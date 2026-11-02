@@ -1,0 +1,16 @@
+[package]
+name = "senca-h3"
+description = "Sans-io HTTP/3 (RFC 9114), QPACK (RFC 9204), extended CONNECT (RFC 9220), HTTP Datagrams (RFC 9297) and WebTransport over HTTP/3 (draft-ietf-webtrans-http3-07) for SENCA"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+
+[dependencies]
+bytes.workspace = true
+senca-quic = { path = "../senca-quic" }
+
+[dev-dependencies]
+senca-tls = { path = "../senca-tls" }
+
+[lints]
+workspace = true

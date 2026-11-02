@@ -1,0 +1,23 @@
+[package]
+name = "senca-quic"
+description = "Sans-io QUIC v1 (RFC 9000/9001/9002/9221) for SENCA"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+
+[dependencies]
+bytes.workspace = true
+sha2.workspace = true
+subtle.workspace = true
+getrandom.workspace = true
+senca-tls = { path = "../senca-tls" }
+hmac = "0.12"
+aes = "0.8"
+aes-gcm = { version = "0.10", default-features = false, features = ["aes", "alloc", "zeroize"] }
+chacha20poly1305 = { version = "0.10", default-features = false, features = ["alloc"] }
+# ChaCha20 の header protection（RFC 9001 5.4.4）に生の鍵ストリームが要る。chacha20poly1305 と同じ版。
+chacha20 = "0.9"
+zeroize = "1"
+
+[lints]
+workspace = true

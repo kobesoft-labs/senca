@@ -1,0 +1,22 @@
+[package]
+name = "senca-moq"
+description = "Sans-io Media over QUIC Transport (draft-ietf-moq-transport-22) session, relay and media mapping for SENCA"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+
+[dependencies]
+bytes.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+sha2.workspace = true
+base64.workspace = true
+subtle.workspace = true
+senca-quic = { path = "../senca-quic" }
+senca-h3 = { path = "../senca-h3" }
+
+[dev-dependencies]
+senca-tls = { path = "../senca-tls" }
+
+[lints]
+workspace = true

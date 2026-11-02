@@ -14,9 +14,9 @@
 | M7 | 入力の追加（SRT、RTSP pull、RTP、TS demux、HLS pull） | P2 | 完了（2026-11-02。RTSP pull は TCP interleaved） |
 | M8 | WebRTC（ICE/STUN/TURN、DTLS-SRTP、SDP、WHIP/WHEP、SFU）、ブラウザーからの送出 | P3、R6-3、REQ-008 | 完了（2026-11-02。Chrome で確認。Firefox・Safari・TURN 経路・独立監査は未） |
 | M9 | 分散（自前 Raft、配置、fencing、振り直し、ノードの追加） | P4、REQ-005、REQ-010 | 完了（2026-11-02。制御面の複製・mTLS・所有権と fencing・所有者への案内。中継の木と共有ストレージは未） |
-| M10 | QUIC・TLS 1.3・HTTP/3・WebTransport・MoQ | P5・P6 | |
+| M10 | QUIC・TLS 1.3・HTTP/3・WebTransport・MoQ | P5・P6 | 部品は済み（aioquic・OpenSSL・Chrome・moq-dev と相互接続 43/43）。ノードへの組み込みが残り |
 | M11 | H.265・AV1/VP9/Opus の経路、fMP4、LL-HLS、Enhanced RTMP | P6、REQ-007 | 完了（2026-11-02。LL-HLS は Apple の検証器・Safari で未確認） |
-| M12 | 管理画面（GUI、パイプライン編集、ノード管理、制作画面） | REQ-002、REQ-005、REQ-008 | 進行中（パイプライン・制作の画面を API につなぐ作業が残り） |
+| M12 | 管理画面（GUI、パイプライン編集、ノード管理、制作画面） | REQ-002、REQ-005、REQ-008 | 済み（試験 74/74） |
 | M13 | Docker 導入、キャプチャボード、PaaS 連携 | REQ-003/004/001 | 完了（2026-11-02。キャプチャ機器・GPU は実機で未検証、PaaS は模擬の API でのみ確認） |
 | M15 | 送り手のアプリ（ブラウザー WHIP、iOS/iPadOS/Android/macOS、senca-sdk、QR で設定、カメラ制御） | REQ-009 | 完了（2026-11-02。SDK・ブラウザーの WHIP は確認済み。Android・Apple のアプリはこの環境でビルドしていない） |
 | M14 | 本番の仕上げ（長時間試験、fuzz、SBOM、署名付き配布） | 13 章、15 章 | |
