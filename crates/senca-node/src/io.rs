@@ -282,6 +282,7 @@ async fn run_input(app: Arc<App>, i: Input, st: Arc<Mutex<IoStatus>>) {
             "hls_pull" => crate::hls_pull::run(&app, &i, &st).await,
             "srt_pull" => crate::srt::pull(&app, &i, &st).await,
             "rtsp_pull" => crate::rtsp_pull::run(&app, &i, &st).await,
+            "device" => crate::capture::run(&app, &i, &st).await,
             p => Err(format!("{p} はこのノードではまだ使えません")),
         };
         match res {

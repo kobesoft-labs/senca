@@ -614,7 +614,8 @@ impl App {
 
     pub fn devices(&self) -> Value {
         let devs = self.codec.as_ref().map(|c| c.devices()).unwrap_or(json!({ "providers": [], "sandbox": null }));
-        json!({ "nodes": [{ "node": self.node_id, "devices": devs }] })
+        let capture = crate::capture::listing(self);
+        json!({ "nodes": [{ "node": self.node_id, "devices": devs, "capture": capture }] })
     }
 
     /// 適用されたコマンドを見て、所有権を失った stream の送り手を切る（fencing）。

@@ -11,8 +11,8 @@ WORKDIR /src
 COPY Cargo.toml Cargo.lock ./
 COPY crates ./crates
 # リリース（M14）では --locked を付ける（今は作業中の部品が Cargo.lock に混ざることがある）
-RUN cargo build --release -p senca-node -p senca-codec-worker \
- && mkdir -p /out && cp target/release/senca-node target/release/senca-codec-worker /out/
+RUN cargo build --release -p senca-node -p senca-codec-worker -p senca-capture \
+ && mkdir -p /out && cp target/release/senca-node target/release/senca-codec-worker target/release/senca-capture-worker /out/
 
 # 実行: libvpx の提供者は libvpx 1.16（libvpx.so.12）の ABI に合わせてあるので、それを持つ Ubuntu 26.04 を使う
 FROM ubuntu:26.04
@@ -21,7 +21,7 @@ RUN apt-get update \
  && rm -rf /var/lib/apt/lists/* \
  && useradd --system --uid 10001 --home /var/lib/senca senca \
  && mkdir -p /var/lib/senca /opt/senca/console && chown senca /var/lib/senca
-COPY --from=build /out/senca-node /out/senca-codec-worker /opt/senca/bin/
+COPY --from=build /out/senca-node /out/senca-codec-worker /out/senca-capture-worker /opt/senca/bin/
 COPY apps/console /opt/senca/console
 COPY apps/sender-web /opt/senca/sender
 COPY docs/licenses /opt/senca/licenses

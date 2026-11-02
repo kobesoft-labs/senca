@@ -10,7 +10,7 @@ use serde::Deserialize;
 use serde_json::{Value, json};
 use std::collections::BTreeMap;
 
-const INPUT_PROTOCOLS: &[&str] = &["rtmp_pull", "rtsp_pull", "srt_pull", "hls_pull"];
+const INPUT_PROTOCOLS: &[&str] = &["rtmp_pull", "rtsp_pull", "srt_pull", "hls_pull", "device"];
 const OUTPUT_PROTOCOLS: &[&str] = &["rtmp_push", "srt_push", "whip_push", "paas"];
 
 fn bad(t: impl Into<String>) -> Problem {
@@ -19,6 +19,9 @@ fn bad(t: impl Into<String>) -> Problem {
 
 /// URL の形を検査する（宛先の IP は接続時に egress の方針で検査する）。資格情報を URL に入れさせない。
 fn check_url(protocol: &str, url: &str) -> Result<(), Problem> {
+    if protocol == "device" {
+        return if url.len() <= 300 && url.starts_with("device:") && !url.chars().any(|c| c.is_control() || c == ' ') { Ok(()) } else { Err(bad("url は device:{機器 ID}")) };
+    }
     let scheme = url.split_once("://").map(|(s, _)| s).ok_or_else(|| bad("url の形が違います"))?;
     let ok = match protocol {
         "rtmp_pull" | "rtmp_push" => matches!(scheme, "rtmp" | "rtmps"),

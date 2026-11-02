@@ -17,7 +17,7 @@
 | M10 | QUIC・TLS 1.3・HTTP/3・WebTransport・MoQ | P5・P6 | |
 | M11 | H.265・AV1/VP9/Opus の経路、fMP4、LL-HLS、Enhanced RTMP | P6、REQ-007 | 完了（2026-11-02。LL-HLS は Apple の検証器・Safari で未確認） |
 | M12 | 管理画面（GUI、パイプライン編集、ノード管理、制作画面） | REQ-002、REQ-005、REQ-008 | 進行中（パイプライン・制作の画面を API につなぐ作業が残り） |
-| M13 | Docker 導入、キャプチャボード、PaaS 連携 | REQ-003/004/001 | 進行中（Docker・PaaS 連携は完了。キャプチャ機器は作業中） |
+| M13 | Docker 導入、キャプチャボード、PaaS 連携 | REQ-003/004/001 | 完了（2026-11-02。キャプチャ機器・GPU は実機で未検証、PaaS は模擬の API でのみ確認） |
 | M15 | 送り手のアプリ（ブラウザー WHIP、iOS/iPadOS/Android/macOS、senca-sdk、QR で設定、カメラ制御） | REQ-009 | 完了（2026-11-02。SDK・ブラウザーの WHIP は確認済み。Android・Apple のアプリはこの環境でビルドしていない） |
 | M14 | 本番の仕上げ（長時間試験、fuzz、SBOM、署名付き配布） | 13 章、15 章 | |
 

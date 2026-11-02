@@ -2,16 +2,16 @@
 # M1〜M3: RTMP → ライブ HLS・録画・VOD・MP4 書き出し・回収・RTMP play・API の契約。
 # 使い方: tools/interop/node.sh（KEEP=1 で作業場所を残す、ONLY=ABC で場面を絞る）
 source "$(dirname "$0")/lib.sh"
-[ -n "${NODE_BIN_PREBUILT:-}" ] || (cd "$ROOT" && cargo build -q -p senca-node -p senca-codec-worker -p senca-devtools && cargo build -q -p senca-rtmp -p senca-paas --examples)
+[ -n "${NODE_BIN_PREBUILT:-}" ] || (cd "$ROOT" && cargo build -q -p senca-node -p senca-codec-worker -p senca-capture -p senca-devtools && cargo build -q -p senca-rtmp -p senca-paas --examples)
 # ロイヤリティフリーのコーデック（dav1d など）の置き場所。無ければ G を飛ばす
 CODEC_LIB_DIR=${CODEC_LIB_DIR:-$HOME/tools/codeclibs/usr/lib/x86_64-linux-gnu}
 W=$(mktemp -d); NODE_PID=
 cleanup() { [ -n "$NODE_PID" ] && kill "$NODE_PID" 2>/dev/null || true; wait 2>/dev/null || true; [ -n "${KEEP:-}" ] && echo "kept $W" || rm -rf "$W"; }
 trap cleanup EXIT
-ONLY=${ONLY:-ABCDEFGHIJKLM}
+ONLY=${ONLY:-ABCDEFGHIJKLMNO}
 HTTP=$(port); RTMP=$(port); SRT=$(port); RTSP=$(port); API=http://127.0.0.1:$HTTP/api/v1
 start_node() {
-  "$NODE_BIN" --data-dir "$W/data" --http 127.0.0.1:$HTTP --rtmp 127.0.0.1:$RTMP --srt 127.0.0.1:$SRT --rtsp 127.0.0.1:$RTSP --public-rtsp-url rtsp://127.0.0.1:$RTSP \
+  "$NODE_BIN" --data-dir "$W/data" --http 127.0.0.1:$HTTP --rtmp 127.0.0.1:$RTMP --srt 127.0.0.1:$SRT --capture-synthetic --rtsp 127.0.0.1:$RTSP --public-rtsp-url rtsp://127.0.0.1:$RTSP \
     --public-rtmp-url rtmp://127.0.0.1:$RTMP --public-http-url http://127.0.0.1:$HTTP --reconnect-grace "${GRACE:-3000}" \
     --codec-lib-dir "$CODEC_LIB_DIR" --codec-workers 2 --egress-allow 127.0.0.0/8 "$@" >>"$W/node.log" 2>&1 &
   NODE_PID=$!
@@ -365,5 +365,33 @@ if [[ $ONLY == *M* ]]; then
   wait $PUB || true
   contiguous "$W/src.v" "$W/m.v" 90 && pass "M RTSP play (TCP) = contiguous source run ($(wc -l < "$W/m.v") frames)" || fail "M RTSP play mismatch ($(wc -l < "$W/m.v"))"
   timeout -k 2 5 "$FFMPEG" -v error -rtsp_transport tcp -i "rtsp://127.0.0.1:$RTSP/live/$(sid m)?exp=1&sig=AAAA" -t 1 -f null - 2>/dev/null && fail "M bad signature accepted" || pass "M bad signature rejected"
+fi
+if [[ $ONLY == *N* ]]; then
+  # N. H.265（Enhanced RTMP で受けて、TS・fMP4 の HLS へそのまま通す。符号化・復号はしない）
+  "$FFMPEG" -v error -f lavfi -i testsrc2=size=640x360:rate=30 -f lavfi -i sine=sample_rate=48000 -t 6 \
+    -c:v libx265 -x265-params log-level=error -g 30 -bf 2 -c:a aac "$W/h265.mp4"
+  "$TARGET/debug/mp4-to-flv" "$W/h265.mp4" "$W/h265.flv"
+  frames "$W/h265.mp4" v > "$W/h265.v"
+  for C in ts fmp4; do
+    api POST /streams -d "{\"name\":\"n$C\",\"hls\":{\"container\":\"$C\"}}" > "$W/n$C.json"
+    "$TARGET/debug/examples/rtmp_push" 127.0.0.1:$RTMP live "$(key n$C)" "$W/h265.flv" >/dev/null 2>&1
+    sleep $(( ${GRACE:-3000} / 1000 + 1 ))
+    URL=$(api POST /streams/$(sid n$C)/playback-url | json "['playback']['hls']")
+    frames "$URL" v > "$W/n$C.v"
+    cmp -s "$W/h265.v" "$W/n$C.v" && pass "N H.265 → HLS $C bit-identical" || fail "N H.265 $C ($(wc -l < "$W/n$C.v"))"
+  done
+fi
+if [[ $ONLY == *O* ]]; then
+  # O. キャプチャ機器（合成デバイス、別プロセスで取り込み・VP9 で符号化）→ stream → fMP4 の HLS
+  if [ ! -e "$CODEC_LIB_DIR/libvpx.so.12" ]; then echo "SKIP O (no libvpx)"; else
+  api GET /devices | grep -q '"synthetic' && pass "O capture devices listed in GET /devices" || fail "O devices: $(api GET /devices | head -c 300)"
+  api POST /streams -d '{"name":"o","codec_profile":"royalty_free","hls":{"container":"fmp4"}}' > "$W/o.json"
+  api POST /streams/$(sid o)/inputs -d '{"protocol":"device","url":"device:synthetic:0","options":{"codec":"vp9","width":"640","height":"360","fps":"30","bitrate_bps":"800000","audio_device":"synthetic:0"}}' > "$W/oi.json"
+  sleep 8
+  URL=$(api POST /streams/$(sid o)/playback-url | json "['playback']['hls']")
+  n=$({ timeout -k 2 10 "$FFMPEG" -v error -i "$URL" -t 4 -map 0:v -f framemd5 - 2>/dev/null || true; } | grep -vc '^#' || true)
+  [ "$n" -ge 60 ] && pass "O device → VP9 → live HLS decodes ($n frames)" || fail "O frames $n; input: $(api GET /inputs/$(json "['id']" < "$W/oi.json") | head -c 300)"
+  api DELETE /inputs/$(json "['id']" < "$W/oi.json") >/dev/null
+  fi
 fi
 summary
