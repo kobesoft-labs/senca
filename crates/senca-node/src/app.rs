@@ -52,6 +52,7 @@ pub struct App {
     pub io: crate::io::IoManager,
     pub pipelines: crate::pipelines::PipelineManager,
     pub captions_running: Mutex<HashMap<String, tokio::task::JoinHandle<()>>>,
+    pub rtc: std::sync::OnceLock<Arc<crate::webrtc::Rtc>>,
 }
 
 impl App {
@@ -82,6 +83,7 @@ impl App {
             io: crate::io::IoManager::default(),
             pipelines: crate::pipelines::PipelineManager::default(),
             captions_running: Mutex::new(HashMap::new()),
+            rtc: std::sync::OnceLock::new(),
         });
         *app.me.lock().unwrap() = Arc::downgrade(&app);
         if let Ok(h) = tokio::runtime::Handle::try_current() {
@@ -681,8 +683,11 @@ impl App {
         crate::paas::cleanup(self, o);
     }
 
-    pub async fn webrtc_http(&self, _h: &senca_http::RequestHead, _body: Bytes, _peer: &str) -> crate::http::Reply {
-        crate::http::Reply { status: 404, headers: vec![], body: Bytes::new() }
+    pub async fn webrtc_http(&self, h: &senca_http::RequestHead, body: Bytes, peer: &str) -> crate::http::Reply {
+        match self.rtc.get() {
+            Some(r) => crate::webrtc::http(&self.arc(), r, h, body, peer).await,
+            None => crate::http::Reply { status: 404, headers: vec![], body: Bytes::new() },
+        }
     }
 
     pub async fn shutdown(&self) {

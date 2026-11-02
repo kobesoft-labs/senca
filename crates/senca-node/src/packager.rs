@@ -40,7 +40,7 @@ pub enum PackagerOut {
     Init { bytes: Bytes, name: String },
 }
 
-/// 映像の設定を待つ間にためる音声の長さ（これを超えたら音声だけで始める）。
+/// 映像・音声の設定を待つ間にためる長さ（これを超えたら、そろっている方だけで始める）。
 const WAIT_VIDEO_US: i64 = 1_000_000;
 
 /// URI の付け方。初期化セグメントは作り直しても名前が重ならないように通し番号にする。
@@ -222,9 +222,10 @@ impl Packager {
 
     pub fn push(&mut self, au: &AccessUnit) -> Vec<PackagerOut> {
         let mut out = Vec::new();
-        // 映像の設定がまだなら、音声を少しためて待つ（作り直しを避ける）
+        // 映像と音声の設定がそろうまで少しためて待つ（あとから片方が来て作り直すのを避ける）
         let has_video = self.configs.values().any(|c| c.codec.kind() == MediaKind::Video);
-        if self.seg.is_none() && !has_video {
+        let has_audio = self.configs.values().any(|c| c.codec.kind() == MediaKind::Audio);
+        if self.seg.is_none() && !(has_video && has_audio) {
             self.held.push(au.clone());
             let span = self.held.last().zip(self.held.first()).map(|(l, f)| {
                 (l.dts - f.dts).rescale(l.timebase, Timebase::MICROS).unwrap_or(0)

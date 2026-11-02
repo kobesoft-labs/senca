@@ -28,6 +28,7 @@ senca-tls = { path = "../senca-tls" }
 senca-pipeline = { path = "../senca-pipeline" }
 senca-paas = { path = "../senca-paas" }
 senca-caption = { path = "../senca-caption" }
+senca-webrtc = { path = "../senca-webrtc" }
 senca-rtp = { path = "../senca-rtp" }
 senca-sdp = { path = "../senca-sdp" }
 senca-rtsp = { path = "../senca-rtsp" }

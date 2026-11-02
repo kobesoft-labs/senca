@@ -34,6 +34,7 @@ mod store;
 mod thumbnail;
 mod tls_io;
 mod util;
+mod webrtc;
 
 use app::App;
 use config::Config;
@@ -221,6 +222,10 @@ async fn run(cfg: Config) -> Result<(), String> {
                 app.log(&format!("srt: {e}"));
             }
         });
+    }
+    if let Some(addr) = cfg.webrtc_udp {
+        let r = webrtc::start(app.clone(), addr).await?;
+        let _ = app.rtc.set(r);
     }
     tokio::spawn(scheduler::run(app.clone()));
     tokio::spawn(snapshot::run_snapshotter(app.clone()));

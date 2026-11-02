@@ -12,7 +12,7 @@
 | M5 | 板書補正、複数チャネル・合成、制作機能（シーン・切り替え・音声ミキサー） | R6-5/6/7、REQ-005、REQ-008 | 完了（2026-11-02。H.264/H.265 の経路は GPU の実機で未検証） |
 | M6 | 字幕と翻訳（WebVTT） | R6-4 | 完了（2026-11-02。録画への字幕の保存・WebRTC の DataChannel は未） |
 | M7 | 入力の追加（SRT、RTSP pull、RTP、TS demux、HLS pull） | P2 | 完了（2026-11-02。RTSP pull は TCP interleaved） |
-| M8 | WebRTC（ICE/STUN/TURN、DTLS-SRTP、SDP、WHIP/WHEP、SFU）、ブラウザーからの送出 | P3、R6-3、REQ-008 | |
+| M8 | WebRTC（ICE/STUN/TURN、DTLS-SRTP、SDP、WHIP/WHEP、SFU）、ブラウザーからの送出 | P3、R6-3、REQ-008 | 完了（2026-11-02。Chrome で確認。Firefox・Safari・TURN 経路・独立監査は未） |
 | M9 | 分散（自前 Raft、配置、fencing、振り直し、ノードの追加） | P4、REQ-005、REQ-010 | 完了（2026-11-02。制御面の複製・mTLS・所有権と fencing・所有者への案内。中継の木と共有ストレージは未） |
 | M10 | QUIC・TLS 1.3・HTTP/3・WebTransport・MoQ | P5・P6 | |
 | M11 | H.265・AV1/VP9/Opus の経路、fMP4、LL-HLS、Enhanced RTMP | P6、REQ-007 | 完了（2026-11-02。LL-HLS は Apple の検証器・Safari で未確認） |
