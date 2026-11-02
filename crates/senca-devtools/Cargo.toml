@@ -1,0 +1,16 @@
+[package]
+name = "senca-devtools"
+description = "Developer and test utilities for SENCA (not shipped)"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+publish = false
+
+[dependencies]
+senca-core = { path = "../senca-core" }
+senca-fmp4 = { path = "../senca-fmp4" }
+senca-flv = { path = "../senca-flv" }
+bytes.workspace = true
+
+[lints]
+workspace = true

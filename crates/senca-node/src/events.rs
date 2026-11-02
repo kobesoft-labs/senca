@@ -5,6 +5,7 @@
 use crate::app::App;
 use senca_control::auth::{self, Scope};
 use senca_control::state::Command;
+use senca_control::{Problem, ProblemCode};
 use senca_http::RequestHead;
 use senca_http::sse::SseEvent;
 use serde_json::json;
@@ -18,14 +19,27 @@ pub async fn serve_sse<S: AsyncWrite + Unpin>(app: &Arc<App>, sock: &mut S, h: &
         let core = app.control.lock().unwrap();
         auth::authenticate(h.headers.get_str("authorization"), &core.state, core.jwt.as_ref(), now)
     };
+    let rid = crate::util::request_id(h.headers.get_str("x-request-id"));
+    let deny = |status: u16, code: ProblemCode, title: &str| {
+        let mut p = Problem::new(code, title);
+        p.request_id = Some(rid.clone());
+        let body = serde_json::to_vec(&p).unwrap_or_default();
+        let extra = if status == 401 { "WWW-Authenticate: Bearer\r\n" } else { "" };
+        let mut v = format!(
+            "HTTP/1.1 {status} {}\r\nContent-Type: application/problem+json\r\nX-Request-Id: {rid}\r\n{extra}Content-Length: {}\r\nConnection: close\r\n\r\n",
+            senca_http::response::reason_phrase(status),
+            body.len()
+        )
+        .into_bytes();
+        v.extend_from_slice(&body);
+        v
+    };
     let Ok(p) = principal else {
-        let _ = sock
-            .write_all(b"HTTP/1.1 401 Unauthorized\r\nWWW-Authenticate: Bearer\r\nContent-Length: 0\r\nConnection: close\r\n\r\n")
-            .await;
+        let _ = sock.write_all(&deny(401, ProblemCode::AuthFailed, "認証に失敗しました")).await;
         return;
     };
     if !p.has(Scope::StreamRead) {
-        let _ = sock.write_all(b"HTTP/1.1 403 Forbidden\r\nContent-Length: 0\r\nConnection: close\r\n\r\n").await;
+        let _ = sock.write_all(&deny(403, ProblemCode::Forbidden, "権限 stream:read が必要です")).await;
         return;
     }
     let last: u64 = h.headers.get_str("last-event-id").and_then(|v| v.parse().ok()).unwrap_or(0);

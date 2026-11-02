@@ -121,7 +121,7 @@ impl ApiResponse {
         if p.status == 401 {
             r.headers.push(("WWW-Authenticate".into(), "Bearer".into()));
         }
-        if p.status == 503 || p.status == 429 {
+        if (p.status == 503 || p.status == 429) && p.retryable {
             r.headers.push(("Retry-After".into(), "1".into()));
         }
         r
@@ -291,22 +291,37 @@ fn idempotent(ctx: &Ctx, key: &str) -> ApiResult {
         if let Some(rec) = core.state.idempotency(ctx.tenant(), key)
             && rec.created_at_ms + senca_control::state::IDEMPOTENCY_TTL_MS > ctx.now_ms
         {
-            if rec.fingerprint != fp {
+            if rec.fingerprint != fp || rec.subject.as_deref().is_some_and(|s| s != ctx.principal.subject) {
                 return Err(Problem::new(ProblemCode::IdempotencyConflict, "同じ Idempotency-Key で別の要求です"));
             }
-            let mut r = ApiResponse::bytes(rec.status, "application/json", Bytes::from(rec.body.clone()))
-                .with_header("Idempotency-Replayed", "true");
+            let ct = rec.content_type.clone().unwrap_or_else(|| "application/json".into());
+            let mut body = Bytes::from(rec.body.clone());
+            if ct.starts_with("application/problem+json")
+                && let Ok(mut v) = serde_json::from_slice::<Value>(&body)
+            {
+                v["request_id"] = Value::String(ctx.req.request_id.clone());
+                body = Bytes::from(serde_json::to_vec(&v).unwrap_or_default());
+            }
+            let mut r = ApiResponse::bytes(rec.status, &ct, body).with_header("Idempotency-Replayed", "true");
             if let Some(l) = &rec.location {
                 r = r.with_header("Location", l.clone());
+            }
+            if let Some(e) = &rec.etag {
+                r = r.with_header("ETag", e.clone());
             }
             return Ok(r);
         }
     }
     let result = route(ctx);
-    let (status, body, location) = match &result {
-        Ok(r) => (r.status, redact_secrets(&r.body), r.headers.iter().find(|(k, _)| k == "Location").map(|(_, v)| v.clone())),
+    let hdr = |r: &ApiResponse, k: &str| r.headers.iter().find(|(h, _)| h.eq_ignore_ascii_case(k)).map(|(_, v)| v.clone());
+    let (status, body, location, etag_v, ct) = match &result {
+        Ok(r) => (r.status, redact_secrets(&r.body), hdr(r, "Location"), hdr(r, "ETag"), hdr(r, "Content-Type")),
         Err(p) if p.status >= 500 => return result,
-        Err(p) => (p.status, Bytes::from(serde_json::to_vec(p).unwrap_or_default()), None),
+        Err(p) => {
+            let mut p = p.clone();
+            p.request_id = None;
+            (p.status, Bytes::from(serde_json::to_vec(&p).unwrap_or_default()), None, None, Some("application/problem+json".into()))
+        }
     };
     if body.len() <= 256 * 1024 {
         let rec = IdempotencyRecord {
@@ -316,6 +331,9 @@ fn idempotent(ctx: &Ctx, key: &str) -> ApiResult {
             status,
             body: String::from_utf8_lossy(&body).into_owned(),
             location,
+            etag: etag_v,
+            subject: Some(ctx.principal.subject.clone()),
+            content_type: ct,
             created_at_ms: ctx.now_ms,
         };
         // 期限切れの古い記録は先に消す
@@ -410,6 +428,7 @@ fn route(ctx: &Ctx) -> ApiResult {
 
         ("POST", ["tokens"]) => tokens::create(ctx),
         ("GET", ["tokens"]) => tokens::list(ctx),
+        ("GET", ["tokens", id]) => tokens::get(ctx, id),
         ("DELETE", ["tokens", id]) => tokens::delete(ctx, id),
 
         (

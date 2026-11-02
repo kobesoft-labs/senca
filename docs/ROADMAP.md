@@ -7,8 +7,8 @@
 |---|---|---|---|
 | M1 | RTMP で受けて HLS で配信（単一ノード） | P1・P2 の一部 | 完了（2026-11-02） |
 | M2 | 録画（アーカイブ）と配信の分岐、VOD 再生、障害後の回収、MP4 書き出し | 5.3、8.4、REQ-006 R6-1 | 完了（2026-11-02） |
-| M3 | 制御 API（stream・録画・予約・トークン、認証、Idempotency、OpenAPI） | 10 章、REQ-002 | 進行中（OpenAPI 未） |
-| M4 | codec worker（隔離・プール）、ハードウェアのコーデック（NVENC/NVDEC・oneVPL・AMF・VA-API）、ロイヤリティフリーのコーデック、静止画・サムネイル | 2.1、3.1、R6-8/9、REQ-004、REQ-007、REQ-010 | |
+| M3 | 制御 API（stream・録画・予約・トークン、認証、Idempotency、OpenAPI） | 10 章、REQ-002 | 完了（2026-11-02） |
+| M4 | codec worker（隔離・プール）、ハードウェアのコーデック（NVENC/NVDEC・oneVPL・AMF・VA-API）、ロイヤリティフリーのコーデック、静止画・サムネイル | 2.1、3.1、R6-8/9、REQ-004、REQ-007、REQ-010 | 完了（GPU の実機は未検証）（2026-11-02） |
 | M5 | 板書補正、複数チャネル・合成、制作機能（シーン・切り替え・音声ミキサー） | R6-5/6/7、REQ-005、REQ-008 | |
 | M6 | 字幕と翻訳（WebVTT） | R6-4 | |
 | M7 | 入力の追加（SRT、RTSP pull、RTP、TS demux、HLS pull） | P2 | |

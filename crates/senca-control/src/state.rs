@@ -334,6 +334,9 @@ mod tests {
             status: 201,
             body: "{}".into(),
             location: None,
+            etag: None,
+            subject: None,
+            content_type: None,
             created_at_ms: 10,
         };
         st.apply(Command::PutIdempotency { record: r.clone() }).unwrap();

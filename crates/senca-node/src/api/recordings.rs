@@ -72,12 +72,24 @@ pub fn list(ctx: &Ctx) -> ApiResult {
     let (limit, cursor) = ctx.page()?;
     let q = ctx.req.query_pairs();
     let stream = q.iter().find(|(k, _)| k == "stream").map(|(_, v)| v.clone());
+    let state = match q.iter().find(|(k, _)| k == "state").map(|(_, v)| v.as_str()) {
+        None => None,
+        Some("recording") => Some(RecordingState::Recording),
+        Some("finalized") => Some(RecordingState::Finalized),
+        Some("interrupted") => Some(RecordingState::Interrupted),
+        Some(_) => return Err(Problem::invalid("state は recording・finalized・interrupted")),
+    };
     let items: Vec<(String, Recording)> = ctx
         .control()
         .state
         .recordings
         .values()
-        .filter(|r| r.tenant == ctx.tenant() && r.state != RecordingState::Deleting && stream.as_ref().is_none_or(|s| *s == r.stream))
+        .filter(|r| {
+            r.tenant == ctx.tenant()
+                && r.state != RecordingState::Deleting
+                && stream.as_ref().is_none_or(|s| *s == r.stream)
+                && state.is_none_or(|x| x == r.state)
+        })
         .map(|r| (r.id.clone(), r.clone()))
         .collect();
     let (page, next) = paginate(items, limit, cursor.as_deref());

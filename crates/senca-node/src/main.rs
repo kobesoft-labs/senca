@@ -28,6 +28,7 @@ use control::ControlCore;
 use senca_control::auth::Scope;
 use senca_control::model::{ApiToken, NodeInfo};
 use senca_control::state::Command;
+use std::sync::Arc;
 use std::time::Duration;
 use tokio::net::TcpListener;
 
@@ -82,7 +83,14 @@ async fn run(cfg: Config) -> Result<(), String> {
     let _ = &mut state;
     let mut core = ControlCore::new(state, Some(store), jwt);
     bootstrap(&cfg, &mut core, &node_id)?;
-    let app = App::new(cfg.clone(), core, node_id, None);
+    let codec = match codec::CodecService::start(&cfg).await {
+        Ok(c) => Some(Arc::new(c)),
+        Err(e) => {
+            eprintln!("codec worker unavailable: {e} (静止画・サムネイル・変換は 503 になります)");
+            None
+        }
+    };
+    let app = App::new(cfg.clone(), core, node_id, codec);
     recovery::recover(&app);
     app.log(&format!("senca-node {} started (node {})", env!("CARGO_PKG_VERSION"), app.node_id));
 
@@ -113,6 +121,7 @@ async fn run(cfg: Config) -> Result<(), String> {
         });
     }
     tokio::spawn(scheduler::run(app.clone()));
+    tokio::spawn(snapshot::run_snapshotter(app.clone()));
     {
         let app = app.clone();
         let every = Duration::from_secs(cfg.retention_sweep_secs.max(1));

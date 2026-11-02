@@ -1,0 +1,1885 @@
+openapi: 3.1.0
+info:
+  title: SENCA 管理 API
+  version: v1
+  description: |
+    SENCA ノードの管理 API（仕様 SENCA-SRS-001 10 章、REQ-002）。この文書は **実装（`crates/senca-node/src/api/`）の挙動** を書いたもの。
+    仕様と違うところは各操作の説明に「仕様との差」として書く。`tools/interop/openapi.sh` が、実装の経路表との一致と、実際の応答がここに書いた状態コード・形に合うことを確かめる。
+
+    ## 共通の決まり
+
+    - base path は `/api/v1`。本文は JSON（UTF-8）、時刻は UTC の RFC 3339（`2026-10-25T00:00:00.000Z` の形）。
+    - **認証**: すべての `/api/v1` は `Authorization: Bearer <token>` が要る。値が `senca_` で始まれば API トークン、それ以外は JWT（`--jwks` を設定したときだけ）。失敗は 401（`WWW-Authenticate: Bearer`）。失敗の理由は応答に出さない。
+    - **権限**: 各操作に要る権限を拡張 `x-senca-scope` に書く（`null` は認証だけ）。`tenant:admin` は `node:admin` 以外のすべてを含む。足りなければ 403（`FORBIDDEN`）。テナントは認証の文脈から決まり、本文のテナントは使わない。他テナントの資源は 404。
+    - **本文**: `Content-Type: application/json` 以外は 415。未知のフィールドは 400（`deny_unknown_fields`、スキーマでは `additionalProperties: false`）。HTTP 層の本文上限は 1 MiB（超えると HTTP 層が text/plain の 413 を返し、接続を閉じる）。
+    - **Idempotency-Key**: POST に付けると 24 時間、同じ答え（状態コード・本文・Location）を返す。再送の応答には `Idempotency-Replayed: true` が付く。同じ鍵で別の要求（メソッド・パス・クエリ・本文の SHA-256 が違う）は 409（`IDEMPOTENCY_CONFLICT`）。鍵は 1〜255 文字の表示可能 ASCII（違えば 400）。覚える本文からは秘密（`stream_key`・`token`）を消し、代わりに `stream_key_redacted: true`・`token_redacted: true` を入れる。5xx は覚えない。
+    - **楽観的排他**: 応答の `ETag` は `"{generation}"`。PATCH は `If-Match` 必須（無いと 428、形が違う・古いと 412）。DELETE の `If-Match` は任意（付ければ検査）。
+    - **一覧**: `limit`（1〜1000、既定 100）と `cursor`（前の応答の `next_cursor`）。順序は ID の昇順。知らないクエリは 400。
+    - **エラー**: `application/problem+json`（`Problem`）。すべての応答に `X-Request-Id`（要求の `X-Request-Id` が 64 文字以内の英数字と `-_.` ならそれを、違えば生成した `req_...`）と `Cache-Control: no-store` が付く。
+    - **405**: 経路表にある資源（`/capabilities`・`/nodes/...`・`/devices`・`/events`・`/streams/...`・`/recordings/...`・`/schedules/...`・`/tokens/...`）に、ここに書いていないメソッド（HEAD を含む）を送ると 405（`METHOD_NOT_ALLOWED`）。それ以外の知らないパスは 404。`x-senca-undefined-method-status` を参照。
+    - **429**: 部品（`components.responses`）には定義するが、今の実装はどの操作でも返さない（レート制限は未実装）。
+    - **422**: `GET /streams/{id}/snapshot` の復号でだけ返す。配信の作成・更新ではコーデックを検査しない（入力のコーデックは publish まで分からない）。不適合は `POST /streams/{id}/plan` の結果の `code: UNSUPPORTED_CODEC` で知らせる。
+    - **5xx**: 制御状態の永続化に失敗すると 500（`INTERNAL_ERROR`、`retryable: true`）。再試行してよい 503 には `Retry-After: 1` が付く。
+
+    ## 仕様との主な差（まとめ）
+
+    - 非同期処理の operation 資源（`GET /operations/{id}`）は無い。202 の応答は対象資源そのものを返す。
+    - `PATCH /streams/{id}` は 202 ではなく 200（その場で反映した資源を返す）。`DELETE /streams/{id}` は 202 ではなく 204。
+    - `POST /streams/{id}/inputs`・`/outputs`・`/sessions`、`DELETE /sessions/{id}`、`/pipelines`、`GET /inputs/{id}/reservations` は未実装。
+    - SSE は再送の保持を持たない（`Last-Event-ID` が今の位置より前なら必ず `resync`）。
+x-senca-undefined-method-status: 405
+servers:
+  - url: /api/v1
+security:
+  - bearer: []
+tags:
+  - name: system
+    description: 能力・ノード・デバイス（運用）。
+  - name: streams
+    description: 配信（stream）の定義・鍵・再生 URL・計画・静止画。
+  - name: recordings
+    description: 録画・VOD・MP4 書き出し。
+  - name: schedules
+    description: 予約（REQ-002）。
+  - name: tokens
+    description: API トークン（ADR-0005、仕様 10.2 の表にない追加）。
+  - name: events
+    description: SSE のイベント購読（仕様 10.5）。
+  - name: playback
+    description: |
+      署名付きの再生パス（`/api/v1` の外、認証ヘッダーなし）。URL は `POST /streams/{id}/playback-url`・`POST /recordings/{id}/playback-url` が返す。
+      署名は `HMAC-SHA256(playback_key, "{kind}/{id}/{exp}")` の先頭 16 バイトを base64url（パディングなし）にしたもの。署名違い・期限切れは 403（text/plain）。応答には `Access-Control-Allow-Origin: *` が付く。
+  - name: health
+    description: 稼働確認（`/api/v1` の外、認証なし）。
+
+paths:
+  # ------------------------------------------------------------------ system
+  /capabilities:
+    get:
+      tags: [system]
+      operationId: getCapabilities
+      summary: 対応版・コーデック・機能の一覧
+      x-senca-scope: null
+      responses:
+        '200':
+          description: 能力
+          headers: { X-Request-Id: { $ref: '#/components/headers/X-Request-Id' } }
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/Capabilities' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+  /nodes:
+    get:
+      tags: [system]
+      operationId: listNodes
+      summary: ノードの一覧
+      description: |
+        仕様との差: ページングは無い（`items` だけ、`next_cursor` なし）。クエリは読まない。
+      x-senca-scope: node:admin
+      responses:
+        '200':
+          description: ノードの一覧
+          headers: { X-Request-Id: { $ref: '#/components/headers/X-Request-Id' } }
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/NodeList' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '403': { $ref: '#/components/responses/Forbidden' }
+  /nodes/{id}:
+    parameters:
+      - $ref: '#/components/parameters/NodeId'
+    get:
+      tags: [system]
+      operationId: getNode
+      summary: ノードの詳細
+      x-senca-scope: node:admin
+      responses:
+        '200':
+          description: ノード
+          headers: { X-Request-Id: { $ref: '#/components/headers/X-Request-Id' } }
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/Node' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '403': { $ref: '#/components/responses/Forbidden' }
+        '404': { $ref: '#/components/responses/NotFound' }
+  /nodes/{id}/drain:
+    parameters:
+      - $ref: '#/components/parameters/NodeId'
+    post:
+      tags: [system]
+      operationId: drainNode
+      summary: 新規割当の停止（drain）
+      description: |
+        `draining: true` にしたノードを返す。本文は読まない。仕様は 202 と operation 資源だが、実装は 202 で Node をそのまま返す。
+      x-senca-scope: node:admin
+      parameters:
+        - $ref: '#/components/parameters/IdempotencyKey'
+      responses:
+        '202': { $ref: '#/components/responses/NodeAccepted' }
+        '400': { $ref: '#/components/responses/BadRequest' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '403': { $ref: '#/components/responses/Forbidden' }
+        '404': { $ref: '#/components/responses/NotFound' }
+        '409': { $ref: '#/components/responses/Conflict' }
+        '500': { $ref: '#/components/responses/InternalError' }
+  /nodes/{id}/undrain:
+    parameters:
+      - $ref: '#/components/parameters/NodeId'
+    post:
+      tags: [system]
+      operationId: undrainNode
+      summary: drain の解除
+      x-senca-scope: node:admin
+      parameters:
+        - $ref: '#/components/parameters/IdempotencyKey'
+      responses:
+        '202': { $ref: '#/components/responses/NodeAccepted' }
+        '400': { $ref: '#/components/responses/BadRequest' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '403': { $ref: '#/components/responses/Forbidden' }
+        '404': { $ref: '#/components/responses/NotFound' }
+        '409': { $ref: '#/components/responses/Conflict' }
+        '500': { $ref: '#/components/responses/InternalError' }
+  /devices:
+    get:
+      tags: [system]
+      operationId: listDevices
+      summary: 全ノードのハードウェア（GPU・キャプチャボード）
+      description: 今の実装は自ノードだけを返す（コーデック worker が未接続なら `devices` は空）。
+      x-senca-scope: node:admin
+      responses:
+        '200':
+          description: デバイス
+          headers: { X-Request-Id: { $ref: '#/components/headers/X-Request-Id' } }
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/Devices' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '403': { $ref: '#/components/responses/Forbidden' }
+
+  # ------------------------------------------------------------------ events
+  /events:
+    get:
+      tags: [events]
+      operationId: streamEvents
+      summary: SSE のイベント購読
+      description: |
+        HTTP 層（`events.rs`）が扱う長く開いたままの応答。適用された制御コマンドをイベントにして、テナントで絞って流す。
+        テナントを持たないイベント（`node.updated`）は `node:admin` を持つ主体にだけ流す。15 秒ごとにコメント行（keepalive）を送る。
+
+        - SSE の `id` は制御ログの位置（applied_index）、`event` はイベントの種類、`data` は `SseEventData` の JSON。
+        - `Last-Event-ID` が今の位置より前なら、最初に `event: resync`（`id` は今の位置、`data: {}`）を送る（保持を持たないので必ず再同期になる）。
+        - 取りこぼし（購読の遅れ）では `event: resync`（`data: {}`）を送って閉じる。
+
+        仕様との差: `data` に `event_id`・`generation` の欄は無い（`event_id` は SSE の `id`）。`occurred_at` は送った時刻。保持期間 24 時間の再送は無い。
+        401・403 は他の API と同じ problem+json。
+      x-senca-scope: stream:read
+      parameters:
+        - name: Last-Event-ID
+          in: header
+          required: false
+          description: 最後に受け取ったイベントの `id`（整数）。
+          schema: { type: string }
+      responses:
+        '200':
+          description: イベントの列
+          content:
+            text/event-stream:
+              schema:
+                type: string
+                description: |
+                  例:
+                  ```
+                  event: stream.created
+                  id: 42
+                  data: {"type":"stream.created","resource_id":"...","occurred_at":"...","data":{"name":"studio-a"}}
+                  ```
+              x-senca-event-data: { $ref: '#/components/schemas/SseEventData' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '403': { $ref: '#/components/responses/Forbidden' }
+
+  # ------------------------------------------------------------------ streams
+  /streams:
+    post:
+      tags: [streams]
+      operationId: createStream
+      summary: 配信定義の作成
+      description: |
+        `ingest.stream_key` はこの応答と `POST /streams/{id}/keys` の応答でだけ渡す（再送の応答では `null` と `stream_key_redacted: true`）。
+        name は テナント内で一意（重複は 409）。stream 数の上限（1000/テナント）を超えると 403（`QUOTA_EXCEEDED`）。
+        仕様との差: 仕様 10.3 の `input`・`outputs`・`transform` は無い（入力は RTMP/SRT/WHIP の push、出力は HLS・RTMP play）。
+      x-senca-scope: stream:write
+      parameters:
+        - $ref: '#/components/parameters/IdempotencyKey'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: '#/components/schemas/StreamCreate' }
+      responses:
+        '201':
+          description: 作成した
+          headers:
+            Location: { $ref: '#/components/headers/Location' }
+            ETag: { $ref: '#/components/headers/ETagNotOnReplay' }
+            X-Request-Id: { $ref: '#/components/headers/X-Request-Id' }
+            Idempotency-Replayed: { $ref: '#/components/headers/Idempotency-Replayed' }
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/Stream' }
+        '400': { $ref: '#/components/responses/BadRequest' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '403': { $ref: '#/components/responses/Forbidden' }
+        '409': { $ref: '#/components/responses/Conflict' }
+        '415': { $ref: '#/components/responses/UnsupportedMediaType' }
+        '500': { $ref: '#/components/responses/InternalError' }
+    get:
+      tags: [streams]
+      operationId: listStreams
+      summary: 配信の一覧
+      x-senca-scope: stream:read
+      parameters:
+        - $ref: '#/components/parameters/Limit'
+        - $ref: '#/components/parameters/Cursor'
+      responses:
+        '200':
+          description: 配信の一覧
+          headers: { X-Request-Id: { $ref: '#/components/headers/X-Request-Id' } }
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/StreamList' }
+        '400': { $ref: '#/components/responses/BadRequest' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '403': { $ref: '#/components/responses/Forbidden' }
+  /streams/{id}:
+    parameters:
+      - $ref: '#/components/parameters/StreamId'
+    get:
+      tags: [streams]
+      operationId: getStream
+      summary: desired / observed 状態の取得
+      x-senca-scope: stream:read
+      responses:
+        '200': { $ref: '#/components/responses/StreamOk' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '403': { $ref: '#/components/responses/Forbidden' }
+        '404': { $ref: '#/components/responses/NotFound' }
+    patch:
+      tags: [streams]
+      operationId: patchStream
+      summary: 設定の更新
+      description: |
+        書いたフィールドだけを置き換える（JSON Merge Patch の簡易版。`snapshots: null` で静止画の方針を消す）。`desired_state: stopped` で publish を拒否する。
+        **仕様との差: 202 ではなく 200**（その場で反映した Stream を返す）。
+      x-senca-scope: stream:write
+      parameters:
+        - $ref: '#/components/parameters/IfMatchRequired'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: '#/components/schemas/StreamPatch' }
+      responses:
+        '200': { $ref: '#/components/responses/StreamOk' }
+        '400': { $ref: '#/components/responses/BadRequest' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '403': { $ref: '#/components/responses/Forbidden' }
+        '404': { $ref: '#/components/responses/NotFound' }
+        '409': { $ref: '#/components/responses/Conflict' }
+        '412': { $ref: '#/components/responses/PreconditionFailed' }
+        '415': { $ref: '#/components/responses/UnsupportedMediaType' }
+        '428': { $ref: '#/components/responses/PreconditionRequired' }
+        '500': { $ref: '#/components/responses/InternalError' }
+    delete:
+      tags: [streams]
+      operationId: deleteStream
+      summary: 配信の削除
+      description: |
+        stream とその予約を消す（録画は消さない、仕様 10.2）。publish 中なら切る。
+        **仕様との差: 202 ではなく 204**（非同期の operation は無い）。
+      x-senca-scope: stream:write
+      parameters:
+        - $ref: '#/components/parameters/IfMatchOptional'
+      responses:
+        '204': { $ref: '#/components/responses/NoContent' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '403': { $ref: '#/components/responses/Forbidden' }
+        '404': { $ref: '#/components/responses/NotFound' }
+        '412': { $ref: '#/components/responses/PreconditionFailed' }
+        '500': { $ref: '#/components/responses/InternalError' }
+  /streams/{id}/keys:
+    parameters:
+      - $ref: '#/components/parameters/StreamId'
+    post:
+      tags: [streams]
+      operationId: rotateStreamKey
+      summary: publish 鍵の作り直し
+      description: 新しい鍵を `ingest.stream_key` で返す（古い鍵は無効）。本文は読まない。201 ではなく 200。
+      x-senca-scope: stream:write
+      parameters:
+        - $ref: '#/components/parameters/IdempotencyKey'
+      responses:
+        '200':
+          description: 新しい鍵を入れた stream
+          headers:
+            ETag: { $ref: '#/components/headers/ETagNotOnReplay' }
+            X-Request-Id: { $ref: '#/components/headers/X-Request-Id' }
+            Idempotency-Replayed: { $ref: '#/components/headers/Idempotency-Replayed' }
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/Stream' }
+        '400': { $ref: '#/components/responses/BadRequest' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '403': { $ref: '#/components/responses/Forbidden' }
+        '404': { $ref: '#/components/responses/NotFound' }
+        '409': { $ref: '#/components/responses/Conflict' }
+        '500': { $ref: '#/components/responses/InternalError' }
+  /streams/{id}/playback-url:
+    parameters:
+      - $ref: '#/components/parameters/StreamId'
+    post:
+      tags: [streams]
+      operationId: createStreamPlaybackUrl
+      summary: ライブ再生の署名付き URL
+      description: |
+        署名付きの HLS・RTMP play・WHEP の URL を返す。本文は省略できる（空なら Content-Type を見ない）。`ttl_secs` の既定は 300、上限は `--max-playback-ttl`。
+      x-senca-scope: subscribe
+      parameters:
+        - $ref: '#/components/parameters/IdempotencyKey'
+      requestBody:
+        required: false
+        content:
+          application/json:
+            schema: { $ref: '#/components/schemas/PlaybackRequest' }
+      responses:
+        '200':
+          description: 再生 URL
+          headers: { X-Request-Id: { $ref: '#/components/headers/X-Request-Id' } }
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/LivePlayback' }
+        '400': { $ref: '#/components/responses/BadRequest' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '403': { $ref: '#/components/responses/Forbidden' }
+        '404': { $ref: '#/components/responses/NotFound' }
+        '409': { $ref: '#/components/responses/Conflict' }
+        '415': { $ref: '#/components/responses/UnsupportedMediaType' }
+  /streams/{id}/recordings:
+    parameters:
+      - $ref: '#/components/parameters/StreamId'
+    post:
+      tags: [recordings]
+      operationId: startRecording
+      summary: 録画の開始
+      description: |
+        Recording を作って 202 で返す（`Location` は `/api/v1/recordings/{id}`）。本文は省略できる。
+        stream が `stopped` なら 409。同じ stream の同時録画が 8 本なら 403（`QUOTA_EXCEEDED`）。
+        仕様との差: operation 資源ではなく Recording を返す。
+      x-senca-scope: stream:write
+      parameters:
+        - $ref: '#/components/parameters/IdempotencyKey'
+      requestBody:
+        required: false
+        content:
+          application/json:
+            schema: { $ref: '#/components/schemas/RecordingStart' }
+      responses:
+        '202':
+          description: 録画を始めた
+          headers:
+            Location: { $ref: '#/components/headers/Location' }
+            ETag: { $ref: '#/components/headers/ETagNotOnReplay' }
+            X-Request-Id: { $ref: '#/components/headers/X-Request-Id' }
+            Idempotency-Replayed: { $ref: '#/components/headers/Idempotency-Replayed' }
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/Recording' }
+        '400': { $ref: '#/components/responses/BadRequest' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '403': { $ref: '#/components/responses/Forbidden' }
+        '404': { $ref: '#/components/responses/NotFound' }
+        '409': { $ref: '#/components/responses/Conflict' }
+        '415': { $ref: '#/components/responses/UnsupportedMediaType' }
+        '500': { $ref: '#/components/responses/InternalError' }
+  /streams/{id}/plan:
+    parameters:
+      - $ref: '#/components/parameters/StreamId'
+    post:
+      tags: [streams]
+      operationId: planStream
+      summary: 変換・資源計画（副作用なし）
+      description: 'publish 前は `state: provisional`。本文は読まない。'
+      x-senca-scope: stream:read
+      parameters:
+        - $ref: '#/components/parameters/IdempotencyKey'
+      responses:
+        '200':
+          description: 計画
+          headers: { X-Request-Id: { $ref: '#/components/headers/X-Request-Id' } }
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/Plan' }
+        '400': { $ref: '#/components/responses/BadRequest' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '403': { $ref: '#/components/responses/Forbidden' }
+        '404': { $ref: '#/components/responses/NotFound' }
+        '409': { $ref: '#/components/responses/Conflict' }
+  /streams/{id}/snapshot:
+    parameters:
+      - $ref: '#/components/parameters/StreamId'
+    get:
+      tags: [streams]
+      operationId: getStreamSnapshot
+      summary: 今の画（静止画）
+      description: |
+        配信中でなければ 409。キーフレーム待ち・映像のトラックが無いときも 409。復号はコーデック worker で行う。
+        worker が動いていない・映像を復号できる装置が無い（H.264/H.265 はハードウェアだけ）ときは 503（`CAPACITY_UNAVAILABLE`、`retryable: false` で `Retry-After` は付かない）。
+        worker が `UNSUPPORTED_CODEC`（royalty_free の方針など）を返すと 422、`INVALID_CONFIG` なら 400、それ以外の失敗は 500。
+      x-senca-scope: stream:read
+      parameters:
+        - name: format
+          in: query
+          required: false
+          schema: { type: string, enum: [jpeg, jpg, png], default: jpeg }
+      responses:
+        '200':
+          description: 静止画
+          headers: { X-Request-Id: { $ref: '#/components/headers/X-Request-Id' } }
+          content:
+            image/jpeg: { schema: { type: string, contentMediaType: image/jpeg } }
+            image/png: { schema: { type: string, contentMediaType: image/png } }
+        '400': { $ref: '#/components/responses/BadRequest' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '403': { $ref: '#/components/responses/Forbidden' }
+        '404': { $ref: '#/components/responses/NotFound' }
+        '409': { $ref: '#/components/responses/Conflict' }
+        '422': { $ref: '#/components/responses/UnprocessableEntity' }
+        '500': { $ref: '#/components/responses/InternalError' }
+        '503': { $ref: '#/components/responses/ServiceUnavailable' }
+  /streams/{id}/snapshots:
+    parameters:
+      - $ref: '#/components/parameters/StreamId'
+    get:
+      tags: [streams]
+      operationId: listStreamSnapshots
+      summary: 保存した静止画の一覧
+      description: 撮った時刻の順。ページングは無い（クエリは読まない）。
+      x-senca-scope: stream:read
+      responses:
+        '200':
+          description: 静止画の一覧
+          headers: { X-Request-Id: { $ref: '#/components/headers/X-Request-Id' } }
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/SnapshotList' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '403': { $ref: '#/components/responses/Forbidden' }
+        '404': { $ref: '#/components/responses/NotFound' }
+  /streams/{id}/snapshots/{sid}:
+    parameters:
+      - $ref: '#/components/parameters/StreamId'
+      - $ref: '#/components/parameters/SnapshotId'
+    get:
+      tags: [streams]
+      operationId: getStreamSnapshotById
+      summary: 保存した静止画
+      x-senca-scope: stream:read
+      responses:
+        '200':
+          description: 静止画
+          headers: { X-Request-Id: { $ref: '#/components/headers/X-Request-Id' } }
+          content:
+            image/jpeg: { schema: { type: string, contentMediaType: image/jpeg } }
+            image/png: { schema: { type: string, contentMediaType: image/png } }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '403': { $ref: '#/components/responses/Forbidden' }
+        '404': { $ref: '#/components/responses/NotFound' }
+    delete:
+      tags: [streams]
+      operationId: deleteStreamSnapshot
+      summary: 保存した静止画の削除
+      x-senca-scope: stream:write
+      responses:
+        '204': { $ref: '#/components/responses/NoContent' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '403': { $ref: '#/components/responses/Forbidden' }
+        '404': { $ref: '#/components/responses/NotFound' }
+
+  # ------------------------------------------------------------------ recordings
+  /recordings:
+    get:
+      tags: [recordings]
+      operationId: listRecordings
+      summary: 録画の一覧
+      description: 削除中（`deleting`）の録画は出さない。`state` は受け付けるが絞り込みに使わない（実装の不備）。
+      x-senca-scope: recording:read
+      parameters:
+        - $ref: '#/components/parameters/Limit'
+        - $ref: '#/components/parameters/Cursor'
+        - $ref: '#/components/parameters/StreamFilter'
+        - $ref: '#/components/parameters/StateIgnored'
+      responses:
+        '200':
+          description: 録画の一覧
+          headers: { X-Request-Id: { $ref: '#/components/headers/X-Request-Id' } }
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/RecordingList' }
+        '400': { $ref: '#/components/responses/BadRequest' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '403': { $ref: '#/components/responses/Forbidden' }
+  /recordings/{id}:
+    parameters:
+      - $ref: '#/components/parameters/RecordingId'
+    get:
+      tags: [recordings]
+      operationId: getRecording
+      summary: 録画の索引と状態
+      x-senca-scope: recording:read
+      responses:
+        '200': { $ref: '#/components/responses/RecordingOk' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '403': { $ref: '#/components/responses/Forbidden' }
+        '404': { $ref: '#/components/responses/NotFound' }
+    patch:
+      tags: [recordings]
+      operationId: patchRecording
+      summary: 保持期限・法的保全・名前の更新
+      description: |
+        法的保全の解除（`legal_hold: false`）には追加で `recording:delete` が要る（無いと 403）。
+        要る権限が `recording:*` ではなく `stream:write` なのは実装の選択（仕様の表に無い操作）。
+      x-senca-scope: stream:write
+      parameters:
+        - $ref: '#/components/parameters/IfMatchRequired'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: '#/components/schemas/RecordingPatch' }
+      responses:
+        '200': { $ref: '#/components/responses/RecordingOk' }
+        '400': { $ref: '#/components/responses/BadRequest' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '403': { $ref: '#/components/responses/Forbidden' }
+        '404': { $ref: '#/components/responses/NotFound' }
+        '412': { $ref: '#/components/responses/PreconditionFailed' }
+        '415': { $ref: '#/components/responses/UnsupportedMediaType' }
+        '428': { $ref: '#/components/responses/PreconditionRequired' }
+        '500': { $ref: '#/components/responses/InternalError' }
+    delete:
+      tags: [recordings]
+      operationId: deleteRecording
+      summary: 録画の削除ジョブ
+      description: 録画中なら止めてから消す。法的保全中は 409。
+      x-senca-scope: recording:delete
+      parameters:
+        - $ref: '#/components/parameters/IfMatchOptional'
+      responses:
+        '202':
+          description: 削除を受け付けた
+          headers: { X-Request-Id: { $ref: '#/components/headers/X-Request-Id' } }
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/RecordingDeleting' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '403': { $ref: '#/components/responses/Forbidden' }
+        '404': { $ref: '#/components/responses/NotFound' }
+        '409': { $ref: '#/components/responses/Conflict' }
+        '412': { $ref: '#/components/responses/PreconditionFailed' }
+        '500': { $ref: '#/components/responses/InternalError' }
+  /recordings/{id}/stop:
+    parameters:
+      - $ref: '#/components/parameters/RecordingId'
+    post:
+      tags: [recordings]
+      operationId: stopRecording
+      summary: 録画の停止
+      description: 録画中でなければ 409。停止は非同期で、応答の `state` はまだ `recording` のことがある。本文は読まない。
+      x-senca-scope: stream:write
+      parameters:
+        - $ref: '#/components/parameters/IdempotencyKey'
+      responses:
+        '202':
+          description: 停止を受け付けた
+          headers: { X-Request-Id: { $ref: '#/components/headers/X-Request-Id' } }
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/Recording' }
+        '400': { $ref: '#/components/responses/BadRequest' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '403': { $ref: '#/components/responses/Forbidden' }
+        '404': { $ref: '#/components/responses/NotFound' }
+        '409': { $ref: '#/components/responses/Conflict' }
+        '500': { $ref: '#/components/responses/InternalError' }
+  /recordings/{id}/playback-url:
+    parameters:
+      - $ref: '#/components/parameters/RecordingId'
+    post:
+      tags: [recordings]
+      operationId: createRecordingPlaybackUrl
+      summary: VOD 再生の署名付き URL
+      description: 本文は省略できる。`playback.mp4` は今は常に `null`（MP4 は `GET /recordings/{id}/export.mp4`）。
+      x-senca-scope: recording:read
+      parameters:
+        - $ref: '#/components/parameters/IdempotencyKey'
+      requestBody:
+        required: false
+        content:
+          application/json:
+            schema: { $ref: '#/components/schemas/PlaybackRequest' }
+      responses:
+        '200':
+          description: 再生 URL
+          headers: { X-Request-Id: { $ref: '#/components/headers/X-Request-Id' } }
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/VodPlayback' }
+        '400': { $ref: '#/components/responses/BadRequest' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '403': { $ref: '#/components/responses/Forbidden' }
+        '404': { $ref: '#/components/responses/NotFound' }
+        '409': { $ref: '#/components/responses/Conflict' }
+        '415': { $ref: '#/components/responses/UnsupportedMediaType' }
+  /recordings/{id}/thumbnail:
+    parameters:
+      - $ref: '#/components/parameters/RecordingId'
+    get:
+      tags: [recordings]
+      operationId: getRecordingThumbnail
+      summary: 録画の代表画
+      description: 録画の確定後に作る。まだ無ければ 404。
+      x-senca-scope: recording:read
+      responses:
+        '200':
+          description: JPEG
+          headers: { X-Request-Id: { $ref: '#/components/headers/X-Request-Id' } }
+          content:
+            image/jpeg: { schema: { type: string, contentMediaType: image/jpeg } }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '403': { $ref: '#/components/responses/Forbidden' }
+        '404': { $ref: '#/components/responses/NotFound' }
+  /recordings/{id}/export.mp4:
+    parameters:
+      - $ref: '#/components/parameters/RecordingId'
+    get:
+      tags: [recordings]
+      operationId: exportRecordingMp4
+      summary: MP4 書き出し
+      description: '録画中・空の録画は 409。大きすぎれば 413（`PAYLOAD_TOO_LARGE`）。`Content-Disposition: attachment` が付く。'
+      x-senca-scope: recording:read
+      responses:
+        '200':
+          description: MP4
+          headers:
+            Content-Disposition: { schema: { type: string } }
+            X-Request-Id: { $ref: '#/components/headers/X-Request-Id' }
+          content:
+            video/mp4: { schema: { type: string, contentMediaType: video/mp4 } }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '403': { $ref: '#/components/responses/Forbidden' }
+        '404': { $ref: '#/components/responses/NotFound' }
+        '409': { $ref: '#/components/responses/Conflict' }
+        '413': { $ref: '#/components/responses/PayloadTooLarge' }
+        '500': { $ref: '#/components/responses/InternalError' }
+
+  # ------------------------------------------------------------------ schedules
+  /schedules:
+    post:
+      tags: [schedules]
+      operationId: createSchedule
+      summary: 予約の作成
+      description: |
+        検査（`POST /schedules/check` と同じ）に通れば作る。窓は 24 時間まで、`end_at` は未来。
+        同じ stream の録画予約が同時 4 本を超えると 409（`details.overlaps` に重なる予約）。stream が無ければ 404。
+        予約数の上限（1000/テナント）を超えると 403（`QUOTA_EXCEEDED`）。
+      x-senca-scope: stream:write
+      parameters:
+        - $ref: '#/components/parameters/IdempotencyKey'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: '#/components/schemas/ScheduleCreate' }
+      responses:
+        '201':
+          description: 作成した
+          headers:
+            Location: { $ref: '#/components/headers/Location' }
+            ETag: { $ref: '#/components/headers/ETagNotOnReplay' }
+            X-Request-Id: { $ref: '#/components/headers/X-Request-Id' }
+            Idempotency-Replayed: { $ref: '#/components/headers/Idempotency-Replayed' }
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/Schedule' }
+        '400': { $ref: '#/components/responses/BadRequest' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '403': { $ref: '#/components/responses/Forbidden' }
+        '404': { $ref: '#/components/responses/NotFound' }
+        '409': { $ref: '#/components/responses/Conflict' }
+        '415': { $ref: '#/components/responses/UnsupportedMediaType' }
+        '500': { $ref: '#/components/responses/InternalError' }
+    get:
+      tags: [schedules]
+      operationId: listSchedules
+      summary: 予約の一覧
+      description: '`state` は受け付けるが絞り込みに使わない（実装の不備）。'
+      x-senca-scope: stream:read
+      parameters:
+        - $ref: '#/components/parameters/Limit'
+        - $ref: '#/components/parameters/Cursor'
+        - $ref: '#/components/parameters/StreamFilter'
+        - $ref: '#/components/parameters/StateIgnored'
+      responses:
+        '200':
+          description: 予約の一覧
+          headers: { X-Request-Id: { $ref: '#/components/headers/X-Request-Id' } }
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/ScheduleList' }
+        '400': { $ref: '#/components/responses/BadRequest' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '403': { $ref: '#/components/responses/Forbidden' }
+  /schedules/check:
+    post:
+      tags: [schedules]
+      operationId: checkSchedule
+      summary: 作成前の検査（重なり・資源・競合、副作用なし）
+      description: 作成と同じ本文。通れば 200、だめなら作成と同じ 400 / 404 / 409。
+      x-senca-scope: stream:read
+      parameters:
+        - $ref: '#/components/parameters/IdempotencyKey'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: '#/components/schemas/ScheduleCreate' }
+      responses:
+        '200':
+          description: 検査結果
+          headers: { X-Request-Id: { $ref: '#/components/headers/X-Request-Id' } }
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/ScheduleCheck' }
+        '400': { $ref: '#/components/responses/BadRequest' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '403': { $ref: '#/components/responses/Forbidden' }
+        '404': { $ref: '#/components/responses/NotFound' }
+        '409': { $ref: '#/components/responses/Conflict' }
+        '415': { $ref: '#/components/responses/UnsupportedMediaType' }
+        '500': { $ref: '#/components/responses/InternalError' }
+  /schedules/{id}:
+    parameters:
+      - $ref: '#/components/parameters/ScheduleId'
+    get:
+      tags: [schedules]
+      operationId: getSchedule
+      summary: 予約の取得
+      x-senca-scope: stream:read
+      responses:
+        '200': { $ref: '#/components/responses/ScheduleOk' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '403': { $ref: '#/components/responses/Forbidden' }
+        '404': { $ref: '#/components/responses/NotFound' }
+    patch:
+      tags: [schedules]
+      operationId: patchSchedule
+      summary: 予約の更新・取り消し
+      description: |
+        実行中の予約の `start_at` は変えられない（409）。`state` は `canceled` だけ指定できる。取り消し以外は作成と同じ検査をする。
+        `recurrence`・`action`・`stream` は変えられない。`snapshot_interval_secs`・`retention_days` は消せない（null は「変えない」）。
+      x-senca-scope: stream:write
+      parameters:
+        - $ref: '#/components/parameters/IfMatchRequired'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: '#/components/schemas/SchedulePatch' }
+      responses:
+        '200': { $ref: '#/components/responses/ScheduleOk' }
+        '400': { $ref: '#/components/responses/BadRequest' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '403': { $ref: '#/components/responses/Forbidden' }
+        '404': { $ref: '#/components/responses/NotFound' }
+        '409': { $ref: '#/components/responses/Conflict' }
+        '412': { $ref: '#/components/responses/PreconditionFailed' }
+        '415': { $ref: '#/components/responses/UnsupportedMediaType' }
+        '428': { $ref: '#/components/responses/PreconditionRequired' }
+        '500': { $ref: '#/components/responses/InternalError' }
+    delete:
+      tags: [schedules]
+      operationId: deleteSchedule
+      summary: 予約の削除
+      x-senca-scope: stream:write
+      parameters:
+        - $ref: '#/components/parameters/IfMatchOptional'
+      responses:
+        '204': { $ref: '#/components/responses/NoContent' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '403': { $ref: '#/components/responses/Forbidden' }
+        '404': { $ref: '#/components/responses/NotFound' }
+        '412': { $ref: '#/components/responses/PreconditionFailed' }
+        '500': { $ref: '#/components/responses/InternalError' }
+  /schedules/{id}/runs:
+    parameters:
+      - $ref: '#/components/parameters/ScheduleId'
+    get:
+      tags: [schedules]
+      operationId: listScheduleRuns
+      summary: 実行履歴と結果
+      description: 直近 100 件。ページングは無い（`items` だけ）。
+      x-senca-scope: stream:read
+      responses:
+        '200':
+          description: 実行履歴
+          headers: { X-Request-Id: { $ref: '#/components/headers/X-Request-Id' } }
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/ScheduleRunList' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '403': { $ref: '#/components/responses/Forbidden' }
+        '404': { $ref: '#/components/responses/NotFound' }
+
+  # ------------------------------------------------------------------ tokens
+  /tokens:
+    post:
+      tags: [tokens]
+      operationId: createToken
+      summary: API トークンの発行
+      description: |
+        値（`token`、`senca_` で始まる）はこの応答でだけ渡す（再送の応答では `null` と `token_redacted: true`）。
+        自分が持っていない権限は渡せない（403）。トークン数の上限（100/テナント）を超えると 403（`QUOTA_EXCEEDED`）。
+        注意: `Location` は `/api/v1/tokens/{id}` を指すが、`GET /tokens/{id}` は無い（405）。
+      x-senca-scope: tenant:admin
+      parameters:
+        - $ref: '#/components/parameters/IdempotencyKey'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: '#/components/schemas/TokenCreate' }
+      responses:
+        '201':
+          description: 発行した
+          headers:
+            Location: { $ref: '#/components/headers/Location' }
+            X-Request-Id: { $ref: '#/components/headers/X-Request-Id' }
+            Idempotency-Replayed: { $ref: '#/components/headers/Idempotency-Replayed' }
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/Token' }
+        '400': { $ref: '#/components/responses/BadRequest' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '403': { $ref: '#/components/responses/Forbidden' }
+        '409': { $ref: '#/components/responses/Conflict' }
+        '415': { $ref: '#/components/responses/UnsupportedMediaType' }
+        '500': { $ref: '#/components/responses/InternalError' }
+    get:
+      tags: [tokens]
+      operationId: listTokens
+      summary: API トークンの一覧（値は含まない）
+      x-senca-scope: tenant:admin
+      parameters:
+        - $ref: '#/components/parameters/Limit'
+        - $ref: '#/components/parameters/Cursor'
+      responses:
+        '200':
+          description: トークンの一覧
+          headers: { X-Request-Id: { $ref: '#/components/headers/X-Request-Id' } }
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/TokenList' }
+        '400': { $ref: '#/components/responses/BadRequest' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '403': { $ref: '#/components/responses/Forbidden' }
+  /tokens/{id}:
+    parameters:
+      - $ref: '#/components/parameters/TokenId'
+    get:
+      tags: [tokens]
+      operationId: getToken
+      summary: API トークンの取得（値は返さない）
+      x-senca-scope: tenant:admin
+      responses:
+        '200':
+          description: トークン（`token` は常に null）
+          content:
+            application/json: { schema: { $ref: '#/components/schemas/Token' } }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '403': { $ref: '#/components/responses/Forbidden' }
+        '404': { $ref: '#/components/responses/NotFound' }
+    delete:
+      tags: [tokens]
+      operationId: deleteToken
+      summary: API トークンの失効
+      description: テナントの最後の `tenant:admin` トークンは消せない（409）。
+      x-senca-scope: tenant:admin
+      responses:
+        '204': { $ref: '#/components/responses/NoContent' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '403': { $ref: '#/components/responses/Forbidden' }
+        '404': { $ref: '#/components/responses/NotFound' }
+        '409': { $ref: '#/components/responses/Conflict' }
+        '500': { $ref: '#/components/responses/InternalError' }
+
+  # ------------------------------------------------------------------ playback（/api/v1 の外）
+  /s/{exp}/{sig}/live/{stream}/index.m3u8:
+    servers: [{ url: / }]
+    parameters:
+      - $ref: '#/components/parameters/SignedExp'
+      - $ref: '#/components/parameters/SignedSig'
+      - { name: stream, in: path, required: true, schema: { type: string }, description: stream の ID }
+    get:
+      tags: [playback]
+      operationId: getLivePlaylist
+      summary: ライブ HLS のプレイリスト（LL-HLS のブロッキング・リロード対応）
+      security: []
+      x-senca-scope: null
+      parameters:
+        - { name: _HLS_msn, in: query, required: false, schema: { type: integer, minimum: 0 }, description: この Media Sequence が出るまで待つ（最長 6 秒） }
+        - { name: _HLS_part, in: query, required: false, schema: { type: integer, minimum: 0 }, description: _HLS_msn の中の part 番号 }
+        - { name: _HLS_skip, in: query, required: false, schema: { type: string, enum: ['YES', v2] }, description: Playlist Delta Update }
+      responses:
+        '200':
+          description: 'プレイリスト（`Cache-Control: no-cache`）'
+          content:
+            application/vnd.apple.mpegurl: { schema: { type: string } }
+        '400': { $ref: '#/components/responses/PlainError' }
+        '403': { $ref: '#/components/responses/PlainError' }
+        '404': { $ref: '#/components/responses/PlainError' }
+        '503':
+          description: _HLS_msn / _HLS_part の待ちが時間切れ
+          headers: { Retry-After: { $ref: '#/components/headers/Retry-After' } }
+          content:
+            text/plain: { schema: { type: string } }
+  /s/{exp}/{sig}/live/{stream}/{file}:
+    servers: [{ url: / }]
+    parameters:
+      - $ref: '#/components/parameters/SignedExp'
+      - $ref: '#/components/parameters/SignedSig'
+      - { name: stream, in: path, required: true, schema: { type: string } }
+      - { name: file, in: path, required: true, schema: { type: string }, description: セグメント・part・init（`..` を含むものは 404） }
+    get:
+      tags: [playback]
+      operationId: getLiveObject
+      summary: ライブ HLS のセグメント・part・init（メモリから）
+      security: []
+      x-senca-scope: null
+      responses:
+        '200':
+          description: '`Cache-Control: max-age=60`'
+          content:
+            video/mp2t: { schema: { type: string } }
+            video/mp4: { schema: { type: string } }
+            video/iso.segment: { schema: { type: string } }
+        '403': { $ref: '#/components/responses/PlainError' }
+        '404': { $ref: '#/components/responses/PlainError' }
+  /s/{exp}/{sig}/vod/{recording}/index.m3u8:
+    servers: [{ url: / }]
+    parameters:
+      - $ref: '#/components/parameters/SignedExp'
+      - $ref: '#/components/parameters/SignedSig'
+      - { name: recording, in: path, required: true, schema: { type: string } }
+    get:
+      tags: [playback]
+      operationId: getVodPlaylist
+      summary: 録画の HLS プレイリスト
+      description: 確定した録画は VOD（ENDLIST あり）、録画中は EVENT（ENDLIST なし）。削除中は 404。
+      security: []
+      x-senca-scope: null
+      responses:
+        '200':
+          description: プレイリスト
+          content:
+            application/vnd.apple.mpegurl: { schema: { type: string } }
+        '403': { $ref: '#/components/responses/PlainError' }
+        '404': { $ref: '#/components/responses/PlainError' }
+  /s/{exp}/{sig}/vod/{recording}/{file}:
+    servers: [{ url: / }]
+    parameters:
+      - $ref: '#/components/parameters/SignedExp'
+      - $ref: '#/components/parameters/SignedSig'
+      - { name: recording, in: path, required: true, schema: { type: string } }
+      - { name: file, in: path, required: true, schema: { type: string }, description: '`init.mp4` または `{epoch}-{sequence}.ts|m4s`' }
+    get:
+      tags: [playback]
+      operationId: getVodObject
+      summary: 録画のセグメント（Range 対応）
+      security: []
+      x-senca-scope: null
+      parameters:
+        - { name: Range, in: header, required: false, schema: { type: string }, description: 1 区間だけ（`bytes=a-b`） }
+      responses:
+        '200':
+          description: '`Accept-Ranges: bytes`、`Cache-Control: max-age=3600`'
+          content:
+            video/mp2t: { schema: { type: string } }
+            video/mp4: { schema: { type: string } }
+            video/iso.segment: { schema: { type: string } }
+        '206':
+          description: 部分
+          headers: { Content-Range: { schema: { type: string } } }
+          content:
+            video/mp2t: { schema: { type: string } }
+            video/mp4: { schema: { type: string } }
+            video/iso.segment: { schema: { type: string } }
+        '403': { $ref: '#/components/responses/PlainError' }
+        '404': { $ref: '#/components/responses/PlainError' }
+        '416':
+          description: 範囲外
+          headers: { Content-Range: { required: true, schema: { type: string } } }
+          content:
+            text/plain: { schema: { type: string } }
+
+  # ------------------------------------------------------------------ health（/api/v1 の外）
+  /healthz:
+    servers: [{ url: / }]
+    get:
+      tags: [health]
+      operationId: healthz
+      summary: 生きているか
+      security: []
+      x-senca-scope: null
+      responses:
+        '200':
+          description: '`ok`'
+          content:
+            text/plain: { schema: { type: string, const: "ok\n" } }
+  /readyz:
+    servers: [{ url: / }]
+    get:
+      tags: [health]
+      operationId: readyz
+      summary: 要求を受けられるか
+      description: 起動処理の後に 200。停止中（SIGTERM 後）は 503。
+      security: []
+      x-senca-scope: null
+      responses:
+        '200':
+          description: '`ready`'
+          content:
+            text/plain: { schema: { type: string, const: "ready\n" } }
+        '503': { $ref: '#/components/responses/PlainError' }
+
+components:
+  securitySchemes:
+    bearer:
+      type: http
+      scheme: bearer
+      description: |
+        API トークン（`senca_` で始まる、`POST /tokens` で発行。初回起動時に `{data-dir}/control/bootstrap-admin-token` に `tenant:admin`+`node:admin` のものを書く）
+        または JWT（`--jwks`・`--jwt-issuer`・`--jwt-audience` を設定したとき。テナントは `--jwt-tenant-claim` の claim）。
+
+  parameters:
+    StreamId: { name: id, in: path, required: true, schema: { type: string }, description: stream の ID }
+    RecordingId: { name: id, in: path, required: true, schema: { type: string }, description: 録画の ID }
+    ScheduleId: { name: id, in: path, required: true, schema: { type: string }, description: 予約の ID }
+    TokenId: { name: id, in: path, required: true, schema: { type: string }, description: トークンの ID }
+    NodeId: { name: id, in: path, required: true, schema: { type: string }, description: ノードの ID }
+    SnapshotId: { name: sid, in: path, required: true, schema: { type: string }, description: 静止画の ID }
+    Limit:
+      name: limit
+      in: query
+      required: false
+      schema: { type: integer, minimum: 1, maximum: 1000, default: 100 }
+    Cursor:
+      name: cursor
+      in: query
+      required: false
+      description: 前の応答の `next_cursor`（最後に返した ID。これより大きい ID から返す）
+      schema: { type: string }
+    StreamFilter:
+      name: stream
+      in: query
+      required: false
+      description: stream の ID で絞る
+      schema: { type: string }
+    StateIgnored:
+      name: state
+      in: query
+      required: false
+      deprecated: true
+      description: 受け付けるが今は無視する（絞り込まない）。
+      schema: { type: string }
+    IdempotencyKey:
+      name: Idempotency-Key
+      in: header
+      required: false
+      description: 1〜255 文字の表示可能 ASCII。24 時間、同じ答えを返す。
+      schema: { type: string, minLength: 1, maxLength: 255, pattern: '^[!-~]+$' }
+    IfMatchRequired:
+      name: If-Match
+      in: header
+      required: true
+      description: '`"{generation}"`（`W/` 付きも可）。無いと 428、形が違う・古いと 412。'
+      schema: { type: string, pattern: '^(W/)?"[0-9]+"$' }
+    IfMatchOptional:
+      name: If-Match
+      in: header
+      required: false
+      description: 付ければ `"{generation}"` と比べる（違えば 412）。
+      schema: { type: string, pattern: '^(W/)?"[0-9]+"$' }
+    SignedExp: { name: exp, in: path, required: true, schema: { type: integer }, description: 期限（UNIX 秒） }
+    SignedSig: { name: sig, in: path, required: true, schema: { type: string }, description: 署名（base64url、22 文字） }
+
+  headers:
+    X-Request-Id:
+      description: 要求 ID（エラーの `request_id` と同じ）
+      required: true
+      schema: { type: string }
+    ETag:
+      description: '`"{generation}"`'
+      required: true
+      schema: { type: string, pattern: '^"[0-9]+"$' }
+    ETagNotOnReplay:
+      description: '`"{generation}"`。Idempotency-Key の再送の応答には付かない（覚えるのは状態コード・本文・Location だけ。実装の不備）。'
+      required: false
+      schema: { type: string, pattern: '^"[0-9]+"$' }
+    Location:
+      description: 作った資源の絶対パス（`/api/v1/...`）
+      required: true
+      schema: { type: string, pattern: '^/api/v1/' }
+    Idempotency-Replayed:
+      description: Idempotency-Key の再送に覚えた答えを返したとき `true`（初回には付かない）
+      required: false
+      schema: { type: string, const: 'true' }
+    Retry-After:
+      description: '再試行までの秒数（今は常に 1）。`retryable: false` のときは付かない'
+      required: false
+      schema: { type: integer }
+    WWW-Authenticate:
+      description: '`Bearer`'
+      required: true
+      schema: { type: string, const: Bearer }
+
+  responses:
+    NoContent:
+      description: 完了（本文なし）
+      headers: { X-Request-Id: { $ref: '#/components/headers/X-Request-Id' } }
+    StreamOk:
+      description: stream
+      headers:
+        ETag: { $ref: '#/components/headers/ETag' }
+        X-Request-Id: { $ref: '#/components/headers/X-Request-Id' }
+      content:
+        application/json:
+          schema: { $ref: '#/components/schemas/Stream' }
+    RecordingOk:
+      description: 録画
+      headers:
+        ETag: { $ref: '#/components/headers/ETag' }
+        X-Request-Id: { $ref: '#/components/headers/X-Request-Id' }
+      content:
+        application/json:
+          schema: { $ref: '#/components/schemas/Recording' }
+    ScheduleOk:
+      description: 予約
+      headers:
+        ETag: { $ref: '#/components/headers/ETag' }
+        X-Request-Id: { $ref: '#/components/headers/X-Request-Id' }
+      content:
+        application/json:
+          schema: { $ref: '#/components/schemas/Schedule' }
+    NodeAccepted:
+      description: 受け付けた（変更後のノード）
+      headers: { X-Request-Id: { $ref: '#/components/headers/X-Request-Id' } }
+      content:
+        application/json:
+          schema: { $ref: '#/components/schemas/Node' }
+    BadRequest:
+      description: |
+        `INVALID_REQUEST`（本文・クエリ・ヘッダーの形）または `INVALID_CONFIG`（値の範囲・組み合わせ）
+        Idempotency-Key の再送で覚えた失敗を返すときは Content-Type が `application/json` になり、`request_id` が無い（実装の不備）。
+      headers: { X-Request-Id: { $ref: '#/components/headers/X-Request-Id' } }
+      content:
+        application/problem+json:
+          schema: { $ref: '#/components/schemas/Problem' }
+        application/json:
+          schema: { $ref: '#/components/schemas/Problem' }
+    Unauthorized:
+      description: '`AUTH_FAILED`'
+      headers:
+        WWW-Authenticate: { $ref: '#/components/headers/WWW-Authenticate' }
+        X-Request-Id: { $ref: '#/components/headers/X-Request-Id' }
+      content:
+        application/problem+json:
+          schema: { $ref: '#/components/schemas/Problem' }
+    Forbidden:
+      description: |
+        `FORBIDDEN`（権限が足りない）または `QUOTA_EXCEEDED`（上限）
+        Idempotency-Key の再送で覚えた失敗を返すときは Content-Type が `application/json` になり、`request_id` が無い（実装の不備）。
+      headers: { X-Request-Id: { $ref: '#/components/headers/X-Request-Id' } }
+      content:
+        application/problem+json:
+          schema: { $ref: '#/components/schemas/Problem' }
+        application/json:
+          schema: { $ref: '#/components/schemas/Problem' }
+    NotFound:
+      description: |
+        `NOT_FOUND`（無い、または他テナント）
+        Idempotency-Key の再送で覚えた失敗を返すときは Content-Type が `application/json` になり、`request_id` が無い（実装の不備）。
+      headers: { X-Request-Id: { $ref: '#/components/headers/X-Request-Id' } }
+      content:
+        application/problem+json:
+          schema: { $ref: '#/components/schemas/Problem' }
+        application/json:
+          schema: { $ref: '#/components/schemas/Problem' }
+    MethodNotAllowed:
+      description: '`METHOD_NOT_ALLOWED`（経路表にある資源に、書いていないメソッド）'
+      headers: { X-Request-Id: { $ref: '#/components/headers/X-Request-Id' } }
+      content:
+        application/problem+json:
+          schema: { $ref: '#/components/schemas/Problem' }
+    Conflict:
+      description: |
+        `CONFLICT`（状態・一意性・上限の衝突）または `IDEMPOTENCY_CONFLICT`
+        Idempotency-Key の再送で覚えた失敗を返すときは Content-Type が `application/json` になり、`request_id` が無い（実装の不備）。
+      headers: { X-Request-Id: { $ref: '#/components/headers/X-Request-Id' } }
+      content:
+        application/problem+json:
+          schema: { $ref: '#/components/schemas/Problem' }
+        application/json:
+          schema: { $ref: '#/components/schemas/Problem' }
+    PreconditionFailed:
+      description: '`PRECONDITION_FAILED`（If-Match が古い・形が違う）'
+      headers: { X-Request-Id: { $ref: '#/components/headers/X-Request-Id' } }
+      content:
+        application/problem+json:
+          schema: { $ref: '#/components/schemas/Problem' }
+    PayloadTooLarge:
+      description: '`PAYLOAD_TOO_LARGE`'
+      headers: { X-Request-Id: { $ref: '#/components/headers/X-Request-Id' } }
+      content:
+        application/problem+json:
+          schema: { $ref: '#/components/schemas/Problem' }
+    UnsupportedMediaType:
+      description: |
+        `UNSUPPORTED_MEDIA_TYPE`（Content-Type が application/json でない）
+        Idempotency-Key の再送で覚えた失敗を返すときは Content-Type が `application/json` になり、`request_id` が無い（実装の不備）。
+      headers: { X-Request-Id: { $ref: '#/components/headers/X-Request-Id' } }
+      content:
+        application/problem+json:
+          schema: { $ref: '#/components/schemas/Problem' }
+        application/json:
+          schema: { $ref: '#/components/schemas/Problem' }
+    UnprocessableEntity:
+      description: '`UNSUPPORTED_CODEC`（今は `GET /streams/{id}/snapshot` の復号でだけ返す）'
+      headers: { X-Request-Id: { $ref: '#/components/headers/X-Request-Id' } }
+      content:
+        application/problem+json:
+          schema: { $ref: '#/components/schemas/Problem' }
+    PreconditionRequired:
+      description: '`PRECONDITION_REQUIRED`（If-Match が無い）'
+      headers: { X-Request-Id: { $ref: '#/components/headers/X-Request-Id' } }
+      content:
+        application/problem+json:
+          schema: { $ref: '#/components/schemas/Problem' }
+    TooManyRequests:
+      description: '`RATE_LIMITED`（予約。今はどの操作も返さない）。`Retry-After` が付く。'
+      headers:
+        Retry-After: { $ref: '#/components/headers/Retry-After' }
+        X-Request-Id: { $ref: '#/components/headers/X-Request-Id' }
+      content:
+        application/problem+json:
+          schema: { $ref: '#/components/schemas/Problem' }
+    InternalError:
+      description: '`INTERNAL_ERROR`'
+      headers: { X-Request-Id: { $ref: '#/components/headers/X-Request-Id' } }
+      content:
+        application/problem+json:
+          schema: { $ref: '#/components/schemas/Problem' }
+    ServiceUnavailable:
+      description: '`CAPACITY_UNAVAILABLE`。`retryable` が再試行の可否、`Retry-After` が付く。'
+      headers:
+        Retry-After: { $ref: '#/components/headers/Retry-After' }
+        X-Request-Id: { $ref: '#/components/headers/X-Request-Id' }
+      content:
+        application/problem+json:
+          schema: { $ref: '#/components/schemas/Problem' }
+    PlainError:
+      description: '`/api/v1` の外のエラー（本文は状態の理由句、text/plain）'
+      content:
+        text/plain: { schema: { type: string } }
+
+  schemas:
+    Timestamp:
+      type: string
+      format: date-time
+      pattern: '^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}(\.\d+)?Z$'
+    Scope:
+      type: string
+      enum: ['stream:read', 'stream:write', publish, subscribe, 'recording:read', 'recording:delete', 'tenant:admin', 'node:admin']
+    LatencyProfile:
+      type: string
+      enum: [standard, low, interactive]
+      description: standard = HLS、low = LL-HLS、interactive = WebRTC・MoQ
+    CodecProfile:
+      type: string
+      enum: [any, royalty_free]
+      description: royalty_free は H.264・H.265・AAC を理由付きで拒否する（REQ-007）。royalty_free では hls.container は fmp4 にする。
+    RecordingPolicy:
+      type: object
+      additionalProperties: false
+      properties:
+        enabled: { type: boolean, default: false, description: publish が始まったら自動で録画する }
+        retention_days: { type: [integer, 'null'], minimum: 1, maximum: 36500, description: 保持日数（null は無期限） }
+    SnapshotPolicy:
+      type: object
+      additionalProperties: false
+      required: [interval_secs, keep]
+      properties:
+        interval_secs: { type: integer, minimum: 1, maximum: 86400 }
+        keep: { type: integer, minimum: 1, maximum: 10000 }
+    HlsSettings:
+      type: object
+      additionalProperties: false
+      properties:
+        segment_ms: { type: integer, minimum: 500, maximum: 10000, default: 2000 }
+        window: { type: integer, minimum: 3, maximum: 60, default: 6 }
+        container: { type: string, enum: [ts, fmp4], default: ts }
+    Limits:
+      type: object
+      additionalProperties: false
+      properties:
+        max_viewers: { type: [integer, 'null'], minimum: 0 }
+        max_ingress_bps: { type: [integer, 'null'], minimum: 0 }
+    Metadata:
+      type: object
+      maxProperties: 32
+      additionalProperties: { type: string, maxLength: 1024 }
+      propertyNames: { minLength: 1, maxLength: 64 }
+    StreamName:
+      type: string
+      minLength: 1
+      maxLength: 64
+      pattern: '^[A-Za-z0-9_-][A-Za-z0-9._-]*$'
+    StreamCreate:
+      type: object
+      additionalProperties: false
+      required: [name]
+      properties:
+        name: { $ref: '#/components/schemas/StreamName' }
+        latency_profile: { $ref: '#/components/schemas/LatencyProfile' }
+        codec_profile: { $ref: '#/components/schemas/CodecProfile' }
+        recording: { $ref: '#/components/schemas/RecordingPolicy' }
+        snapshots:
+          oneOf:
+            - { $ref: '#/components/schemas/SnapshotPolicy' }
+            - { type: 'null' }
+        hls: { $ref: '#/components/schemas/HlsSettings' }
+        limits: { $ref: '#/components/schemas/Limits' }
+        metadata: { $ref: '#/components/schemas/Metadata' }
+        desired_state: { type: string, enum: [running, stopped], default: running }
+    StreamPatch:
+      type: object
+      additionalProperties: false
+      description: '書いたフィールドだけ置き換える。`snapshots: null` は静止画の方針を消す。他のフィールドの null は「変えない」。'
+      properties:
+        name: { $ref: '#/components/schemas/StreamName' }
+        latency_profile: { $ref: '#/components/schemas/LatencyProfile' }
+        codec_profile: { $ref: '#/components/schemas/CodecProfile' }
+        recording: { $ref: '#/components/schemas/RecordingPolicy' }
+        snapshots:
+          oneOf:
+            - { $ref: '#/components/schemas/SnapshotPolicy' }
+            - { type: 'null' }
+        hls: { $ref: '#/components/schemas/HlsSettings' }
+        limits: { $ref: '#/components/schemas/Limits' }
+        metadata: { $ref: '#/components/schemas/Metadata' }
+        desired_state: { type: string, enum: [running, stopped] }
+    Ingest:
+      type: object
+      additionalProperties: false
+      required: [rtmp_url, stream_key]
+      properties:
+        rtmp_url: { type: string, description: 'RTMP の publish 先（`{public-rtmp-url}/live`）。stream name に stream_key を使う。' }
+        stream_key:
+          type: [string, 'null']
+          pattern: '^sk_'
+          description: publish 鍵。作成・作り直しの応答でだけ値が入る（それ以外は null）。
+        stream_key_redacted: { type: boolean, const: true, description: Idempotency-Key の再送で鍵を伏せたとき }
+        srt_url: { type: string, description: '`--public-srt-url` を設定したとき' }
+        srt_streamid_format: { type: string, const: 'publish:{stream_key}' }
+        whip_url: { type: string, description: '`--public-http-url` を設定したとき' }
+    LiveInfo:
+      type: object
+      additionalProperties: false
+      required: [transport, started_at, epoch, tracks, bitrate_bps, viewers_hint]
+      properties:
+        transport: { type: string, description: 'rtmp・srt など' }
+        started_at: { $ref: '#/components/schemas/Timestamp' }
+        epoch: { type: integer, minimum: 0, description: 再接続ごとに増える }
+        tracks: { type: array, items: { type: object } }
+        bitrate_bps: { type: integer, minimum: 0 }
+        viewers_hint: { type: integer, minimum: 0 }
+    Stream:
+      type: object
+      additionalProperties: false
+      required: [id, name, generation, created_at, updated_at, desired_state, observed_state, latency_profile, codec_profile,
+                 recording, snapshots, hls, limits, metadata, ingest, live]
+      properties:
+        id: { type: string }
+        name: { type: string }
+        generation: { type: integer, minimum: 1 }
+        created_at: { $ref: '#/components/schemas/Timestamp' }
+        updated_at: { $ref: '#/components/schemas/Timestamp' }
+        desired_state: { type: string, enum: [running, stopped] }
+        observed_state:
+          type: string
+          enum: [waiting_input, live, stopped]
+          description: 仕様 10.4 の provisioning・draining・degraded・failed は今は出さない。
+        latency_profile: { $ref: '#/components/schemas/LatencyProfile' }
+        codec_profile: { $ref: '#/components/schemas/CodecProfile' }
+        recording: { $ref: '#/components/schemas/RecordingPolicy' }
+        snapshots:
+          oneOf:
+            - { $ref: '#/components/schemas/SnapshotPolicy' }
+            - { type: 'null' }
+        hls: { $ref: '#/components/schemas/HlsSettings' }
+        limits: { $ref: '#/components/schemas/Limits' }
+        metadata: { $ref: '#/components/schemas/Metadata' }
+        ingest: { $ref: '#/components/schemas/Ingest' }
+        live:
+          oneOf:
+            - { $ref: '#/components/schemas/LiveInfo' }
+            - { type: 'null' }
+    StreamList:
+      type: object
+      additionalProperties: false
+      required: [items, next_cursor]
+      properties:
+        items: { type: array, items: { $ref: '#/components/schemas/Stream' } }
+        next_cursor: { type: [string, 'null'] }
+    PlaybackRequest:
+      type: object
+      additionalProperties: false
+      properties:
+        ttl_secs: { type: [integer, 'null'], minimum: 1, description: 既定 300、上限は `--max-playback-ttl` }
+    LivePlayback:
+      type: object
+      additionalProperties: false
+      required: [expires_at, playback]
+      properties:
+        expires_at: { $ref: '#/components/schemas/Timestamp' }
+        playback:
+          type: object
+          additionalProperties: false
+          required: [hls, rtmp, whep]
+          properties:
+            hls: { type: string, description: '`{http}/s/{exp}/{sig}/live/{id}/index.m3u8`' }
+            rtmp: { type: string, description: '`{rtmp}/play/{id}?exp=&sig=`' }
+            whep: { type: string, description: '`{http}/whep/{id}?exp=&sig=`（WHEP は未実装で 404）' }
+    VodPlayback:
+      type: object
+      additionalProperties: false
+      required: [expires_at, playback]
+      properties:
+        expires_at: { $ref: '#/components/schemas/Timestamp' }
+        playback:
+          type: object
+          additionalProperties: false
+          required: [hls, mp4]
+          properties:
+            hls: { type: string, description: '`{http}/s/{exp}/{sig}/vod/{id}/index.m3u8`' }
+            mp4: { type: 'null', description: 今は常に null }
+    PlanOutput:
+      type: object
+      additionalProperties: false
+      required: [output, track, mode]
+      properties:
+        output: { type: string, enum: [hls, webrtc, recording, rtmp] }
+        track: { type: string, enum: [video, audio, data] }
+        mode: { type: string, enum: [passthrough, remux, repacketize, transcode, unsupported] }
+        container: { type: string, enum: [ts, fmp4] }
+        to: { type: string }
+        added_latency_ms: { type: integer }
+        code: { type: string, const: UNSUPPORTED_CODEC }
+        reason: { type: string }
+    Plan:
+      type: object
+      additionalProperties: false
+      required: [state, outputs]
+      properties:
+        state: { type: string, enum: [provisional, ready] }
+        reason: { type: string }
+        outputs: { type: array, items: { $ref: '#/components/schemas/PlanOutput' } }
+    SnapshotList:
+      type: object
+      additionalProperties: false
+      required: [items]
+      properties:
+        items:
+          type: array
+          items:
+            type: object
+            additionalProperties: false
+            required: [id, taken_at, reason, width, height, bytes]
+            properties:
+              id: { type: string }
+              taken_at: { $ref: '#/components/schemas/Timestamp' }
+              reason: { type: string, enum: [interval, schedule, board_change], description: 撮った理由 }
+              width: { type: integer, minimum: 1 }
+              height: { type: integer, minimum: 1 }
+              bytes: { type: integer, minimum: 0, description: JPEG の大きさ }
+    RecordingStart:
+      type: object
+      additionalProperties: false
+      properties:
+        name: { type: [string, 'null'] }
+        retention_days: { type: [integer, 'null'], minimum: 1, maximum: 36500 }
+    RecordingPatch:
+      type: object
+      additionalProperties: false
+      properties:
+        retention_until:
+          type: [string, 'null']
+          description: RFC 3339。null で無期限。
+        legal_hold: { type: boolean, description: 解除には recording:delete が要る }
+        name: { type: string, maxLength: 128 }
+    Gap:
+      type: object
+      additionalProperties: false
+      required: [at, reason, dropped]
+      properties:
+        at: { $ref: '#/components/schemas/Timestamp' }
+        reason: { type: string, description: 'publisher_reconnect など' }
+        dropped: { type: integer, minimum: 0 }
+    Recording:
+      type: object
+      additionalProperties: false
+      required: [id, stream, name, generation, state, started_at, ended_at, retention_until, legal_hold, schedule,
+                 duration_ms, gaps, segments, bytes, thumbnail]
+      properties:
+        id: { type: string }
+        stream: { type: string, description: 元の stream の ID（stream を消しても残る） }
+        name: { type: [string, 'null'] }
+        generation: { type: integer, minimum: 1 }
+        state:
+          type: string
+          enum: [recording, finalized, interrupted]
+          description: 削除中（deleting）の録画は API から見えない（404）。
+        started_at: { $ref: '#/components/schemas/Timestamp' }
+        ended_at: { type: [string, 'null'], format: date-time }
+        retention_until: { type: [string, 'null'], format: date-time }
+        legal_hold: { type: boolean }
+        schedule: { type: [string, 'null'], description: 予約で作った録画なら予約の ID }
+        duration_ms: { type: [integer, 'null'], minimum: 0 }
+        gaps:
+          type: [array, 'null']
+          items: { $ref: '#/components/schemas/Gap' }
+        segments: { type: [integer, 'null'], minimum: 0 }
+        bytes: { type: [integer, 'null'], minimum: 0 }
+        thumbnail: { type: boolean, description: '`GET /recordings/{id}/thumbnail` があるか' }
+    RecordingDeleting:
+      type: object
+      additionalProperties: false
+      required: [id, state]
+      properties:
+        id: { type: string }
+        state: { type: string, const: deleting }
+    RecordingList:
+      type: object
+      additionalProperties: false
+      required: [items, next_cursor]
+      properties:
+        items: { type: array, items: { $ref: '#/components/schemas/Recording' } }
+        next_cursor: { type: [string, 'null'] }
+    ScheduleAction:
+      type: string
+      enum: [record, live, snapshot]
+      description: record = 窓の間録画、live = 窓の間だけ publish を受け付ける、snapshot = 窓の間一定間隔で静止画
+    ScheduleState:
+      type: string
+      enum: [pending, running, completed, missed, canceled, failed]
+    Recurrence:
+      type: object
+      additionalProperties: false
+      required: [freq, timezone]
+      properties:
+        freq: { type: string, enum: [daily, weekly] }
+        weekdays: { type: array, items: { type: integer, minimum: 0, maximum: 6 }, description: weekly の曜日（0 = 日曜） }
+        timezone: { type: string, description: 'IANA 名（例: Asia/Tokyo）。壁時計の時刻で繰り返す' }
+        until_ms: { type: [integer, 'null'], description: 繰り返しの終わり（含まない、UTC ミリ秒） }
+        count: { type: [integer, 'null'], minimum: 0 }
+    ScheduleCreate:
+      type: object
+      additionalProperties: false
+      required: [stream, action, start_at, end_at]
+      properties:
+        stream: { type: string }
+        name: { type: [string, 'null'] }
+        action: { $ref: '#/components/schemas/ScheduleAction' }
+        start_at: { type: string, description: RFC 3339 }
+        end_at: { type: string, description: 'RFC 3339。start_at より後、窓は 24 時間まで、未来' }
+        pre_roll_ms: { type: [integer, 'null'], minimum: 0, maximum: 300000, description: 既定 0 }
+        post_roll_ms: { type: [integer, 'null'], minimum: 0, maximum: 300000, description: 既定 0 }
+        grace_ms: { type: [integer, 'null'], minimum: 0, maximum: 3600000, description: 既定 60000。実行時刻を過ぎてもこの間なら途中から実行 }
+        snapshot_interval_secs: { type: [integer, 'null'], minimum: 1, maximum: 3600, description: action が snapshot のときだけ（必須） }
+        recurrence:
+          oneOf:
+            - { $ref: '#/components/schemas/Recurrence' }
+            - { type: 'null' }
+        retention_days: { type: [integer, 'null'], minimum: 0 }
+    SchedulePatch:
+      type: object
+      additionalProperties: false
+      properties:
+        name: { type: [string, 'null'] }
+        start_at: { type: [string, 'null'] }
+        end_at: { type: [string, 'null'] }
+        pre_roll_ms: { type: [integer, 'null'], minimum: 0, maximum: 300000 }
+        post_roll_ms: { type: [integer, 'null'], minimum: 0, maximum: 300000 }
+        grace_ms: { type: [integer, 'null'], minimum: 0, maximum: 3600000 }
+        snapshot_interval_secs: { type: [integer, 'null'], minimum: 1, maximum: 3600 }
+        retention_days: { type: [integer, 'null'], minimum: 0 }
+        state: { type: [string, 'null'], enum: [canceled, null] }
+    ScheduleRun:
+      type: object
+      additionalProperties: false
+      required: [occurrence, start_at, end_at, state, recording, reason]
+      properties:
+        occurrence: { type: integer, minimum: 0 }
+        start_at: { $ref: '#/components/schemas/Timestamp' }
+        end_at: { $ref: '#/components/schemas/Timestamp' }
+        state: { $ref: '#/components/schemas/ScheduleState' }
+        recording: { type: [string, 'null'] }
+        reason: { type: [string, 'null'] }
+    Schedule:
+      type: object
+      additionalProperties: false
+      required: [id, stream, name, generation, action, start_at, end_at, pre_roll_ms, post_roll_ms, grace_ms,
+                 snapshot_interval_secs, recurrence, retention_days, state, created_at, last_run]
+      properties:
+        id: { type: string }
+        stream: { type: string }
+        name: { type: [string, 'null'] }
+        generation: { type: integer, minimum: 1 }
+        action: { $ref: '#/components/schemas/ScheduleAction' }
+        start_at: { $ref: '#/components/schemas/Timestamp' }
+        end_at: { $ref: '#/components/schemas/Timestamp' }
+        pre_roll_ms: { type: integer, minimum: 0 }
+        post_roll_ms: { type: integer, minimum: 0 }
+        grace_ms: { type: integer, minimum: 0 }
+        snapshot_interval_secs: { type: [integer, 'null'] }
+        recurrence:
+          oneOf:
+            - { $ref: '#/components/schemas/Recurrence' }
+            - { type: 'null' }
+        retention_days: { type: [integer, 'null'] }
+        state: { $ref: '#/components/schemas/ScheduleState' }
+        created_at: { $ref: '#/components/schemas/Timestamp' }
+        last_run:
+          oneOf:
+            - { $ref: '#/components/schemas/ScheduleRun' }
+            - { type: 'null' }
+    ScheduleList:
+      type: object
+      additionalProperties: false
+      required: [items, next_cursor]
+      properties:
+        items: { type: array, items: { $ref: '#/components/schemas/Schedule' } }
+        next_cursor: { type: [string, 'null'] }
+    ScheduleRunList:
+      type: object
+      additionalProperties: false
+      required: [items]
+      properties:
+        items: { type: array, items: { $ref: '#/components/schemas/ScheduleRun' } }
+    ScheduleCheck:
+      type: object
+      additionalProperties: false
+      required: [ok, overlaps, shared_input]
+      properties:
+        ok: { type: boolean, const: true }
+        overlaps:
+          type: array
+          description: 同じ stream で時間が重なる録画予約（pre/post roll を含む）
+          items:
+            type: object
+            additionalProperties: false
+            required: [id, start_at, end_at]
+            properties:
+              id: { type: string }
+              start_at: { $ref: '#/components/schemas/Timestamp' }
+              end_at: { $ref: '#/components/schemas/Timestamp' }
+        shared_input: { type: boolean, description: 重なりがあり、入力を共有するか }
+    TokenCreate:
+      type: object
+      additionalProperties: false
+      required: [name, scopes]
+      properties:
+        name: { type: string, minLength: 1, maxLength: 64 }
+        scopes: { type: array, minItems: 1, items: { $ref: '#/components/schemas/Scope' } }
+        expires_at: { type: [string, 'null'], description: RFC 3339（未来） }
+    Token:
+      type: object
+      additionalProperties: false
+      required: [id, name, scopes, created_at, expires_at, token]
+      properties:
+        id: { type: string }
+        name: { type: string }
+        scopes: { type: array, items: { $ref: '#/components/schemas/Scope' } }
+        created_at: { $ref: '#/components/schemas/Timestamp' }
+        expires_at: { type: [string, 'null'], format: date-time }
+        token:
+          type: [string, 'null']
+          pattern: '^senca_'
+          description: 値。発行の応答でだけ入る（一覧では null）。
+        token_redacted: { type: boolean, const: true, description: Idempotency-Key の再送で値を伏せたとき }
+    TokenList:
+      type: object
+      additionalProperties: false
+      required: [items, next_cursor]
+      properties:
+        items: { type: array, items: { $ref: '#/components/schemas/Token' } }
+        next_cursor: { type: [string, 'null'] }
+    Capabilities:
+      type: object
+      additionalProperties: false
+      required: [api_version, node, ingest, output, codecs, codec_profiles, recordings, schedules]
+      properties:
+        api_version: { type: string, const: v1 }
+        node: { type: string, description: このノードの ID }
+        ingest:
+          type: object
+          additionalProperties: false
+          required: [rtmp, rtmps, srt, rtsp_pull, whip]
+          properties:
+            rtmp: { type: boolean }
+            rtmps: { type: boolean }
+            srt: { type: boolean }
+            rtsp_pull: { type: boolean }
+            whip: { type: boolean }
+        output:
+          type: object
+          additionalProperties: false
+          required: [hls, rtmp_play, whep]
+          properties:
+            hls:
+              type: object
+              additionalProperties: false
+              required: [containers, ll_hls]
+              properties:
+                containers: { type: array, items: { type: string, enum: [ts, fmp4] } }
+                ll_hls: { type: boolean }
+            rtmp_play: { type: boolean }
+            whep: { type: boolean }
+        codecs:
+          type: object
+          additionalProperties: false
+          required: [passthrough, transcode]
+          properties:
+            passthrough: { type: array, items: { type: string } }
+            transcode: { type: array, items: { $ref: '#/components/schemas/TranscodeCapability' }, description: コーデック worker が報告する変換能力（未接続なら空） }
+        codec_profiles: { type: array, items: { $ref: '#/components/schemas/CodecProfile' } }
+        recordings:
+          type: object
+          additionalProperties: false
+          required: [export, max_concurrent_per_stream]
+          properties:
+            export: { type: array, items: { type: string } }
+            max_concurrent_per_stream: { type: integer }
+        schedules:
+          type: object
+          additionalProperties: false
+          required: [actions, recurrence]
+          properties:
+            actions: { type: array, items: { $ref: '#/components/schemas/ScheduleAction' } }
+            recurrence: { type: array, items: { type: string, enum: [daily, weekly] } }
+    Node:
+      type: object
+      additionalProperties: false
+      required: [id, name, draining, registered_at, labels, live_streams, self]
+      properties:
+        id: { type: string }
+        name: { type: string }
+        draining: { type: boolean }
+        registered_at: { $ref: '#/components/schemas/Timestamp' }
+        labels: { type: object, additionalProperties: { type: string } }
+        live_streams: { type: integer, minimum: 0, description: 配信中の stream 数（他ノードは今は 0） }
+        self: { type: boolean, description: 応答したノード自身か }
+    NodeList:
+      type: object
+      additionalProperties: false
+      required: [items]
+      properties:
+        items: { type: array, items: { $ref: '#/components/schemas/Node' } }
+    Devices:
+      type: object
+      additionalProperties: false
+      required: [nodes]
+      properties:
+        nodes:
+          type: array
+          items:
+            type: object
+            additionalProperties: false
+            required: [node, devices]
+            properties:
+              node: { type: string }
+              devices:
+                description: コーデック worker のプールが動いていなければ `providers` は空、`sandbox` は null。
+                $ref: '#/components/schemas/DeviceStatus'
+    DeviceStatus:
+      type: object
+      additionalProperties: false
+      required: [providers, sandbox]
+      properties:
+        providers:
+          type: array
+          items:
+            type: object
+            additionalProperties: false
+            required: [provider, available, detail]
+            properties:
+              provider: { type: string, description: 'コーデックのプロバイダー（例: nvenc、dav1d）' }
+              available: { type: boolean }
+              detail: { type: string, description: 使えない理由、または読み込んだライブラリの説明 }
+        sandbox: { type: [string, 'null'], description: worker のサンドボックスの種類（worker がまだ情報を返していなければ null） }
+    TranscodeCapability:
+      type: object
+      additionalProperties: false
+      required: [provider, codec, direction, hardware, max_width, max_height, max_sessions, device]
+      properties:
+        provider: { type: string }
+        codec: { type: string }
+        direction: { type: string, enum: [encode, decode] }
+        hardware: { type: boolean }
+        max_width: { type: integer, minimum: 0 }
+        max_height: { type: integer, minimum: 0 }
+        max_sessions: { type: [integer, 'null'], minimum: 0 }
+        device: { type: string }
+    SseEventData:
+      type: object
+      additionalProperties: false
+      required: [type, resource_id, occurred_at, data]
+      properties:
+        type:
+          type: string
+          enum: [stream.created, stream.updated, stream.deleted, recording.updated, recording.deleted,
+                 schedule.created, schedule.updated, schedule.deleted, schedule.run, node.updated]
+        resource_id: { type: string }
+        occurred_at: { $ref: '#/components/schemas/Timestamp' }
+        data: { type: object, description: 種類ごとの中身（秘密は含まない） }
+    ProblemCode:
+      type: string
+      enum: [INVALID_CONFIG, INVALID_REQUEST, UNSUPPORTED_PROTOCOL_VERSION, UNSUPPORTED_CODEC, UNSUPPORTED_MEDIA_TYPE,
+             AUTH_FAILED, FORBIDDEN, NOT_FOUND, METHOD_NOT_ALLOWED, CONFLICT, IDEMPOTENCY_CONFLICT, PRECONDITION_FAILED,
+             PRECONDITION_REQUIRED, QUOTA_EXCEEDED, RATE_LIMITED, CAPACITY_UNAVAILABLE, INPUT_TIMEOUT, OWNERSHIP_LOST,
+             PAYLOAD_TOO_LARGE, INTERNAL_ERROR]
+    Problem:
+      type: object
+      description: RFC 9457 の problem details（仕様 10.4）。内部の詳細や秘密は入れない。
+      additionalProperties: false
+      required: [type, title, status, code, retryable]
+      properties:
+        type: { type: string, pattern: '^urn:senca:error:[a-z-]+$' }
+        title: { type: string, description: 日本語の説明 }
+        status: { type: integer, minimum: 400, maximum: 599 }
+        code: { $ref: '#/components/schemas/ProblemCode' }
+        request_id:
+          type: string
+          description: '`X-Request-Id` と同じ。Idempotency-Key の再送で返した覚えたエラーには無い（実装の不備）。'
+        retryable: { type: boolean }
+        details: { description: 'code ごとの補足（例: 本文の解析エラーは `{reason}`、予約の衝突は `{limit, overlaps}`）' }

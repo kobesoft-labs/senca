@@ -90,6 +90,12 @@ pub fn list(ctx: &Ctx) -> ApiResult {
     Ok(ApiResponse::json(200, &json!({ "items": items, "next_cursor": next })))
 }
 
+pub fn get(ctx: &Ctx, id: &str) -> ApiResult {
+    ctx.require(Scope::TenantAdmin)?;
+    let t = ctx.control().state.tokens.get(id).filter(|t| t.tenant == ctx.tenant()).cloned().ok_or_else(Problem::not_found)?;
+    Ok(ApiResponse::json(200, &render(&t, None)))
+}
+
 pub fn delete(ctx: &Ctx, id: &str) -> ApiResult {
     ctx.require(Scope::TenantAdmin)?;
     ctx.control().propose(Command::DeleteToken { tenant: ctx.tenant().to_string(), id: id.to_string() })?;

@@ -187,13 +187,21 @@ pub fn check(ctx: &Ctx) -> ApiResult {
 pub fn list(ctx: &Ctx) -> ApiResult {
     ctx.require(Scope::StreamRead)?;
     let (limit, cursor) = ctx.page()?;
-    let stream = ctx.req.query_pairs().into_iter().find(|(k, _)| k == "stream").map(|(_, v)| v);
+    let q = ctx.req.query_pairs();
+    let stream = q.iter().find(|(k, _)| k == "stream").map(|(_, v)| v.clone());
+    let state: Option<ScheduleState> = match q.iter().find(|(k, _)| k == "state") {
+        None => None,
+        Some((_, v)) => Some(
+            serde_json::from_value(Value::String(v.clone()))
+                .map_err(|_| Problem::invalid("state は pending・running・completed・missed・canceled・failed"))?,
+        ),
+    };
     let items: Vec<(String, Schedule)> = ctx
         .control()
         .state
         .schedules
         .values()
-        .filter(|s| s.tenant == ctx.tenant() && stream.as_ref().is_none_or(|x| *x == s.stream))
+        .filter(|s| s.tenant == ctx.tenant() && stream.as_ref().is_none_or(|x| *x == s.stream) && state.is_none_or(|x| x == s.state))
         .map(|s| (s.id.clone(), s.clone()))
         .collect();
     let (page, next) = paginate(items, limit, cursor.as_deref());

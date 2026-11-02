@@ -4,7 +4,7 @@
 use bytes::{Bytes, BytesMut};
 use senca_control::model::{LatencyProfile, Stream};
 use senca_core::{AccessUnit, CodecConfig, MediaKind, Rescale, Timebase, TrackId};
-use senca_hls::segmenter::{PlaylistKind, SegmentEvent, Segmenter, SegmenterConfig, SimpleUris, SkipRequest};
+use senca_hls::segmenter::{PlaylistKind, SegmentEvent, Segmenter, SegmenterConfig, SkipRequest, UriScheme};
 use std::collections::BTreeMap;
 
 #[derive(Debug, Clone)]
@@ -38,6 +38,27 @@ pub enum PackagerOut {
     Init { bytes: Bytes, name: String },
 }
 
+/// 映像の設定を待つ間にためる音声の長さ（これを超えたら音声だけで始める）。
+const WAIT_VIDEO_US: i64 = 1_000_000;
+
+/// URI の付け方。初期化セグメントは作り直しても名前が重ならないように通し番号にする。
+struct Uris {
+    ext: &'static str,
+    inits: BTreeMap<u64, String>,
+}
+
+impl UriScheme for Uris {
+    fn segment(&self, seq: u64) -> String {
+        format!("{seq}.{}", self.ext)
+    }
+    fn part(&self, seq: u64, part: u32) -> String {
+        format!("{seq}.{part}.{}", self.ext)
+    }
+    fn init(&self, d: u64) -> Option<String> {
+        self.inits.get(&d).cloned()
+    }
+}
+
 enum Mux {
     Ts(senca_mpegts::TsMuxer),
     Fmp4 { writer: senca_fmp4::FragmentWriter, tracks: BTreeMap<TrackId, (u32, u32)>, pending: BTreeMap<TrackId, Vec<AccessUnit>> },
@@ -60,6 +81,11 @@ pub struct Packager {
     init_name: Option<String>,
     init_bytes: Option<Bytes>,
     removed: Vec<u64>,
+    /// 区間（不連続の番号）→ 初期化セグメントの名前。
+    init_names: BTreeMap<u64, String>,
+    init_counter: u64,
+    /// 映像の設定を待つ間の AU。
+    held: Vec<AccessUnit>,
 }
 
 impl Packager {
@@ -83,6 +109,9 @@ impl Packager {
             init_name: None,
             init_bytes: None,
             removed: Vec::new(),
+            init_names: BTreeMap::new(),
+            init_counter: 0,
+            held: Vec::new(),
         }
     }
 
@@ -159,7 +188,9 @@ impl Packager {
                 if senca_fmp4::write_init_segment(&specs, &mut init).is_err() {
                     return false;
                 }
-                let name = format!("init{disc_index}.mp4");
+                let name = format!("init{}.mp4", self.init_counter);
+                self.init_counter += 1;
+                self.init_names.insert(disc_index, name.clone());
                 let bytes = Bytes::from(init);
                 self.init_name = Some(name.clone());
                 self.init_bytes = Some(bytes.clone());
@@ -187,16 +218,32 @@ impl Packager {
 
     pub fn push(&mut self, au: &AccessUnit) -> Vec<PackagerOut> {
         let mut out = Vec::new();
+        // 映像の設定がまだなら、音声を少しためて待つ（作り直しを避ける）
+        let has_video = self.configs.values().any(|c| c.codec.kind() == MediaKind::Video);
+        if self.seg.is_none() && !has_video {
+            self.held.push(au.clone());
+            let span = self.held.last().zip(self.held.first()).map(|(l, f)| {
+                (l.dts - f.dts).rescale(l.timebase, Timebase::MICROS).unwrap_or(0)
+            });
+            if span.unwrap_or(0) < WAIT_VIDEO_US {
+                return out;
+            }
+        }
         if !self.ensure() {
             return out;
         }
-        let mut au = au.clone();
-        au.epoch = self.epoch.max(au.epoch);
-        let mut evs = Vec::new();
-        if self.seg.as_mut().unwrap().push(au, &mut evs).is_err() {
-            return out;
+        let mut aus = std::mem::take(&mut self.held);
+        if aus.last().is_none_or(|l| l.sequence != au.sequence || l.track != au.track) {
+            aus.push(au.clone());
         }
-        self.handle(evs, &mut out);
+        for mut au in aus {
+            au.epoch = self.epoch.max(au.epoch);
+            let mut evs = Vec::new();
+            if self.seg.as_mut().unwrap().push(au, &mut evs).is_err() {
+                continue;
+            }
+            self.handle(evs, &mut out);
+        }
         out
     }
 
@@ -327,7 +374,7 @@ impl Packager {
 
     fn render(&self) -> (String, Option<String>) {
         let Some(seg) = self.seg.as_ref() else { return (String::new(), None) };
-        let uris = SimpleUris { prefix: String::new(), ext: self.ext().into(), fmp4_init: self.container == "fmp4" };
+        let uris = Uris { ext: self.ext(), inits: if self.container == "fmp4" { self.init_names.clone() } else { BTreeMap::new() } };
         let pl = seg.playlist(&uris, SkipRequest::No).to_m3u8().unwrap_or_default();
         let pls = self.part_us.and_then(|_| seg.playlist(&uris, SkipRequest::Yes).to_m3u8().ok());
         (pl, pls)

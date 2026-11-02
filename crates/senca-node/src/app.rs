@@ -474,7 +474,7 @@ impl App {
         };
         let gop: Vec<_> = hub.shared.gop.lock().unwrap().clone();
         let configs = hub.shared.configs.lock().unwrap().clone();
-        crate::snapshot::render(self, &configs, &gop, fmt)
+        crate::snapshot::render(self, s, &configs, &gop, fmt)
     }
 
     pub fn snapshot_store_list(&self, stream: &str) -> Vec<Value> {
@@ -549,7 +549,7 @@ impl App {
     }
 
     pub fn devices(&self) -> Value {
-        let devs = self.codec.as_ref().map(|c| c.devices()).unwrap_or(json!([]));
+        let devs = self.codec.as_ref().map(|c| c.devices()).unwrap_or(json!({ "providers": [], "sandbox": null }));
         json!({ "nodes": [{ "node": self.node_id, "devices": devs }] })
     }
 
@@ -562,6 +562,9 @@ impl App {
         let hubs: Vec<HubHandle> = self.hubs.lock().unwrap().values().cloned().collect();
         for h in hubs {
             h.shutdown().await;
+        }
+        if let Some(c) = &self.codec {
+            c.shutdown().await;
         }
     }
 }

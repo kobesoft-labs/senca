@@ -2,15 +2,18 @@
 # M1〜M3: RTMP → ライブ HLS・録画・VOD・MP4 書き出し・回収・RTMP play・API の契約。
 # 使い方: tools/interop/node.sh（KEEP=1 で作業場所を残す、ONLY=ABC で場面を絞る）
 source "$(dirname "$0")/lib.sh"
-[ -n "${NODE_BIN_PREBUILT:-}" ] || (cd "$ROOT" && cargo build -q -p senca-node)
+[ -n "${NODE_BIN_PREBUILT:-}" ] || (cd "$ROOT" && cargo build -q -p senca-node -p senca-codec-worker -p senca-devtools && cargo build -q -p senca-rtmp --examples)
+# ロイヤリティフリーのコーデック（dav1d など）の置き場所。無ければ G を飛ばす
+CODEC_LIB_DIR=${CODEC_LIB_DIR:-$HOME/tools/codeclibs/usr/lib/x86_64-linux-gnu}
 W=$(mktemp -d); NODE_PID=
 cleanup() { [ -n "$NODE_PID" ] && kill "$NODE_PID" 2>/dev/null || true; wait 2>/dev/null || true; [ -n "${KEEP:-}" ] && echo "kept $W" || rm -rf "$W"; }
 trap cleanup EXIT
-ONLY=${ONLY:-ABCDEF}
+ONLY=${ONLY:-ABCDEFG}
 HTTP=$(port); RTMP=$(port); API=http://127.0.0.1:$HTTP/api/v1
 start_node() {
   "$NODE_BIN" --data-dir "$W/data" --http 127.0.0.1:$HTTP --rtmp 127.0.0.1:$RTMP \
-    --public-rtmp-url rtmp://127.0.0.1:$RTMP --public-http-url http://127.0.0.1:$HTTP --reconnect-grace "${GRACE:-3000}" "$@" >>"$W/node.log" 2>&1 &
+    --public-rtmp-url rtmp://127.0.0.1:$RTMP --public-http-url http://127.0.0.1:$HTTP --reconnect-grace "${GRACE:-3000}" \
+    --codec-lib-dir "$CODEC_LIB_DIR" --codec-workers 2 "$@" >>"$W/node.log" 2>&1 &
   NODE_PID=$!
   for _ in $(seq 50); do curl -sf http://127.0.0.1:$HTTP/readyz >/dev/null && return; sleep 0.1; done
   echo "node did not start"; cat "$W/node.log"; exit 1
@@ -122,5 +125,35 @@ if [[ $ONLY == *F* ]]; then
   R=$(latest_rec "$(sid f)"); stop_node TERM; wait $PUB 2>/dev/null || true
   grep -q '"t":"end".*finalized' "$W/data/recordings/$R/index.jsonl" && pass "F SIGTERM finalizes recording" || fail "F not finalized"
   start_node
+fi
+
+if [[ $ONLY == *G* ]]; then
+  # G. ロイヤリティフリー（AV1＋Opus、Enhanced RTMP、fMP4）: ライブ・今の画・録画・サムネイル・書き出し。
+  #    H.264 の今の画はハードウェアが無いので理由付きの 503。
+  if [ ! -e "$CODEC_LIB_DIR/libdav1d.so.7" ]; then echo "SKIP G (no $CODEC_LIB_DIR/libdav1d.so.7)"; else
+  "$FFMPEG" -v error -f lavfi -i testsrc2=size=640x360:rate=30 -f lavfi -i sine=sample_rate=48000 -t 6 \
+    -c:v libaom-av1 -cpu-used 8 -row-mt 1 -g 30 -b:v 500k -c:a libopus "$W/av1.mp4"
+  "$TARGET/debug/mp4-to-flv" "$W/av1.mp4" "$W/av1.flv"
+  api POST /streams -d '{"name":"g","codec_profile":"royalty_free","hls":{"container":"fmp4"},"recording":{"enabled":true}}' > "$W/g.json"
+  "$TARGET/debug/examples/rtmp_push" 127.0.0.1:$RTMP live "$(key g)" "$W/av1.flv" >/dev/null 2>&1
+  c=$(curl -s -o "$W/snap.jpg" -w '%{http_code}' "${H[@]}" "$API/streams/$(sid g)/snapshot")
+  [ "$c" = 200 ] && "$FFPROBE" -v error -show_entries stream=width,height -of csv=p=0 "$W/snap.jpg" | grep -q '640,360' && pass "G AV1 snapshot JPEG 640x360" || fail "G snapshot $c"
+  sleep $(( ${GRACE:-3000} / 1000 + 1 ))
+  URL=$(api POST /streams/$(sid g)/playback-url | json "['playback']['hls']")
+  frames "$W/av1.mp4" v > "$W/g.sv"; frames "$URL" v > "$W/g.lv"
+  cmp -s "$W/g.sv" "$W/g.lv" && pass "G live fMP4 AV1 bit-identical" || fail "G live AV1 differs"
+  # 最初の映像キーフレームより前の音声 1 パケットは捨てるので、Opus の復号器が落ち着いた後で比べる
+  frames "$W/av1.mp4" a | tail -n 200 > "$W/g.sa"; frames "$URL" a | tail -n 200 > "$W/g.la"
+  cmp -s "$W/g.sa" "$W/g.la" && pass "G live Opus identical (last 200 frames)" || fail "G live Opus differs"
+  R=$(latest_rec "$(sid g)"); wait_state "$R" finalized || fail "G not finalized"
+  for _ in $(seq 50); do [ "$(api GET /recordings/$R | json "['thumbnail']")" = True ] && break; sleep 0.2; done
+  [ "$(api GET /recordings/$R | json "['thumbnail']")" = True ] && pass "G recording thumbnail generated" || fail "G no thumbnail"
+  curl -s "${H[@]}" -o "$W/g.mp4" "$API/recordings/$R/export.mp4"; frames "$W/g.mp4" v > "$W/g.ev"
+  cmp -s "$W/g.sv" "$W/g.ev" && pass "G export AV1 bit-identical" || fail "G export differs"
+  # H.264 は GPU が無いと復号しない
+  new_stream gh false; publish "$(key gh)" & PUB=$!; sleep 2
+  c=$(curl -s -o "$W/gh.json" -w '%{http_code}' "${H[@]}" "$API/streams/$(sid gh)/snapshot"); wait $PUB || true
+  [ "$c" = 503 ] && grep -q CAPACITY_UNAVAILABLE "$W/gh.json" && pass "G H.264 snapshot without GPU is 503" || fail "G H.264 snapshot $c"
+  fi
 fi
 summary

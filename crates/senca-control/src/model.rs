@@ -262,6 +262,13 @@ pub struct IdempotencyRecord {
     pub body: String,
     #[serde(default)]
     pub location: Option<String>,
+    #[serde(default)]
+    pub etag: Option<String>,
+    /// 最初の要求の主体。別の主体が同じ鍵を使ったら 409（権限の確認を飛ばして答えないため）。
+    #[serde(default)]
+    pub subject: Option<String>,
+    #[serde(default)]
+    pub content_type: Option<String>,
     pub created_at_ms: i64,
 }
 
