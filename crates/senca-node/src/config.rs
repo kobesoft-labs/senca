@@ -34,6 +34,7 @@ pub struct Config {
     pub codec_lib_dir: Option<PathBuf>,
     pub zoneinfo_dir: PathBuf,
     pub console_dir: Option<PathBuf>,
+    pub sender_dir: Option<PathBuf>,
     pub verify_recordings: bool,
     pub log_json: bool,
     pub cluster: Option<ClusterConfig>,
@@ -115,6 +116,7 @@ impl Default for Config {
             codec_lib_dir: None,
             zoneinfo_dir: PathBuf::from("/usr/share/zoneinfo"),
             console_dir: None,
+            sender_dir: None,
             verify_recordings: false,
             log_json: false,
             cluster: None,
@@ -129,7 +131,7 @@ pub const USAGE: &str = "senca-node [--config FILE] [--data-dir DIR] [--http ADD
   [--max-playback-ttl SECS] [--reconnect-grace MS] [--record-queue N] [--retention-sweep SECS]
   [--jwks FILE --jwt-issuer ISS --jwt-audience AUD [--jwt-tenant-claim NAME]]
   [--codec-workers N] [--codec-worker-bin FILE] [--codec-lib-dir DIR] [--zoneinfo DIR]
-  [--console-dir DIR] [--verify-recordings] [--log-json] [--node-name NAME] [--egress-allow CIDR]...
+  [--console-dir DIR] [--sender-dir DIR] [--verify-recordings] [--log-json] [--node-name NAME] [--egress-allow CIDR]...
   [--cluster-config FILE]";
 
 impl Config {
@@ -191,6 +193,7 @@ impl Config {
                 _ if flag("--codec-lib-dir") => cfg.codec_lib_dir = Some(PathBuf::from(val()?)),
                 _ if flag("--zoneinfo") => cfg.zoneinfo_dir = PathBuf::from(val()?),
                 _ if flag("--console-dir") => cfg.console_dir = Some(PathBuf::from(val()?)),
+                _ if flag("--sender-dir") => cfg.sender_dir = Some(PathBuf::from(val()?)),
                 _ if flag("--verify-recordings") => cfg.verify_recordings = true,
                 _ if flag("--log-json") => cfg.log_json = true,
                 _ if flag("--egress-allow") => cfg.egress_allow.push(val()?),

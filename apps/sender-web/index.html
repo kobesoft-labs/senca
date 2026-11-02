@@ -1,0 +1,113 @@
+<!doctype html>
+<!--
+  SENCA ブラウザ送信（WHIP、RFC 9725）。REQ-008 R8-10・REQ-009 R9-1。
+  npm も外部の CDN も使わない静的なページ。相対パスだけで書いてあるので、どこに置いても動く
+  （ノードの /sender/ に置く想定）。カメラ・画面の取得はブラウザの許可が要るので https か localhost で開く。
+  ?config=<senca:// か https:// の設定（URL エンコード）> で設定を埋められる（トークンは URL に入れないこと）。
+-->
+<html lang="ja">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <meta name="referrer" content="no-referrer">
+  <title>SENCA 送信（ブラウザ）</title>
+  <link rel="stylesheet" href="style.css">
+</head>
+<body>
+  <header>
+    <h1>SENCA 送信</h1>
+    <span id="state" class="state idle" role="status" aria-live="polite">待機中</span>
+  </header>
+  <main>
+    <section class="preview">
+      <video id="preview" autoplay playsinline muted></video>
+      <dl id="stats" class="stats" aria-label="送信の状態">
+        <div><dt>映像</dt><dd id="st-video">—</dd></div>
+        <div><dt>音声</dt><dd id="st-audio">—</dd></div>
+        <div><dt>解像度</dt><dd id="st-res">—</dd></div>
+        <div><dt>fps</dt><dd id="st-fps">—</dd></div>
+        <div><dt>往復時間</dt><dd id="st-rtt">—</dd></div>
+        <div><dt>制限</dt><dd id="st-limit">—</dd></div>
+      </dl>
+      <p id="message" class="message" role="alert"></p>
+    </section>
+
+    <form id="form" class="settings" autocomplete="off">
+      <fieldset>
+        <legend>送り先</legend>
+        <label>設定（senca://ingest?… または WHIP の URL）
+          <textarea id="config" rows="3" spellcheck="false" required
+            placeholder="senca://ingest?v=1&amp;proto=whip&amp;url=https://example.com/whip/…&amp;token=…"></textarea>
+        </label>
+        <label>トークン（設定に含まれていなければ）
+          <input id="token" type="password" spellcheck="false">
+        </label>
+      </fieldset>
+
+      <fieldset>
+        <legend>入力</legend>
+        <label>映像
+          <select id="source">
+            <option value="camera">カメラ</option>
+            <option value="screen">画面・ウィンドウ</option>
+            <option value="none">なし（音声だけ）</option>
+          </select>
+        </label>
+        <label>カメラ <select id="camera"></select></label>
+        <label>マイク <select id="mic"></select></label>
+        <label><input id="screen-audio" type="checkbox"> 画面の音も送る（対応するブラウザのみ）</label>
+        <button id="refresh" type="button">機器の一覧を更新</button>
+      </fieldset>
+
+      <fieldset>
+        <legend>品質</legend>
+        <label>解像度
+          <select id="resolution">
+            <option value="640x360">360p（640×360）</option>
+            <option value="1280x720" selected>720p（1280×720）</option>
+            <option value="1920x1080">1080p（1920×1080）</option>
+          </select>
+        </label>
+        <label>フレームレート
+          <select id="fps">
+            <option value="15">15</option>
+            <option value="30" selected>30</option>
+            <option value="60">60</option>
+          </select>
+        </label>
+        <label>映像のビットレート
+          <select id="vbr">
+            <option value="800">800 kbps</option>
+            <option value="1500">1.5 Mbps</option>
+            <option value="2500" selected>2.5 Mbps</option>
+            <option value="4500">4.5 Mbps</option>
+            <option value="8000">8 Mbps</option>
+          </select>
+        </label>
+        <label>音声のビットレート
+          <select id="abr">
+            <option value="64">64 kbps</option>
+            <option value="128" selected>128 kbps</option>
+          </select>
+        </label>
+        <label>映像のコーデック
+          <select id="codec">
+            <option value="">自動（ブラウザに任せる）</option>
+            <option value="video/H264">H.264</option>
+            <option value="video/VP8">VP8</option>
+            <option value="video/VP9">VP9</option>
+            <option value="video/AV1">AV1</option>
+          </select>
+        </label>
+        <label><input id="simulcast" type="checkbox"> サイマルキャスト（3 段階の画質を同時に送る）</label>
+      </fieldset>
+
+      <div class="actions">
+        <button id="start" type="submit">送信開始</button>
+        <button id="stop" type="button" disabled>停止</button>
+      </div>
+    </form>
+  </main>
+  <script type="module" src="app.js"></script>
+</body>
+</html>

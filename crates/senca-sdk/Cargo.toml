@@ -1,0 +1,26 @@
+[package]
+name = "senca-sdk"
+description = "SENCA native sender SDK (RTMP / SRT publish, stable C ABI, senca: URI and QR code)"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+
+[lib]
+# rlib: Rust から、cdylib / staticlib: C ABI（include/senca.h）から使う。
+crate-type = ["rlib", "cdylib", "staticlib"]
+
+[dependencies]
+bytes.workspace = true
+getrandom.workspace = true
+senca-core = { path = "../senca-core" }
+senca-rtmp = { path = "../senca-rtmp" }
+senca-flv = { path = "../senca-flv" }
+senca-srt = { path = "../senca-srt" }
+senca-mpegts = { path = "../senca-mpegts" }
+senca-h264 = { path = "../senca-h264" }
+senca-h265 = { path = "../senca-h265" }
+senca-aac = { path = "../senca-aac" }
+senca-opus = { path = "../senca-opus" }
+
+[lints]
+workspace = true

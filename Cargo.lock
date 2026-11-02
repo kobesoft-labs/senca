@@ -1058,6 +1058,7 @@ dependencies = [
  "senca-sdp",
  "senca-srt",
  "senca-tls",
+ "senca-webrtc",
  "serde",
  "serde_json",
  "sha2",

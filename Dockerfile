@@ -23,12 +23,13 @@ RUN apt-get update \
  && mkdir -p /var/lib/senca /opt/senca/console && chown senca /var/lib/senca
 COPY --from=build /out/senca-node /out/senca-codec-worker /opt/senca/bin/
 COPY apps/console /opt/senca/console
+COPY apps/sender-web /opt/senca/sender
 COPY docs/licenses /opt/senca/licenses
 USER senca
 WORKDIR /var/lib/senca
 EXPOSE 8080/tcp 1935/tcp 9000/udp 8443/udp
 VOLUME ["/var/lib/senca"]
 HEALTHCHECK --interval=10s --timeout=3s CMD ["/opt/senca/bin/senca-node", "--healthcheck", "http://127.0.0.1:8080/readyz"]
-ENTRYPOINT ["/opt/senca/bin/senca-node", "--data-dir", "/var/lib/senca", "--console-dir", "/opt/senca/console", \
+ENTRYPOINT ["/opt/senca/bin/senca-node", "--data-dir", "/var/lib/senca", "--console-dir", "/opt/senca/console", "--sender-dir", "/opt/senca/sender", \
             "--codec-lib-dir", "/usr/lib/x86_64-linux-gnu"]
 CMD ["--http", "0.0.0.0:8080", "--rtmp", "0.0.0.0:1935", "--srt", "0.0.0.0:9000"]

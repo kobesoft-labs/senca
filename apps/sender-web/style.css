@@ -1,0 +1,41 @@
+:root {
+  color-scheme: light dark;
+  --bg: #f6f7f9;
+  --fg: #1d2330;
+  --muted: #5d6677;
+  --card: #fff;
+  --line: #d8dce4;
+  --accent: #1f6feb;
+  --ok: #1a7f37;
+  --warn: #9a6700;
+  --bad: #cf222e;
+  font-family: system-ui, -apple-system, "Hiragino Sans", "Noto Sans JP", sans-serif;
+}
+@media (prefers-color-scheme: dark) {
+  :root { --bg: #0f1218; --fg: #e6e9ef; --muted: #9aa3b2; --card: #171b23; --line: #2b313d; }
+}
+* { box-sizing: border-box; }
+body { margin: 0; background: var(--bg); color: var(--fg); }
+header { display: flex; align-items: center; gap: 1rem; padding: .75rem 1rem; border-bottom: 1px solid var(--line); }
+h1 { font-size: 1.1rem; margin: 0; }
+main { display: grid; grid-template-columns: minmax(0, 3fr) minmax(280px, 2fr); gap: 1rem; padding: 1rem; }
+@media (max-width: 800px) { main { grid-template-columns: 1fr; } }
+.preview video { width: 100%; aspect-ratio: 16 / 9; background: #000; border-radius: 6px; }
+.stats { display: grid; grid-template-columns: repeat(3, 1fr); gap: .5rem; margin: .75rem 0; }
+.stats div { background: var(--card); border: 1px solid var(--line); border-radius: 6px; padding: .4rem .6rem; }
+.stats dt { font-size: .75rem; color: var(--muted); }
+.stats dd { margin: 0; font-variant-numeric: tabular-nums; font-size: 1rem; }
+.message { min-height: 1.5em; color: var(--bad); }
+.settings fieldset { background: var(--card); border: 1px solid var(--line); border-radius: 6px; margin: 0 0 .75rem; padding: .5rem .75rem .75rem; }
+.settings legend { font-weight: 600; padding: 0 .25rem; }
+.settings label { display: block; margin: .4rem 0; font-size: .9rem; }
+.settings select, .settings input[type=password], .settings textarea { display: block; width: 100%; margin-top: .2rem; padding: .35rem; font: inherit; border: 1px solid var(--line); border-radius: 4px; background: var(--bg); color: var(--fg); }
+.settings textarea { font-family: ui-monospace, monospace; font-size: .8rem; }
+.actions { display: flex; gap: .5rem; }
+button { font: inherit; padding: .45rem 1rem; border-radius: 4px; border: 1px solid var(--line); background: var(--card); color: var(--fg); cursor: pointer; }
+button[type=submit] { background: var(--accent); color: #fff; border-color: var(--accent); }
+button:disabled { opacity: .5; cursor: default; }
+.state { font-size: .85rem; padding: .15rem .6rem; border-radius: 999px; border: 1px solid var(--line); }
+.state.connected { color: var(--ok); border-color: var(--ok); }
+.state.connecting, .state.reconnecting { color: var(--warn); border-color: var(--warn); }
+.state.failed { color: var(--bad); border-color: var(--bad); }

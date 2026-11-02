@@ -35,5 +35,6 @@
 | senca-pipeline | パイプライン（DAG）の検証・世代・実行（復号・板書補正・合成・ミキサー・符号化）。codec worker の中で動く |
 | senca-paas | クラウドの PaaS（Cloudflare Stream・Amazon IVS・MediaLive）の要求の組み立てと応答の解析、SigV4、後片付けの判断 |
 | senca-caption | 字幕（復号しない音声の切り出し、音声認識・翻訳のアダプター、WebVTT・HLS 字幕） |
+| senca-sdk | 送り手の SDK（C ABI、RTMP・SRT、再接続、senca: の URI と QR、VISCA over IP） |
 | senca-devtools | 開発・試験の道具（配布しない） |
 | senca-node | 実行ファイル |

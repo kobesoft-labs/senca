@@ -173,6 +173,11 @@ async fn route(app: &Arc<App>, h: &RequestHead, body: Bytes, peer: &str) -> Repl
     if path == "/console" || path.starts_with("/console/") {
         return console(app, path);
     }
+    if path == "/sender" || path.starts_with("/sender/") {
+        // ブラウザーからの送出（WHIP）のページ（apps/sender-web）
+        let Some(dir) = app.cfg.sender_dir.as_ref() else { return Reply::status(404) };
+        return static_files(dir, path.strip_prefix("/sender").unwrap_or(""));
+    }
     if path == "/" {
         return Reply::status(302).header("Location", "/console/");
     }
@@ -288,7 +293,11 @@ fn vod(app: &Arc<App>, rec: &str, file: &str, h: &RequestHead) -> Reply {
 
 fn console(app: &Arc<App>, path: &str) -> Reply {
     let Some(dir) = app.cfg.console_dir.as_ref() else { return Reply::status(404) };
-    let rel = path.strip_prefix("/console").unwrap_or("").trim_start_matches('/');
+    static_files(dir, path.strip_prefix("/console").unwrap_or(""))
+}
+
+fn static_files(dir: &std::path::Path, rel: &str) -> Reply {
+    let rel = rel.trim_start_matches('/');
     let rel = if rel.is_empty() { "index.html" } else { rel };
     if rel.split('/').any(|s| s.is_empty() || s == "." || s == ".." || s.starts_with('.')) {
         return Reply::status(404);
