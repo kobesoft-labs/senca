@@ -2,7 +2,11 @@
 # ソフトウェアの H.264/H.265 コーデックは入れない（ADR-0004）。ロイヤリティフリーのコーデック（dav1d・libvpx・SVT-AV1・libopus）は
 # ディストリビューションのパッケージを入れ、codec worker が実行時に読み込む。GPU は compose の設定で渡す。
 
-FROM rust:1-slim-trixie AS build
+FROM ubuntu:26.04 AS build
+RUN apt-get update && apt-get install -y --no-install-recommends ca-certificates curl gcc libc6-dev \
+ && rm -rf /var/lib/apt/lists/* \
+ && curl -sSf https://sh.rustup.rs | sh -s -- -y --profile minimal
+ENV PATH=/root/.cargo/bin:$PATH
 WORKDIR /src
 COPY Cargo.toml Cargo.lock ./
 COPY crates ./crates
@@ -10,9 +14,10 @@ COPY crates ./crates
 RUN cargo build --release -p senca-node -p senca-codec-worker \
  && mkdir -p /out && cp target/release/senca-node target/release/senca-codec-worker /out/
 
-FROM debian:trixie-slim
+# 実行: libvpx の提供者は libvpx 1.16（libvpx.so.12）の ABI に合わせてあるので、それを持つ Ubuntu 26.04 を使う
+FROM ubuntu:26.04
 RUN apt-get update \
- && apt-get install -y --no-install-recommends ca-certificates tzdata libdav1d7 libvpx9 libopus0 libsvtav1enc2 \
+ && apt-get install -y --no-install-recommends ca-certificates tzdata libdav1d7 libvpx12 libopus0 libsvtav1enc2 libva2 libva-drm2 libvpl2 \
  && rm -rf /var/lib/apt/lists/* \
  && useradd --system --uid 10001 --home /var/lib/senca senca \
  && mkdir -p /var/lib/senca /opt/senca/console && chown senca /var/lib/senca
