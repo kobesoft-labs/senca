@@ -33,6 +33,7 @@ senca-capture = { path = "../senca-capture" }
 senca-rtp = { path = "../senca-rtp" }
 senca-sdp = { path = "../senca-sdp" }
 senca-rtsp = { path = "../senca-rtsp" }
+senca-relay = { path = "../senca-relay", features = ["tokio"] }
 bytes.workspace = true
 tokio.workspace = true
 serde.workspace = true

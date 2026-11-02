@@ -200,8 +200,22 @@ async fn signed(app: &Arc<App>, rest: &str, h: &RequestHead) -> Reply {
     }
     let cors = |r: Reply| r.header("Access-Control-Allow-Origin", "*");
     // 分散: データを持つノードへ案内する（仕事はデータのある所で。REQ-010 R10-9）
+    // 中継があれば、手元に写しを作って配る（視聴者を案内しない。上流は stream ごとに 1 本）
+    if *kind == "live"
+        && let Some(r) = app.relay.get()
+        && (r.is_mirror(id) || app.live_cache(id).is_none())
+        && let Some(hub) = r.ensure_mirror(app, id)
+    {
+        let deadline = tokio::time::Instant::now() + crate::relay::MIRROR_WARMUP;
+        while hub.shared.cache.playlist(false).is_none() && tokio::time::Instant::now() < deadline {
+            tokio::time::sleep(std::time::Duration::from_millis(50)).await;
+        }
+        if hub.shared.cache.playlist(false).is_some() {
+            return cors(live(app, id, file, h).await);
+        }
+    }
     let elsewhere = match *kind {
-        "live" if app.live_cache(id).is_none() => app.owner_base(id),
+        "live" if app.live_cache(id).is_none_or(|c| c.playlist(false).is_none()) => app.owner_base(id),
         "vod" if app.read_index(id).is_none() => app.recording_base(id),
         _ => None,
     };

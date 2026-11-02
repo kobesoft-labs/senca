@@ -333,6 +333,11 @@ async fn parallel_workers() {
             .await
             .unwrap(),
     );
+    // start は最初の worker が上がった時点で返す（仕様）。全部がそろうのを待ってから並列度を測る。
+    let deadline = std::time::Instant::now() + Duration::from_secs(10);
+    while pool.stats().alive < 4 && std::time::Instant::now() < deadline {
+        tokio::time::sleep(Duration::from_millis(10)).await;
+    }
     assert_eq!(pool.stats().alive, 4);
     let t0 = std::time::Instant::now();
     let hs: Vec<_> = (0..4)

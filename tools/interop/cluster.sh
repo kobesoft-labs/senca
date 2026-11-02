@@ -19,15 +19,15 @@ if [ -n "${CLUSTER_TLS:-}" ]; then
   for i in 1 2 3; do mkcert n$i ca; done
   mkcert intruder evilca
 fi
-declare -A HTTP RAFT RTMPP
-for i in 1 2 3; do HTTP[$i]=$(port); RAFT[$i]=$(port); RTMPP[$i]=$(port); done
+declare -A HTTP RAFT RTMPP RELAY
+for i in 1 2 3; do HTTP[$i]=$(port); RAFT[$i]=$(port); RTMPP[$i]=$(port); RELAY[$i]=$(port); done
 for i in 1 2 3; do
   T=""; [ -n "${CLUSTER_TLS:-}" ] && T="\"tls_ca\": \"$W/ca.pem\", \"tls_cert\": \"$W/n$i.pem\", \"tls_key\": \"$W/n$i.key\","
   cat > "$W/c$i.json" <<J
-{"node_id": $i, "listen": "127.0.0.1:${RAFT[$i]}", "secret_file": "$W/secret", $T
- "peers": [{"id":1,"addr":"127.0.0.1:${RAFT[1]}","api":"http://127.0.0.1:${HTTP[1]}"},
-           {"id":2,"addr":"127.0.0.1:${RAFT[2]}","api":"http://127.0.0.1:${HTTP[2]}"},
-           {"id":3,"addr":"127.0.0.1:${RAFT[3]}","api":"http://127.0.0.1:${HTTP[3]}"}]}
+{"node_id": $i, "listen": "127.0.0.1:${RAFT[$i]}", "relay_listen": "127.0.0.1:${RELAY[$i]}", "secret_file": "$W/secret", $T
+ "peers": [{"id":1,"addr":"127.0.0.1:${RAFT[1]}","relay":"127.0.0.1:${RELAY[1]}","api":"http://127.0.0.1:${HTTP[1]}"},
+           {"id":2,"addr":"127.0.0.1:${RAFT[2]}","relay":"127.0.0.1:${RELAY[2]}","api":"http://127.0.0.1:${HTTP[2]}"},
+           {"id":3,"addr":"127.0.0.1:${RAFT[3]}","relay":"127.0.0.1:${RELAY[3]}","api":"http://127.0.0.1:${HTTP[3]}"}]}
 J
 done
 start() {
@@ -71,24 +71,44 @@ ok=0; for _ in $(seq 40); do c=$(code 3 POST /streams -d '{"name":"healed"}'); [
 sleep 1
 n1=$(api 1 GET /streams | json "['items'].__len__()"); n3=$(api 3 GET /streams | json "['items'].__len__()")
 [ "$n1" = 5 ] && [ "$n3" = 5 ] && pass "all nodes converge (5 streams)" || fail "converge n1=$n1 n3=$n3"
-# メディア: 所有権と案内（node 2 で受けた配信を node 3 で見る → 307 で node 2 へ）
-"$FFMPEG" -v error -f lavfi -i testsrc2=size=320x240:rate=30 -t 8 -c:v libx264 -g 30 -f flv "$W/src.flv"
+# メディア: 所有権と中継（ADR-0014）。node 2 で受けた配信を node 3・node 1 で見る → 案内せず、中継の写しから配る
+"$FFMPEG" -v error -f lavfi -i testsrc2=size=320x240:rate=30 -t 10 -c:v libx264 -g 30 -f flv "$W/src.flv"
 frames "$W/src.flv" v > "$W/src.v"
 S=$(api 1 POST /streams -d '{"name":"media"}'); SID=$(echo "$S" | json "['id']"); KEY=$(echo "$S" | json "['ingest']['stream_key']")
 "$FFMPEG" -v error -re -i "$W/src.flv" -c copy -f flv rtmp://127.0.0.1:${RTMPP[2]}/live/$KEY & PUB=$!
 sleep 3
 URL3=$(api 3 POST /streams/$SID/playback-url | json "['playback']['hls']")
-loc=$(curl -s -o /dev/null -w '%{http_code} %{redirect_url}' "$URL3")
-case "$loc" in "307 http://127.0.0.1:${HTTP[2]}/"*) pass "viewer on node 3 redirected to owner node 2";; *) fail "redirect: $loc";; esac
-# 同じ stream を node 3 で受け直す → node 2 の送り手は切られる（fencing）
+c=$(curl -s -o /dev/null -w '%{http_code}' "$URL3")
+[ "$c" = 200 ] && pass "viewer on node 3 served locally via relay (no redirect)" || fail "relay playlist on node 3: $c"
+frames "$URL3" v > "$W/r3.v" &
+FR=$!
+# RTMP play on node 1 も中継から（署名付きキー）
+PURL1=$(api 1 POST /streams/$SID/playback-url | json "['playback']['rtmp']" 2>/dev/null || true)
+if [ -n "$PURL1" ] && [ "$PURL1" != None ]; then
+  P1=$(echo "$PURL1" | sed "s#rtmp://[^/]*/#rtmp://127.0.0.1:${RTMPP[1]}/#")
+  "$FFMPEG" -v error -i "$P1" -t 3 -c copy -f flv "$W/p1.flv" 2>/dev/null || true
+  frames "$W/p1.flv" v 2>/dev/null | head -n -5 > "$W/p1.v" || true
+  contiguous "$W/src.v" "$W/p1.v" 60 && pass "RTMP play on node 1 via relay = contiguous source run" || fail "RTMP play via relay ($(wc -l < "$W/p1.v" 2>/dev/null))"
+fi
+wait $PUB || true
+wait $FR || true
+contiguous "$W/src.v" "$W/r3.v" 100 && pass "HLS via relay on node 3 = contiguous source run ($(wc -l < "$W/r3.v") frames)" || fail "HLS via relay ($(wc -l < "$W/r3.v"))"
+st=$(api 2 GET /nodes | python3 -c "import json,sys; d=json.load(sys.stdin); r=[n['relay'] for n in d['items'] if n['self']][0]; print(max(p['tx_aus'] for p in r['peers']) if r['peers'] else 0)")
+[ "${st:-0}" -gt 100 ] && pass "owner node 2 relayed AUs ($st)" || fail "relay stats on node 2: $st"
+# 同じ stream を node 2 で配信し直し、node 3 の写しから見ている間に node 3 で受け直す → node 2 の送り手は切られ、node 3 の写しは本物に譲る
+"$FFMPEG" -v error -re -i "$W/src.flv" -c copy -f flv rtmp://127.0.0.1:${RTMPP[2]}/live/$KEY & PUB=$!
+sleep 3
+curl -s -o /dev/null "$URL3"
 "$FFMPEG" -v error -re -i "$W/src.flv" -c copy -f flv rtmp://127.0.0.1:${RTMPP[3]}/live/$KEY & PUB3=$!
 sleep 2
 rc=0; wait $PUB 2>/dev/null || rc=$?
 grep -q "publisher evicted" "$W/n2.log" && pass "old owner (node 2) evicted its publisher" || fail "node 2 did not evict (rc=$rc)"
-wait $PUB3 || true; sleep 3
+grep -q "mirror of $SID stopped" "$W/n3.log" && pass "node 3 mirror yielded to the real publisher" || fail "node 3 mirror not stopped"
+sleep 1
 URL1=$(api 1 POST /streams/$SID/playback-url | json "['playback']['hls']")
 frames "$URL1" v > "$W/m.v"
-contiguous "$W/src.v" "$W/m.v" 100 && pass "playback via node 1 follows redirect to new owner (node 3)" || fail "playback via redirect ($(wc -l < "$W/m.v"))"
+wait $PUB3 || true
+contiguous "$W/src.v" "$W/m.v" 100 && pass "playback on node 1 relays from the new owner (node 3)" || fail "playback via new owner ($(wc -l < "$W/m.v"))"
 if [ -n "${CLUSTER_TLS:-}" ]; then
   # 別の認証局の証明書を持つノードは、合言葉を知っていても入れない
   python3 - "$W" <<'PY'

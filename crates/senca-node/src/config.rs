@@ -76,6 +76,9 @@ pub struct ClusterConfig {
     pub tls_cert: Option<PathBuf>,
     #[serde(default)]
     pub tls_key: Option<PathBuf>,
+    /// ノード間の中継（ADR-0014）の待ち受け。既定は `listen` の次の番号。
+    #[serde(default)]
+    pub relay_listen: Option<SocketAddr>,
 }
 
 #[derive(Debug, Clone, Deserialize)]
@@ -87,6 +90,9 @@ pub struct ClusterPeer {
     /// 管理 API の宛先（転送・案内に使う）。
     #[serde(default)]
     pub api: Option<String>,
+    /// 中継の宛先。既定は `addr` の次の番号。
+    #[serde(default)]
+    pub relay: Option<SocketAddr>,
 }
 
 impl Default for Config {

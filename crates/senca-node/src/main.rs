@@ -24,6 +24,7 @@ mod pipelines;
 mod plan;
 mod recorder;
 mod recovery;
+mod relay;
 mod rtmp;
 mod rtsp_pull;
 mod rtsp_serve;
@@ -122,8 +123,9 @@ async fn run(cfg: Config) -> Result<(), String> {
             return Err("cluster: 合言葉は 16 文字以上にしてください".into());
         }
         let peers = cc.peers.iter().map(|p| (p.id, p.addr)).collect();
-        let c = cluster::start(app.clone(), cc.node_id, cc.listen, peers, secret)?;
+        let c = cluster::start(app.clone(), cc.node_id, cc.listen, peers, secret.clone())?;
         let _ = app.cluster.set(c);
+        let _ = app.relay.set(relay::start(&app, cc, secret)?);
         app.watch_ownership();
         app.log(&format!("cluster: node {} started ({} voters)", cc.node_id, cc.peers.len()));
         // リーダーが決まってから初期化（管理者トークンは ID が最小のノードだけが作る）

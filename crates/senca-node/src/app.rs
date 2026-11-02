@@ -53,6 +53,8 @@ pub struct App {
     pub pipelines: crate::pipelines::PipelineManager,
     pub captions_running: Mutex<HashMap<String, tokio::task::JoinHandle<()>>>,
     pub rtc: std::sync::OnceLock<Arc<crate::webrtc::Rtc>>,
+    /// ノード間の中継（分散のとき）。
+    pub relay: std::sync::OnceLock<Arc<crate::relay::Relay>>,
 }
 
 impl App {
@@ -80,6 +82,7 @@ impl App {
             codec,
             secret_box,
             cluster: std::sync::OnceLock::new(),
+            relay: std::sync::OnceLock::new(),
             io: crate::io::IoManager::default(),
             pipelines: crate::pipelines::PipelineManager::default(),
             captions_running: Mutex::new(HashMap::new()),
@@ -210,6 +213,12 @@ impl App {
         if !self.publish_allowed(&stream) {
             return Err(PublishError::Rejected("outside of the live schedule".into()));
         }
+        // 写しがあれば止めて、本物の送り手に譲る
+        if let Some(r) = self.relay.get()
+            && r.is_mirror(&stream.id)
+        {
+            r.stop_mirror(&stream.id).await;
+        }
         let hub = self.hub(&stream);
         let p = hub.attach(transport, peer).await?;
         // 字幕（設定があるときだけ。外部の送り先は利用者が設定したものだけ）
@@ -284,8 +293,22 @@ impl App {
         if crate::util::now_ms() / 1000 > exp || !self.verify_signature("live", id, exp, sig) {
             return None;
         }
-        let hub = self.hubs.lock().unwrap().get(id).cloned()?;
+        let hub = self.source_hub(id)?;
         Some(hub.subscribe())
+    }
+
+    /// stream の hub。このノードに無く、別のノードが持っていれば中継の写しを作る（ADR-0014）。
+    pub fn source_hub(&self, id: &str) -> Option<HubHandle> {
+        let local = self.hubs.lock().unwrap().get(id).cloned();
+        if let Some(r) = self.relay.get() {
+            if local.as_ref().is_some_and(|h| h.is_live()) && !r.is_mirror(id) {
+                return local;
+            }
+            if let Some(h) = r.ensure_mirror(&self.arc(), id) {
+                return Some(h);
+            }
+        }
+        local
     }
 
     pub fn live_info(&self, id: &str) -> Option<Value> {
@@ -616,6 +639,7 @@ impl App {
             "labels": n.labels,
             "live_streams": streams,
             "self": mine,
+            "relay": if mine { self.relay.get().map(|r| r.status()) } else { None },
         })
     }
 
@@ -700,6 +724,9 @@ impl App {
 
     pub async fn shutdown(&self) {
         self.shutting_down.store(true, Ordering::Relaxed);
+        if let Some(r) = self.relay.get() {
+            r.endpoint.go_away("node shutting down");
+        }
         let hubs: Vec<HubHandle> = self.hubs.lock().unwrap().values().cloned().collect();
         for h in hubs {
             h.shutdown().await;
