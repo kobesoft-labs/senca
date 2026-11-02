@@ -858,6 +858,8 @@ dependencies = [
  "libc",
  "senca-codec",
  "senca-core",
+ "senca-pipeline",
+ "serde_json",
  "tokio",
 ]
 
@@ -1004,6 +1006,7 @@ dependencies = [
  "getrandom 0.3.4",
  "hmac",
  "senca-aac",
+ "senca-av1",
  "senca-codec",
  "senca-codec-worker",
  "senca-control",
@@ -1018,6 +1021,10 @@ dependencies = [
  "senca-mpegts",
  "senca-record",
  "senca-rtmp",
+ "senca-rtp",
+ "senca-rtsp",
+ "senca-sdp",
+ "senca-srt",
  "serde",
  "serde_json",
  "sha2",

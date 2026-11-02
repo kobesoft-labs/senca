@@ -1,0 +1,20 @@
+[package]
+name = "senca-caption"
+description = "Captions (ASR) and translation pipeline parts for SENCA: audio chunking without decoding, sans-io ASR / translation adapters, cue merging, WebVTT and HLS subtitles"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+
+[dependencies]
+bytes.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+senca-core = { path = "../senca-core" }
+senca-aac = { path = "../senca-aac" }
+senca-opus = { path = "../senca-opus" }
+senca-fmp4 = { path = "../senca-fmp4" }
+senca-http = { path = "../senca-http" }
+senca-hls = { path = "../senca-hls" }
+
+[lints]
+workspace = true
