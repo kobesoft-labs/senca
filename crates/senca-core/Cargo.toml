@@ -1,0 +1,13 @@
+[package]
+name = "senca-core"
+description = "Common media model, ids, time arithmetic and bit utilities for SENCA"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+
+[dependencies]
+bytes.workspace = true
+getrandom.workspace = true
+
+[lints]
+workspace = true

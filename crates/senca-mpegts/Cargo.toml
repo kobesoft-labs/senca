@@ -1,0 +1,13 @@
+[package]
+name = "senca-mpegts"
+description = "MPEG-2 TS muxer / demuxer (sans-io) for SENCA"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+
+[dependencies]
+senca-core = { path = "../senca-core" }
+bytes.workspace = true
+
+[lints]
+workspace = true

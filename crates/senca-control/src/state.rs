@@ -1,0 +1,358 @@
+//! 制御状態と、それを変えるコマンド。
+//!
+//! 規則:
+//! - 状態を変えるのは [`ControlState::apply`] だけ。時刻・乱数・ID はコマンドに入れて渡す（決定的に保つ）。
+//! - `apply` は不変条件（存在・世代・上限・最後の管理者）を自分でも検査する。提案した時点の状態が古くても、
+//!   適用の時点で誤りにならないようにするため（分散で同じコマンドが複数のノードで適用される）。
+//! - 失敗したコマンドは状態を変えない。
+
+use crate::auth::Scope;
+use crate::model::*;
+use crate::problem::{Problem, ProblemCode};
+use serde::{Deserialize, Serialize};
+use std::collections::BTreeMap;
+
+pub const MAX_STREAMS_PER_TENANT: usize = 1000;
+pub const MAX_TOKENS_PER_TENANT: usize = 100;
+pub const MAX_SCHEDULES_PER_TENANT: usize = 1000;
+pub const IDEMPOTENCY_TTL_MS: i64 = 24 * 3600 * 1000;
+
+#[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
+pub struct ControlState {
+    #[serde(default)]
+    pub streams: BTreeMap<String, Stream>,
+    #[serde(default)]
+    pub tokens: BTreeMap<String, ApiToken>,
+    #[serde(default)]
+    pub recordings: BTreeMap<String, Recording>,
+    #[serde(default)]
+    pub schedules: BTreeMap<String, Schedule>,
+    /// キーは `tenant\u{0}key`。
+    #[serde(default)]
+    pub idempotency: BTreeMap<String, IdempotencyRecord>,
+    #[serde(default)]
+    pub nodes: BTreeMap<String, NodeInfo>,
+    /// 署名付き再生 URL の鍵（16 進）。作り直すと発行済みの URL がすべて無効になる。
+    #[serde(default)]
+    pub playback_key: Option<String>,
+    /// 適用したコマンドの数（ログの位置）。
+    #[serde(default)]
+    pub applied_index: u64,
+    /// 所有権の世代（fencing token）を払い出す通し番号（仕様 8.2）。
+    #[serde(default)]
+    pub fencing_counter: u64,
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(tag = "op", rename_all = "snake_case")]
+pub enum Command {
+    CreateStream { stream: Stream },
+    /// 世代 `expect_generation` のときだけ置き換える（If-Match）。新しい世代は +1。
+    UpdateStream { stream: Stream, expect_generation: u64 },
+    DeleteStream { tenant: String, id: String, expect_generation: Option<u64> },
+    CreateToken { token: ApiToken },
+    DeleteToken { tenant: String, id: String },
+    PutRecording { recording: Recording },
+    DeleteRecording { tenant: String, id: String },
+    CreateSchedule { schedule: Schedule },
+    UpdateSchedule { schedule: Schedule, expect_generation: u64 },
+    DeleteSchedule { tenant: String, id: String, expect_generation: Option<u64> },
+    /// 予約の実行結果（状態と run の追記・更新）。世代は変えない（利用者の更新と競合させない）。
+    RecordScheduleRun { tenant: String, id: String, state: ScheduleState, run: ScheduleRun },
+    PutIdempotency { record: IdempotencyRecord },
+    ExpireIdempotency { before_ms: i64 },
+    SetPlaybackKey { key_hex: String },
+    PutNode { node: NodeInfo },
+    /// 新しい fencing token を払い出す（結果は `fencing_counter`）。
+    NextFencingToken,
+}
+
+fn conflict(t: &str) -> Problem {
+    Problem::new(ProblemCode::Conflict, t)
+}
+
+fn stale() -> Problem {
+    Problem::new(ProblemCode::PreconditionFailed, "資源が更新されています（If-Match が古い）")
+}
+
+pub fn idem_key(tenant: &str, key: &str) -> String {
+    format!("{tenant}\u{0}{key}")
+}
+
+impl ControlState {
+    pub fn apply(&mut self, cmd: Command) -> Result<(), Problem> {
+        self.apply_inner(cmd)?;
+        self.applied_index += 1;
+        Ok(())
+    }
+
+    fn apply_inner(&mut self, cmd: Command) -> Result<(), Problem> {
+        match cmd {
+            Command::CreateStream { stream } => {
+                if self.streams.contains_key(&stream.id) {
+                    return Err(conflict("同じ ID の stream があります"));
+                }
+                if self.streams.values().filter(|s| s.tenant == stream.tenant).count() >= MAX_STREAMS_PER_TENANT {
+                    return Err(Problem::new(ProblemCode::QuotaExceeded, "stream の数が上限です"));
+                }
+                if self.streams.values().any(|s| s.tenant == stream.tenant && s.name == stream.name) {
+                    return Err(conflict("同じ名前の stream があります"));
+                }
+                self.streams.insert(stream.id.clone(), stream);
+            }
+            Command::UpdateStream { mut stream, expect_generation } => {
+                let cur = self.tenant_stream(&stream.tenant, &stream.id)?;
+                if cur.generation != expect_generation {
+                    return Err(stale());
+                }
+                if cur.name != stream.name
+                    && self.streams.values().any(|s| s.tenant == stream.tenant && s.name == stream.name && s.id != stream.id)
+                {
+                    return Err(conflict("同じ名前の stream があります"));
+                }
+                stream.generation = expect_generation + 1;
+                stream.created_at_ms = cur.created_at_ms;
+                self.streams.insert(stream.id.clone(), stream);
+            }
+            Command::DeleteStream { tenant, id, expect_generation } => {
+                let cur = self.tenant_stream(&tenant, &id)?;
+                if let Some(g) = expect_generation
+                    && cur.generation != g
+                {
+                    return Err(stale());
+                }
+                self.streams.remove(&id);
+                // 予約は stream と一緒に消す（録画は消さない。仕様 10.2）。
+                self.schedules.retain(|_, s| s.stream != id);
+            }
+            Command::CreateToken { token } => {
+                if self.tokens.contains_key(&token.id) {
+                    return Err(conflict("同じ ID のトークンがあります"));
+                }
+                if self.tokens.values().filter(|t| t.tenant == token.tenant).count() >= MAX_TOKENS_PER_TENANT {
+                    return Err(Problem::new(ProblemCode::QuotaExceeded, "トークンの数が上限です"));
+                }
+                self.tokens.insert(token.id.clone(), token);
+            }
+            Command::DeleteToken { tenant, id } => {
+                let t = self.tokens.get(&id).filter(|t| t.tenant == tenant).ok_or_else(Problem::not_found)?;
+                if t.scopes.contains(&Scope::TenantAdmin) {
+                    let admins = self
+                        .tokens
+                        .values()
+                        .filter(|x| x.tenant == tenant && x.scopes.contains(&Scope::TenantAdmin))
+                        .count();
+                    if admins <= 1 {
+                        return Err(conflict("テナントの最後の管理者トークンは消せません"));
+                    }
+                }
+                self.tokens.remove(&id);
+            }
+            Command::PutRecording { recording } => {
+                if let Some(cur) = self.recordings.get(&recording.id)
+                    && cur.tenant != recording.tenant
+                {
+                    return Err(conflict("録画のテナントが違います"));
+                }
+                self.recordings.insert(recording.id.clone(), recording);
+            }
+            Command::DeleteRecording { tenant, id } => {
+                let r = self.recordings.get(&id).filter(|r| r.tenant == tenant).ok_or_else(Problem::not_found)?;
+                if r.legal_hold {
+                    return Err(conflict("法的保全中の録画は消せません"));
+                }
+                self.recordings.remove(&id);
+            }
+            Command::CreateSchedule { schedule } => {
+                if self.schedules.contains_key(&schedule.id) {
+                    return Err(conflict("同じ ID の予約があります"));
+                }
+                self.tenant_stream(&schedule.tenant, &schedule.stream)?;
+                if self.schedules.values().filter(|s| s.tenant == schedule.tenant).count() >= MAX_SCHEDULES_PER_TENANT {
+                    return Err(Problem::new(ProblemCode::QuotaExceeded, "予約の数が上限です"));
+                }
+                self.schedules.insert(schedule.id.clone(), schedule);
+            }
+            Command::UpdateSchedule { mut schedule, expect_generation } => {
+                let cur = self
+                    .schedules
+                    .get(&schedule.id)
+                    .filter(|s| s.tenant == schedule.tenant)
+                    .ok_or_else(Problem::not_found)?;
+                if cur.generation != expect_generation {
+                    return Err(stale());
+                }
+                schedule.generation = expect_generation + 1;
+                schedule.created_at_ms = cur.created_at_ms;
+                schedule.runs = cur.runs.clone();
+                self.schedules.insert(schedule.id.clone(), schedule);
+            }
+            Command::DeleteSchedule { tenant, id, expect_generation } => {
+                let cur = self.schedules.get(&id).filter(|s| s.tenant == tenant).ok_or_else(Problem::not_found)?;
+                if let Some(g) = expect_generation
+                    && cur.generation != g
+                {
+                    return Err(stale());
+                }
+                self.schedules.remove(&id);
+            }
+            Command::RecordScheduleRun { tenant, id, state, run } => {
+                let s = self
+                    .schedules
+                    .get_mut(&id)
+                    .filter(|s| s.tenant == tenant)
+                    .ok_or_else(Problem::not_found)?;
+                s.state = state;
+                match s.runs.iter_mut().find(|r| r.occurrence == run.occurrence) {
+                    Some(r) => *r = run,
+                    None => {
+                        s.runs.push(run);
+                        // 履歴は直近 100 件まで
+                        let n = s.runs.len();
+                        if n > 100 {
+                            s.runs.drain(..n - 100);
+                        }
+                    }
+                }
+            }
+            Command::PutIdempotency { record } => {
+                let k = idem_key(&record.tenant, &record.key);
+                if let Some(cur) = self.idempotency.get(&k)
+                    && cur.fingerprint != record.fingerprint
+                {
+                    return Err(Problem::new(ProblemCode::IdempotencyConflict, "同じ Idempotency-Key で別の要求です"));
+                }
+                self.idempotency.insert(k, record);
+            }
+            Command::ExpireIdempotency { before_ms } => {
+                self.idempotency.retain(|_, r| r.created_at_ms >= before_ms);
+            }
+            Command::SetPlaybackKey { key_hex } => {
+                if key_hex.len() != 64 || !key_hex.bytes().all(|c| c.is_ascii_hexdigit()) {
+                    return Err(Problem::invalid("鍵の形が違います"));
+                }
+                self.playback_key = Some(key_hex);
+            }
+            Command::PutNode { node } => {
+                self.nodes.insert(node.id.clone(), node);
+            }
+            Command::NextFencingToken => {
+                self.fencing_counter += 1;
+            }
+        }
+        Ok(())
+    }
+
+    /// テナントの stream。別テナントのものは「無い」と同じ（仕様 10.1: 404 で存在を漏らさない）。
+    pub fn tenant_stream(&self, tenant: &str, id: &str) -> Result<&Stream, Problem> {
+        self.streams.get(id).filter(|s| s.tenant == tenant).ok_or_else(Problem::not_found)
+    }
+
+    pub fn tenant_recording(&self, tenant: &str, id: &str) -> Result<&Recording, Problem> {
+        self.recordings.get(id).filter(|r| r.tenant == tenant).ok_or_else(Problem::not_found)
+    }
+
+    pub fn tenant_schedule(&self, tenant: &str, id: &str) -> Result<&Schedule, Problem> {
+        self.schedules.get(id).filter(|r| r.tenant == tenant).ok_or_else(Problem::not_found)
+    }
+
+    pub fn idempotency(&self, tenant: &str, key: &str) -> Option<&IdempotencyRecord> {
+        self.idempotency.get(&idem_key(tenant, key))
+    }
+
+    pub fn stream_by_name(&self, tenant: &str, name: &str) -> Option<&Stream> {
+        self.streams.values().find(|s| s.tenant == tenant && s.name == name)
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::collections::BTreeSet;
+
+    fn stream(id: &str, tenant: &str, name: &str) -> Stream {
+        Stream {
+            id: id.into(),
+            tenant: tenant.into(),
+            name: name.into(),
+            generation: 1,
+            created_at_ms: 1,
+            updated_at_ms: 1,
+            key_hash: "h".into(),
+            latency_profile: Default::default(),
+            codec_profile: Default::default(),
+            recording: Default::default(),
+            snapshots: None,
+            hls: Default::default(),
+            limits: Default::default(),
+            metadata: Default::default(),
+            desired_state: "running".into(),
+        }
+    }
+
+    fn token(id: &str, tenant: &str, admin: bool) -> ApiToken {
+        let mut scopes = BTreeSet::new();
+        scopes.insert(if admin { Scope::TenantAdmin } else { Scope::StreamRead });
+        ApiToken { id: id.into(), tenant: tenant.into(), name: id.into(), hash: id.into(), scopes, created_at_ms: 0, expires_at_ms: None }
+    }
+
+    #[test]
+    fn stream_lifecycle_and_generation() {
+        let mut st = ControlState::default();
+        st.apply(Command::CreateStream { stream: stream("a", "t1", "cam") }).unwrap();
+        assert_eq!(st.apply(Command::CreateStream { stream: stream("b", "t1", "cam") }).unwrap_err().status, 409);
+        st.apply(Command::CreateStream { stream: stream("b", "t2", "cam") }).unwrap();
+        // 別テナントからは見えない
+        assert_eq!(st.tenant_stream("t2", "a").unwrap_err().status, 404);
+        let mut s = st.streams["a"].clone();
+        s.name = "cam2".into();
+        assert_eq!(st.apply(Command::UpdateStream { stream: s.clone(), expect_generation: 7 }).unwrap_err().status, 412);
+        st.apply(Command::UpdateStream { stream: s, expect_generation: 1 }).unwrap();
+        assert_eq!(st.streams["a"].generation, 2);
+        assert_eq!(st.applied_index, 3);
+        st.apply(Command::DeleteStream { tenant: "t1".into(), id: "a".into(), expect_generation: Some(2) }).unwrap();
+        assert!(!st.streams.contains_key("a"));
+    }
+
+    #[test]
+    fn last_admin_cannot_be_deleted() {
+        let mut st = ControlState::default();
+        st.apply(Command::CreateToken { token: token("x", "t", true) }).unwrap();
+        st.apply(Command::CreateToken { token: token("y", "t", false) }).unwrap();
+        assert_eq!(st.apply(Command::DeleteToken { tenant: "t".into(), id: "x".into() }).unwrap_err().status, 409);
+        st.apply(Command::CreateToken { token: token("z", "t", true) }).unwrap();
+        st.apply(Command::DeleteToken { tenant: "t".into(), id: "x".into() }).unwrap();
+    }
+
+    #[test]
+    fn idempotency_conflict() {
+        let mut st = ControlState::default();
+        let r = IdempotencyRecord {
+            tenant: "t".into(),
+            key: "k".into(),
+            fingerprint: "f1".into(),
+            status: 201,
+            body: "{}".into(),
+            location: None,
+            created_at_ms: 10,
+        };
+        st.apply(Command::PutIdempotency { record: r.clone() }).unwrap();
+        let mut r2 = r.clone();
+        r2.fingerprint = "f2".into();
+        assert_eq!(st.apply(Command::PutIdempotency { record: r2 }).unwrap_err().status, 409);
+        st.apply(Command::ExpireIdempotency { before_ms: 11 }).unwrap();
+        assert!(st.idempotency("t", "k").is_none());
+    }
+
+    #[test]
+    fn serde_roundtrip() {
+        let mut st = ControlState::default();
+        st.apply(Command::CreateStream { stream: stream("a", "t1", "cam") }).unwrap();
+        let j = serde_json::to_string(&st).unwrap();
+        let back: ControlState = serde_json::from_str(&j).unwrap();
+        assert_eq!(back, st);
+        let c = Command::NextFencingToken;
+        let j = serde_json::to_string(&c).unwrap();
+        assert_eq!(j, r#"{"op":"next_fencing_token"}"#);
+    }
+}

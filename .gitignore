@@ -1,0 +1,7 @@
+/target
+/out
+/fuzz/target
+/fuzz/corpus
+/fuzz/artifacts
+*.swp
+.DS_Store

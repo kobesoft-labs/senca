@@ -1,0 +1,281 @@
+SENCA senca-codec の第三者表示（NOTICE）
+
+このクレートは、コーデック・ハードウェア SDK の C ヘッダーから bindgen で生成した型定義（構造体・定数）を
+src/providers/*/bindings* に含む。関数は宣言せず、実行時に dlopen で読み込む。ライブラリ本体（.so）は同梱しない。
+各ヘッダーの出典・版・ライセンスを以下に示す（生成のコマンドは各 bindings ファイルの冒頭にある）。
+
+特許について（ADR-0004・REQ-007）: 下のライセンスはヘッダー（著作物）のものであり、H.264/H.265 などの
+特許の実施許諾を与えるものではない。AV1/VP8/VP9/Opus の各ライブラリに付く特許許諾（AOM Patent License 1.0、
+WebM の Additional IP Rights Grant、Opus の各社の宣言）は各プロジェクトの文書を参照し、法務確認の対象とする。
+
+目次
+  1. dav1d 1.5.3（BSD-2-Clause）            src/providers/dav1d/bindings.rs
+  2. libvpx 1.16.0（BSD-3-Clause）          src/providers/libvpx/bindings.rs
+  3. SVT-AV1 2.3.0（BSD-3-Clause-Clear）    src/providers/svtav1/bindings.rs
+  4. libopus 1.6.1（BSD-3-Clause）          src/providers/opus/bindings.rs
+  5. NVIDIA nv-codec-headers（MIT）         src/providers/nvidia/bindings/nv.rs
+  6. Intel oneVPL 2.16.0（MIT）             src/providers/vpl/bindings/vpl.rs
+  7. AMD AMF 1.5.3（MIT）                   src/providers/amf/bindings/amf.rs
+  8. libva 2.23.0（MIT）                    src/providers/vaapi/bindings.rs
+
+1〜4 のヘッダーは Ubuntu 26.04 の -dev パッケージ（libdav1d-dev 1.5.3-1、libvpx-dev 1.16.0-3、
+libsvtav1enc-dev 2.3.0+dfsg-1build1、libopus-dev 1.6.1-1）から取った。
+
+======================================================================
+1. dav1d（https://code.videolan.org/videolan/dav1d）
+======================================================================
+
+Copyright © 2018-2021, VideoLAN and dav1d authors
+Copyright © 2018, Two Orioles, LLC
+All rights reserved.
+
+Redistribution and use in source and binary forms, with or without
+modification, are permitted provided that the following conditions are met:
+
+1. Redistributions of source code must retain the above copyright notice, this
+   list of conditions and the following disclaimer.
+
+2. Redistributions in binary form must reproduce the above copyright notice,
+   this list of conditions and the following disclaimer in the documentation
+   and/or other materials provided with the distribution.
+
+THIS SOFTWARE IS PROVIDED BY THE COPYRIGHT HOLDERS AND CONTRIBUTORS "AS IS" AND
+ANY EXPRESS OR IMPLIED WARRANTIES, INCLUDING, BUT NOT LIMITED TO, THE IMPLIED
+WARRANTIES OF MERCHANTABILITY AND FITNESS FOR A PARTICULAR PURPOSE ARE
+DISCLAIMED. IN NO EVENT SHALL THE COPYRIGHT OWNER OR CONTRIBUTORS BE LIABLE FOR
+ANY DIRECT, INDIRECT, INCIDENTAL, SPECIAL, EXEMPLARY, OR CONSEQUENTIAL DAMAGES
+(INCLUDING, BUT NOT LIMITED TO, PROCUREMENT OF SUBSTITUTE GOODS OR SERVICES;
+LOSS OF USE, DATA, OR PROFITS; OR BUSINESS INTERRUPTION) HOWEVER CAUSED AND
+ON ANY THEORY OF LIABILITY, WHETHER IN CONTRACT, STRICT LIABILITY, OR TORT
+(INCLUDING NEGLIGENCE OR OTHERWISE) ARISING IN ANY WAY OUT OF THE USE OF THIS
+SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
+ 
+======================================================================
+2. libvpx（https://chromium.googlesource.com/webm/libvpx）
+======================================================================
+Copyright (c) 2010, The WebM Project authors. All rights reserved.
+
+Redistribution and use in source and binary forms, with or without
+modification, are permitted provided that the following conditions are
+met:
+* Redistributions of source code must retain the above copyright
+  notice, this list of conditions and the following disclaimer.
+* Redistributions in binary form must reproduce the above copyright
+  notice, this list of conditions and the following disclaimer in
+  the documentation and/or other materials provided with the
+  distribution.
+* Neither the name of Google, nor the WebM Project, nor the names
+  of its contributors may be used to endorse or promote products
+  derived from this software without specific prior written
+  permission.
+THIS SOFTWARE IS PROVIDED BY THE COPYRIGHT HOLDERS AND CONTRIBUTORS
+"AS IS" AND ANY EXPRESS OR IMPLIED WARRANTIES, INCLUDING, BUT NOT
+LIMITED TO, THE IMPLIED WARRANTIES OF MERCHANTABILITY AND FITNESS FOR
+A PARTICULAR PURPOSE ARE DISCLAIMED. IN NO EVENT SHALL THE COPYRIGHT
+HOLDER OR CONTRIBUTORS BE LIABLE FOR ANY DIRECT, INDIRECT, INCIDENTAL,
+SPECIAL, EXEMPLARY, OR CONSEQUENTIAL DAMAGES (INCLUDING, BUT NOT
+LIMITED TO, PROCUREMENT OF SUBSTITUTE GOODS OR SERVICES; LOSS OF USE,
+DATA, OR PROFITS; OR BUSINESS INTERRUPTION) HOWEVER CAUSED AND ON ANY
+THEORY OF LIABILITY, WHETHER IN CONTRACT, STRICT LIABILITY, OR TORT
+(INCLUDING NEGLIGENCE OR OTHERWISE) ARISING IN ANY WAY OUT OF THE USE
+OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
+
+======================================================================
+3. SVT-AV1（https://gitlab.com/AOMediaCodec/SVT-AV1）
+======================================================================
+Copyright (c) 2019 Intel Corporation
+Copyright (c) 2016-2024 Alliance for Open Media
+
+Redistribution and use in source and binary forms, with or without
+modification, are permitted (subject to the limitations in the disclaimer
+below) provided that the following conditions are met:
+
+ 1. Redistributions of source code must retain the above copyright
+    notice, this list of conditions and the following disclaimer.
+
+ 2. Redistributions in binary form must reproduce the above copyright
+    notice, this list of conditions and the following disclaimer in
+    the documentation and/or other materials provided with the distribution.
+
+ 3. Neither the name of the Alliance for Open Media nor the names of its
+    contributors may be used to endorse or promote products derived from
+    this software without specific prior written permission.
+
+NO EXPRESS OR IMPLIED LICENSES TO ANY PARTY'S PATENT RIGHTS ARE GRANTED BY THIS LICENSE.
+THIS SOFTWARE IS PROVIDED BY THE COPYRIGHT HOLDERS AND CONTRIBUTORS "AS IS" AND ANY
+EXPRESS OR IMPLIED WARRANTIES, INCLUDING, BUT NOT LIMITED TO, THE IMPLIED WARRANTIES
+OF MERCHANTABILITY AND FITNESS FOR A PARTICULAR PURPOSE ARE DISCLAIMED. IN NO EVENT SHALL
+THE COPYRIGHT HOLDER OR CONTRIBUTORS BE LIABLE FOR ANY DIRECT, INDIRECT, INCIDENTAL,
+SPECIAL, EXEMPLARY, OR CONSEQUENTIAL DAMAGES (INCLUDING, BUT NOT LIMITED TO, PROCUREMENT
+OF SUBSTITUTE GOODS OR SERVICES; LOSS OF USE, DATA, OR PROFITS; OR BUSINESS INTERRUPTION)
+HOWEVER CAUSED AND ON ANY THEORY OF LIABILITY, WHETHER IN CONTRACT, STRICT LIABILITY,
+OR TORT (INCLUDING NEGLIGENCE OR OTHERWISE) ARISING IN ANY WAY OUT OF THE USE OF THIS
+SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
+
+（SVT-AV1 には Alliance for Open Media Patent License 1.0 が付く: https://www.aomedia.org/license/patent-license）
+
+======================================================================
+4. libopus（https://opus-codec.org/）
+======================================================================
+ Copyright (c) 2010-2011 Xiph.Org Foundation, Skype Limited
+   Written by Jean-Marc Valin and Koen Vos 
+
+======================================================================
+5. （nvidia プロバイダー）
+======================================================================
+SENCA senca-codec: NVIDIA プロバイダー（providers/nvidia/bindings/nv.rs）の出典
+
+bindings/nv.rs は次のヘッダーから bindgen で生成した型定義を含む。GUID の値（ffi.rs）も同じヘッダーから写した。
+
+  プロジェクト: FFmpeg/nv-codec-headers（NVIDIA Video Codec SDK の FFmpeg 向けヘッダー）
+  URL:          https://github.com/FFmpeg/nv-codec-headers
+  commit:       f2053071ea93137255b6dcf42e9b4c9e0965a44e（2026-10-24）
+  対応 SDK:     NVIDIA Video Codec SDK 13.1.15（NVENCAPI 13.1）
+  必要なドライバー（README より）: Linux 610.0 以上
+  ファイル:     include/ffnvcodec/nvEncodeAPI.h, dynlink_cuviddec.h, dynlink_nvcuvid.h（Copyright (c) 2010-2026 NVIDIA Corporation）
+                include/ffnvcodec/dynlink_cuda.h（Copyright (c) 2016）
+  ライセンス:   MIT（各ヘッダー冒頭の表記。下に全文）
+
+NVIDIA のライブラリ（libcuda.so.1、libnvidia-encode.so.1、libnvcuvid.so.1、libnvidia-ml.so.1）は
+同梱しない。実行時に、ドライバーと一緒に導入されたものを dlopen で読み込む。
+
+----------------------------------------------------------------------
+This copyright notice applies to this header file only:
+
+Copyright (c) 2010-2026 NVIDIA Corporation
+(dynlink_cuda.h: Copyright (c) 2016)
+
+Permission is hereby granted, free of charge, to any person
+obtaining a copy of this software and associated documentation
+files (the "Software"), to deal in the Software without
+restriction, including without limitation the rights to use,
+copy, modify, merge, publish, distribute, sublicense, and/or sell
+copies of the software, and to permit persons to whom the
+software is furnished to do so, subject to the following
+conditions:
+
+The above copyright notice and this permission notice shall be
+included in all copies or substantial portions of the Software.
+
+THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND,
+EXPRESS OR IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES
+OF MERCHANTABILITY, FITNESS FOR A PARTICULAR PURPOSE AND
+NONINFRINGEMENT. IN NO EVENT SHALL THE AUTHORS OR COPYRIGHT
+HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER LIABILITY,
+WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING
+FROM, OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR
+OTHER DEALINGS IN THE SOFTWARE.
+
+======================================================================
+6. （vpl プロバイダー）
+======================================================================
+oneVPL（Intel Video Processing Library）の API ヘッダー由来の部分
+
+対象: src/providers/vpl/bindings/vpl.rs（bindgen による型・定数の機械的な変換）
+元:   https://github.com/intel/libvpl  tag v2.16.0
+      commit 778a66d6c6537f08eabb91955dbbf1bce3812894  api/vpl/*.h
+取得: 2026-11-02（Ubuntu の libvpl-dev 1:2.16.0-1 のヘッダーと同一であることを確認）
+実行時: libvpl.so.2（dispatcher）を dlopen で読み込む。製品に同梱しない。
+
+MIT License
+
+Copyright (c) 2020 Intel Corporation
+
+Permission is hereby granted, free of charge, to any person obtaining a copy
+of this software and associated documentation files (the "Software"), to deal
+in the Software without restriction, including without limitation the rights
+to use, copy, modify, merge, publish, distribute, sublicense, and/or sell
+copies of the Software, and to permit persons to whom the Software is
+furnished to do so, subject to the following conditions:
+
+The above copyright notice and this permission notice shall be included in all
+copies or substantial portions of the Software.
+
+THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
+IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
+FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE
+AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
+LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
+OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
+SOFTWARE.
+
+======================================================================
+7. （amf プロバイダー）
+======================================================================
+AMD AMF（Advanced Media Framework）の公開ヘッダー由来の部分
+
+対象: src/providers/amf/bindings/amf.rs（bindgen による型・定数の機械的な変換）と、
+      src/providers/amf/mod.rs のプロパティ名・コンポーネント ID・インターフェース ID の写し
+元:   https://github.com/GPUOpen-LibrariesAndSDKs/AMF  tag v1.5.3
+      commit 57ee0cfb0e1a08d9041f77435653794c1b012be0  amf/public/include
+取得: 2026-11-02
+実行時: libamfrt64.so.1（AMD のドライバーに含まれる）を dlopen で読み込む。製品に同梱しない。
+注意: 下の「Notice Regarding Standards」のとおり、AMD は H.264/HEVC などの特許の許諾を与えない（ADR-0004 の法務確認の対象）。
+
+Notice Regarding Standards.  AMD does not provide a license or sublicense to
+any Intellectual Property Rights relating to any standards, including but not
+limited to any audio and/or video codec technologies such as MPEG-2, MPEG-4;
+AVC/H.264; HEVC/H.265; AAC decode/FFMPEG; AAC encode/FFMPEG; VC-1; and MP3
+(collectively, the "Media Technologies"). For clarity, you will pay any
+royalties due for such third party technologies, which may include the Media
+Technologies that are owed as a result of AMD providing the Software to you.
+
+This software uses libraries from the FFmpeg project under the LGPLv2.1.
+
+MIT license 
+
+Copyright (c) 2016 Advanced Micro Devices, Inc. All rights reserved.
+
+Permission is hereby granted, free of charge, to any person obtaining a copy
+of this software and associated documentation files (the "Software"), to deal
+in the Software without restriction, including without limitation the rights
+to use, copy, modify, merge, publish, distribute, sublicense, and/or sell
+copies of the Software, and to permit persons to whom the Software is
+furnished to do so, subject to the following conditions:
+
+The above copyright notice and this permission notice shall be included in
+all copies or substantial portions of the Software.
+
+THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
+IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
+FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT.  IN NO EVENT SHALL THE
+AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
+LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
+OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN
+THE SOFTWARE.
+
+======================================================================
+8. （vaapi プロバイダー）
+======================================================================
+VA-API bindings (bindings.rs)
+
+bindings.rs is generated by bindgen from the libva headers:
+  Project: libva - https://github.com/intel/libva
+  Version: 2.23.0 (tag commit dbf83dc3b1ce6bad46e1628aaf2da5ef731157b8, VA-API 1.23.0)
+  Files:   va/va.h, va/va_drm.h (as shipped in Ubuntu libva-dev 2.23.0-1ubuntu1)
+  License: MIT (Expat)
+
+The libraries libva.so.2 / libva-drm.so.2 are not linked or distributed; they are
+loaded at run time with dlopen if present on the host.
+
+Copyright (c) 2007-2009 Intel Corporation. All Rights Reserved.
+
+Permission is hereby granted, free of charge, to any person obtaining a
+copy of this software and associated documentation files (the
+"Software"), to deal in the Software without restriction, including
+without limitation the rights to use, copy, modify, merge, publish,
+distribute, sub license, and/or sell copies of the Software, and to
+permit persons to whom the Software is furnished to do so, subject to
+the following conditions:
+
+The above copyright notice and this permission notice (including the
+next paragraph) shall be included in all copies or substantial portions
+of the Software.
+
+THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS
+OR IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF
+MERCHANTABILITY, FITNESS FOR A PARTICULAR PURPOSE AND NON-INFRINGEMENT.
+IN NO EVENT SHALL INTEL AND/OR ITS SUPPLIERS BE LIABLE FOR
+ANY CLAIM, DAMAGES OR OTHER LIABILITY, WHETHER IN AN ACTION OF CONTRACT,
+TORT OR OTHERWISE, ARISING FROM, OUT OF OR IN CONNECTION WITH THE
+SOFTWARE OR THE USE OR OTHER DEALINGS IN THE SOFTWARE.

@@ -1,0 +1,12 @@
+[package]
+name = "senca-http"
+description = "Sans-io strict HTTP/1.1 parser and serializer for SENCA"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+
+[dependencies]
+bytes.workspace = true
+
+[lints]
+workspace = true

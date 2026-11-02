@@ -1,0 +1,11 @@
+[package]
+name = "senca-amf0"
+description = "AMF0 encoder/decoder with strict limits for SENCA"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+
+[dependencies]
+
+[lints]
+workspace = true

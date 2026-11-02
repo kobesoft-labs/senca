@@ -1,0 +1,32 @@
+[package]
+name = "senca-node"
+description = "SENCA node executable"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+
+[dependencies]
+senca-core = { path = "../senca-core" }
+senca-control = { path = "../senca-control" }
+senca-record = { path = "../senca-record" }
+senca-h264 = { path = "../senca-h264" }
+senca-h265 = { path = "../senca-h265" }
+senca-aac = { path = "../senca-aac" }
+senca-flv = { path = "../senca-flv" }
+senca-rtmp = { path = "../senca-rtmp" }
+senca-mpegts = { path = "../senca-mpegts" }
+senca-fmp4 = { path = "../senca-fmp4" }
+senca-hls = { path = "../senca-hls" }
+senca-http = { path = "../senca-http" }
+bytes.workspace = true
+tokio.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+sha2.workspace = true
+base64.workspace = true
+subtle.workspace = true
+getrandom.workspace = true
+hmac = "0.12"
+
+[lints]
+workspace = true

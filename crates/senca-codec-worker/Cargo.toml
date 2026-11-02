@@ -1,0 +1,23 @@
+[package]
+name = "senca-codec-worker"
+description = "Isolated codec worker process for SENCA and the parent-side worker pool"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+
+[lib]
+path = "src/lib.rs"
+
+[[bin]]
+name = "senca-codec-worker"
+path = "src/bin/senca-codec-worker.rs"
+
+[dependencies]
+senca-core = { path = "../senca-core" }
+senca-codec = { path = "../senca-codec" }
+bytes.workspace = true
+libc = "0.2"
+tokio = { workspace = true, features = ["process", "rt", "rt-multi-thread", "io-util", "time", "sync", "macros"] }
+
+[lints]
+workspace = true

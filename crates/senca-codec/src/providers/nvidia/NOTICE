@@ -1,0 +1,42 @@
+SENCA senca-codec: NVIDIA プロバイダー（providers/nvidia/bindings/nv.rs）の出典
+
+bindings/nv.rs は次のヘッダーから bindgen で生成した型定義を含む。GUID の値（ffi.rs）も同じヘッダーから写した。
+
+  プロジェクト: FFmpeg/nv-codec-headers（NVIDIA Video Codec SDK の FFmpeg 向けヘッダー）
+  URL:          https://github.com/FFmpeg/nv-codec-headers
+  commit:       f2053071ea93137255b6dcf42e9b4c9e0965a44e（2026-10-24）
+  対応 SDK:     NVIDIA Video Codec SDK 13.1.15（NVENCAPI 13.1）
+  必要なドライバー（README より）: Linux 610.0 以上
+  ファイル:     include/ffnvcodec/nvEncodeAPI.h, dynlink_cuviddec.h, dynlink_nvcuvid.h（Copyright (c) 2010-2026 NVIDIA Corporation）
+                include/ffnvcodec/dynlink_cuda.h（Copyright (c) 2016）
+  ライセンス:   MIT（各ヘッダー冒頭の表記。下に全文）
+
+NVIDIA のライブラリ（libcuda.so.1、libnvidia-encode.so.1、libnvcuvid.so.1、libnvidia-ml.so.1）は
+同梱しない。実行時に、ドライバーと一緒に導入されたものを dlopen で読み込む。
+
+----------------------------------------------------------------------
+This copyright notice applies to this header file only:
+
+Copyright (c) 2010-2026 NVIDIA Corporation
+(dynlink_cuda.h: Copyright (c) 2016)
+
+Permission is hereby granted, free of charge, to any person
+obtaining a copy of this software and associated documentation
+files (the "Software"), to deal in the Software without
+restriction, including without limitation the rights to use,
+copy, modify, merge, publish, distribute, sublicense, and/or sell
+copies of the software, and to permit persons to whom the
+software is furnished to do so, subject to the following
+conditions:
+
+The above copyright notice and this permission notice shall be
+included in all copies or substantial portions of the Software.
+
+THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND,
+EXPRESS OR IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES
+OF MERCHANTABILITY, FITNESS FOR A PARTICULAR PURPOSE AND
+NONINFRINGEMENT. IN NO EVENT SHALL THE AUTHORS OR COPYRIGHT
+HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER LIABILITY,
+WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING
+FROM, OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR
+OTHER DEALINGS IN THE SOFTWARE.

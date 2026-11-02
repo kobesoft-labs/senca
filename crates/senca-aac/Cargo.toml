@@ -1,0 +1,13 @@
+[package]
+name = "senca-aac"
+description = "AAC configuration and ADTS framing (no encoding/decoding) for SENCA"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+
+[dependencies]
+bytes.workspace = true
+senca-core = { path = "../senca-core" }
+
+[lints]
+workspace = true

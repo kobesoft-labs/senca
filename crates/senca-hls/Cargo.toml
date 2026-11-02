@@ -1,0 +1,13 @@
+[package]
+name = "senca-hls"
+description = "HLS / LL-HLS playlist writer, parser and sans-io segmenter for SENCA"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+
+[dependencies]
+bytes.workspace = true
+senca-core = { path = "../senca-core" }
+
+[lints]
+workspace = true

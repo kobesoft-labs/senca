@@ -1,0 +1,13 @@
+[package]
+name = "senca-av1"
+description = "AV1 OBU and sequence header parsing for SENCA"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+
+[dependencies]
+bytes.workspace = true
+senca-core = { path = "../senca-core" }
+
+[lints]
+workspace = true

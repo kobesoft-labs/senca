@@ -1,0 +1,13 @@
+[package]
+name = "senca-h264"
+description = "H.264 bitstream parsing (NAL, SPS/PPS, AVCC) for SENCA"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+
+[dependencies]
+bytes.workspace = true
+senca-core = { path = "../senca-core" }
+
+[lints]
+workspace = true
