@@ -1129,7 +1129,7 @@ class Live:
                   "status に入力の状態がある", f"{ev.get('event')}")
             self.call("POST", f"/pipelines/{pid}/control", "操作 request_keyframe", 200, body={"op": "request_keyframe"})
             self.call("POST", f"/pipelines/{pid}/control", "操作 request_keyframe（部品の指定）", 200, body={"op": "request_keyframe", "node": "e"})
-            self.call("POST", f"/pipelines/{pid}/control", "操作 知らない部品（実装は 409）", 409, body={"op": "set_master", "node": "nosuch", "gain_db": 0})
+            self.call("POST", f"/pipelines/{pid}/control", "操作 知らない部品は 400", 400, body={"op": "set_master", "node": "nosuch", "gain_db": 0})
         s, _, p2 = self.call("POST", "/pipelines", "パイプライン 2 本目", 201, body={"name": "pl-other", "graph": g})
         self.call("PATCH", f"/pipelines/{pid}", "パイプライン PATCH 名前の重複", 409, headers={"If-Match": '"2"'}, body={"name": "pl-other"})
         s, h, p = self.call("PATCH", f"/pipelines/{pid}", "パイプラインの停止", 200, headers={"If-Match": '"2"'}, body={"desired_state": "stopped", "name": "pl-renamed"})

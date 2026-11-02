@@ -595,6 +595,13 @@ impl App {
             "codec_profiles": ["any", "royalty_free"],
             "recordings": { "export": ["mp4"], "max_concurrent_per_stream": 8 },
             "schedules": { "actions": ["record", "live", "snapshot"], "recurrence": ["daily", "weekly"] },
+            "inputs": ["rtmp_pull", "rtsp_pull", "srt_pull", "hls_pull", "device"],
+            "outputs": ["rtmp_push", "srt_push", "paas"],
+            "paas_providers": crate::paas::PROVIDERS,
+            "pipelines": self.codec.is_some(),
+            "captions": { "asr": ["openai", "whisper_cpp"], "translate": ["anthropic", "deepl", "openai"] },
+            "rtsp_play": self.cfg.rtsp_listen.is_some(),
+            "cluster": self.cluster.get().is_some(),
         })
     }
 

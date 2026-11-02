@@ -113,6 +113,15 @@ fn describe(c: &Command) -> Option<(&'static str, Option<String>, String, serde_
             json!({ "state": state, "occurrence": run.occurrence, "run_state": run.state, "recording": run.recording }),
         ),
         Command::PutNode { node } => ("node.updated", None, node.id.clone(), json!({ "draining": node.draining })),
+        Command::PutInput { input: i } => ("input.updated", Some(i.tenant.clone()), i.id.clone(), json!({ "stream": i.stream, "generation": i.generation, "enabled": i.enabled })),
+        Command::DeleteInput { tenant, id } => ("input.deleted", Some(tenant.clone()), id.clone(), json!({})),
+        Command::PutOutput { output: o } => ("output.updated", Some(o.tenant.clone()), o.id.clone(), json!({ "stream": o.stream, "generation": o.generation, "enabled": o.enabled })),
+        Command::DeleteOutput { tenant, id } => ("output.deleted", Some(tenant.clone()), id.clone(), json!({})),
+        Command::PutSecret { secret: s } => ("secret.created", Some(s.tenant.clone()), s.id.clone(), json!({ "name": s.name })),
+        Command::DeleteSecret { tenant, id } => ("secret.deleted", Some(tenant.clone()), id.clone(), json!({})),
+        Command::PutPipeline { pipeline: p, .. } => ("pipeline.updated", Some(p.tenant.clone()), p.id.clone(), json!({ "name": p.name, "desired_state": p.desired_state })),
+        Command::DeletePipeline { tenant, id } => ("pipeline.deleted", Some(tenant.clone()), id.clone(), json!({})),
+        Command::ClaimStream { stream, node, .. } => ("stream.owner", None, stream.clone(), json!({ "node": node })),
         _ => return None,
     })
 }

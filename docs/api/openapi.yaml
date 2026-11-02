@@ -2315,6 +2315,17 @@ components:
       additionalProperties: false
       required: [api_version, node, ingest, output, codecs, codec_profiles, recordings, schedules]
       properties:
+        inputs: { type: array, items: { type: string }, description: 使える入力の種類 }
+        outputs: { type: array, items: { type: string }, description: 使える出力の種類 }
+        paas_providers: { type: array, items: { type: string } }
+        pipelines: { type: boolean, description: パイプライン（codec worker が動いているとき） }
+        captions:
+          type: object
+          properties:
+            asr: { type: array, items: { type: string } }
+            translate: { type: array, items: { type: string } }
+        rtsp_play: { type: boolean }
+        cluster: { type: boolean }
         api_version: { type: string, const: v1 }
         node: { type: string, description: このノードの ID }
         ingest:

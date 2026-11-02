@@ -11,7 +11,8 @@ use serde_json::{Value, json};
 use std::collections::BTreeMap;
 
 const INPUT_PROTOCOLS: &[&str] = &["rtmp_pull", "rtsp_pull", "srt_pull", "hls_pull", "device"];
-const OUTPUT_PROTOCOLS: &[&str] = &["rtmp_push", "srt_push", "whip_push", "paas"];
+// whip_push（外部の WHIP サーバーへ送る）は未実装なので受け付けない
+const OUTPUT_PROTOCOLS: &[&str] = &["rtmp_push", "srt_push", "paas"];
 
 fn bad(t: impl Into<String>) -> Problem {
     Problem::new(ProblemCode::InvalidConfig, t)

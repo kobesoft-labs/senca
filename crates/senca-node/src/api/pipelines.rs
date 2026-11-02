@@ -164,6 +164,8 @@ pub fn control(ctx: &Ctx, id: &str) -> ApiResult {
     let r = app.rt.get().ok_or_else(Problem::internal)?.block_on(app.pipelines.control(id, c));
     match r {
         Ok(v) => Ok(ApiResponse::json(200, &json!({ "ok": true, "reply": v }))),
-        Err(e) => Err(Problem::new(ProblemCode::Conflict, e)),
+        // 動いていない → 409、操作の中身が誤り（知らない部品・シーンなど）→ 400
+        Err(e) if e.contains("動いていません") || e.contains("止まりました") => Err(Problem::new(ProblemCode::Conflict, e)),
+        Err(e) => Err(Problem::invalid("操作を受け付けられません").with_details(serde_json::json!({ "reason": e }))),
     }
 }
