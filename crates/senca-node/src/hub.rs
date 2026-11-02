@@ -28,6 +28,8 @@ pub enum HubEvent {
     Discontinuity,
     /// 配信が終わった（再接続の猶予が切れた）。購読者は閉じてよい。
     End,
+    /// ライブの HLS のセグメントが閉じた（字幕の区切りを合わせる）。
+    Segment { seq: u64, start_us: i64, duration_us: u64, discontinuity: bool },
 }
 
 #[derive(Debug)]
@@ -173,7 +175,7 @@ impl Subscription {
             HubEvent::Discontinuity => {
                 self.flv.resend_configs();
             }
-            HubEvent::End => {}
+            HubEvent::End | HubEvent::Segment { .. } => {}
         }
     }
 }
@@ -508,6 +510,12 @@ fn emit(st: &mut State, shared: &HubShared, recorder: &RecorderTx, outs: Vec<Pac
         match o {
             PackagerOut::Segment(seg) => {
                 shared.cache.push_segment(&seg);
+                let _ = shared.fanout.send(HubEvent::Segment {
+                    seq: seg.sequence,
+                    start_us: seg.start_us,
+                    duration_us: seg.duration_ms as u64 * 1000,
+                    discontinuity: seg.discontinuity,
+                });
                 if !st.recordings.is_empty() || !st.pending_stops.is_empty() {
                     recorder.segment(SegmentData {
                         name: seg.name.clone(),

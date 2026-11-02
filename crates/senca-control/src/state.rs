@@ -405,6 +405,7 @@ mod tests {
             limits: Default::default(),
             metadata: Default::default(),
             desired_state: "running".into(),
+            captions: None,
         }
     }
 

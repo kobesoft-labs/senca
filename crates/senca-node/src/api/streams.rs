@@ -33,6 +33,8 @@ pub struct StreamBody {
     pub metadata: BTreeMap<String, String>,
     #[serde(default)]
     pub desired_state: Option<String>,
+    #[serde(default)]
+    pub captions: Option<CaptionSettings>,
 }
 
 /// PATCH の本文（JSON Merge Patch の簡易版: 書いたフィールドだけ置き換える）。
@@ -49,6 +51,8 @@ pub struct StreamPatch {
     pub limits: Option<Limits>,
     pub metadata: Option<BTreeMap<String, String>>,
     pub desired_state: Option<String>,
+    #[serde(default, deserialize_with = "double_option")]
+    pub captions: Option<Option<CaptionSettings>>,
 }
 
 fn double_option<'de, D, T>(d: D) -> Result<Option<Option<T>>, D::Error>
@@ -99,6 +103,25 @@ fn validate(s: &Stream) -> Result<(), Problem> {
     if s.desired_state != "running" && s.desired_state != "stopped" {
         return bad("desired_state は running か stopped");
     }
+    if let Some(c) = &s.captions {
+        if !matches!(c.asr_provider.as_str(), "openai" | "whisper_cpp") {
+            return bad("captions.asr_provider は openai か whisper_cpp");
+        }
+        if senca_caption::http::Endpoint::parse(&c.asr_endpoint).is_err() {
+            return bad("captions.asr_endpoint の形が違います");
+        }
+        if let Some(t) = &c.translate_provider {
+            if !matches!(t.as_str(), "anthropic" | "deepl" | "openai") {
+                return bad("captions.translate_provider は anthropic・deepl・openai");
+            }
+            if c.translate_endpoint.as_deref().is_none_or(|e| senca_caption::http::Endpoint::parse(e).is_err()) {
+                return bad("captions.translate_endpoint が要ります");
+            }
+        }
+        if c.targets.len() > 8 || c.targets.iter().chain(std::iter::once(&c.language)).any(|l| l.is_empty() || l.len() > 8 || !l.bytes().all(|b| b.is_ascii_alphanumeric() || b == b'-')) {
+            return bad("captions の言語は 8 個まで、ISO 639-1 の形");
+        }
+    }
     Ok(())
 }
 
@@ -141,6 +164,7 @@ pub fn render(ctx: &Ctx, s: &Stream, key: Option<&str>) -> Value {
         "metadata": s.metadata,
         "ingest": ingest,
         "live": live,
+        "captions": s.captions,
     })
 }
 
@@ -164,6 +188,7 @@ pub fn create(ctx: &Ctx) -> ApiResult {
         limits: b.limits,
         metadata: b.metadata,
         desired_state: b.desired_state.unwrap_or_else(|| "running".into()),
+        captions: b.captions,
     };
     validate(&s)?;
     ctx.app.propose(Command::CreateStream { stream: s.clone() })?;
@@ -225,6 +250,9 @@ pub fn patch(ctx: &Ctx, id: &str) -> ApiResult {
     }
     if let Some(v) = p.desired_state {
         s.desired_state = v;
+    }
+    if let Some(v) = p.captions {
+        s.captions = v;
     }
     s.updated_at_ms = ctx.now_ms;
     validate(&s)?;

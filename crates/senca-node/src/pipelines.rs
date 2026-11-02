@@ -232,7 +232,7 @@ async fn feed_source(app: Arc<App>, h: Arc<SessionHandle>, node_id: String, stre
             match ev {
                 HubEvent::Config(_, c) => h.send_input(&node_id, Some(c), vec![]).is_ok(),
                 HubEvent::Au(a) => h.send_input(&node_id, None, vec![a]).is_ok(),
-                HubEvent::Discontinuity => true,
+                HubEvent::Discontinuity | HubEvent::Segment { .. } => true,
                 HubEvent::End => false,
             }
         };

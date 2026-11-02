@@ -112,6 +112,40 @@ pub struct Stream {
     /// "running"（publish を受け付ける）または "stopped"。
     #[serde(default = "default_desired")]
     pub desired_state: String,
+    /// 字幕と翻訳（R6-4）。無ければ外部へは何も送らない。
+    #[serde(default)]
+    pub captions: Option<CaptionSettings>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct CaptionSettings {
+    /// 音声認識: "openai"（OpenAI 互換の /audio/transcriptions）か "whisper_cpp"。
+    pub asr_provider: String,
+    /// 送り先の URL（例: https://api.openai.com/v1、社内の whisper サーバー）。
+    pub asr_endpoint: String,
+    #[serde(default)]
+    pub asr_credential_ref: Option<String>,
+    #[serde(default)]
+    pub asr_model: Option<String>,
+    /// 話している言語（ISO 639-1）。
+    #[serde(default = "default_lang")]
+    pub language: String,
+    /// 翻訳: "anthropic"・"deepl"・"openai"。
+    #[serde(default)]
+    pub translate_provider: Option<String>,
+    #[serde(default)]
+    pub translate_endpoint: Option<String>,
+    #[serde(default)]
+    pub translate_credential_ref: Option<String>,
+    #[serde(default)]
+    pub translate_model: Option<String>,
+    #[serde(default)]
+    pub targets: Vec<String>,
+}
+
+fn default_lang() -> String {
+    "ja".into()
 }
 
 fn default_desired() -> String {

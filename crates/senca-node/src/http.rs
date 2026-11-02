@@ -246,6 +246,9 @@ async fn live(app: &Arc<App>, stream: &str, file: &str, h: &RequestHead) -> Repl
             None => Reply::status(404),
         };
     }
+    if let Some((b, ct)) = cache.extra(file) {
+        return Reply::new(200, ct, b).header("Cache-Control", "no-cache");
+    }
     match cache.object(file) {
         Some(b) => {
             let ct = if file.ends_with(".ts") {

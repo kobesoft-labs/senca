@@ -2,6 +2,7 @@
 
 mod api;
 mod app;
+mod captions;
 mod cluster;
 mod codec;
 mod config;

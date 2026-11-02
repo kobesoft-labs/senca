@@ -51,6 +51,7 @@ pub struct App {
     pub cluster: std::sync::OnceLock<Arc<crate::cluster::Cluster>>,
     pub io: crate::io::IoManager,
     pub pipelines: crate::pipelines::PipelineManager,
+    pub captions_running: Mutex<HashMap<String, tokio::task::JoinHandle<()>>>,
 }
 
 impl App {
@@ -80,6 +81,7 @@ impl App {
             cluster: std::sync::OnceLock::new(),
             io: crate::io::IoManager::default(),
             pipelines: crate::pipelines::PipelineManager::default(),
+            captions_running: Mutex::new(HashMap::new()),
         });
         *app.me.lock().unwrap() = Arc::downgrade(&app);
         if let Ok(h) = tokio::runtime::Handle::try_current() {
@@ -208,6 +210,16 @@ impl App {
         }
         let hub = self.hub(&stream);
         let p = hub.attach(transport, peer).await?;
+        // 字幕（設定があるときだけ。外部の送り先は利用者が設定したものだけ）
+        if stream.captions.is_some() {
+            let me = self.arc();
+            let s2 = stream.clone();
+            let key = s2.id.clone();
+            let mut running = self.captions_running.lock().unwrap();
+            if running.get(&key).is_none_or(|t: &tokio::task::JoinHandle<()>| t.is_finished()) {
+                running.insert(key, tokio::spawn(async move { crate::captions::run(me, s2).await }));
+            }
+        }
         // 分散: 所有権を取る（古い所有者は送り手を切る）
         if self.cluster.get().is_some() {
             let me = self.arc();

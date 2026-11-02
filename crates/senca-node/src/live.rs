@@ -23,6 +23,8 @@ struct Inner {
     last_part: Option<(u64, u32)>,
     ended: bool,
     ext: String,
+    /// 字幕など、名前で引くもの（`sub_ja.m3u8`・`sub_ja_12.vtt`・`master.m3u8`）。
+    extra: BTreeMap<String, (Bytes, &'static str)>,
 }
 
 pub struct LiveCache {
@@ -98,6 +100,26 @@ impl LiveCache {
         }
         drop(g);
         self.bump();
+    }
+
+    /// 字幕のプレイリスト・セグメント・multivariant を置く。古い字幕のセグメントは数を絞る。
+    pub fn put_extra(&self, name: &str, b: Bytes, ct: &'static str) {
+        let mut g = self.inner.lock().unwrap();
+        g.extra.insert(name.to_string(), (b, ct));
+        let vtts: Vec<String> = g.extra.keys().filter(|k| k.ends_with(".vtt")).cloned().collect();
+        if vtts.len() > 256 {
+            let mut v = vtts;
+            v.sort_by_key(|k| k.rsplit('_').next().and_then(|x| x.trim_end_matches(".vtt").parse::<u64>().ok()).unwrap_or(0));
+            for k in v.iter().take(v.len() - 256) {
+                g.extra.remove(k);
+            }
+        }
+        drop(g);
+        self.bump();
+    }
+
+    pub fn extra(&self, name: &str) -> Option<(Bytes, &'static str)> {
+        self.inner.lock().unwrap().extra.get(name).cloned()
     }
 
     pub fn set_init(&self, b: Bytes, name: &str) {

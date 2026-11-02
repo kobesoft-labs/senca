@@ -218,7 +218,7 @@ impl TsSender {
                 }
                 let _ = self.mux.as_mut().unwrap().push(a, &mut self.buf);
             }
-            HubEvent::Discontinuity | HubEvent::End => {}
+            HubEvent::Discontinuity | HubEvent::End | HubEvent::Segment { .. } => {}
         }
         let mut out = Vec::new();
         while self.buf.len() >= 1316 {

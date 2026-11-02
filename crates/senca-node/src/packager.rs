@@ -15,6 +15,8 @@ pub struct LiveSegment {
     pub duration_ms: u32,
     pub wall_ms: i64,
     pub discontinuity: bool,
+    /// セグメントの先頭の媒体時刻（µs、AU の時間軸から）。字幕の区切りを合わせるのに使う。
+    pub start_us: i64,
     pub bytes: Bytes,
     /// この時点のプレイリスト（通常・delta）。
     pub playlist: String,
@@ -75,6 +77,7 @@ pub struct Packager {
     buf: BytesMut,
     parts: Vec<Bytes>,
     cur: Option<(u64, bool, i64, u64)>, // (seq, discontinuity, wall_ms, discontinuity_index)
+    cur_start_us: i64,
     epoch: u64,
     mux_disc: Option<u64>,
     resume_seq: Option<u64>,
@@ -105,6 +108,7 @@ impl Packager {
             cur: None,
             epoch: 0,
             mux_disc: None,
+            cur_start_us: 0,
             resume_seq: None,
             init_name: None,
             init_bytes: None,
@@ -267,7 +271,8 @@ impl Packager {
     fn handle(&mut self, evs: Vec<SegmentEvent>, out: &mut Vec<PackagerOut>) {
         for ev in evs {
             match ev {
-                SegmentEvent::SegmentStart { seq, discontinuity, discontinuity_index, program_date_time_ms, .. } => {
+                SegmentEvent::SegmentStart { seq, discontinuity, discontinuity_index, program_date_time_ms, start_us } => {
+                    self.cur_start_us = start_us;
                     self.buf.clear();
                     self.parts.clear();
                     let wall = program_date_time_ms.unwrap_or_else(crate::util::now_ms);
@@ -317,6 +322,7 @@ impl Packager {
                         duration_ms: (duration_us / 1000) as u32,
                         wall_ms: wall,
                         discontinuity: disc,
+                        start_us: self.cur_start_us,
                         bytes,
                         playlist: pl,
                         playlist_skip: pls,

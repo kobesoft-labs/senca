@@ -8,7 +8,7 @@ CODEC_LIB_DIR=${CODEC_LIB_DIR:-$HOME/tools/codeclibs/usr/lib/x86_64-linux-gnu}
 W=$(mktemp -d); NODE_PID=
 cleanup() { [ -n "$NODE_PID" ] && kill "$NODE_PID" 2>/dev/null || true; wait 2>/dev/null || true; [ -n "${KEEP:-}" ] && echo "kept $W" || rm -rf "$W"; }
 trap cleanup EXIT
-ONLY=${ONLY:-ABCDEFGHIJK}
+ONLY=${ONLY:-ABCDEFGHIJKL}
 HTTP=$(port); RTMP=$(port); SRT=$(port); API=http://127.0.0.1:$HTTP/api/v1
 start_node() {
   "$NODE_BIN" --data-dir "$W/data" --http 127.0.0.1:$HTTP --rtmp 127.0.0.1:$RTMP --srt 127.0.0.1:$SRT \
@@ -332,5 +332,28 @@ if [[ $ONLY == *K* ]]; then
   grep -q "DELETE /prod/inputs/" "$W/mock.err" && grep -q "DELETE /prod/inputSecurityGroups/" "$W/mock.err" && pass "K output delete cleans up external resources" || fail "K cleanup ($c)"
   grep -q "mock/secret" "$W/node.log" "$W/data/control/log" && fail "K AWS secret leaked" || pass "K AWS secret not in logs/state"
   kill $MOCK 2>/dev/null || true
+fi
+if [[ $ONLY == *L* ]]; then
+  # L. 字幕と翻訳（模擬の音声認識・翻訳）: 復号せずに音声を送り、WebVTT の HLS 字幕を出す
+  CP=$(port)
+  python3 "$ROOT/tools/interop/caption_mock.py" $CP 2> "$W/cmock.err" & CM=$!
+  sleep 0.5
+  api POST /secrets -d '{"name":"anthropic","value":"mock-anthropic-key"}' >/dev/null
+  api POST /streams -d "{\"name\":\"l\",\"captions\":{\"asr_provider\":\"openai\",\"asr_endpoint\":\"http://127.0.0.1:$CP/v1\",\"language\":\"ja\",\"translate_provider\":\"anthropic\",\"translate_endpoint\":\"http://127.0.0.1:$CP\",\"translate_credential_ref\":\"secret:anthropic\",\"targets\":[\"en\"]}}" > "$W/l.json"
+  "$FFMPEG" -v error -re -f lavfi -i testsrc2=size=320x240:rate=30 -f lavfi -i sine=frequency=500:sample_rate=48000 -t 20 \
+    -c:v libx264 -g 30 -c:a aac -f flv rtmp://127.0.0.1:$RTMP/live/$(key l) & PUB=$!
+  sleep 16
+  URL=$(api POST /streams/$(sid l)/playback-url | json "['playback']['hls']"); B=${URL%index.m3u8}
+  curl -s "${B}master.m3u8" > "$W/master.m3u8"
+  grep -q 'TYPE=SUBTITLES' "$W/master.m3u8" && grep -q 'LANGUAGE="ja"' "$W/master.m3u8" && grep -q 'LANGUAGE="en"' "$W/master.m3u8" && pass "L master playlist has ja/en subtitle renditions" || fail "L master: $(cat "$W/master.m3u8" | head -5)"
+  curl -s "${B}sub_ja.m3u8" > "$W/sub_ja.m3u8"; V=$(grep -m1 '\.vtt' "$W/sub_ja.m3u8" || true)
+  ok=0; for f in $(grep '\.vtt' "$W/sub_ja.m3u8"); do curl -s "${B}$f" | grep -q 'テスト' && ok=1; done
+  [ $ok = 1 ] && pass "L Japanese captions in WebVTT segments" || fail "L no ja cues ($V)"
+  curl -s "${B}sub_en.m3u8" > "$W/sub_en.m3u8"
+  ok=0; for f in $(grep '\.vtt' "$W/sub_en.m3u8"); do curl -s "${B}$f" | grep -q 'EN:' && ok=1; done
+  [ $ok = 1 ] && pass "L translated English captions" || fail "L no en cues"
+  grep -q "POST /v1/audio/transcriptions" "$W/cmock.err" && pass "L audio chunks sent to ASR without decoding" || fail "L no ASR calls"
+  grep -q "mock-anthropic-key" "$W/node.log" && fail "L API key leaked" || pass "L API key not logged"
+  wait $PUB || true; kill $CM 2>/dev/null || true
 fi
 summary
