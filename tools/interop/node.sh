@@ -8,12 +8,12 @@ CODEC_LIB_DIR=${CODEC_LIB_DIR:-$HOME/tools/codeclibs/usr/lib/x86_64-linux-gnu}
 W=$(mktemp -d); NODE_PID=
 cleanup() { [ -n "$NODE_PID" ] && kill "$NODE_PID" 2>/dev/null || true; wait 2>/dev/null || true; [ -n "${KEEP:-}" ] && echo "kept $W" || rm -rf "$W"; }
 trap cleanup EXIT
-ONLY=${ONLY:-ABCDEFG}
-HTTP=$(port); RTMP=$(port); API=http://127.0.0.1:$HTTP/api/v1
+ONLY=${ONLY:-ABCDEFGHI}
+HTTP=$(port); RTMP=$(port); SRT=$(port); API=http://127.0.0.1:$HTTP/api/v1
 start_node() {
-  "$NODE_BIN" --data-dir "$W/data" --http 127.0.0.1:$HTTP --rtmp 127.0.0.1:$RTMP \
+  "$NODE_BIN" --data-dir "$W/data" --http 127.0.0.1:$HTTP --rtmp 127.0.0.1:$RTMP --srt 127.0.0.1:$SRT \
     --public-rtmp-url rtmp://127.0.0.1:$RTMP --public-http-url http://127.0.0.1:$HTTP --reconnect-grace "${GRACE:-3000}" \
-    --codec-lib-dir "$CODEC_LIB_DIR" --codec-workers 2 "$@" >>"$W/node.log" 2>&1 &
+    --codec-lib-dir "$CODEC_LIB_DIR" --codec-workers 2 --egress-allow 127.0.0.0/8 "$@" >>"$W/node.log" 2>&1 &
   NODE_PID=$!
   for _ in $(seq 50); do curl -sf http://127.0.0.1:$HTTP/readyz >/dev/null && return; sleep 0.1; done
   echo "node did not start"; cat "$W/node.log"; exit 1
@@ -154,6 +154,121 @@ if [[ $ONLY == *G* ]]; then
   new_stream gh false; publish "$(key gh)" & PUB=$!; sleep 2
   c=$(curl -s -o "$W/gh.json" -w '%{http_code}' "${H[@]}" "$API/streams/$(sid gh)/snapshot"); wait $PUB || true
   [ "$c" = 503 ] && grep -q CAPACITY_UNAVAILABLE "$W/gh.json" && pass "G H.264 snapshot without GPU is 503" || fail "G H.264 snapshot $c"
+  fi
+fi
+if [[ $ONLY == *H* ]]; then
+  # H. 入力・出力: 外部への RTMP push（秘密値で鍵を渡す）、RTMP pull、HLS pull、宛先の制限（SSRF）
+  P1=$(port)
+  "$FFMPEG" -v error -listen 1 -i "rtmp://127.0.0.1:$P1/app/sinkkey" -c copy -f flv "$W/pushed.flv" & SINK=$!
+  sleep 0.5
+  new_stream h false
+  api POST /secrets -d '{"name":"sinkkey","value":"sinkkey"}' >/dev/null
+  api POST /streams/$(sid h)/outputs -d "{\"protocol\":\"rtmp_push\",\"url\":\"rtmp://127.0.0.1:$P1/app\",\"credential_ref\":\"secret:sinkkey\"}" > "$W/out.json"
+  publish "$(key h)"; wait $SINK || true
+  frames "$W/pushed.flv" v > "$W/pushed.v"
+  # 出力は配信が始まってからつなぐので、先頭の GOP を逃すことがある。連続した一部として一致すること
+  contiguous "$W/src.v" "$W/pushed.v" 300 && pass "H RTMP push to external server = contiguous source run ($(wc -l < "$W/pushed.v") frames)" || fail "H push differs ($(wc -l < "$W/pushed.v"))"
+  # RTMP pull: ffmpeg が play 用の RTMP サーバーになる
+  P2=$(port)
+  "$FFMPEG" -v error -re -i "$W/src.flv" -c copy -f flv -listen 1 "rtmp://127.0.0.1:$P2/app/cam" & SRC=$!
+  sleep 0.5
+  new_stream hp false
+  api POST /streams/$(sid hp)/inputs -d "{\"protocol\":\"rtmp_pull\",\"url\":\"rtmp://127.0.0.1:$P2/app/cam\"}" > "$W/in.json"
+  wait $SRC || true
+  # 再接続の猶予が切れて ENDLIST が付くまで待つ（pull は相手が消えると再接続を試み続ける）
+  sleep $(( ${GRACE:-3000} / 1000 + 2 ))
+  URL=$(api POST /streams/$(sid hp)/playback-url | json "['playback']['hls']")
+  frames "$URL" v > "$W/pull.v"
+  contiguous "$W/src.v" "$W/pull.v" 150 && pass "H RTMP pull = contiguous source run ($(wc -l < "$W/pull.v") frames)" || fail "H RTMP pull mismatch ($(wc -l < "$W/pull.v"))"
+  # HLS pull: 外部の HLS（VOD）を取り込む
+  mkdir -p "$W/hls"; "$FFMPEG" -v error -i "$W/src.flv" -c copy -f hls -hls_time 2 -hls_playlist_type vod "$W/hls/x.m3u8"
+  P3=$(port); (cd "$W/hls" && exec python3 -m http.server $P3 --bind 127.0.0.1 >/dev/null 2>&1) & HTTPD=$!
+  sleep 0.5
+  new_stream hh false
+  api POST /streams/$(sid hh)/inputs -d "{\"protocol\":\"hls_pull\",\"url\":\"http://127.0.0.1:$P3/x.m3u8\"}" >/dev/null
+  # 実時間で送るので 12 秒＋猶予を待つ
+  for _ in $(seq 60); do api GET /streams/$(sid hh) | grep -q '"observed_state":"waiting_input"' && break; sleep 0.5; done
+  sleep 1
+  kill $HTTPD 2>/dev/null || true
+  URL=$(api POST /streams/$(sid hh)/playback-url | json "['playback']['hls']")
+  frames "$URL" v > "$W/hpull.v"
+  cmp -s "$W/src.v" "$W/hpull.v" && pass "H HLS pull bit-identical" || fail "H HLS pull differs ($(wc -l < "$W/hpull.v"))"
+  # 宛先の制限: メタデータのアドレスは拒否
+  new_stream hs false
+  I=$(api POST /streams/$(sid hs)/inputs -d '{"protocol":"hls_pull","url":"http://169.254.169.254/latest/x.m3u8"}' | json "['id']")
+  sleep 2
+  api GET /inputs/$I | grep -q '許されていない宛先' && pass "H egress to metadata address refused" || fail "H SSRF not refused"
+  c=$(api POST /streams/$(sid hs)/inputs -d '{"protocol":"rtmp_pull","url":"rtmp://u:p@h/app/k"}' -o /dev/null -w '%{http_code}')
+  [ "$c" = 400 ] && pass "H credentials in URL rejected" || fail "H url creds $c"
+  grep -q '"value"\|sinkkey' "$W/data/control/log" && grep -q '"sealed"' "$W/data/control/log" && ! grep -q 'secret:sinkkey.*sinkkey"' /dev/null; \
+    python3 -c "import sys;d=open('$W/data/control/log','rb').read();sys.exit(1 if b'\"value\"' in d else 0)" && pass "H secret value not stored in plain" || fail "H secret stored in plain"
+fi
+if [[ $ONLY == *I* ]]; then
+  # I. SRT（publish・play・pull・push、パスフレーズ）と RTSP pull（mediamtx）
+  "$FFMPEG" -v error -i "$W/src.flv" -c copy -f mpegts "$W/src.ts"
+  new_stream i1 false
+  "$FFMPEG" -v error -re -i "$W/src.ts" -c copy -f mpegts "srt://127.0.0.1:$SRT?mode=caller&streamid=publish:$(key i1)&latency=200000" || true
+  sleep $(( ${GRACE:-3000} / 1000 + 1 ))
+  URL=$(api POST /streams/$(sid i1)/playback-url | json "['playback']['hls']")
+  frames "$URL" v | head -n -3 > "$W/i1.v"
+  # libsrt は閉じるときに送り残しを捨てるので、末尾が欠けうる。元素材の連続した一部であること
+  contiguous "$W/src.v" "$W/i1.v" 300 && pass "I SRT publish (libsrt) = contiguous source run ($(wc -l < "$W/i1.v") frames)" || fail "I SRT publish differs ($(wc -l < "$W/i1.v"))"
+  "$FFMPEG" -v error -re -i "$W/src.ts" -c copy -f mpegts "srt://127.0.0.1:$SRT?mode=caller&streamid=publish:sk_bogus" 2>/dev/null && fail "I SRT bad key accepted" || pass "I SRT bad key rejected"
+  # テナントのパスフレーズ
+  api POST /secrets -d '{"name":"srt-passphrase","value":"0123456789abcdef"}' >/dev/null
+  new_stream i2 false
+  "$FFMPEG" -v error -re -i "$W/src.ts" -t 3 -c copy -f mpegts "srt://127.0.0.1:$SRT?mode=caller&streamid=publish:$(key i2)" 2>/dev/null && fail "I SRT plaintext accepted when passphrase required" || pass "I SRT plaintext refused (passphrase required)"
+  "$FFMPEG" -v error -re -i "$W/src.ts" -c copy -f mpegts "srt://127.0.0.1:$SRT?mode=caller&streamid=publish:$(key i2)&passphrase=0123456789abcdef&pbkeylen=32" || true
+  sleep $(( ${GRACE:-3000} / 1000 + 1 ))
+  URL=$(api POST /streams/$(sid i2)/playback-url | json "['playback']['hls']")
+  frames "$URL" v | head -n -3 > "$W/i2.v"
+  contiguous "$W/src.v" "$W/i2.v" 300 && pass "I SRT encrypted publish (AES-256) = contiguous source run ($(wc -l < "$W/i2.v") frames)" || fail "I SRT encrypted differs ($(wc -l < "$W/i2.v"))"
+  # SRT play（署名付き）
+  new_stream i3 false
+  "$FFMPEG" -v error -re -i "$W/src.flv" -c copy -f flv rtmp://127.0.0.1:$RTMP/live/$(key i3) & PUB=$!; sleep 2
+  PL=$(api POST /streams/$(sid i3)/playback-url | json "['playback']['rtmp']"); Q=$(python3 -c "import urllib.parse,sys;print(urllib.parse.quote(sys.argv[1],safe=''))" "${PL#*/play/}")
+  timeout -k 5 20 "$FFMPEG" -v error -i "srt://127.0.0.1:$SRT?mode=caller&streamid=play:$Q&passphrase=0123456789abcdef" -c copy -f mpegts "$W/i3.ts" || true
+  wait $PUB || true
+  frames "$W/i3.ts" v > "$W/i3.v"
+  contiguous "$W/src.v" "$W/i3.v" 150 && pass "I SRT play = contiguous source run ($(wc -l < "$W/i3.v") frames)" || fail "I SRT play mismatch ($(wc -l < "$W/i3.v"))"
+  # SRT push（出力）と pull（入力）
+  P4=$(port)
+  timeout -k 5 40 "$FFMPEG" -v error -i "srt://127.0.0.1:$P4?mode=listener" -c copy -f mpegts "$W/i4.ts" & SINK=$!; sleep 0.5
+  new_stream i4 false
+  api POST /streams/$(sid i4)/outputs -d "{\"protocol\":\"srt_push\",\"url\":\"srt://127.0.0.1:$P4\"}" >/dev/null
+  publish "$(key i4)"; sleep 2; kill $SINK 2>/dev/null; wait $SINK 2>/dev/null || true
+  frames "$W/i4.ts" v | head -n -1 > "$W/i4.v"
+  contiguous "$W/src.v" "$W/i4.v" 250 && pass "I SRT push to libsrt listener = contiguous source run ($(wc -l < "$W/i4.v") frames)" || fail "I SRT push mismatch ($(wc -l < "$W/i4.v"))"
+  P5=$(port)
+  "$FFMPEG" -v error -re -i "$W/src.ts" -c copy -f mpegts "srt://127.0.0.1:$P5?mode=listener" & SRC=$!; sleep 0.5
+  new_stream i5 false
+  api POST /streams/$(sid i5)/inputs -d "{\"protocol\":\"srt_pull\",\"url\":\"srt://127.0.0.1:$P5\"}" >/dev/null
+  wait $SRC || true; sleep $(( ${GRACE:-3000} / 1000 + 2 ))
+  URL=$(api POST /streams/$(sid i5)/playback-url | json "['playback']['hls']")
+  frames "$URL" v | head -n -3 > "$W/i5.v"
+  contiguous "$W/src.v" "$W/i5.v" 250 && pass "I SRT pull from libsrt listener = contiguous source run ($(wc -l < "$W/i5.v") frames)" || fail "I SRT pull mismatch ($(wc -l < "$W/i5.v"))"
+  # RTSP pull（mediamtx）
+  if docker image inspect bluenviron/mediamtx >/dev/null 2>&1; then
+    RP=$(port)
+    CID=$(docker run -d --rm --network host -e MTX_RTSPADDRESS=127.0.0.1:$RP -e MTX_RTMP=no -e MTX_HLS=no -e MTX_WEBRTC=no -e MTX_SRT=no bluenviron/mediamtx)
+    sleep 1
+    "$FFMPEG" -v error -re -stream_loop 1 -i "$W/src.flv" -c copy -f rtsp -rtsp_transport tcp "rtsp://127.0.0.1:$RP/cam" & SRC=$!
+    sleep 1
+    new_stream i6 false
+    api POST /streams/$(sid i6)/inputs -d "{\"protocol\":\"rtsp_pull\",\"url\":\"rtsp://127.0.0.1:$RP/cam\"}" >/dev/null
+    sleep 10
+    URL=$(api POST /streams/$(sid i6)/playback-url | json "['playback']['hls']")
+    api GET /streams/$(sid i6) | json "['live']" > "$W/i6.live"
+    kill $SRC 2>/dev/null; wait $SRC 2>/dev/null || true; docker stop "$CID" >/dev/null 2>&1 || true
+    sleep $(( ${GRACE:-3000} / 1000 + 2 ))
+    frames "$URL" v > "$W/i6.v"
+    contiguous "$W/src.v" "$W/i6.v" 100 || python3 - "$W/src.v" "$W/i6.v" <<'PY' && pass "I RTSP pull (mediamtx, TCP) frames from source ($(wc -l < "$W/i6.v"))" || fail "I RTSP pull mismatch ($(wc -l < "$W/i6.v"))"
+import sys
+s=set(open(sys.argv[1]).read().split()); p=open(sys.argv[2]).read().split()
+sys.exit(0 if len(p)>=100 and sum(x in s for x in p) >= 0.98*len(p) else 1)
+PY
+  else
+    echo "SKIP I RTSP (no mediamtx image)"
   fi
 fi
 summary

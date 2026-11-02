@@ -169,7 +169,7 @@ pub fn create(ctx: &Ctx) -> ApiResult {
     ctx.require(Scope::StreamWrite)?;
     let s = from_body(ctx, ctx.body()?)?;
     check_schedule(ctx, &s)?;
-    ctx.control().propose(Command::CreateSchedule { schedule: s.clone() })?;
+    ctx.app.propose(Command::CreateSchedule { schedule: s.clone() })?;
     ctx.app.audit(ctx, "schedule.create", &s.id);
     ctx.app.wake_scheduler();
     Ok(ApiResponse::json(201, &render(&s))
@@ -266,7 +266,7 @@ pub fn patch(ctx: &Ctx, id: &str) -> ApiResult {
     if s.state != ScheduleState::Canceled {
         check_schedule(ctx, &s)?;
     }
-    ctx.control().propose(Command::UpdateSchedule { schedule: s, expect_generation: expect })?;
+    ctx.app.propose(Command::UpdateSchedule { schedule: s, expect_generation: expect })?;
     let s = ctx.control().state.tenant_schedule(ctx.tenant(), id)?.clone();
     ctx.app.audit(ctx, "schedule.update", id);
     ctx.app.wake_scheduler();
@@ -276,7 +276,7 @@ pub fn patch(ctx: &Ctx, id: &str) -> ApiResult {
 pub fn delete(ctx: &Ctx, id: &str) -> ApiResult {
     ctx.require(Scope::StreamWrite)?;
     let expect = ctx.if_match(false)?;
-    ctx.control().propose(Command::DeleteSchedule { tenant: ctx.tenant().to_string(), id: id.to_string(), expect_generation: expect })?;
+    ctx.app.propose(Command::DeleteSchedule { tenant: ctx.tenant().to_string(), id: id.to_string(), expect_generation: expect })?;
     ctx.app.audit(ctx, "schedule.delete", id);
     ctx.app.wake_scheduler();
     Ok(ApiResponse::empty(204))

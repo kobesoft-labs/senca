@@ -12,6 +12,7 @@ senca-record = { path = "../senca-record" }
 senca-h264 = { path = "../senca-h264" }
 senca-h265 = { path = "../senca-h265" }
 senca-aac = { path = "../senca-aac" }
+senca-av1 = { path = "../senca-av1" }
 senca-flv = { path = "../senca-flv" }
 senca-rtmp = { path = "../senca-rtmp" }
 senca-mpegts = { path = "../senca-mpegts" }
@@ -21,6 +22,11 @@ senca-http = { path = "../senca-http" }
 senca-codec = { path = "../senca-codec" }
 senca-codec-worker = { path = "../senca-codec-worker" }
 senca-image = { path = "../senca-image" }
+senca-srt = { path = "../senca-srt" }
+senca-raft = { path = "../senca-raft" }
+senca-rtp = { path = "../senca-rtp" }
+senca-sdp = { path = "../senca-sdp" }
+senca-rtsp = { path = "../senca-rtsp" }
 bytes.workspace = true
 tokio.workspace = true
 serde.workspace = true
@@ -30,6 +36,7 @@ base64.workspace = true
 subtle.workspace = true
 getrandom.workspace = true
 hmac = "0.12"
+aes-gcm = "0.10"
 
 [lints]
 workspace = true

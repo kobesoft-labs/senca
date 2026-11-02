@@ -1,0 +1,36 @@
+# 単一ノード（REQ-003）: docker compose up -d
+# 最初の管理者トークン: docker compose exec senca cat /var/lib/senca/control/bootstrap-admin-token
+# 管理画面: http://localhost:8080/console/
+services:
+  senca:
+    build: .
+    image: senca/node:local
+    restart: unless-stopped
+    command:
+      - --http
+      - 0.0.0.0:8080
+      - --rtmp
+      - 0.0.0.0:1935
+      - --srt
+      - 0.0.0.0:9000
+      - --public-http-url
+      - ${SENCA_PUBLIC_HTTP:-http://localhost:8080}
+      - --public-rtmp-url
+      - ${SENCA_PUBLIC_RTMP:-rtmp://localhost:1935}
+    ports:
+      - "8080:8080/tcp"   # 管理 API・HLS・管理画面
+      - "1935:1935/tcp"   # RTMP
+      - "9000:9000/udp"   # SRT
+    volumes:
+      - senca-data:/var/lib/senca
+    # GPU を使うとき（ホストにドライバーと NVIDIA Container Toolkit が要る）:
+    # deploy:
+    #   resources:
+    #     reservations:
+    #       devices: [{ driver: nvidia, count: all, capabilities: [video, compute, utility] }]
+    # Intel / AMD（VA-API・oneVPL・AMF）: devices: ["/dev/dri:/dev/dri"]
+    read_only: true
+    tmpfs: [/tmp]
+    security_opt: ["no-new-privileges:true"]
+volumes:
+  senca-data:

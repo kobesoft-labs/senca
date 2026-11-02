@@ -1,9 +1,9 @@
 //! 仕様 10.4 のエラー（application/problem+json）。内部の詳細や秘密は入れない。
 
-use serde::Serialize;
+use serde::{Deserialize, Serialize};
 use serde_json::Value;
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "SCREAMING_SNAKE_CASE")]
 pub enum ProblemCode {
     InvalidConfig,

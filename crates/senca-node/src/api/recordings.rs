@@ -132,8 +132,7 @@ pub fn patch(ctx: &Ctx, id: &str) -> ApiResult {
     ctx.require(Scope::StreamWrite)?;
     let expect = ctx.if_match(true)?.unwrap_or(0);
     let p: Patch = ctx.body()?;
-    let mut core = ctx.control();
-    let mut r = core.state.tenant_recording(ctx.tenant(), id)?.clone();
+    let mut r = ctx.control().state.tenant_recording(ctx.tenant(), id)?.clone();
     if r.state == RecordingState::Deleting {
         return Err(Problem::not_found());
     }
@@ -160,8 +159,7 @@ pub fn patch(ctx: &Ctx, id: &str) -> ApiResult {
         r.name = Some(v);
     }
     r.generation += 1;
-    core.propose(Command::PutRecording { recording: r.clone() })?;
-    drop(core);
+    ctx.app.propose(Command::PutRecording { recording: r.clone() })?;
     ctx.app.audit(ctx, "recording.update", id);
     Ok(ApiResponse::json(200, &render(ctx, &r)).with_header("ETag", etag(r.generation)))
 }

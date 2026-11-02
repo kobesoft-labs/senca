@@ -44,11 +44,22 @@ pub struct App {
     ready: AtomicBool,
     tz_cache: Mutex<HashMap<String, Option<Tz>>>,
     me: Mutex<Weak<App>>,
+    /// tokio の実行環境（API のスレッドから非同期の仕事を出すため）。
+    pub rt: std::sync::OnceLock<tokio::runtime::Handle>,
     pub codec: Option<Arc<crate::codec::CodecService>>,
+    pub secret_box: crate::secrets::SecretBox,
+    pub cluster: std::sync::OnceLock<Arc<crate::cluster::Cluster>>,
+    pub io: crate::io::IoManager,
 }
 
 impl App {
-    pub fn new(cfg: Config, control: ControlCore, node_id: String, codec: Option<Arc<crate::codec::CodecService>>) -> Arc<App> {
+    pub fn new(
+        cfg: Config,
+        control: ControlCore,
+        node_id: String,
+        codec: Option<Arc<crate::codec::CodecService>>,
+        secret_box: crate::secrets::SecretBox,
+    ) -> Arc<App> {
         let app = Arc::new(App {
             cfg,
             node_id,
@@ -62,14 +73,37 @@ impl App {
             ready: AtomicBool::new(false),
             tz_cache: Mutex::new(HashMap::new()),
             me: Mutex::new(Weak::new()),
+            rt: std::sync::OnceLock::new(),
             codec,
+            secret_box,
+            cluster: std::sync::OnceLock::new(),
+            io: crate::io::IoManager::default(),
         });
         *app.me.lock().unwrap() = Arc::downgrade(&app);
+        if let Ok(h) = tokio::runtime::Handle::try_current() {
+            let _ = app.rt.set(h);
+        }
         app
     }
 
     fn arc(&self) -> Arc<App> {
         self.me.lock().unwrap().upgrade().expect("app alive")
+    }
+
+    /// 制御状態を変える唯一の入口。単一ノードではその場で、分散では合意を取ってから適用する。
+    /// ブロックするので、tokio のワーカーからは spawn_blocking の中で呼ぶ。
+    pub fn propose(&self, cmd: senca_control::state::Command) -> Result<(), Problem> {
+        match self.cluster.get() {
+            None => self.control.lock().unwrap().propose(cmd),
+            Some(c) => {
+                // 早めの 4xx: 手元の写しで試す（確定の結果は合意後の適用で決まる）
+                {
+                    let mut probe = self.control.lock().unwrap().state.clone();
+                    probe.apply(cmd.clone())?;
+                }
+                c.propose(cmd)
+            }
+        }
     }
 
     pub fn log(&self, msg: &str) {
@@ -245,6 +279,7 @@ impl App {
     }
 
     pub fn on_stream_deleted(&self, id: &str) {
+        self.io_reconcile();
         let h = self.hubs.lock().unwrap().remove(id);
         if let Some(h) = h {
             tokio::spawn(async move { h.shutdown().await });
@@ -288,7 +323,7 @@ impl App {
             node: Some(self.node_id.clone()),
         };
         // 保存してから書き手に頼む
-        self.control.lock().unwrap().propose(Command::PutRecording { recording: rec.clone() })?;
+        self.propose(Command::PutRecording { recording: rec.clone() })?;
         let hub = self.hub(s);
         let id = rec.id.clone();
         let res = tokio::runtime::Handle::current().block_on(hub.start_recording(&id, not_before_ms));
@@ -298,7 +333,7 @@ impl App {
             r.state = RecordingState::Interrupted;
             r.ended_at_ms = Some(crate::util::now_ms());
             r.generation += 1;
-            let _ = self.control.lock().unwrap().propose(Command::PutRecording { recording: r });
+            let _ = self.propose(Command::PutRecording { recording: r });
             return Err(Problem::internal());
         }
         self.rec_info.lock().unwrap().insert(rec.id.clone(), RecInfo::default());
@@ -316,14 +351,14 @@ impl App {
     }
 
     fn finish_recording(&self, id: &str, ended: i64, state: RecordingState) {
-        let mut core = self.control.lock().unwrap();
-        if let Some(mut r) = core.state.recordings.get(id).cloned()
+        let r = self.control.lock().unwrap().state.recordings.get(id).cloned();
+        if let Some(mut r) = r
             && r.state == RecordingState::Recording
         {
             r.state = state;
             r.ended_at_ms = Some(ended);
             r.generation += 1;
-            let _ = core.propose(Command::PutRecording { recording: r });
+            let _ = self.propose(Command::PutRecording { recording: r });
         }
     }
 
@@ -380,7 +415,7 @@ impl App {
         let mut d = r.clone();
         d.state = RecordingState::Deleting;
         d.generation += 1;
-        self.control.lock().unwrap().propose(Command::PutRecording { recording: d })?;
+        self.propose(Command::PutRecording { recording: d })?;
         let me = self.arc();
         let id = r.id.clone();
         std::thread::spawn(move || crate::recovery::delete_recording(&me, &id));
@@ -551,6 +586,22 @@ impl App {
     pub fn devices(&self) -> Value {
         let devs = self.codec.as_ref().map(|c| c.devices()).unwrap_or(json!({ "providers": [], "sandbox": null }));
         json!({ "nodes": [{ "node": self.node_id, "devices": devs }] })
+    }
+
+    pub fn io_status(&self, id: &str) -> Option<crate::io::IoStatus> {
+        self.io.status(id)
+    }
+
+    pub fn io_reconcile(&self) {
+        let me = self.arc();
+        // API のスレッド（tokio の外）からも呼ばれる
+        if let Some(rt) = self.rt.get() {
+            rt.spawn(async move { me.io.reconcile(&me) });
+        }
+    }
+
+    pub fn paas_cleanup(&self, o: &Output) {
+        crate::paas::cleanup(self, o);
     }
 
     pub async fn webrtc_http(&self, _h: &senca_http::RequestHead, _body: Bytes, _peer: &str) -> crate::http::Reply {

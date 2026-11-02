@@ -166,7 +166,7 @@ pub fn create(ctx: &Ctx) -> ApiResult {
         desired_state: b.desired_state.unwrap_or_else(|| "running".into()),
     };
     validate(&s)?;
-    ctx.control().propose(Command::CreateStream { stream: s.clone() })?;
+    ctx.app.propose(Command::CreateStream { stream: s.clone() })?;
     ctx.app.audit(ctx, "stream.create", &s.id);
     Ok(ApiResponse::json(201, &render(ctx, &s, Some(key.expose())))
         .with_header("Location", format!("/api/v1/streams/{}", s.id))
@@ -195,8 +195,7 @@ pub fn patch(ctx: &Ctx, id: &str) -> ApiResult {
     ctx.require(Scope::StreamWrite)?;
     let expect = ctx.if_match(true)?.unwrap_or(0);
     let p: StreamPatch = ctx.body()?;
-    let mut core = ctx.control();
-    let mut s = core.state.tenant_stream(ctx.tenant(), id)?.clone();
+    let mut s = ctx.control().state.tenant_stream(ctx.tenant(), id)?.clone();
     if s.generation != expect {
         return Err(Problem::new(ProblemCode::PreconditionFailed, "資源が更新されています（If-Match が古い）"));
     }
@@ -229,9 +228,8 @@ pub fn patch(ctx: &Ctx, id: &str) -> ApiResult {
     }
     s.updated_at_ms = ctx.now_ms;
     validate(&s)?;
-    core.propose(Command::UpdateStream { stream: s, expect_generation: expect })?;
-    let s = core.state.tenant_stream(ctx.tenant(), id)?.clone();
-    drop(core);
+    ctx.app.propose(Command::UpdateStream { stream: s, expect_generation: expect })?;
+    let s = ctx.control().state.tenant_stream(ctx.tenant(), id)?.clone();
     ctx.app.on_stream_changed(&s);
     ctx.app.audit(ctx, "stream.update", id);
     Ok(ApiResponse::json(200, &render(ctx, &s, None)).with_header("ETag", etag(s.generation)))
@@ -240,7 +238,7 @@ pub fn patch(ctx: &Ctx, id: &str) -> ApiResult {
 pub fn delete(ctx: &Ctx, id: &str) -> ApiResult {
     ctx.require(Scope::StreamWrite)?;
     let expect = ctx.if_match(false)?;
-    ctx.control().propose(Command::DeleteStream { tenant: ctx.tenant().to_string(), id: id.to_string(), expect_generation: expect })?;
+    ctx.app.propose(Command::DeleteStream { tenant: ctx.tenant().to_string(), id: id.to_string(), expect_generation: expect })?;
     ctx.app.on_stream_deleted(id);
     ctx.app.audit(ctx, "stream.delete", id);
     Ok(ApiResponse::empty(204))
@@ -249,14 +247,12 @@ pub fn delete(ctx: &Ctx, id: &str) -> ApiResult {
 pub fn rotate_key(ctx: &Ctx, id: &str) -> ApiResult {
     ctx.require(Scope::StreamWrite)?;
     let key = secret::generate(KEY_PREFIX).map_err(|_| Problem::internal())?;
-    let mut core = ctx.control();
-    let mut s = core.state.tenant_stream(ctx.tenant(), id)?.clone();
+    let mut s = ctx.control().state.tenant_stream(ctx.tenant(), id)?.clone();
     let expect = s.generation;
     s.key_hash = secret::hash(key.expose());
     s.updated_at_ms = ctx.now_ms;
-    core.propose(Command::UpdateStream { stream: s, expect_generation: expect })?;
-    let s = core.state.tenant_stream(ctx.tenant(), id)?.clone();
-    drop(core);
+    ctx.app.propose(Command::UpdateStream { stream: s, expect_generation: expect })?;
+    let s = ctx.control().state.tenant_stream(ctx.tenant(), id)?.clone();
     ctx.app.audit(ctx, "stream.rotate_key", id);
     Ok(ApiResponse::json(200, &render(ctx, &s, Some(key.expose()))).with_header("ETag", etag(s.generation)))
 }

@@ -26,6 +26,8 @@ pub enum HubEvent {
     Au(AccessUnit),
     /// 送り手が切れた・入れ替わった（epoch が変わる）。
     Discontinuity,
+    /// 配信が終わった（再接続の猶予が切れた）。購読者は閉じてよい。
+    End,
 }
 
 #[derive(Debug)]
@@ -164,6 +166,7 @@ impl Subscription {
             HubEvent::Discontinuity => {
                 self.flv.resend_configs();
             }
+            HubEvent::End => {}
         }
     }
 }
@@ -352,6 +355,23 @@ async fn run(stream: Stream, mut rx: mpsc::Receiver<Msg>, shared: Arc<HubShared>
                 if st.publisher.map(|p| p.0) != Some(id) || !st.configs.contains_key(&au.track) {
                     continue;
                 }
+                // VP8/VP9 の寸法は最初のキーフレームから補う（fMP4 の初期化セグメントに要る）
+                if au.keyframe
+                    && matches!(au.codec, Codec::Vp8 | Codec::Vp9)
+                    && let Some(cfg) = st.configs.get(&au.track)
+                    && cfg.video.is_none_or(|v| v.width == 0)
+                    && let Some((w, h)) = crate::media::vpx_keyframe_dims(au.codec, &au.payload)
+                {
+                    let mut c = cfg.clone();
+                    let v = c.video.get_or_insert_with(Default::default);
+                    v.width = w;
+                    v.height = h;
+                    st.configs.insert(au.track, c.clone());
+                    shared.configs.lock().unwrap().insert(au.track, c.clone());
+                    update_tracks(&st, &shared);
+                    let outs = st.packager.config(au.track, &c);
+                    emit(&mut st, &shared, &recorder, outs);
+                }
                 st.ever_published = true;
                 st.bytes_window.1 += au.payload.len() as u64;
                 let now = crate::util::mono_ms();
@@ -446,6 +466,7 @@ async fn stop_rec(st: &mut State, recorder: &RecorderTx, rec: &str, not_after_ms
 
 async fn end_of_stream(st: &mut State, shared: &HubShared, recorder: &RecorderTx, deps: &HubDeps) {
     (deps.log)(&format!("stream {}: input ended", st.stream.id));
+    let _ = shared.fanout.send(HubEvent::End);
     *shared.live.lock().unwrap() = None;
     shared.gop.lock().unwrap().clear();
     let outs = st.packager.end();
@@ -551,5 +572,3 @@ fn update_tracks(st: &State, shared: &HubShared) {
     }
 }
 
-#[allow(dead_code)]
-fn _codec(_: Codec) {}

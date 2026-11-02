@@ -284,3 +284,65 @@ pub struct NodeInfo {
     #[serde(default)]
     pub labels: BTreeMap<String, String>,
 }
+
+/// 入力（仕様 10.2 `POST /streams/{id}/inputs`）。push（送り手がつなぐ）は stream の鍵で受けるので、ここは pull だけ。
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct Input {
+    pub id: String,
+    pub tenant: String,
+    pub stream: String,
+    pub generation: u64,
+    /// "rtmp_pull"・"rtsp_pull"・"srt_pull"・"hls_pull"
+    pub protocol: String,
+    /// 取りに行く URL（資格情報は入れない。`credential_ref` で渡す）。
+    pub url: String,
+    #[serde(default)]
+    pub credential_ref: Option<String>,
+    #[serde(default = "default_true")]
+    pub enabled: bool,
+    /// RTSP の転送（"udp" / "tcp"）など、プロトコルごとの設定。
+    #[serde(default)]
+    pub options: BTreeMap<String, String>,
+    pub created_at_ms: i64,
+}
+
+/// 出力（仕様 10.2 `POST /streams/{id}/outputs`）。外部への push と PaaS 連携（REQ-001）。
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct Output {
+    pub id: String,
+    pub tenant: String,
+    pub stream: String,
+    pub generation: u64,
+    /// "rtmp_push"・"srt_push"・"whip_push"・"paas"
+    pub protocol: String,
+    #[serde(default)]
+    pub url: Option<String>,
+    #[serde(default)]
+    pub credential_ref: Option<String>,
+    #[serde(default = "default_true")]
+    pub enabled: bool,
+    /// PaaS 連携（"cloudflare_stream"・"aws_ivs" など）。
+    #[serde(default)]
+    pub provider: Option<String>,
+    /// SENCA が外部に作った資源（後片付けに使う）。
+    #[serde(default)]
+    pub provider_resource: Option<String>,
+    #[serde(default)]
+    pub options: BTreeMap<String, String>,
+    pub created_at_ms: i64,
+}
+
+fn default_true() -> bool {
+    true
+}
+
+/// 秘密値（仕様 10.2「credentials は secret reference」）。値はノードの鍵で暗号化して持つ（AES-256-GCM）。
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct SecretEntry {
+    pub id: String,
+    pub tenant: String,
+    pub name: String,
+    /// base64(nonce 12 バイト || 暗号文 || タグ)。
+    pub sealed: String,
+    pub created_at_ms: i64,
+}

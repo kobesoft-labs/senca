@@ -32,6 +32,12 @@ pub struct ControlState {
     pub idempotency: BTreeMap<String, IdempotencyRecord>,
     #[serde(default)]
     pub nodes: BTreeMap<String, NodeInfo>,
+    #[serde(default)]
+    pub inputs: BTreeMap<String, Input>,
+    #[serde(default)]
+    pub outputs: BTreeMap<String, Output>,
+    #[serde(default)]
+    pub secrets: BTreeMap<String, SecretEntry>,
     /// 署名付き再生 URL の鍵（16 進）。作り直すと発行済みの URL がすべて無効になる。
     #[serde(default)]
     pub playback_key: Option<String>,
@@ -63,6 +69,12 @@ pub enum Command {
     ExpireIdempotency { before_ms: i64 },
     SetPlaybackKey { key_hex: String },
     PutNode { node: NodeInfo },
+    PutInput { input: Input },
+    DeleteInput { tenant: String, id: String },
+    PutOutput { output: Output },
+    DeleteOutput { tenant: String, id: String },
+    PutSecret { secret: SecretEntry },
+    DeleteSecret { tenant: String, id: String },
     /// 新しい fencing token を払い出す（結果は `fencing_counter`）。
     NextFencingToken,
 }
@@ -122,8 +134,10 @@ impl ControlState {
                     return Err(stale());
                 }
                 self.streams.remove(&id);
-                // 予約は stream と一緒に消す（録画は消さない。仕様 10.2）。
+                // 予約・入力・出力は stream と一緒に消す（録画は消さない。仕様 10.2）。
                 self.schedules.retain(|_, s| s.stream != id);
+                self.inputs.retain(|_, i| i.stream != id);
+                self.outputs.retain(|_, o| o.stream != id);
             }
             Command::CreateToken { token } => {
                 if self.tokens.contains_key(&token.id) {
@@ -235,6 +249,58 @@ impl ControlState {
             }
             Command::PutNode { node } => {
                 self.nodes.insert(node.id.clone(), node);
+            }
+            Command::PutInput { input } => {
+                self.tenant_stream(&input.tenant, &input.stream)?;
+                if let Some(c) = self.inputs.get(&input.id)
+                    && c.tenant != input.tenant
+                {
+                    return Err(conflict("入力のテナントが違います"));
+                }
+                if !self.inputs.contains_key(&input.id) && self.inputs.values().filter(|i| i.stream == input.stream).count() >= 4 {
+                    return Err(Problem::new(ProblemCode::QuotaExceeded, "stream の入力は 4 つまで"));
+                }
+                self.inputs.insert(input.id.clone(), input);
+            }
+            Command::DeleteInput { tenant, id } => {
+                self.inputs.get(&id).filter(|i| i.tenant == tenant).ok_or_else(Problem::not_found)?;
+                self.inputs.remove(&id);
+            }
+            Command::PutOutput { output } => {
+                self.tenant_stream(&output.tenant, &output.stream)?;
+                if let Some(c) = self.outputs.get(&output.id)
+                    && c.tenant != output.tenant
+                {
+                    return Err(conflict("出力のテナントが違います"));
+                }
+                if !self.outputs.contains_key(&output.id) && self.outputs.values().filter(|o| o.stream == output.stream).count() >= 16 {
+                    return Err(Problem::new(ProblemCode::QuotaExceeded, "stream の出力は 16 個まで"));
+                }
+                self.outputs.insert(output.id.clone(), output);
+            }
+            Command::DeleteOutput { tenant, id } => {
+                self.outputs.get(&id).filter(|o| o.tenant == tenant).ok_or_else(Problem::not_found)?;
+                self.outputs.remove(&id);
+            }
+            Command::PutSecret { secret } => {
+                if let Some(c) = self.secrets.get(&secret.id)
+                    && c.tenant != secret.tenant
+                {
+                    return Err(conflict("秘密値のテナントが違います"));
+                }
+                if !self.secrets.contains_key(&secret.id) {
+                    if self.secrets.values().any(|s| s.tenant == secret.tenant && s.name == secret.name) {
+                        return Err(conflict("同じ名前の秘密値があります"));
+                    }
+                    if self.secrets.values().filter(|s| s.tenant == secret.tenant).count() >= 500 {
+                        return Err(Problem::new(ProblemCode::QuotaExceeded, "秘密値の数が上限です"));
+                    }
+                }
+                self.secrets.insert(secret.id.clone(), secret);
+            }
+            Command::DeleteSecret { tenant, id } => {
+                self.secrets.get(&id).filter(|s| s.tenant == tenant).ok_or_else(Problem::not_found)?;
+                self.secrets.remove(&id);
             }
             Command::NextFencingToken => {
                 self.fencing_counter += 1;

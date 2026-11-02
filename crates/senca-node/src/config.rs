@@ -37,6 +37,8 @@ pub struct Config {
     pub verify_recordings: bool,
     pub log_json: bool,
     pub cluster: Option<ClusterConfig>,
+    /// pull 入力・push 出力で接続してよい私設アドレスの範囲（CIDR）。既定では私設・ループバック・リンクローカルを拒否（仕様 9.4）。
+    pub egress_allow: Vec<String>,
 }
 
 #[derive(Debug, Clone, Deserialize)]
@@ -55,22 +57,24 @@ impl Default for PublicUrls {
 
 #[derive(Debug, Clone, Deserialize)]
 #[serde(deny_unknown_fields)]
-#[allow(dead_code)] // M9
 pub struct ClusterConfig {
     pub node_id: u64,
     pub listen: SocketAddr,
+    /// 投票するノード（自分を含む）。
     pub peers: Vec<ClusterPeer>,
-    pub join_token_file: Option<PathBuf>,
+    /// クラスタの合言葉のファイル（全ノードで同じ。ノード間の接続を認める）。
+    pub secret_file: PathBuf,
 }
 
 #[derive(Debug, Clone, Deserialize)]
 #[serde(deny_unknown_fields)]
-#[allow(dead_code)] // M9
 pub struct ClusterPeer {
     pub id: u64,
+    /// ノード間の通信（Raft）の宛先。
     pub addr: SocketAddr,
+    /// 管理 API の宛先（転送・案内に使う）。
     #[serde(default)]
-    pub voter: Option<bool>,
+    pub api: Option<String>,
 }
 
 impl Default for Config {
@@ -105,6 +109,7 @@ impl Default for Config {
             verify_recordings: false,
             log_json: false,
             cluster: None,
+            egress_allow: Vec::new(),
         }
     }
 }
@@ -115,7 +120,8 @@ pub const USAGE: &str = "senca-node [--config FILE] [--data-dir DIR] [--http ADD
   [--max-playback-ttl SECS] [--reconnect-grace MS] [--record-queue N] [--retention-sweep SECS]
   [--jwks FILE --jwt-issuer ISS --jwt-audience AUD [--jwt-tenant-claim NAME]]
   [--codec-workers N] [--codec-worker-bin FILE] [--codec-lib-dir DIR] [--zoneinfo DIR]
-  [--console-dir DIR] [--verify-recordings] [--log-json] [--node-name NAME]";
+  [--console-dir DIR] [--verify-recordings] [--log-json] [--node-name NAME] [--egress-allow CIDR]...
+  [--cluster-config FILE]";
 
 impl Config {
     pub fn from_args(args: &[String]) -> Result<Config, String> {
@@ -177,6 +183,12 @@ impl Config {
                 _ if flag("--console-dir") => cfg.console_dir = Some(PathBuf::from(val()?)),
                 _ if flag("--verify-recordings") => cfg.verify_recordings = true,
                 _ if flag("--log-json") => cfg.log_json = true,
+                _ if flag("--egress-allow") => cfg.egress_allow.push(val()?),
+                _ if flag("--cluster-config") => {
+                    let p = val()?;
+                    let b = std::fs::read(&p).map_err(|e| format!("{p}: {e}"))?;
+                    cfg.cluster = Some(serde_json::from_slice(&b).map_err(|e| format!("{p}: {e}"))?);
+                }
                 _ => return Err(format!("unknown argument: {a}\n{USAGE}")),
             }
             i += 1;
@@ -194,6 +206,17 @@ impl Config {
         }
         if !(16..=1 << 20).contains(&self.record_queue) {
             return Err("--record-queue must be 16..=1048576".into());
+        }
+        if let Some(c) = &self.cluster {
+            if c.node_id == 0 || !c.peers.iter().any(|p| p.id == c.node_id) {
+                return Err("cluster: node_id は 1 以上で、peers に自分を含めてください".into());
+            }
+            if !(1..=7).contains(&c.peers.len()) {
+                return Err("cluster: 投票するノードは 1〜7 台".into());
+            }
+        }
+        for c in &self.egress_allow {
+            crate::egress::Cidr::parse(c).ok_or_else(|| format!("--egress-allow: bad CIDR {c}"))?;
         }
         if self.max_playback_ttl_secs == 0 {
             return Err("--max-playback-ttl must be > 0".into());

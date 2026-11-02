@@ -73,14 +73,14 @@ pub fn recover(app: &App) {
                     let _ = f.write_all(&line).and_then(|_| f.sync_all());
                 }
                 app.log(&format!("recovery: recording {id} closed as interrupted ({} segments)", idx.segments.len()));
-                let mut core = app.control.lock().unwrap();
-                if let Some(mut r) = core.state.recordings.get(&id).cloned()
+                let r = app.control.lock().unwrap().state.recordings.get(&id).cloned();
+                if let Some(mut r) = r
                     && r.state == RecordingState::Recording
                 {
                     r.state = RecordingState::Interrupted;
                     r.ended_at_ms = Some(ended);
                     r.generation += 1;
-                    let _ = core.propose(Command::PutRecording { recording: r });
+                    let _ = app.propose(Command::PutRecording { recording: r });
                 }
             }
         }
@@ -99,7 +99,7 @@ pub fn recover(app: &App) {
         r.state = RecordingState::Interrupted;
         r.ended_at_ms.get_or_insert(r.started_at_ms);
         r.generation += 1;
-        let _ = app.control.lock().unwrap().propose(Command::PutRecording { recording: r });
+        let _ = app.propose(Command::PutRecording { recording: r });
     }
     if !unreadable {
         quarantine_orphans(app, &referenced);
@@ -185,7 +185,7 @@ pub fn delete_recording(app: &App, id: &str) {
     let _ = fs::remove_dir_all(&trash);
     let tenant = app.control.lock().unwrap().state.recordings.get(id).map(|r| r.tenant.clone());
     if let Some(t) = tenant {
-        let _ = app.control.lock().unwrap().propose(Command::DeleteRecording { tenant: t, id: id.into() });
+        let _ = app.propose(Command::DeleteRecording { tenant: t, id: id.into() });
     }
     app.rec_info.lock().unwrap().remove(id);
 }

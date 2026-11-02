@@ -286,7 +286,10 @@ impl ClientSession {
         match i {
             Incoming::Command { stream_id, command } => self.on_command(stream_id, command),
             Incoming::Media { stream_id, message } => {
-                if self.active_stream() == Some(stream_id) {
+                // play では 1 本しか開かないので、メッセージの stream ID が createStream の答えと違っても受け取る
+                // （FFmpeg の listen モードのサーバーなどは別の ID で送ってくる）。publish では自分が送る側なので来ない。
+                let playing = matches!(self.config.mode, ClientMode::Play { .. }) && self.active_stream().is_some();
+                if self.active_stream() == Some(stream_id) || playing {
                     self.events
                         .push_back(ClientEvent::Media { stream_id, message });
                 }

@@ -1019,6 +1019,7 @@ dependencies = [
  "senca-http",
  "senca-image",
  "senca-mpegts",
+ "senca-raft",
  "senca-record",
  "senca-rtmp",
  "senca-rtp",
@@ -1108,6 +1109,17 @@ dependencies = [
  "senca-mpegts",
  "senca-rtp",
  "senca-sdp",
+ "sha2",
+ "subtle",
+]
+
+[[package]]
+name = "senca-sctp"
+version = "0.1.0"
+dependencies = [
+ "bytes",
+ "getrandom 0.3.4",
+ "hmac",
  "sha2",
  "subtle",
 ]

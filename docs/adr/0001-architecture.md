@@ -30,4 +30,6 @@
 | senca-rtp / senca-sdp / senca-rtsp | RTP/RTCP と各コーデックのペイロード形式、SDP と offer/answer、RTSP 1.0 のクライアントとサーバー |
 | senca-dtls / senca-srtp | DTLS 1.2（WebRTC 用）と SRTP/SRTCP（AES-CM・AEAD-GCM） |
 | senca-raft | 自前の Raft（PreVote・CheckQuorum・joint consensus・ReadIndex・スナップショット、ファイルの保存） |
+| senca-caption | 字幕（復号しない音声の切り出し、音声認識・翻訳のアダプター、WebVTT・HLS 字幕） |
+| senca-devtools | 開発・試験の道具（配布しない） |
 | senca-node | 実行ファイル |

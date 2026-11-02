@@ -7,6 +7,7 @@
 //! - 一覧は `limit`（既定 100、最大 1000）と `cursor`。
 //! - エラーは problem+json。`X-Request-Id` を返す。
 
+pub mod io;
 pub mod recordings;
 pub mod schedules;
 pub mod streams;
@@ -337,11 +338,11 @@ fn idempotent(ctx: &Ctx, key: &str) -> ApiResult {
             created_at_ms: ctx.now_ms,
         };
         // 期限切れの古い記録は先に消す
-        let mut core = ctx.control();
-        if core.state.idempotency(ctx.tenant(), key).is_some() {
-            let _ = core.propose(Command::ExpireIdempotency { before_ms: ctx.now_ms - senca_control::state::IDEMPOTENCY_TTL_MS });
+        let stale = ctx.control().state.idempotency(ctx.tenant(), key).is_some();
+        if stale {
+            let _ = ctx.app.propose(Command::ExpireIdempotency { before_ms: ctx.now_ms - senca_control::state::IDEMPOTENCY_TTL_MS });
         }
-        if let Err(e) = core.propose(Command::PutIdempotency { record: rec }) {
+        if let Err(e) = ctx.app.propose(Command::PutIdempotency { record: rec }) {
             ctx.app.log(&format!("idempotency record not stored: {e}"));
         }
     }
@@ -426,6 +427,20 @@ fn route(ctx: &Ctx) -> ApiResult {
         ("DELETE", ["schedules", id]) => schedules::delete(ctx, id),
         ("GET", ["schedules", id, "runs"]) => schedules::runs(ctx, id),
 
+        ("POST", ["streams", id, "inputs"]) => io::create_input(ctx, id),
+        ("GET", ["streams", id, "inputs"]) => io::list_inputs(ctx, id),
+        ("POST", ["streams", id, "outputs"]) => io::create_output(ctx, id),
+        ("GET", ["streams", id, "outputs"]) => io::list_outputs(ctx, id),
+        ("GET", ["inputs", id]) => io::get_input(ctx, id),
+        ("PATCH", ["inputs", id]) => io::patch_input(ctx, id),
+        ("DELETE", ["inputs", id]) => io::delete_input(ctx, id),
+        ("GET", ["outputs", id]) => io::get_output(ctx, id),
+        ("PATCH", ["outputs", id]) => io::patch_output(ctx, id),
+        ("DELETE", ["outputs", id]) => io::delete_output(ctx, id),
+        ("POST", ["secrets"]) => io::create_secret(ctx),
+        ("GET", ["secrets"]) => io::list_secrets(ctx),
+        ("DELETE", ["secrets", id]) => io::delete_secret(ctx, id),
+
         ("POST", ["tokens"]) => tokens::create(ctx),
         ("GET", ["tokens"]) => tokens::list(ctx),
         ("GET", ["tokens", id]) => tokens::get(ctx, id),
@@ -434,7 +449,10 @@ fn route(ctx: &Ctx) -> ApiResult {
         (
             _,
             ["capabilities"] | ["nodes", ..] | ["devices"] | ["events"] | ["streams", ..] | ["recordings", ..] | ["schedules", ..]
-            | ["tokens", ..],
+            | ["tokens", ..]
+            | ["inputs", ..]
+            | ["outputs", ..]
+            | ["secrets", ..],
         ) => not_allowed(),
         _ => Err(Problem::not_found()),
     }

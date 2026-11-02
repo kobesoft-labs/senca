@@ -28,6 +28,21 @@ impl ControlCore {
         ControlCore { state, store, jwt, applied_tx }
     }
 
+    /// 合意で確定したコマンドを適用する（分散。全ノードで同じ順に呼ばれる）。
+    pub fn apply_committed(&mut self, cmd: Command, raft_index: u64) -> Result<(), Problem> {
+        let r = self.state.apply(cmd.clone());
+        if r.is_ok() {
+            let _ = self.applied_tx.send(Applied { index: raft_index, cmd: Arc::new(cmd) });
+        }
+        r
+    }
+
+    /// スナップショットから状態を置き換える。
+    pub fn replace_state(&mut self, st: ControlState) {
+        self.state = st;
+    }
+
+    /// 単一ノード: 写しに適用 → ログに書く → 入れ替え。
     pub fn propose(&mut self, cmd: Command) -> Result<(), Problem> {
         let mut next = self.state.clone();
         next.apply(cmd.clone())?;

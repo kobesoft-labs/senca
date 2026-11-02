@@ -69,7 +69,7 @@ pub fn create(ctx: &Ctx) -> ApiResult {
         created_at_ms: ctx.now_ms,
         expires_at_ms,
     };
-    ctx.control().propose(Command::CreateToken { token: t.clone() })?;
+    ctx.app.propose(Command::CreateToken { token: t.clone() })?;
     ctx.app.audit(ctx, "token.create", &t.id);
     Ok(ApiResponse::json(201, &render(&t, Some(value.expose()))).with_header("Location", format!("/api/v1/tokens/{}", t.id)))
 }
@@ -98,7 +98,7 @@ pub fn get(ctx: &Ctx, id: &str) -> ApiResult {
 
 pub fn delete(ctx: &Ctx, id: &str) -> ApiResult {
     ctx.require(Scope::TenantAdmin)?;
-    ctx.control().propose(Command::DeleteToken { tenant: ctx.tenant().to_string(), id: id.to_string() })?;
+    ctx.app.propose(Command::DeleteToken { tenant: ctx.tenant().to_string(), id: id.to_string() })?;
     ctx.app.audit(ctx, "token.delete", id);
     Ok(ApiResponse::empty(204))
 }

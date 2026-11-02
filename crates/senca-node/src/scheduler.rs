@@ -109,14 +109,11 @@ pub fn tick(app: &App, now: i64) {
             continue;
         }
         // fencing token を取ってから実行する（分散で二重実行しないため。単一ノードでも同じ手順）
-        let token = {
-            let mut core = app.control.lock().unwrap_or_else(|e| e.into_inner());
-            match core.propose(Command::NextFencingToken) {
-                Ok(()) => core.state.fencing_counter,
-                Err(e) => {
-                    app.log(&format!("scheduler: fencing token: {e}"));
-                    continue;
-                }
+        let token = match app.propose(Command::NextFencingToken) {
+            Ok(()) => app.control.lock().unwrap_or_else(|e| e.into_inner()).state.fencing_counter,
+            Err(e) => {
+                app.log(&format!("scheduler: fencing token: {e}"));
+                continue;
             }
         };
         run.fencing_token = Some(token);
@@ -159,8 +156,7 @@ pub fn tick(app: &App, now: i64) {
 }
 
 fn record(app: &App, s: &Schedule, state: ScheduleState, run: ScheduleRun) -> bool {
-    let mut core = app.control.lock().unwrap_or_else(|e| e.into_inner());
-    match core.propose(Command::RecordScheduleRun { tenant: s.tenant.clone(), id: s.id.clone(), state, run }) {
+    match app.propose(Command::RecordScheduleRun { tenant: s.tenant.clone(), id: s.id.clone(), state, run }) {
         Ok(()) => true,
         Err(e) => {
             app.log(&format!("scheduler: record run for {}: {e}", s.id));

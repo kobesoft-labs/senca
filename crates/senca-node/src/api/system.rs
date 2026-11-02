@@ -24,11 +24,9 @@ pub fn node(ctx: &Ctx, id: &str) -> ApiResult {
 
 pub fn drain(ctx: &Ctx, id: &str, on: bool) -> ApiResult {
     ctx.require(Scope::NodeAdmin)?;
-    let mut core = ctx.control();
-    let mut n = core.state.nodes.get(id).cloned().ok_or_else(Problem::not_found)?;
+    let mut n = ctx.control().state.nodes.get(id).cloned().ok_or_else(Problem::not_found)?;
     n.draining = on;
-    core.propose(Command::PutNode { node: n.clone() })?;
-    drop(core);
+    ctx.app.propose(Command::PutNode { node: n.clone() })?;
     ctx.app.audit(ctx, if on { "node.drain" } else { "node.undrain" }, id);
     Ok(ApiResponse::json(202, &ctx.app.render_node(&n)))
 }

@@ -42,6 +42,7 @@ where
                     }
                     ev = sub.recv() => {
                         match ev {
+                            Ok(crate::hub::HubEvent::End) => { let _ = sess.end_play(*sid); let out = sess.take_output(); let _ = sock.write_all(&out).await; return Ok(()); }
                             Ok(ev) => send_play(&mut sess, *sid, &ev, sub)?,
                             Err(RecvError::Lagged(n)) => { sub.lagged(n); continue; }
                             Err(RecvError::Closed) => { let _ = sess.end_play(*sid); let out = sess.take_output(); let _ = sock.write_all(&out).await; return Ok(()); }

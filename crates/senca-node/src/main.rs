@@ -2,21 +2,30 @@
 
 mod api;
 mod app;
+mod cluster;
 mod codec;
 mod config;
 mod control;
+mod egress;
 mod events;
 mod export;
 mod http;
+mod hls_pull;
+mod httpc;
 mod hub;
+mod io;
 mod live;
 mod media;
 mod packager;
+mod paas;
 mod plan;
 mod recorder;
 mod recovery;
 mod rtmp;
+mod rtsp_pull;
+mod srt;
 mod scheduler;
+mod secrets;
 mod snapshot;
 mod store;
 mod thumbnail;
@@ -27,13 +36,17 @@ use config::Config;
 use control::ControlCore;
 use senca_control::auth::Scope;
 use senca_control::model::{ApiToken, NodeInfo};
-use senca_control::state::Command;
+use senca_control::state::{Command, ControlState};
 use std::sync::Arc;
 use std::time::Duration;
 use tokio::net::TcpListener;
 
 fn main() {
     let args: Vec<String> = std::env::args().skip(1).collect();
+    // コンテナのヘルスチェック: `senca-node --healthcheck http://127.0.0.1:8080/readyz`
+    if args.first().map(String::as_str) == Some("--healthcheck") {
+        std::process::exit(healthcheck(args.get(1).map(String::as_str).unwrap_or("http://127.0.0.1:8080/readyz")));
+    }
     if args.iter().any(|a| a == "--help" || a == "-h") {
         println!("{}", config::USAGE);
         return;
@@ -81,8 +94,12 @@ async fn run(cfg: Config) -> Result<(), String> {
         }
     };
     let _ = &mut state;
-    let mut core = ControlCore::new(state, Some(store), jwt);
-    bootstrap(&cfg, &mut core, &node_id)?;
+    let clustered = cfg.cluster.is_some();
+    // 分散では制御状態の永続化は Raft のログ（単一ノードのログは使わない）
+    let mut core = if clustered { ControlCore::new(ControlState::default(), None, jwt) } else { ControlCore::new(state, Some(store), jwt) };
+    if !clustered {
+        bootstrap(&cfg, &mut core, &node_id)?;
+    }
     let codec = match codec::CodecService::start(&cfg).await {
         Ok(c) => Some(Arc::new(c)),
         Err(e) => {
@@ -90,7 +107,24 @@ async fn run(cfg: Config) -> Result<(), String> {
             None
         }
     };
-    let app = App::new(cfg.clone(), core, node_id, codec);
+    let secret_box = secrets::SecretBox::open(&cfg.data_dir.join("control").join("secret-key"))?;
+    let app = App::new(cfg.clone(), core, node_id, codec, secret_box);
+    if let Some(cc) = &cfg.cluster {
+        let secret = std::fs::read_to_string(&cc.secret_file).map_err(|e| format!("{}: {e}", cc.secret_file.display()))?;
+        let secret = secret.trim().to_string();
+        if secret.len() < 16 {
+            return Err("cluster: 合言葉は 16 文字以上にしてください".into());
+        }
+        let peers = cc.peers.iter().map(|p| (p.id, p.addr)).collect();
+        let c = cluster::start(app.clone(), cc.node_id, cc.listen, peers, secret)?;
+        let _ = app.cluster.set(c);
+        app.log(&format!("cluster: node {} started ({} voters)", cc.node_id, cc.peers.len()));
+        // リーダーが決まってから初期化（管理者トークンは ID が最小のノードだけが作る）
+        let a = app.clone();
+        let cc = cc.clone();
+        let nid = a.node_id.clone();
+        tokio::task::spawn_blocking(move || cluster_bootstrap(&a, &cc, &nid));
+    }
     recovery::recover(&app);
     app.log(&format!("senca-node {} started (node {})", env!("CARGO_PKG_VERSION"), app.node_id));
 
@@ -120,6 +154,14 @@ async fn run(cfg: Config) -> Result<(), String> {
             }
         });
     }
+    if let Some(addr) = cfg.srt_listen {
+        let app = app.clone();
+        tokio::spawn(async move {
+            if let Err(e) = srt::serve(app.clone(), addr).await {
+                app.log(&format!("srt: {e}"));
+            }
+        });
+    }
     tokio::spawn(scheduler::run(app.clone()));
     tokio::spawn(snapshot::run_snapshotter(app.clone()));
     {
@@ -132,14 +174,18 @@ async fn run(cfg: Config) -> Result<(), String> {
                 let _ = tokio::task::spawn_blocking(move || recovery::retention_sweep(&a)).await;
                 // Idempotency の記録の期限切れ
                 let now = util::now_ms();
-                let mut core = app.control.lock().unwrap();
-                if core.state.idempotency.values().any(|r| r.created_at_ms < now - senca_control::state::IDEMPOTENCY_TTL_MS) {
-                    let _ = core.propose(Command::ExpireIdempotency { before_ms: now - senca_control::state::IDEMPOTENCY_TTL_MS });
+                let stale = app.control.lock().unwrap().state.idempotency.values().any(|r| r.created_at_ms < now - senca_control::state::IDEMPOTENCY_TTL_MS);
+                if stale {
+                    let a = app.clone();
+                    let _ = tokio::task::spawn_blocking(move || a.propose(Command::ExpireIdempotency { before_ms: now - senca_control::state::IDEMPOTENCY_TTL_MS })).await;
                 }
             }
         });
     }
-    app.set_ready();
+    if !clustered {
+        app.io_reconcile();
+        app.set_ready();
+    }
     // 終了の合図
     let mut term = tokio::signal::unix::signal(tokio::signal::unix::SignalKind::terminate()).map_err(|e| e.to_string())?;
     tokio::select! {
@@ -204,4 +250,100 @@ fn bootstrap(cfg: &Config, core: &mut ControlCore, node_id: &str) -> Result<(), 
         eprintln!("created the first admin token in {} (mode 0600)", path.display());
     }
     Ok(())
+}
+
+/// ループバックへの平文 HTTP で 200 が返れば 0。
+fn healthcheck(url: &str) -> i32 {
+    use std::io::{Read, Write};
+    let Some(rest) = url.strip_prefix("http://") else { return 2 };
+    let (hp, path) = rest.split_once('/').map(|(a, b)| (a, format!("/{b}"))).unwrap_or((rest, "/".into()));
+    let Ok(mut s) = std::net::TcpStream::connect(hp) else { return 1 };
+    let _ = s.set_read_timeout(Some(Duration::from_secs(3)));
+    if s.write_all(format!("GET {path} HTTP/1.1\r\nHost: {hp}\r\nConnection: close\r\n\r\n").as_bytes()).is_err() {
+        return 1;
+    }
+    let mut b = [0u8; 16];
+    match s.read(&mut b) {
+        Ok(n) if b[..n].starts_with(b"HTTP/1.1 200") => 0,
+        _ => 1,
+    }
+}
+
+/// 分散の初期化。何度呼ばれても同じ結果になるように、状態を見てから提案する。
+fn cluster_bootstrap(app: &std::sync::Arc<App>, cc: &config::ClusterConfig, node_id: &str) {
+    let first = cc.peers.iter().map(|p| p.id).min() == Some(cc.node_id);
+    for _ in 0..600 {
+        if app.cluster.get().and_then(|c| c.leader()).is_some() {
+            break;
+        }
+        std::thread::sleep(Duration::from_millis(100));
+    }
+    let mut tries = 0;
+    loop {
+        tries += 1;
+        let (has_node, has_key, has_tokens) = {
+            let core = app.control.lock().unwrap();
+            (core.state.nodes.contains_key(node_id), core.state.playback_key.is_some(), !core.state.tokens.is_empty())
+        };
+        let mut ok = true;
+        if !has_node {
+            ok &= app
+                .propose(Command::PutNode {
+                    node: NodeInfo {
+                        id: node_id.into(),
+                        name: app.cfg.node_name.clone(),
+                        draining: false,
+                        registered_at_ms: util::now_ms(),
+                        media_addr: cc.peers.iter().find(|p| p.id == cc.node_id).and_then(|p| p.api.clone()),
+                        labels: [("raft_id".to_string(), cc.node_id.to_string())].into_iter().collect(),
+                    },
+                })
+                .is_ok();
+        }
+        if first && !has_key {
+            let mut k = [0u8; 32];
+            let _ = getrandom::fill(&mut k);
+            ok &= app.propose(Command::SetPlaybackKey { key_hex: senca_control::secret::hex(&k) }).is_ok();
+        }
+        if first && !has_tokens {
+            match senca_control::secret::generate(senca_control::auth::TOKEN_PREFIX) {
+                Ok(value) => {
+                    let mut scopes = std::collections::BTreeSet::new();
+                    scopes.insert(Scope::TenantAdmin);
+                    scopes.insert(Scope::NodeAdmin);
+                    let t = ApiToken {
+                        id: senca_core::Id128::random().map(|i| i.to_string()).unwrap_or_default(),
+                        tenant: "default".into(),
+                        name: "bootstrap-admin".into(),
+                        hash: senca_control::secret::hash(value.expose()),
+                        scopes,
+                        created_at_ms: util::now_ms(),
+                        expires_at_ms: None,
+                    };
+                    if app.propose(Command::CreateToken { token: t }).is_ok() {
+                        let path = app.cfg.data_dir.join("control").join("bootstrap-admin-token");
+                        use std::io::Write;
+                        use std::os::unix::fs::OpenOptionsExt;
+                        if let Ok(mut f) = std::fs::OpenOptions::new().write(true).create_new(true).mode(0o600).open(&path) {
+                            let _ = f.write_all(value.expose().as_bytes()).and_then(|_| f.sync_all());
+                            app.log(&format!("created the first admin token in {} (mode 0600)", path.display()));
+                        }
+                    } else {
+                        ok = false;
+                    }
+                }
+                Err(_) => ok = false,
+            }
+        }
+        if ok {
+            app.set_ready();
+            app.io_reconcile();
+            return;
+        }
+        if tries > 600 {
+            app.log("cluster: bootstrap did not complete");
+            return;
+        }
+        std::thread::sleep(Duration::from_millis(200));
+    }
 }

@@ -1,0 +1,6 @@
+target
+**/target
+fuzz/target
+fuzz/corpus
+out
+.git
