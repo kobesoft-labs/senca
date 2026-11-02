@@ -22,6 +22,8 @@ const ROUTES = [
   { re: /^\/nodes\/?$/, nav: 'nodes', load: () => import('./views/nodes.js') },
   { re: /^\/pipelines\/?$/, nav: 'pipelines', load: () => import('./views/pipelines.js') },
   { re: /^\/production\/?$/, nav: 'production', load: () => import('./views/production.js') },
+  { re: /^\/secrets\/?$/, nav: 'secrets', load: () => import('./views/secrets.js') },
+  { re: /^\/send\/?$/, nav: 'send', load: () => import('./views/send.js') },
 ];
 
 const NAV = [
@@ -30,9 +32,12 @@ const NAV = [
   ['recordings', '#/recordings', '録画'],
   ['schedules', '#/schedules', '予約'],
   null,
-  ['pipelines', '#/pipelines', 'パイプライン', '準備中'],
-  ['production', '#/production', 'スイッチャー', '準備中'],
+  ['send', '#/send', 'ブラウザから送る'],
   null,
+  ['pipelines', '#/pipelines', 'パイプライン'],
+  ['production', '#/production', 'スイッチャー'],
+  null,
+  ['secrets', '#/secrets', '秘密値'],
   ['nodes', '#/nodes', 'ノードとデバイス'],
   ['tokens', '#/tokens', 'API トークン'],
 ];

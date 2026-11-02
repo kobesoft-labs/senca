@@ -57,6 +57,31 @@ export const tokens = {
   remove: (id) => del(`/tokens/${enc(id)}`),
 };
 
+/** 入力（pull）。protocol: rtmp_pull・rtsp_pull・srt_pull・hls_pull。PATCH は url・credential_ref・enabled・options だけ。 */
+export const inputs = {
+  list: (stream) => get(`/streams/${enc(stream)}/inputs`, { query: { limit: 1000 } }),
+  get: (id) => get(`/inputs/${enc(id)}`),
+  create: (stream, body, key = idemKey()) => post(`/streams/${enc(stream)}/inputs`, body, { idempotencyKey: key }),
+  update: (id, body, etag) => patch(`/inputs/${enc(id)}`, body, etag),
+  remove: (id) => del(`/inputs/${enc(id)}`),
+};
+
+/** 出力（push・PaaS）。protocol: rtmp_push・srt_push・whip_push・paas（provider が要る）。 */
+export const outputs = {
+  list: (stream) => get(`/streams/${enc(stream)}/outputs`, { query: { limit: 1000 } }),
+  get: (id) => get(`/outputs/${enc(id)}`),
+  create: (stream, body, key = idemKey()) => post(`/streams/${enc(stream)}/outputs`, body, { idempotencyKey: key }),
+  update: (id, body, etag) => patch(`/outputs/${enc(id)}`, body, etag),
+  remove: (id) => del(`/outputs/${enc(id)}`),
+};
+
+/** 秘密値（値は書くだけ。読めない）。入力・出力・字幕からは `secret:{name}` で参照する。 */
+export const secrets = {
+  list: () => get('/secrets'),
+  create: (body, key = idemKey()) => post('/secrets', body, { idempotencyKey: key }),
+  remove: (id) => del(`/secrets/${enc(id)}`),
+};
+
 /** 一覧を最後まで読む（件数の上限はテナントあたり 1000 なので数回で終わる）。 */
 export async function listAll(fn, opts = {}, max = 5000) {
   const items = [];

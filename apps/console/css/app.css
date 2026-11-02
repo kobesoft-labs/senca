@@ -245,3 +245,16 @@ dialog .dlg-foot { padding: 0 16px 14px; display: flex; gap: 8px; justify-conten
 .strip button.muted-on { background: var(--danger); color: #fff; border-color: var(--danger); }
 .strip input[type="number"] { width: 72px; }
 .offline-banner { display: flex; gap: 8px; align-items: center; }
+/* スイッチャー: 映像のモニター・入力のタリー */
+.monitor video { width: 100%; aspect-ratio: 16 / 9; display: block; background: #000; }
+.monitor .player-widget .row { padding: 4px 6px; background: var(--panel); flex-wrap: wrap; }
+.monitor .player-widget .player { margin: 0; }
+.monitor .empty { color: #ccc; aspect-ratio: 16 / 9; display: grid; place-items: center; }
+.sw-sources { display: grid; grid-template-columns: repeat(auto-fill, minmax(180px, 1fr)); gap: 8px; }
+.sw-source { border: 2px solid var(--border); border-radius: var(--radius); padding: 6px 8px; background: var(--panel-2); }
+.sw-source.preview { border-color: #1fa34a; }
+.sw-source.program { border-color: var(--live); }
+[data-tally] { margin-top: 8px; gap: 10px; flex-wrap: wrap; }
+.strip [data-server-gain] { font-size: 10.5px; text-align: center; max-width: 90px; }
+.player-status[data-state="live"] { color: var(--ok); font-weight: 600; }
+.monitor:has(video) .mlabel { top: 6px; bottom: auto; }

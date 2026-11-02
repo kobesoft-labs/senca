@@ -10,11 +10,13 @@ import { stateBadge } from './streams.js';
 import { recBadge } from './recordings.js';
 import { takeSecret } from '../lib/secrets.js';
 import { playerWidget } from '../player/widget.js';
+import { ioSection, captionsSection, playbackSection } from './stream-io.js';
 
 export async function render(root, [id], { caps, navigate }) {
   let stream = null;
   let etag = null;
   let secret = takeSecret(id);
+  let captions = null;
   const blobUrls = new Set();
   const timers = [];
 
@@ -26,7 +28,7 @@ export async function render(root, [id], { caps, navigate }) {
   const planBox = h('div', { class: 'muted' }, '「計画を取る」で、入力のコーデックに対する出力ごとの扱い（そのまま・再多重化・変換・不可）を確かめます。');
   const recBox = h('div');
 
-  const player = playerWidget({ getUrl: async () => (await streams.playbackUrl(id)).data.playback.hls, live: true, label: 'ライブのプレビュー' });
+  const player = playerWidget({ getPlayback: async () => (await streams.playbackUrl(id)).data.playback, live: true, label: 'ライブのプレビュー' });
 
   const blobUrl = (blob) => {
     const u = URL.createObjectURL(blob);
@@ -95,7 +97,8 @@ export async function render(root, [id], { caps, navigate }) {
           h('div', { class: 'hint' }, 'OBS などでは「サーバー」にこの URL、「ストリームキー」に下の鍵を入れます。')),
         ig.srt_url ? h('div', { class: 'field' }, h('strong', null, 'SRT の URL'), copyField(ig.srt_url, 'SRT の URL'),
           h('div', { class: 'hint' }, 'streamid は ', h('code', null, ig.srt_streamid_format || 'publish:{stream_key}'))) : null,
-        ig.whip_url ? h('div', { class: 'field' }, h('strong', null, 'WHIP の URL'), copyField(ig.whip_url, 'WHIP の URL')) : null,
+        ig.whip_url ? h('div', { class: 'field' }, h('strong', null, 'WHIP の URL'), copyField(ig.whip_url, 'WHIP の URL'),
+          h('div', { class: 'hint' }, h('a', { href: `#/send?stream=${encodeURIComponent(stream.id)}` }, 'このブラウザのカメラ・画面から送る →'))) : null,
         h('div', { class: 'field' }, h('strong', null, 'ストリームキー'),
           key
             ? [h('div', { class: 'alert warn', role: 'alert' }, 'この鍵はもう表示されません。この画面を離れる前に控えてください。'),
@@ -109,6 +112,7 @@ export async function render(root, [id], { caps, navigate }) {
     renderHead();
     renderOverview();
     renderIngest();
+    if (captions) captions.render();
   };
 
   const reload = async () => {
@@ -119,6 +123,7 @@ export async function render(root, [id], { caps, navigate }) {
       if (JSON.stringify(stream) === before) return;
       renderHead();
       renderOverview();
+      if (captions) captions.render();
       // 取り込み先は変わったときだけ描き直す（写している途中のフォーカスを奪わない）
       if (JSON.stringify(stream.ingest) !== ingestBefore) renderIngest();
     } catch (e) {
@@ -312,6 +317,10 @@ export async function render(root, [id], { caps, navigate }) {
   }
 
   const container = stream.hls.container;
+  const inputsBox = ioSection('input', id);
+  const outputsBox = ioSection('output', id);
+  captions = captionsSection(() => stream, () => etag, (r) => { stream = r.data; etag = r.etag; renderAll(); });
+  const playback = playbackSection(id);
   root.append(
     h('nav', { class: 'small', 'aria-label': 'パンくず' }, h('a', { href: '#/streams' }, '配信'), ' / ', stream.name),
     head,
@@ -323,8 +332,16 @@ export async function render(root, [id], { caps, navigate }) {
         container === 'ts'
           ? h('div', { class: 'alert info small' }, 'この配信の HLS は MPEG-TS です。Safari 以外ではブラウザで再生できないので、URL を VLC などで開いてください。')
           : null,
+        container === 'ts' ? null : h('p', { class: 'small muted' }, '自動は WebRTC（WHEP、1 秒未満の遅延）を先に試し、運べないコーデック（AAC だけ・H.265 など）や配信前なら HLS にします。'),
         player.el),
       h('section', { class: 'panel', 'aria-labelledby': 's-sn' }, h('h2', { id: 's-sn' }, '今の画'), snapNow)),
+    h('div', { class: 'grid cols-2' },
+      h('section', { class: 'panel', 'aria-labelledby': 's-pb' }, h('h2', { id: 's-pb' }, '再生 URL'), playback.el),
+      h('section', { class: 'panel', 'aria-labelledby': 's-cc' }, h('h2', { id: 's-cc' }, '字幕と翻訳'), captions.el)),
+    h('section', { class: 'panel', 'aria-labelledby': 's-ii' }, h('h2', { id: 's-ii' }, '入力（pull）'),
+      h('p', { class: 'small muted' }, 'ノードが外から取りに行く入力です（RTMP・RTSP・SRT・HLS）。送り手が push するなら上の「取り込み」を使います。'), inputsBox.el),
+    h('section', { class: 'panel', 'aria-labelledby': 's-oo' }, h('h2', { id: 's-oo' }, '出力（push・PaaS）'),
+      h('p', { class: 'small muted' }, 'この配信をほかへ送ります（RTMP・SRT・WHIP、Cloudflare Stream・Amazon IVS・MediaLive）。鍵は秘密値にして資格情報で参照します。', h('a', { href: '#/secrets' }, '秘密値の管理')), outputsBox.el),
     h('section', { class: 'panel', 'aria-labelledby': 's-pl' }, h('h2', { id: 's-pl' }, '変換・資源の計画'),
       h('div', { class: 'toolbar' }, h('button', { onClick: loadPlan }, '計画を取る')), planBox),
     h('section', { class: 'panel', 'aria-labelledby': 's-ga' }, h('h2', { id: 's-ga' }, '保存した静止画',
