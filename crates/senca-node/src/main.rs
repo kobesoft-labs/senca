@@ -25,6 +25,7 @@ mod recorder;
 mod recovery;
 mod rtmp;
 mod rtsp_pull;
+mod rtsp_serve;
 mod srt;
 mod scheduler;
 mod secrets;
@@ -197,6 +198,19 @@ async fn run(cfg: Config) -> Result<(), String> {
                 let _ = sock.set_nodelay(true);
                 let app = app.clone();
                 tokio::spawn(async move { rtmp::serve(app, sock, peer.to_string()).await });
+            }
+        });
+    }
+    if let Some(addr) = cfg.rtsp_listen {
+        let l = TcpListener::bind(addr).await.map_err(|e| format!("rtsp {addr}: {e}"))?;
+        app.log(&format!("rtsp listening on {addr}"));
+        let app = app.clone();
+        tokio::spawn(async move {
+            loop {
+                let Ok((sock, peer)) = l.accept().await else { continue };
+                let _ = sock.set_nodelay(true);
+                let app = app.clone();
+                tokio::spawn(async move { rtsp_serve::serve(app, sock, peer.to_string()).await });
             }
         });
     }

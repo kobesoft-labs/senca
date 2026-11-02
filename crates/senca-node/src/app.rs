@@ -482,6 +482,9 @@ impl App {
         if kind == "live" {
             v["rtmp"] = json!(format!("{}/play/{id}?exp={exp}&sig={sig}", self.cfg.public.rtmp));
             v["whep"] = json!(format!("{http}/whep/{id}?exp={exp}&sig={sig}"));
+            if let Some(r) = &self.cfg.public.rtsp {
+                v["rtsp"] = json!(format!("{r}/live/{id}?exp={exp}&sig={sig}"));
+            }
         } else {
             v["mp4"] = Value::Null;
         }

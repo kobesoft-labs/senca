@@ -8,10 +8,10 @@ CODEC_LIB_DIR=${CODEC_LIB_DIR:-$HOME/tools/codeclibs/usr/lib/x86_64-linux-gnu}
 W=$(mktemp -d); NODE_PID=
 cleanup() { [ -n "$NODE_PID" ] && kill "$NODE_PID" 2>/dev/null || true; wait 2>/dev/null || true; [ -n "${KEEP:-}" ] && echo "kept $W" || rm -rf "$W"; }
 trap cleanup EXIT
-ONLY=${ONLY:-ABCDEFGHIJKL}
-HTTP=$(port); RTMP=$(port); SRT=$(port); API=http://127.0.0.1:$HTTP/api/v1
+ONLY=${ONLY:-ABCDEFGHIJKLM}
+HTTP=$(port); RTMP=$(port); SRT=$(port); RTSP=$(port); API=http://127.0.0.1:$HTTP/api/v1
 start_node() {
-  "$NODE_BIN" --data-dir "$W/data" --http 127.0.0.1:$HTTP --rtmp 127.0.0.1:$RTMP --srt 127.0.0.1:$SRT \
+  "$NODE_BIN" --data-dir "$W/data" --http 127.0.0.1:$HTTP --rtmp 127.0.0.1:$RTMP --srt 127.0.0.1:$SRT --rtsp 127.0.0.1:$RTSP --public-rtsp-url rtsp://127.0.0.1:$RTSP \
     --public-rtmp-url rtmp://127.0.0.1:$RTMP --public-http-url http://127.0.0.1:$HTTP --reconnect-grace "${GRACE:-3000}" \
     --codec-lib-dir "$CODEC_LIB_DIR" --codec-workers 2 --egress-allow 127.0.0.0/8 "$@" >>"$W/node.log" 2>&1 &
   NODE_PID=$!
@@ -355,5 +355,15 @@ if [[ $ONLY == *L* ]]; then
   grep -q "POST /v1/audio/transcriptions" "$W/cmock.err" && pass "L audio chunks sent to ASR without decoding" || fail "L no ASR calls"
   grep -q "mock-anthropic-key" "$W/node.log" && fail "L API key leaked" || pass "L API key not logged"
   wait $PUB || true; kill $CM 2>/dev/null || true
+fi
+if [[ $ONLY == *M* ]]; then
+  # M. RTSP サーバーの play（署名付き）: FFmpeg を RTSP のクライアントにして見る
+  new_stream m false
+  "$FFMPEG" -v error -re -i "$W/src.flv" -c copy -f flv rtmp://127.0.0.1:$RTMP/live/$(key m) & PUB=$!; sleep 2
+  R=$(api POST /streams/$(sid m)/playback-url | json "['playback']['rtsp']")
+  { timeout -k 5 15 "$FFMPEG" -v error -rtsp_transport tcp -i "$R" -t 5 -map 0:v -f framemd5 - 2>/dev/null || true; } | { grep -v "^#" || true; } | awk -F, '{gsub(/ /,"",$6); print $6}' > "$W/m.v"
+  wait $PUB || true
+  contiguous "$W/src.v" "$W/m.v" 90 && pass "M RTSP play (TCP) = contiguous source run ($(wc -l < "$W/m.v") frames)" || fail "M RTSP play mismatch ($(wc -l < "$W/m.v"))"
+  timeout -k 2 5 "$FFMPEG" -v error -rtsp_transport tcp -i "rtsp://127.0.0.1:$RTSP/live/$(sid m)?exp=1&sig=AAAA" -t 1 -f null - 2>/dev/null && fail "M bad signature accepted" || pass "M bad signature rejected"
 fi
 summary

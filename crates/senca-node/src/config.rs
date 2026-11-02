@@ -47,11 +47,13 @@ pub struct PublicUrls {
     pub rtmp: String,
     pub http: Option<String>,
     pub srt: Option<String>,
+    #[serde(default)]
+    pub rtsp: Option<String>,
 }
 
 impl Default for PublicUrls {
     fn default() -> Self {
-        PublicUrls { rtmp: "rtmp://127.0.0.1:1935".into(), http: Some("http://127.0.0.1:8080".into()), srt: None }
+        PublicUrls { rtmp: "rtmp://127.0.0.1:1935".into(), http: Some("http://127.0.0.1:8080".into()), srt: None, rtsp: None }
     }
 }
 
@@ -175,6 +177,7 @@ impl Config {
                 _ if flag("--public-rtmp-url") => cfg.public.rtmp = val()?,
                 _ if flag("--public-http-url") => cfg.public.http = Some(val()?),
                 _ if flag("--public-srt-url") => cfg.public.srt = Some(val()?),
+                _ if flag("--public-rtsp-url") => cfg.public.rtsp = Some(val()?),
                 _ if flag("--max-playback-ttl") => cfg.max_playback_ttl_secs = num(val()?)? as u32,
                 _ if flag("--reconnect-grace") => cfg.reconnect_grace_ms = num(val()?)?,
                 _ if flag("--record-queue") => cfg.record_queue = num(val()?)? as usize,
