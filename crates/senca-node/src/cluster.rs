@@ -80,7 +80,36 @@ fn frame(kind: u8, payload: &[u8]) -> Vec<u8> {
 }
 
 /// 起動する。`peers` は投票するノード（自分を含む）。データは `data_dir/control/raft/`。
+/// ノード間の mTLS の設定（無ければ平文の TCP。閉じたネットワークでだけ使う）。
+#[derive(Clone)]
+pub struct ClusterTls {
+    pub client: Arc<senca_tls::ClientConfig>,
+    pub server: Arc<senca_tls::ServerConfig>,
+}
+
+/// ノード間の証明書の名前（全ノードの証明書の SAN に入れる）。
+pub const CLUSTER_SERVER_NAME: &str = "senca-cluster";
+
+impl ClusterTls {
+    pub fn load(ca: &std::path::Path, cert: &std::path::Path, key: &std::path::Path) -> Result<ClusterTls, String> {
+        let mut roots = senca_tls::RootStore::new();
+        roots.add_pem_file(ca).map_err(|e| format!("cluster ca: {e:?}"))?;
+        let roots = Arc::new(roots);
+        let ck = Arc::new(senca_tls::CertifiedKey::from_pem_files(cert, key).map_err(|e| format!("cluster cert: {e:?}"))?);
+        let mut s = senca_tls::ServerConfig::new(ck.clone()).map_err(|e| format!("{e:?}"))?;
+        s.client_auth = senca_tls::ClientAuth::Required(roots.clone());
+        let mut c = senca_tls::ClientConfig::new(senca_tls::ServerVerifier::WebPki { roots, spki_pins: vec![] });
+        c.client_cert = Some(ck);
+        Ok(ClusterTls { client: Arc::new(c), server: Arc::new(s) })
+    }
+}
+
 pub fn start(app: Arc<App>, me: u64, listen: SocketAddr, peers: HashMap<u64, SocketAddr>, secret: String) -> Result<Arc<Cluster>, String> {
+    let tls = match app.cfg.cluster.as_ref().map(|c| (c.tls_ca.clone(), c.tls_cert.clone(), c.tls_key.clone())) {
+        Some((Some(ca), Some(cert), Some(key))) => Some(ClusterTls::load(&ca, &cert, &key)?),
+        Some((None, None, None)) | None => None,
+        _ => return Err("cluster: tls_ca・tls_cert・tls_key は 3 つそろえてください".into()),
+    };
     let dir = app.cfg.data_dir.join("control").join("raft");
     std::fs::create_dir_all(&dir).map_err(|e| e.to_string())?;
     let mut storage = FileStorage::open(&dir).map_err(|e| format!("raft storage: {e}"))?;
@@ -114,9 +143,9 @@ pub fn start(app: Arc<App>, me: u64, listen: SocketAddr, peers: HashMap<u64, Soc
         }
         let (otx, orx) = mpsc::channel(4096);
         outq.insert(id, otx);
-        rt.spawn(dial(app.clone(), me, id, addr, secret.clone(), orx));
+        rt.spawn(dial(app.clone(), me, id, addr, secret.clone(), orx, tls.clone()));
     }
-    rt.spawn(accept(app.clone(), listen, secret.clone(), tx.clone()));
+    rt.spawn(accept(app.clone(), listen, secret.clone(), tx.clone(), tls.clone()));
     let c = Arc::new(Cluster { me, tx: tx.clone(), leader: leader.clone(), peers });
     let app2 = app.clone();
     std::thread::Builder::new()
@@ -126,14 +155,14 @@ pub fn start(app: Arc<App>, me: u64, listen: SocketAddr, peers: HashMap<u64, Soc
     Ok(c)
 }
 
-async fn dial(app: Arc<App>, me: u64, peer: u64, addr: SocketAddr, secret: String, mut rx: mpsc::Receiver<Vec<u8>>) {
+async fn dial(app: Arc<App>, me: u64, peer: u64, addr: SocketAddr, secret: String, mut rx: mpsc::Receiver<Vec<u8>>, tls: Option<ClusterTls>) {
     let hello = {
         let mut h = me.to_be_bytes().to_vec();
         h.extend_from_slice(senca_control::secret::hash(&secret).as_bytes());
         frame(K_HELLO, &h)
     };
     loop {
-        let mut s = match tokio::net::TcpStream::connect(addr).await {
+        let tcp = match tokio::net::TcpStream::connect(addr).await {
             Ok(s) => s,
             Err(_) => {
                 // つながるまで溜めない（古いメッセージは捨てる）
@@ -142,7 +171,18 @@ async fn dial(app: Arc<App>, me: u64, peer: u64, addr: SocketAddr, secret: Strin
                 continue;
             }
         };
-        let _ = s.set_nodelay(true);
+        let _ = tcp.set_nodelay(true);
+        let mut s: Box<dyn crate::io::IoStream> = match &tls {
+            None => Box::new(tcp),
+            Some(t) => match crate::tls_io::connect(tcp, t.client.clone(), CLUSTER_SERVER_NAME).await {
+                Ok(s) => Box::new(s),
+                Err(e) => {
+                    app.log(&format!("cluster: mTLS to node {peer} failed: {e}"));
+                    tokio::time::sleep(Duration::from_millis(1000)).await;
+                    continue;
+                }
+            },
+        };
         if s.write_all(&hello).await.is_err() {
             continue;
         }
@@ -156,7 +196,7 @@ async fn dial(app: Arc<App>, me: u64, peer: u64, addr: SocketAddr, secret: Strin
     }
 }
 
-async fn accept(app: Arc<App>, listen: SocketAddr, secret: String, tx: smpsc::Sender<DriverMsg>) {
+async fn accept(app: Arc<App>, listen: SocketAddr, secret: String, tx: smpsc::Sender<DriverMsg>, tls: Option<ClusterTls>) {
     let l = match tokio::net::TcpListener::bind(listen).await {
         Ok(l) => l,
         Err(e) => {
@@ -166,11 +206,22 @@ async fn accept(app: Arc<App>, listen: SocketAddr, secret: String, tx: smpsc::Se
     };
     let want = senca_control::secret::hash(&secret);
     loop {
-        let Ok((mut s, peer)) = l.accept().await else { continue };
+        let Ok((tcp, peer)) = l.accept().await else { continue };
         let tx = tx.clone();
         let want = want.clone();
         let app = app.clone();
+        let tls = tls.clone();
         tokio::spawn(async move {
+            let mut s: Box<dyn crate::io::IoStream> = match tls {
+                None => Box::new(tcp),
+                Some(t) => match crate::tls_io::accept(tcp, t.server.clone()).await {
+                    Ok(s) => Box::new(s),
+                    Err(e) => {
+                        app.log(&format!("cluster: mTLS from {peer} refused: {e}"));
+                        return;
+                    }
+                },
+            };
             let mut hdr = [0u8; 5];
             let mut from = 0u64;
             loop {

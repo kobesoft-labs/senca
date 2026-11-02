@@ -6,11 +6,25 @@ W=$(mktemp -d); PIDS=()
 cleanup() { for p in "${PIDS[@]:-}"; do kill "$p" 2>/dev/null || true; done; wait 2>/dev/null || true; [ -n "${KEEP:-}" ] && echo "kept $W" || rm -rf "$W"; }
 trap cleanup EXIT
 echo "0123456789abcdef-cluster-secret" > "$W/secret"
+# CLUSTER_TLS=1 でノード間を mTLS にする（クラスタの認証局、SAN に senca-cluster）
+TLSCFG=""
+if [ -n "${CLUSTER_TLS:-}" ]; then
+  mkca() { openssl req -x509 -newkey ec -pkeyopt ec_paramgen_curve:P-256 -nodes -keyout "$W/$1.key" -out "$W/$1.pem" -days 2 -subj "/CN=$1" 2>/dev/null; }
+  mkcert() { # $1=name $2=ca
+    openssl req -newkey ec -pkeyopt ec_paramgen_curve:P-256 -nodes -keyout "$W/$1.key" -out "$W/$1.csr" -subj "/CN=$1" 2>/dev/null
+    printf "subjectAltName=DNS:senca-cluster\nbasicConstraints=CA:FALSE\nextendedKeyUsage=serverAuth,clientAuth\n" > "$W/$1.ext"
+    openssl x509 -req -in "$W/$1.csr" -CA "$W/$2.pem" -CAkey "$W/$2.key" -CAcreateserial -out "$W/$1.pem" -days 2 -extfile "$W/$1.ext" 2>/dev/null
+  }
+  mkca ca; mkca evilca
+  for i in 1 2 3; do mkcert n$i ca; done
+  mkcert intruder evilca
+fi
 declare -A HTTP RAFT RTMPP
 for i in 1 2 3; do HTTP[$i]=$(port); RAFT[$i]=$(port); RTMPP[$i]=$(port); done
 for i in 1 2 3; do
+  T=""; [ -n "${CLUSTER_TLS:-}" ] && T="\"tls_ca\": \"$W/ca.pem\", \"tls_cert\": \"$W/n$i.pem\", \"tls_key\": \"$W/n$i.key\","
   cat > "$W/c$i.json" <<J
-{"node_id": $i, "listen": "127.0.0.1:${RAFT[$i]}", "secret_file": "$W/secret",
+{"node_id": $i, "listen": "127.0.0.1:${RAFT[$i]}", "secret_file": "$W/secret", $T
  "peers": [{"id":1,"addr":"127.0.0.1:${RAFT[1]}","api":"http://127.0.0.1:${HTTP[1]}"},
            {"id":2,"addr":"127.0.0.1:${RAFT[2]}","api":"http://127.0.0.1:${HTTP[2]}"},
            {"id":3,"addr":"127.0.0.1:${RAFT[3]}","api":"http://127.0.0.1:${HTTP[3]}"}]}
@@ -75,4 +89,17 @@ wait $PUB3 || true; sleep 3
 URL1=$(api 1 POST /streams/$SID/playback-url | json "['playback']['hls']")
 frames "$URL1" v > "$W/m.v"
 contiguous "$W/src.v" "$W/m.v" 100 && pass "playback via node 1 follows redirect to new owner (node 3)" || fail "playback via redirect ($(wc -l < "$W/m.v"))"
+if [ -n "${CLUSTER_TLS:-}" ]; then
+  # 別の認証局の証明書を持つノードは、合言葉を知っていても入れない
+  python3 - "$W" <<'PY'
+import json,sys
+w=sys.argv[1]; c=json.load(open(f"{w}/c1.json")); c["tls_cert"]=f"{w}/intruder.pem"; c["tls_key"]=f"{w}/intruder.key"; c["node_id"]=1
+json.dump(c,open(f"{w}/evil.json","w"))
+PY
+  EH=$(port)
+  "$NODE_BIN" --data-dir "$W/evil" --http 127.0.0.1:$EH --rtmp off --cluster-config "$W/evil.json" >>"$W/evil.log" 2>&1 & EP=$!
+  sleep 3
+  grep -q "mTLS from .* refused\|mTLS .* failed" "$W"/n*.log "$W/evil.log" && pass "node with a certificate from another CA is refused" || fail "intruder not refused"
+  kill $EP 2>/dev/null || true
+fi
 summary

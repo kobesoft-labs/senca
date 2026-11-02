@@ -64,6 +64,13 @@ pub struct ClusterConfig {
     pub peers: Vec<ClusterPeer>,
     /// クラスタの合言葉のファイル（全ノードで同じ。ノード間の接続を認める）。
     pub secret_file: PathBuf,
+    /// mTLS（仕様 9.2「node 間は mTLS」）。クラスタの認証局と、このノードの証明書（SAN に `senca-cluster`）。
+    #[serde(default)]
+    pub tls_ca: Option<PathBuf>,
+    #[serde(default)]
+    pub tls_cert: Option<PathBuf>,
+    #[serde(default)]
+    pub tls_key: Option<PathBuf>,
 }
 
 #[derive(Debug, Clone, Deserialize)]
