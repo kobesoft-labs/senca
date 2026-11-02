@@ -1,0 +1,23 @@
+[package]
+name = "senca-relay"
+description = "Inter-node media relay for SENCA: multiplexed wire protocol, prioritised sender scheduler and subscription aggregation (ADR-0014)"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+
+[features]
+default = []
+# tokio のアダプター（RelayConnection・RelayEndpoint・RelayHub）
+tokio = ["dep:tokio"]
+
+[dependencies]
+bytes.workspace = true
+senca-core = { path = "../senca-core" }
+tokio = { workspace = true, optional = true }
+
+[dev-dependencies]
+senca-flv = { path = "../senca-flv" }
+tokio = { workspace = true }
+
+[lints]
+workspace = true
