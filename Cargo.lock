@@ -308,6 +308,16 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "b6d2cec3eae94f9f509c767b45932f1ada8350c4bdb85af2fcab4a3c14807981"
 
 [[package]]
+name = "md-5"
+version = "0.10.6"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "d89e7ee0cfbedfc4da3340218492196241d89eefb6dab27de5df917a6d2e78cf"
+dependencies = [
+ "cfg-if",
+ "digest",
+]
+
+[[package]]
 name = "memchr"
 version = "2.8.3"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -734,6 +744,32 @@ dependencies = [
  "senca-core",
  "senca-flv",
 ]
+
+[[package]]
+name = "senca-rtp"
+version = "0.1.0"
+dependencies = [
+ "bytes",
+ "senca-aac",
+ "senca-av1",
+ "senca-core",
+ "senca-h264",
+ "senca-h265",
+ "senca-opus",
+]
+
+[[package]]
+name = "senca-rtsp"
+version = "0.1.0"
+dependencies = [
+ "bytes",
+ "md-5",
+ "sha2",
+]
+
+[[package]]
+name = "senca-sdp"
+version = "0.1.0"
 
 [[package]]
 name = "serde"

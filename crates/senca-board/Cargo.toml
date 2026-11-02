@@ -1,0 +1,12 @@
+[package]
+name = "senca-board"
+description = "Blackboard / whiteboard correction (keystone, illumination, enhancement, change detection) for SENCA"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+
+[dependencies]
+senca-image = { path = "../senca-image" }
+
+[lints]
+workspace = true

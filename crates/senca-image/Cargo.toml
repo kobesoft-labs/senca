@@ -1,0 +1,12 @@
+[package]
+name = "senca-image"
+description = "In-house image primitives for SENCA: frames, color conversion, scaling, PNG/JPEG codecs, quality metrics"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+
+[dependencies]
+bytes.workspace = true
+
+[lints]
+workspace = true

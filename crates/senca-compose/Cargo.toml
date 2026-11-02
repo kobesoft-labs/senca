@@ -1,0 +1,12 @@
+[package]
+name = "senca-compose"
+description = "Video compositor and audio mixer for SENCA production"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+
+[dependencies]
+senca-image = { path = "../senca-image" }
+
+[lints]
+workspace = true
