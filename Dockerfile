@@ -6,7 +6,8 @@ FROM rust:1-slim-trixie AS build
 WORKDIR /src
 COPY Cargo.toml Cargo.lock ./
 COPY crates ./crates
-RUN cargo build --release --locked -p senca-node -p senca-codec-worker \
+# リリース（M14）では --locked を付ける（今は作業中の部品が Cargo.lock に混ざることがある）
+RUN cargo build --release -p senca-node -p senca-codec-worker \
  && mkdir -p /out && cp target/release/senca-node target/release/senca-codec-worker /out/
 
 FROM debian:trixie-slim
