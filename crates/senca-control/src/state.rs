@@ -323,6 +323,11 @@ impl ControlState {
                         if expect_generation.is_some_and(|g| g != cur.generation) {
                             return Err(stale());
                         }
+                        if cur.name != pipeline.name
+                            && self.pipelines.values().any(|p| p.tenant == pipeline.tenant && p.name == pipeline.name && p.id != pipeline.id)
+                        {
+                            return Err(conflict("同じ名前のパイプラインがあります"));
+                        }
                         pipeline.generation = cur.generation + 1;
                         pipeline.created_at_ms = cur.created_at_ms;
                     }

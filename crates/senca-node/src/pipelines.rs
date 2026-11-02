@@ -164,7 +164,7 @@ async fn run_once(app: &Arc<App>, p: &Pipeline, rt: &Mutex<PipelineRuntime>, con
                 Some(SessionEventItem::Pipeline(ev)) => {
                     let v = serde_json::to_value(&ev).unwrap_or(Value::Null);
                     let mut g = rt.lock().unwrap();
-                    match v.get("kind").or_else(|| v.get("type")).and_then(Value::as_str) {
+                    match v.get("event").or_else(|| v.get("kind")).or_else(|| v.get("type")).and_then(Value::as_str) {
                         Some(k) if k.contains("meter") => {
                             let node = v.get("node").and_then(Value::as_str).unwrap_or("").to_string();
                             g.meters.insert(node, v);

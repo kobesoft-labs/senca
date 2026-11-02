@@ -80,6 +80,18 @@ pub async fn start(app: Arc<App>, udp: SocketAddr) -> Result<Arc<Rtc>, String> {
     Ok(Arc::new(Rtc { tx, down_tx }))
 }
 
+/// セッション ID（推測できない 64 bit。DELETE・PATCH はこの ID を知っている者だけができる）。
+fn session_id(fallback: &mut u64) -> u64 {
+    let mut b = [0u8; 8];
+    match getrandom::fill(&mut b) {
+        Ok(()) => u64::from_le_bytes(b) >> 1 | 1,
+        Err(_) => {
+            *fallback += 1;
+            *fallback
+        }
+    }
+}
+
 fn epoch_ns() -> Option<i64> {
     SystemTime::now().duration_since(UNIX_EPOCH).ok().map(|d| d.as_nanos() as i64)
 }
@@ -115,7 +127,7 @@ async fn drive(app: Arc<App>, sock: UdpSocket, cert: DtlsCertificate, mut rx: mp
                         match r {
                             Ok((pc, ans)) => {
                                 let (utx, urx) = mpsc::channel(4096);
-                                let id = next_id; next_id += 1;
+                                let id = session_id(&mut next_id);
                                 sessions.insert(id, Session { pc, remote: None, up: Some(utx), send: HashMap::new(), send_cfg: HashMap::new(), pending: Vec::new(), last_key: HashMap::new(), connected: false, closed_at: None });
                                 let _ = reply.send(Ok((id, ans, urx)));
                             }
@@ -129,7 +141,7 @@ async fn drive(app: Arc<App>, sock: UdpSocket, cert: DtlsCertificate, mut rx: mp
                         });
                         match r {
                             Ok((pc, ans)) => {
-                                let id = next_id; next_id += 1;
+                                let id = session_id(&mut next_id);
                                 let mut send = HashMap::new();
                                 for t in pc.send_tracks() {
                                     send.entry(t.kind).or_insert(t.track);

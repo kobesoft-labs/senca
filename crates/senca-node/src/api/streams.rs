@@ -125,6 +125,19 @@ fn validate(s: &Stream) -> Result<(), Problem> {
     Ok(())
 }
 
+/// 字幕の資格情報の参照が、このテナントの秘密値を指しているか。
+fn check_caption_refs(ctx: &Ctx, c: &Option<CaptionSettings>) -> Result<(), Problem> {
+    let Some(c) = c else { return Ok(()) };
+    for r in [&c.asr_credential_ref, &c.translate_credential_ref].into_iter().flatten() {
+        let name = r.strip_prefix("secret:").ok_or_else(|| Problem::new(ProblemCode::InvalidConfig, "credential_ref は secret:{name} の形です"))?;
+        let core = ctx.control();
+        if !core.state.secrets.values().any(|s| s.tenant == ctx.tenant() && s.name == name) {
+            return Err(Problem::new(ProblemCode::InvalidConfig, format!("秘密値 {name} がありません")));
+        }
+    }
+    Ok(())
+}
+
 /// stream の表現。`key` は作成・作り直しの応答でだけ渡す。
 pub fn render(ctx: &Ctx, s: &Stream, key: Option<&str>) -> Value {
     let live = ctx.app.live_info(&s.id);
@@ -171,6 +184,7 @@ pub fn render(ctx: &Ctx, s: &Stream, key: Option<&str>) -> Value {
 pub fn create(ctx: &Ctx) -> ApiResult {
     ctx.require(Scope::StreamWrite)?;
     let b: StreamBody = ctx.body()?;
+    check_caption_refs(ctx, &b.captions)?;
     let key = secret::generate(KEY_PREFIX).map_err(|_| Problem::internal())?;
     let s = Stream {
         id: new_id()?,
@@ -252,6 +266,7 @@ pub fn patch(ctx: &Ctx, id: &str) -> ApiResult {
         s.desired_state = v;
     }
     if let Some(v) = p.captions {
+        check_caption_refs(ctx, &v)?;
         s.captions = v;
     }
     s.updated_at_ms = ctx.now_ms;

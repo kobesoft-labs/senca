@@ -358,6 +358,10 @@ pub fn delete_secret(ctx: &Ctx, id: &str) -> ApiResult {
         let core = ctx.control();
         core.state.inputs.values().any(|i| i.tenant == ctx.tenant() && i.credential_ref.as_deref() == Some(&r))
             || core.state.outputs.values().any(|o| o.tenant == ctx.tenant() && o.credential_ref.as_deref() == Some(&r))
+            || core.state.streams.values().any(|s| {
+                s.tenant == ctx.tenant()
+                    && s.captions.as_ref().is_some_and(|c| c.asr_credential_ref.as_deref() == Some(&r) || c.translate_credential_ref.as_deref() == Some(&r))
+            })
     };
     if used {
         return Err(Problem::new(ProblemCode::Conflict, "入力・出力が使っている秘密値は消せません"));
