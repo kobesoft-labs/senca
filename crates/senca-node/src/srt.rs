@@ -283,9 +283,13 @@ async fn caller(
     cred: &Option<String>,
     st: &Mutex<IoStatus>,
 ) -> Result<(senca_srt::Connection, UdpSocket, Instant), String> {
+    caller_with(app, url, crate::io::secret_value(app, tenant, cred)?, st).await
+}
+
+async fn caller_with(app: &Arc<App>, url: &str, passphrase: Option<String>, st: &Mutex<IoStatus>) -> Result<(senca_srt::Connection, UdpSocket, Instant), String> {
     let (host, port, sid, lat) = parse_srt_url(url).ok_or("srt:// の URL の形が違います")?;
     let addr = crate::egress::resolve(&host, port, &app.cfg.egress_allow).await?;
-    let pass = match crate::io::secret_value(app, tenant, cred)? {
+    let pass = match passphrase {
         Some(p) => Some(Passphrase::new(p).map_err(|_| "パスフレーズは 10〜79 文字")?),
         None => None,
     };
@@ -342,8 +346,15 @@ pub async fn pull(app: &Arc<App>, i: &Input, st: &Mutex<IoStatus>) -> Result<(),
 }
 
 pub async fn push(app: &Arc<App>, o: &Output, st: &Mutex<IoStatus>) -> Result<(), String> {
+    let url = o.url.clone().ok_or("url がありません")?;
+    let pass = crate::io::secret_value(app, &o.tenant, &o.credential_ref)?;
+    push_to(app, &o.stream, &url, pass, st).await
+}
+
+/// stream を外部の SRT（caller）へ送る（PaaS の受け口にも使う）。
+pub async fn push_to(app: &Arc<App>, stream: &str, url: &str, passphrase: Option<String>, st: &Mutex<IoStatus>) -> Result<(), String> {
     let hub = loop {
-        let h = app.hubs.lock().unwrap().get(&o.stream).cloned();
+        let h = app.hubs.lock().unwrap().get(stream).cloned();
         match h {
             Some(h) if h.is_live() => break h,
             _ => {
@@ -352,8 +363,7 @@ pub async fn push(app: &Arc<App>, o: &Output, st: &Mutex<IoStatus>) -> Result<()
             }
         }
     };
-    let url = o.url.clone().ok_or("url がありません")?;
-    let (mut c, sock, t0) = caller(app, &o.tenant, &url, &o.credential_ref, st).await?;
+    let (mut c, sock, t0) = caller_with(app, url, passphrase, st).await?;
     let now_us = || t0.elapsed().as_micros() as u64;
     let mut buf = vec![0u8; 2048];
     let mut sub: Option<crate::hub::Subscription> = None;

@@ -41,7 +41,7 @@ impl IoManager {
             let core = app.control.lock().unwrap();
             (
                 core.state.inputs.values().filter(|i| i.enabled).cloned().collect(),
-                core.state.outputs.values().filter(|o| o.enabled && o.protocol != "paas").cloned().collect(),
+                core.state.outputs.values().filter(|o| o.enabled).cloned().collect(),
             )
         };
         let mut want: HashMap<String, u64> = HashMap::new();
@@ -163,6 +163,7 @@ async fn run_output(app: Arc<App>, o: Output, st: Arc<Mutex<IoStatus>>) {
         let res = match o.protocol.as_str() {
             "rtmp_push" => rtmp_push(&app, &o, &st).await,
             "srt_push" => crate::srt::push(&app, &o, &st).await,
+            "paas" => crate::paas::run(&app, &o, &st).await,
             p => Err(format!("{p} はこのノードではまだ使えません")),
         };
         match res {
@@ -177,10 +178,19 @@ async fn run_output(app: Arc<App>, o: Output, st: Arc<Mutex<IoStatus>>) {
 }
 
 async fn rtmp_push(app: &Arc<App>, o: &Output, st: &Mutex<IoStatus>) -> Result<(), String> {
+    let url = o.url.clone().ok_or("url がありません")?;
+    let (_, _, _, _, key_in_url) = split_rtmp(&url).ok_or("url の形が違います")?;
+    let key = secret_value(app, &o.tenant, &o.credential_ref)?.or(key_in_url).ok_or("stream key がありません（url の最後か credential_ref）")?;
+    rtmp_push_to(app, &o.stream, &url, &key, st).await
+}
+
+/// stream を外部の RTMP(S) へ送る（PaaS の受け口にも使う）。
+pub async fn rtmp_push_to(app: &Arc<App>, stream: &str, url: &str, key: &str, st: &Mutex<IoStatus>) -> Result<(), String> {
     use senca_rtmp::{ClientConfig, ClientEvent, ClientMode, ClientSession, MediaType, Secret};
+    let key = key.to_string();
     // 配信が始まるまで待つ
     let hub = loop {
-        let h = app.hubs.lock().unwrap().get(&o.stream).cloned();
+        let h = app.hubs.lock().unwrap().get(stream).cloned();
         match h {
             Some(h) if h.is_live() => break h,
             _ => {
@@ -189,9 +199,7 @@ async fn rtmp_push(app: &Arc<App>, o: &Output, st: &Mutex<IoStatus>) -> Result<(
             }
         }
     };
-    let url = o.url.clone().ok_or("url がありません")?;
-    let (tls, host, port, rtmp_app, key_in_url) = split_rtmp(&url).ok_or("url の形が違います")?;
-    let key = secret_value(app, &o.tenant, &o.credential_ref)?.or(key_in_url).ok_or("stream key がありません（url の最後か credential_ref）")?;
+    let (tls, host, port, rtmp_app, _) = split_rtmp(url).ok_or("url の形が違います")?;
     set(st, "connecting", None);
     let mut sock = connect_stream(app, &host, port, tls).await?;
     let tc = format!("rtmp://{host}:{port}/{rtmp_app}");

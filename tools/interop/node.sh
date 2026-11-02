@@ -2,13 +2,13 @@
 # M1〜M3: RTMP → ライブ HLS・録画・VOD・MP4 書き出し・回収・RTMP play・API の契約。
 # 使い方: tools/interop/node.sh（KEEP=1 で作業場所を残す、ONLY=ABC で場面を絞る）
 source "$(dirname "$0")/lib.sh"
-[ -n "${NODE_BIN_PREBUILT:-}" ] || (cd "$ROOT" && cargo build -q -p senca-node -p senca-codec-worker -p senca-devtools && cargo build -q -p senca-rtmp --examples)
+[ -n "${NODE_BIN_PREBUILT:-}" ] || (cd "$ROOT" && cargo build -q -p senca-node -p senca-codec-worker -p senca-devtools && cargo build -q -p senca-rtmp -p senca-paas --examples)
 # ロイヤリティフリーのコーデック（dav1d など）の置き場所。無ければ G を飛ばす
 CODEC_LIB_DIR=${CODEC_LIB_DIR:-$HOME/tools/codeclibs/usr/lib/x86_64-linux-gnu}
 W=$(mktemp -d); NODE_PID=
 cleanup() { [ -n "$NODE_PID" ] && kill "$NODE_PID" 2>/dev/null || true; wait 2>/dev/null || true; [ -n "${KEEP:-}" ] && echo "kept $W" || rm -rf "$W"; }
 trap cleanup EXIT
-ONLY=${ONLY:-ABCDEFGHIJ}
+ONLY=${ONLY:-ABCDEFGHIJK}
 HTTP=$(port); RTMP=$(port); SRT=$(port); API=http://127.0.0.1:$HTTP/api/v1
 start_node() {
   "$NODE_BIN" --data-dir "$W/data" --http 127.0.0.1:$HTTP --rtmp 127.0.0.1:$RTMP --srt 127.0.0.1:$SRT \
@@ -316,5 +316,21 @@ J
   [ "$c" = 400 ] || [ "$c" = 503 ] && pass "J H.264 pipeline rejected with reasons ($c)" || fail "J bad pipeline $c"
   api DELETE /pipelines/$PID >/dev/null
   fi
+fi
+if [[ $ONLY == *K* ]]; then
+  # K. PaaS 連携（模擬の AWS MediaLive）: 外部の受け口の作成・記録・取得・後片付け、秘密が漏れない
+  MP=$(port)
+  "$TARGET/debug/examples/paas_mock" $MP > "$W/mock.out" 2> "$W/mock.err" & MOCK=$!
+  sleep 0.5
+  api POST /secrets -d '{"name":"aws","value":"AKIAMOCK0000000001:mock/secret+0000000000000000000000000000"}' >/dev/null
+  new_stream k false
+  O=$(api POST /streams/$(sid k)/outputs -d "{\"protocol\":\"paas\",\"provider\":\"aws_medialive\",\"credential_ref\":\"secret:aws\",\"options\":{\"region\":\"ap-northeast-1\",\"endpoint\":\"http://127.0.0.1:$MP\",\"allow_cidr\":\"0.0.0.0/0\"}}")
+  OID=$(echo "$O" | json "['id']")
+  for _ in $(seq 40); do r=$(api GET /outputs/$OID | json "['provider_resource']"); [ "$r" != None ] && break; sleep 0.25; done
+  [[ "$r" == input=*";sg="* ]] && pass "K external input + security group created and recorded ($r)" || fail "K provider_resource=$r"
+  c=$(api DELETE /outputs/$OID -o /dev/null -w '%{http_code}'); sleep 0.5
+  grep -q "DELETE /prod/inputs/" "$W/mock.err" && grep -q "DELETE /prod/inputSecurityGroups/" "$W/mock.err" && pass "K output delete cleans up external resources" || fail "K cleanup ($c)"
+  grep -q "mock/secret" "$W/node.log" "$W/data/control/log" && fail "K AWS secret leaked" || pass "K AWS secret not in logs/state"
+  kill $MOCK 2>/dev/null || true
 fi
 summary
