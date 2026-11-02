@@ -206,6 +206,16 @@ impl App {
         }
         let hub = self.hub(&stream);
         let p = hub.attach(transport, peer).await?;
+        // 分散: 所有権を取る（古い所有者は送り手を切る）
+        if self.cluster.get().is_some() {
+            let me = self.arc();
+            let sid = stream.id.clone();
+            tokio::task::spawn_blocking(move || {
+                if let Err(e) = me.propose(Command::ClaimStream { stream: sid.clone(), node: me.node_id.clone(), now_ms: crate::util::now_ms() }) {
+                    me.log(&format!("cluster: claim stream {sid} failed: {e}"));
+                }
+            });
+        }
         // 録画方針: publish で自動録画
         if stream.recording.enabled && !self.has_active_auto_recording(&stream.id) {
             let me = self.arc();
@@ -586,6 +596,49 @@ impl App {
     pub fn devices(&self) -> Value {
         let devs = self.codec.as_ref().map(|c| c.devices()).unwrap_or(json!({ "providers": [], "sandbox": null }));
         json!({ "nodes": [{ "node": self.node_id, "devices": devs }] })
+    }
+
+    /// 適用されたコマンドを見て、所有権を失った stream の送り手を切る（fencing）。
+    pub fn watch_ownership(self: &Arc<Self>) {
+        let mut rx = self.control.lock().unwrap().applied_tx.subscribe();
+        let me = self.clone();
+        tokio::spawn(async move {
+            loop {
+                match rx.recv().await {
+                    Ok(a) => {
+                        if let Command::ClaimStream { stream, node, .. } = a.cmd.as_ref()
+                            && *node != me.node_id
+                            && let Some(h) = me.hubs.lock().unwrap().get(stream)
+                        {
+                            h.evict();
+                        }
+                    }
+                    Err(tokio::sync::broadcast::error::RecvError::Lagged(_)) => {}
+                    Err(_) => return,
+                }
+            }
+        });
+    }
+
+    /// この stream の配信・録画を持つ別のノードの公開 URL（分散のとき）。
+    pub fn owner_base(&self, stream: &str) -> Option<String> {
+        self.cluster.get()?;
+        let core = self.control.lock().unwrap();
+        let o = core.state.owners.get(stream)?;
+        if o.node == self.node_id {
+            return None;
+        }
+        core.state.nodes.get(&o.node)?.media_addr.clone()
+    }
+
+    pub fn recording_base(&self, rec: &str) -> Option<String> {
+        self.cluster.get()?;
+        let core = self.control.lock().unwrap();
+        let n = core.state.recordings.get(rec)?.node.clone()?;
+        if n == self.node_id {
+            return None;
+        }
+        core.state.nodes.get(&n)?.media_addr.clone()
     }
 
     pub fn io_status(&self, id: &str) -> Option<crate::io::IoStatus> {

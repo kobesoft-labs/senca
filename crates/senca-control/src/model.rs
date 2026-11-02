@@ -346,3 +346,11 @@ pub struct SecretEntry {
     pub sealed: String,
     pub created_at_ms: i64,
 }
+
+/// stream の所有権（仕様 8.2）。送り手を受けているノードと、その fencing token。
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct Ownership {
+    pub node: String,
+    pub token: u64,
+    pub since_ms: i64,
+}

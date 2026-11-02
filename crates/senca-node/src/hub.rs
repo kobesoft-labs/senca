@@ -45,6 +45,8 @@ enum Msg {
     Au { id: u64, au: AccessUnit },
     Detach { id: u64, reason: String },
     UpdateStream(Box<Stream>),
+    /// 所有権が別のノードへ移った（fencing）。送り手を切る。
+    Evict,
     StartRecording { rec: String, not_before_ms: Option<i64>, reply: oneshot::Sender<Result<(), String>> },
     StopRecording { rec: String, end_at_ms: Option<i64>, reply: Option<oneshot::Sender<()>> },
     Shutdown { reply: oneshot::Sender<()> },
@@ -67,6 +69,8 @@ pub struct HubShared {
     pub configs: Mutex<BTreeMap<TrackId, CodecConfig>>,
     pub cache: Arc<LiveCache>,
     pub fanout: broadcast::Sender<HubEvent>,
+    /// 切られた送り手の ID（送り手はこれを見て接続を閉じる）。
+    pub evicted: std::sync::atomic::AtomicU64,
 }
 
 #[derive(Clone)]
@@ -96,6 +100,9 @@ impl Publisher {
         self.hub.tx.send(Msg::Config { id: self.id, track, config }).await.map_err(|_| "stream closed")
     }
     pub async fn access_unit(&self, au: AccessUnit) -> Result<(), &'static str> {
+        if self.hub.shared.evicted.load(std::sync::atomic::Ordering::Relaxed) == self.id {
+            return Err("所有権が別のノードへ移りました");
+        }
         self.hub.tx.send(Msg::Au { id: self.id, au }).await.map_err(|_| "stream closed")
     }
     pub async fn detach(mut self, reason: &str) {
@@ -189,6 +196,7 @@ pub fn spawn(stream: Stream, deps: HubDeps) -> HubHandle {
         configs: Mutex::new(BTreeMap::new()),
         cache: Arc::new(LiveCache::new()),
         fanout,
+        evicted: std::sync::atomic::AtomicU64::new(0),
     });
     let handle = HubHandle {
         tx,
@@ -229,6 +237,10 @@ impl HubHandle {
 
     pub fn is_live(&self) -> bool {
         self.shared.live.lock().unwrap().is_some()
+    }
+
+    pub fn evict(&self) {
+        let _ = self.tx.try_send(Msg::Evict);
     }
 
     pub fn update(&self, s: &Stream) {
@@ -394,6 +406,13 @@ async fn run(stream: Stream, mut rx: mpsc::Receiver<Msg>, shared: Arc<HubShared>
                 if stopped && st.publisher.is_some() {
                     // 送り手は接続側が hub の閉鎖で気づく。ここでは受け付けを止める
                     st.publisher = None;
+                    grace_deadline = Some(tokio::time::Instant::now());
+                }
+            }
+            Msg::Evict => {
+                if let Some((id, _)) = st.publisher.take() {
+                    shared.evicted.store(id, std::sync::atomic::Ordering::Relaxed);
+                    (deps.log)(&format!("stream {}: publisher evicted (ownership moved to another node)", st.stream.id));
                     grace_deadline = Some(tokio::time::Instant::now());
                 }
             }

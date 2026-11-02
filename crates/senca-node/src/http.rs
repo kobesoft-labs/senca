@@ -194,6 +194,16 @@ async fn signed(app: &Arc<App>, rest: &str, h: &RequestHead) -> Reply {
         return Reply::status(403);
     }
     let cors = |r: Reply| r.header("Access-Control-Allow-Origin", "*");
+    // 分散: データを持つノードへ案内する（仕事はデータのある所で。REQ-010 R10-9）
+    let elsewhere = match *kind {
+        "live" if app.live_cache(id).is_none() => app.owner_base(id),
+        "vod" if app.read_index(id).is_none() => app.recording_base(id),
+        _ => None,
+    };
+    if let Some(base) = elsewhere {
+        let q = h.query().map(|q| format!("?{q}")).unwrap_or_default();
+        return cors(Reply::status(307).header("Location", format!("{base}/s/{rest}{q}")));
+    }
     match *kind {
         "live" => cors(live(app, id, file, h).await),
         "vod" => cors(vod(app, id, file, h)),

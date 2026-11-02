@@ -6,17 +6,20 @@ W=$(mktemp -d); PIDS=()
 cleanup() { for p in "${PIDS[@]:-}"; do kill "$p" 2>/dev/null || true; done; wait 2>/dev/null || true; [ -n "${KEEP:-}" ] && echo "kept $W" || rm -rf "$W"; }
 trap cleanup EXIT
 echo "0123456789abcdef-cluster-secret" > "$W/secret"
-declare -A HTTP RAFT
-for i in 1 2 3; do HTTP[$i]=$(port); RAFT[$i]=$(port); done
+declare -A HTTP RAFT RTMPP
+for i in 1 2 3; do HTTP[$i]=$(port); RAFT[$i]=$(port); RTMPP[$i]=$(port); done
 for i in 1 2 3; do
   cat > "$W/c$i.json" <<J
 {"node_id": $i, "listen": "127.0.0.1:${RAFT[$i]}", "secret_file": "$W/secret",
- "peers": [{"id":1,"addr":"127.0.0.1:${RAFT[1]}"},{"id":2,"addr":"127.0.0.1:${RAFT[2]}"},{"id":3,"addr":"127.0.0.1:${RAFT[3]}"}]}
+ "peers": [{"id":1,"addr":"127.0.0.1:${RAFT[1]}","api":"http://127.0.0.1:${HTTP[1]}"},
+           {"id":2,"addr":"127.0.0.1:${RAFT[2]}","api":"http://127.0.0.1:${HTTP[2]}"},
+           {"id":3,"addr":"127.0.0.1:${RAFT[3]}","api":"http://127.0.0.1:${HTTP[3]}"}]}
 J
 done
 start() {
   local i=$1
-  "$NODE_BIN" --data-dir "$W/d$i" --http 127.0.0.1:${HTTP[$i]} --rtmp off --cluster-config "$W/c$i.json" --node-name n$i >>"$W/n$i.log" 2>&1 &
+  "$NODE_BIN" --data-dir "$W/d$i" --http 127.0.0.1:${HTTP[$i]} --rtmp 127.0.0.1:${RTMPP[$i]} --public-http-url http://127.0.0.1:${HTTP[$i]} \
+    --reconnect-grace 2000 --cluster-config "$W/c$i.json" --node-name n$i >>"$W/n$i.log" 2>&1 &
   PIDS[$i]=$!
 }
 ready() { for _ in $(seq 100); do curl -sf http://127.0.0.1:${HTTP[$1]}/readyz >/dev/null && return 0; sleep 0.2; done; return 1; }
@@ -54,4 +57,22 @@ ok=0; for _ in $(seq 40); do c=$(code 3 POST /streams -d '{"name":"healed"}'); [
 sleep 1
 n1=$(api 1 GET /streams | json "['items'].__len__()"); n3=$(api 3 GET /streams | json "['items'].__len__()")
 [ "$n1" = 5 ] && [ "$n3" = 5 ] && pass "all nodes converge (5 streams)" || fail "converge n1=$n1 n3=$n3"
+# メディア: 所有権と案内（node 2 で受けた配信を node 3 で見る → 307 で node 2 へ）
+"$FFMPEG" -v error -f lavfi -i testsrc2=size=320x240:rate=30 -t 8 -c:v libx264 -g 30 -f flv "$W/src.flv"
+frames "$W/src.flv" v > "$W/src.v"
+S=$(api 1 POST /streams -d '{"name":"media"}'); SID=$(echo "$S" | json "['id']"); KEY=$(echo "$S" | json "['ingest']['stream_key']")
+"$FFMPEG" -v error -re -i "$W/src.flv" -c copy -f flv rtmp://127.0.0.1:${RTMPP[2]}/live/$KEY & PUB=$!
+sleep 3
+URL3=$(api 3 POST /streams/$SID/playback-url | json "['playback']['hls']")
+loc=$(curl -s -o /dev/null -w '%{http_code} %{redirect_url}' "$URL3")
+case "$loc" in "307 http://127.0.0.1:${HTTP[2]}/"*) pass "viewer on node 3 redirected to owner node 2";; *) fail "redirect: $loc";; esac
+# 同じ stream を node 3 で受け直す → node 2 の送り手は切られる（fencing）
+"$FFMPEG" -v error -re -i "$W/src.flv" -c copy -f flv rtmp://127.0.0.1:${RTMPP[3]}/live/$KEY & PUB3=$!
+sleep 2
+rc=0; wait $PUB 2>/dev/null || rc=$?
+grep -q "publisher evicted" "$W/n2.log" && pass "old owner (node 2) evicted its publisher" || fail "node 2 did not evict (rc=$rc)"
+wait $PUB3 || true; sleep 3
+URL1=$(api 1 POST /streams/$SID/playback-url | json "['playback']['hls']")
+frames "$URL1" v > "$W/m.v"
+contiguous "$W/src.v" "$W/m.v" 100 && pass "playback via node 1 follows redirect to new owner (node 3)" || fail "playback via redirect ($(wc -l < "$W/m.v"))"
 summary

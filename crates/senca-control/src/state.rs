@@ -38,6 +38,9 @@ pub struct ControlState {
     pub outputs: BTreeMap<String, Output>,
     #[serde(default)]
     pub secrets: BTreeMap<String, SecretEntry>,
+    /// stream → 所有者（送り手を受けているノード）。
+    #[serde(default)]
+    pub owners: BTreeMap<String, Ownership>,
     /// 署名付き再生 URL の鍵（16 進）。作り直すと発行済みの URL がすべて無効になる。
     #[serde(default)]
     pub playback_key: Option<String>,
@@ -74,6 +77,10 @@ pub enum Command {
     PutOutput { output: Output },
     DeleteOutput { tenant: String, id: String },
     PutSecret { secret: SecretEntry },
+    /// stream の所有権を取る（新しい fencing token を払い出す。古い所有者は送り手を切る）。
+    ClaimStream { stream: String, node: String, now_ms: i64 },
+    /// 所有権を手放す（token が今のものと同じときだけ）。
+    ReleaseStream { stream: String, token: u64 },
     DeleteSecret { tenant: String, id: String },
     /// 新しい fencing token を払い出す（結果は `fencing_counter`）。
     NextFencingToken,
@@ -138,6 +145,7 @@ impl ControlState {
                 self.schedules.retain(|_, s| s.stream != id);
                 self.inputs.retain(|_, i| i.stream != id);
                 self.outputs.retain(|_, o| o.stream != id);
+                self.owners.remove(&id);
             }
             Command::CreateToken { token } => {
                 if self.tokens.contains_key(&token.id) {
@@ -301,6 +309,18 @@ impl ControlState {
             Command::DeleteSecret { tenant, id } => {
                 self.secrets.get(&id).filter(|s| s.tenant == tenant).ok_or_else(Problem::not_found)?;
                 self.secrets.remove(&id);
+            }
+            Command::ClaimStream { stream, node, now_ms } => {
+                if !self.streams.contains_key(&stream) {
+                    return Err(Problem::not_found());
+                }
+                self.fencing_counter += 1;
+                self.owners.insert(stream, Ownership { node, token: self.fencing_counter, since_ms: now_ms });
+            }
+            Command::ReleaseStream { stream, token } => {
+                if self.owners.get(&stream).is_some_and(|o| o.token == token) {
+                    self.owners.remove(&stream);
+                }
             }
             Command::NextFencingToken => {
                 self.fencing_counter += 1;

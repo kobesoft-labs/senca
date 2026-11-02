@@ -118,6 +118,7 @@ async fn run(cfg: Config) -> Result<(), String> {
         let peers = cc.peers.iter().map(|p| (p.id, p.addr)).collect();
         let c = cluster::start(app.clone(), cc.node_id, cc.listen, peers, secret)?;
         let _ = app.cluster.set(c);
+        app.watch_ownership();
         app.log(&format!("cluster: node {} started ({} voters)", cc.node_id, cc.peers.len()));
         // リーダーが決まってから初期化（管理者トークンは ID が最小のノードだけが作る）
         let a = app.clone();
