@@ -826,6 +826,21 @@ dependencies = [
 ]
 
 [[package]]
+name = "senca-caption"
+version = "0.1.0"
+dependencies = [
+ "bytes",
+ "senca-aac",
+ "senca-core",
+ "senca-fmp4",
+ "senca-hls",
+ "senca-http",
+ "senca-opus",
+ "serde",
+ "serde_json",
+]
+
+[[package]]
 name = "senca-codec"
 version = "0.1.0"
 dependencies = [
@@ -1016,6 +1031,22 @@ version = "0.1.0"
 dependencies = [
  "bytes",
  "senca-core",
+]
+
+[[package]]
+name = "senca-pipeline"
+version = "0.1.0"
+dependencies = [
+ "base64",
+ "bytes",
+ "senca-board",
+ "senca-codec",
+ "senca-compose",
+ "senca-core",
+ "senca-fmp4",
+ "senca-image",
+ "serde",
+ "serde_json",
 ]
 
 [[package]]

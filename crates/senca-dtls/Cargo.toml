@@ -1,0 +1,23 @@
+[package]
+name = "senca-dtls"
+description = "Sans-io DTLS 1.2 (RFC 6347) for WebRTC DTLS-SRTP"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+
+[dependencies]
+bytes.workspace = true
+sha2 = { workspace = true, features = ["oid"] }
+subtle.workspace = true
+getrandom.workspace = true
+hmac = "0.12"
+aes-gcm = { version = "0.10", default-features = false, features = ["aes", "alloc"] }
+chacha20poly1305 = { version = "0.10", default-features = false, features = ["alloc"] }
+p256 = { version = "0.13", default-features = false, features = ["ecdsa", "ecdh", "pkcs8", "pem", "std"] }
+x25519-dalek = { version = "2", default-features = false, features = ["zeroize"] }
+x509-cert = { version = "0.2", default-features = false, features = ["std", "builder", "pem"] }
+der = { version = "0.7", features = ["std"] }
+zeroize = { version = "1", features = ["derive"] }
+
+[lints]
+workspace = true

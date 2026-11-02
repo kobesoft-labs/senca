@@ -1,0 +1,19 @@
+[package]
+name = "senca-rtp"
+description = "Sans-io RTP/RTCP, jitter buffer and RTP payload formats for SENCA"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+
+[dependencies]
+bytes.workspace = true
+base64.workspace = true
+senca-core = { path = "../senca-core" }
+senca-h264 = { path = "../senca-h264" }
+senca-h265 = { path = "../senca-h265" }
+senca-aac = { path = "../senca-aac" }
+senca-opus = { path = "../senca-opus" }
+senca-av1 = { path = "../senca-av1" }
+
+[lints]
+workspace = true

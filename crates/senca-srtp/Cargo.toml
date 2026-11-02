@@ -1,0 +1,21 @@
+[package]
+name = "senca-srtp"
+description = "Sans-io SRTP/SRTCP (RFC 3711, RFC 7714) for SENCA"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+
+[dependencies]
+subtle.workspace = true
+hmac = "0.12"
+sha1 = "0.10"
+aes = "0.8"
+ctr = "0.9"
+aes-gcm = { version = "0.10", default-features = false, features = ["aes", "alloc"] }
+zeroize = { version = "1", features = ["derive"] }
+
+[dev-dependencies]
+base64.workspace = true
+
+[lints]
+workspace = true

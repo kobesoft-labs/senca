@@ -16,6 +16,9 @@
 | aes / ctr / aes-gcm / chacha20poly1305 | 共通鍵暗号（RustCrypto） | MIT/Apache-2.0 |
 | p256 / x25519-dalek / ed25519-dalek / rsa | 署名・鍵交換（RustCrypto・dalek）。JWT は ed25519-dalek 2・p256 0.13・rsa 0.9 | MIT/Apache-2.0、BSD-3 |
 | rustls-webpki | X.509 の証明書パス検証（仕様 2.1 で外部利用可） | ISC |
+| x509-cert / der | 自己署名証明書の生成（DTLS）と証明書の解析（RustCrypto） | MIT/Apache-2.0 |
+| pbkdf2 / aes-kw | SRT の鍵導出（PBKDF2-HMAC-SHA1）と鍵の包み（RFC 3394） | MIT/Apache-2.0 |
+| zeroize | 鍵の消去 | MIT/Apache-2.0 |
 | libloading | 外部コーデック・ハードウェア SDK の動的読み込み（codec worker だけ） | ISC |
 | libc | codec worker のサンドボックス（prctl・setrlimit・seccomp・Landlock） | MIT/Apache-2.0 |
 | base64 / subtle | トークン・署名の符号化、定数時間比較 | MIT/Apache-2.0、BSD-3 |

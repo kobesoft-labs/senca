@@ -1,0 +1,11 @@
+[package]
+name = "senca-sdp"
+description = "SDP parsing/serialization and JSEP-lite offer/answer negotiation for SENCA"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+
+[dependencies]
+
+[lints]
+workspace = true

@@ -26,5 +26,8 @@
 | senca-codec / senca-codec-worker | コーデックの抽象と提供者（GPU ベンダー・ロイヤリティフリー）、隔離した worker プロセス |
 | senca-image / senca-board / senca-compose | 画像処理、板書補正、合成・音声ミキサー |
 | senca-stun / senca-ice / senca-turn | STUN、ICE（full・lite、trickle、consent）、TURN のサーバーとクライアント |
+| senca-srt | SRT（HSv5、caller/listener、ARQ、TSBPD、AES-CTR/GCM、鍵の更新） |
+| senca-rtp / senca-sdp / senca-rtsp | RTP/RTCP と各コーデックのペイロード形式、SDP と offer/answer、RTSP 1.0 のクライアントとサーバー |
+| senca-dtls / senca-srtp | DTLS 1.2（WebRTC 用）と SRTP/SRTCP（AES-CM・AEAD-GCM） |
 | senca-raft | 自前の Raft（PreVote・CheckQuorum・joint consensus・ReadIndex・スナップショット、ファイルの保存） |
 | senca-node | 実行ファイル |
