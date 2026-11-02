@@ -1,0 +1,18 @@
+[package]
+name = "senca-turn"
+description = "Sans-io TURN (RFC 8656) server and client for SENCA"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+
+[dependencies]
+bytes.workspace = true
+getrandom.workspace = true
+subtle.workspace = true
+sha2.workspace = true
+hmac = "0.12"
+sha1 = "0.10"
+senca-stun = { path = "../senca-stun" }
+
+[lints]
+workspace = true

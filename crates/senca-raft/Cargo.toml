@@ -1,0 +1,12 @@
+[package]
+name = "senca-raft"
+description = "SENCA control plane consensus: sans-io Raft (PreVote, CheckQuorum, joint consensus, ReadIndex, snapshots) with file storage and a binary codec"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+
+[dependencies]
+bytes.workspace = true
+
+[lints]
+workspace = true

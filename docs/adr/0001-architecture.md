@@ -25,4 +25,6 @@
 | senca-control | 制御状態（決定的な状態機械）・認証・予約の計算 |
 | senca-codec / senca-codec-worker | コーデックの抽象と提供者（GPU ベンダー・ロイヤリティフリー）、隔離した worker プロセス |
 | senca-image / senca-board / senca-compose | 画像処理、板書補正、合成・音声ミキサー |
+| senca-stun / senca-ice / senca-turn | STUN、ICE（full・lite、trickle、consent）、TURN のサーバーとクライアント |
+| senca-raft | 自前の Raft（PreVote・CheckQuorum・joint consensus・ReadIndex・スナップショット、ファイルの保存） |
 | senca-node | 実行ファイル |

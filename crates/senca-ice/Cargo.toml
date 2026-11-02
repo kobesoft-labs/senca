@@ -1,0 +1,15 @@
+[package]
+name = "senca-ice"
+description = "Sans-io ICE (RFC 8445) agent with trickle ICE and consent freshness for SENCA"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+
+[dependencies]
+bytes.workspace = true
+getrandom.workspace = true
+senca-stun = { path = "../senca-stun" }
+senca-turn = { path = "../senca-turn" }
+
+[lints]
+workspace = true

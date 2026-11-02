@@ -1,0 +1,18 @@
+[package]
+name = "senca-stun"
+description = "Sans-io STUN (RFC 8489) message codec, integrity, credentials and retransmission timers for SENCA"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+
+[dependencies]
+bytes.workspace = true
+getrandom.workspace = true
+subtle.workspace = true
+sha2.workspace = true
+hmac = "0.12"
+sha1 = "0.10"
+md-5 = "0.10"
+
+[lints]
+workspace = true
