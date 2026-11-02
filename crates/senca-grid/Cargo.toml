@@ -1,0 +1,15 @@
+[package]
+name = "senca-grid"
+description = "SENCA grid scheduler: sans-io deterministic placement, degradation, failure detection and fencing (ADR-0013)"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+
+[dependencies]
+serde.workspace = true
+
+[dev-dependencies]
+serde_json.workspace = true
+
+[lints]
+workspace = true
