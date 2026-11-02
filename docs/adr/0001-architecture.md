@@ -28,6 +28,7 @@
 | senca-stun / senca-ice / senca-turn | STUN、ICE（full・lite、trickle、consent）、TURN のサーバーとクライアント |
 | senca-srt | SRT（HSv5、caller/listener、ARQ、TSBPD、AES-CTR/GCM、鍵の更新） |
 | senca-rtp / senca-sdp / senca-rtsp | RTP/RTCP と各コーデックのペイロード形式、SDP と offer/answer、RTSP 1.0 のクライアントとサーバー |
+| senca-tls | TLS 1.3（クライアント・サーバー、mTLS、チケット、QUIC 向けの使い方） |
 | senca-dtls / senca-srtp | DTLS 1.2（WebRTC 用）と SRTP/SRTCP（AES-CM・AEAD-GCM） |
 | senca-raft | 自前の Raft（PreVote・CheckQuorum・joint consensus・ReadIndex・スナップショット、ファイルの保存） |
 | senca-caption | 字幕（復号しない音声の切り出し、音声認識・翻訳のアダプター、WebVTT・HLS 字幕） |

@@ -21,6 +21,7 @@ dependencies = [
  "cfg-if",
  "cipher",
  "cpufeatures",
+ "zeroize",
 ]
 
 [[package]]
@@ -35,6 +36,7 @@ dependencies = [
  "ctr",
  "ghash",
  "subtle",
+ "zeroize",
 ]
 
 [[package]]
@@ -1042,6 +1044,18 @@ dependencies = [
 ]
 
 [[package]]
+name = "senca-paas"
+version = "0.1.0"
+dependencies = [
+ "bytes",
+ "hmac",
+ "senca-http",
+ "serde_json",
+ "sha2",
+ "subtle",
+]
+
+[[package]]
 name = "senca-pipeline"
 version = "0.1.0"
 dependencies = [
@@ -1176,6 +1190,7 @@ dependencies = [
 name = "senca-tls"
 version = "0.1.0"
 dependencies = [
+ "aes",
  "aes-gcm",
  "chacha20poly1305",
  "ed25519-dalek",
@@ -1202,6 +1217,26 @@ dependencies = [
  "hmac",
  "senca-stun",
  "sha1",
+ "sha2",
+ "subtle",
+]
+
+[[package]]
+name = "senca-webrtc"
+version = "0.1.0"
+dependencies = [
+ "bytes",
+ "getrandom 0.3.4",
+ "senca-av1",
+ "senca-core",
+ "senca-dtls",
+ "senca-h264",
+ "senca-ice",
+ "senca-rtp",
+ "senca-sctp",
+ "senca-sdp",
+ "senca-srtp",
+ "senca-stun",
  "sha2",
  "subtle",
 ]

@@ -15,7 +15,8 @@
 | sha1 / sha2 / hmac / hkdf / md-5 | ハッシュ・MAC・鍵導出（RustCrypto）。MD5 は STUN/TURN の長期資格情報の鍵（RFC 8489）と RTSP の Digest 認証だけ | MIT/Apache-2.0 |
 | aes / ctr / aes-gcm / chacha20poly1305 | 共通鍵暗号（RustCrypto） | MIT/Apache-2.0 |
 | p256 / x25519-dalek / ed25519-dalek / rsa | 署名・鍵交換（RustCrypto・dalek）。JWT は ed25519-dalek 2・p256 0.13・rsa 0.9 | MIT/Apache-2.0、BSD-3 |
-| rustls-webpki | X.509 の証明書パス検証（仕様 2.1 で外部利用可） | ISC |
+| rustls-webpki / rustls-pki-types | X.509 の証明書パス検証（仕様 2.1 で外部利用可）。署名の検証は RustCrypto で行う（ring・aws-lc は使わない） | ISC、MIT/Apache-2.0 |
+| p384 | P-384 の証明書チェーンの検証（Let's Encrypt などの中間証明書） | MIT/Apache-2.0 |
 | x509-cert / der | 自己署名証明書の生成（DTLS）と証明書の解析（RustCrypto） | MIT/Apache-2.0 |
 | pbkdf2 / aes-kw | SRT の鍵導出（PBKDF2-HMAC-SHA1）と鍵の包み（RFC 3394） | MIT/Apache-2.0 |
 | zeroize | 鍵の消去 | MIT/Apache-2.0 |
