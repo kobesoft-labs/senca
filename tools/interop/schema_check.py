@@ -451,6 +451,9 @@ class Live:
         rec_ids = self.publish_and_record(sid)
         self.recordings(sid, rec_ids, sw)
         self.schedules(sid)
+        self.captions()
+        self.io(ro)
+        self.pipelines(ro)
         self.events(sub_tok)
         self.methods()
         self.cleanup(sid, other, ro)
@@ -648,6 +651,7 @@ class Live:
                     base = path.rsplit("/", 1)[0]
                     self.call_other("GET", f"{base}/{segs[0]}", "ライブ HLS セグメント", 200)
                 self.call_other("GET", path.rsplit("/", 1)[0] + "/nosuch.ts", "ライブ HLS 無いセグメント", 404)
+                self.call_other("GET", path.rsplit("/", 1)[0] + "/master.m3u8", "ライブ 字幕の master（captions なし）", 404)
                 parts = path.split("/")
                 parts[3] = "AAAAAAAAAAAAAAAAAAAAAA"
                 self.call_other("GET", "/".join(parts), "ライブ HLS 署名違い", 403)
@@ -810,6 +814,335 @@ class Live:
         self.call("DELETE", f"/schedules/{scid}", "予約の削除 古い If-Match", 412, headers={"If-Match": '"99"'})
         self.call("DELETE", f"/schedules/{scid}", "予約の削除", 204)
         self.call("DELETE", f"/schedules/{scid}", "予約の削除 2 回目", 404)
+
+    # ------------------------------------------------------------ 字幕・入力・出力・秘密値・パイプライン
+
+    def mk_stream(self, name, **kw):
+        s, _, b = self.raw("POST", "/api/v1/streams", body=dict(name=name, **kw))
+        if s != 201:
+            bad(f"準備: stream {name} を作れない（{s} {b[:200]!r}）")
+            return None
+        return json.loads(b)["id"]
+
+    def captions(self):
+        cap = {"asr_provider": "whisper_cpp", "asr_endpoint": "http://127.0.0.1:9/inference", "language": "ja"}
+        s, h, st = self.call("POST", "/streams", "stream 字幕つきの作成", 201, body={"name": "cap", "desired_state": "stopped", "captions": cap})
+        if s != 201:
+            return
+        cid = st["id"]
+        check(st.get("captions", {}).get("asr_provider") == "whisper_cpp" and st["captions"].get("targets") == [],
+              "captions が既定値つきで返る", f"{st.get('captions')}")
+        self.call("POST", "/streams", "captions asr_provider の値", 400, body={"name": "cap2", "captions": dict(cap, asr_provider="x")})
+        self.call("POST", "/streams", "captions asr_endpoint の形", 400, body={"name": "cap2", "captions": dict(cap, asr_endpoint="nope")})
+        self.call("POST", "/streams", "captions 翻訳に endpoint が無い", 400, body={"name": "cap2", "captions": dict(cap, translate_provider="deepl")})
+        self.call("POST", "/streams", "captions 言語の形", 400, body={"name": "cap2", "captions": dict(cap, targets=["english-us"])})
+        self.call("POST", "/streams", "captions 未知のフィールド", 400, body={"name": "cap2", "captions": dict(cap, foo=1)})
+        self.call("POST", "/streams", "captions 必須が無い", 400, body={"name": "cap2", "captions": {"asr_provider": "openai"}})
+        full = dict(cap, asr_provider="openai", asr_endpoint="https://api.example/v1", asr_model="whisper-1",
+                    translate_provider="anthropic", translate_endpoint="https://api.example/tr", translate_model="m",
+                    asr_credential_ref="secret:cap-key", targets=["en", "zh-Hant"])
+        s, _, ck = self.call("POST", "/secrets", "秘密値の登録（字幕用）", 201, body={"name": "cap-key", "value": "k"})
+        self.call("PATCH", f"/streams/{cid}", "PATCH captions 無い秘密値", 400, headers={"If-Match": '"1"'},
+                  body={"captions": dict(full, asr_credential_ref="secret:nosuch")})
+        self.call("POST", "/streams", "captions credential_ref の形", 400, body={"name": "cap2", "captions": dict(cap, asr_credential_ref="cap-key")})
+        s, h, p = self.call("PATCH", f"/streams/{cid}", "PATCH captions の置き換え", 200, headers={"If-Match": '"1"'}, body={"captions": full})
+        check(isinstance(p, dict) and (p.get("captions") or {}).get("targets") == ["en", "zh-Hant"], "PATCH で captions が置き換わる")
+        self.call("PATCH", f"/streams/{cid}", "PATCH captions 不正", 400, headers={"If-Match": h.get("etag", '"2"')},
+                  body={"captions": dict(full, translate_provider="babelfish")})
+        if isinstance(ck, dict) and ck.get("id"):
+            self.call("DELETE", f"/secrets/{ck['id']}", "字幕が使っている秘密値は消せない", 409)
+        s, h, p = self.call("PATCH", f"/streams/{cid}", "PATCH captions: null", 200, headers={"If-Match": h.get("etag", '"2"')}, body={"captions": None})
+        check(isinstance(p, dict) and p.get("captions") is None, "captions: null で字幕を消す")
+        if isinstance(ck, dict) and ck.get("id"):
+            self.call("DELETE", f"/secrets/{ck['id']}", "字幕用の秘密値の削除", 204)
+        self.raw("DELETE", f"/api/v1/streams/{cid}")
+
+    def io(self, ro):
+        sid = self.mk_stream("io")
+        if not sid:
+            return
+        secret_value = "s3cr3t-VALUE-for-openapi-check"
+        # 秘密値
+        s, h, sec = self.call("POST", "/secrets", "秘密値の登録", 201, body={"name": "pull-key", "value": secret_value})
+        check(s == 201 and h.get("location") == f"/api/v1/secrets/{sec['id']}" and sec.get("ref") == "secret:pull-key"
+              and secret_value not in json.dumps(sec), "秘密値の Location・ref、値は返らない")
+        sec_id = sec["id"] if s == 201 else "x"
+        s, h, s2 = self.call("POST", "/secrets", "秘密値（消す用）", 201, headers={"Idempotency-Key": "sec-1"}, body={"name": "tmp-key", "value": "v"})
+        s, h, s3 = self.call("POST", "/secrets", "秘密値 Idempotency 再送", 201, headers={"Idempotency-Key": "sec-1"}, body={"name": "tmp-key", "value": "v"})
+        check(h.get("idempotency-replayed") == "true" and s3.get("id") == s2.get("id"), "秘密値の再送は同じ id")
+        self.call("POST", "/secrets", "秘密値 名前の重複", 409, body={"name": "pull-key", "value": "x"})
+        self.call("POST", "/secrets", "秘密値 名前の形", 400, body={"name": ".x", "value": "x"})
+        self.call("POST", "/secrets", "秘密値 値が空", 400, body={"name": "e", "value": ""})
+        self.call("POST", "/secrets", "秘密値 値が長すぎ", 400, body={"name": "e", "value": "x" * 8193})
+        self.call("POST", "/secrets", "秘密値 未知のフィールド", 400, body={"name": "e", "value": "x", "x": 1})
+        self.call("POST", "/secrets", "秘密値 Content-Type 違い", 415, body=b"{}", headers={"Content-Type": "text/plain"})
+        self.call("POST", "/secrets", "秘密値 stream:read では登録できない", 403, token=ro, body={"name": "e", "value": "x"})
+        s, _, lst = self.call("GET", "/secrets", "秘密値の一覧", 200)
+        check(isinstance(lst, dict) and secret_value not in json.dumps(lst) and len(lst.get("items", [])) >= 2, "一覧に値は無い")
+        self.call("GET", "/secrets?limit=1", "秘密値の一覧 クエリ（読まない）", 200)
+        self.call("GET", "/secrets", "秘密値の一覧 stream:read", 403, token=ro)
+        self.call("DELETE", f"/secrets/{s2['id']}", "秘密値の削除", 204)
+        self.call("DELETE", f"/secrets/{s2['id']}", "秘密値の削除 2 回目", 404)
+        self.call("DELETE", "/secrets/nosuch", "秘密値の削除 無い", 404)
+        self.call("DELETE", f"/secrets/{sec_id}", "秘密値の削除 stream:read", 403, token=ro)
+
+        # 入力
+        body = {"protocol": "rtmp_pull", "url": "rtmp://127.0.0.1:1/live/x", "credential_ref": "secret:pull-key",
+                "options": {"note": "a"}}
+        s, h, inp = self.call("POST", f"/streams/{sid}/inputs", "入力の作成 rtmp_pull", 201, body=body)
+        iid = inp["id"] if s == 201 else "x"
+        check(s == 201 and h.get("location") == f"/api/v1/inputs/{iid}" and h.get("etag") == '"1"', "入力の Location・ETag")
+        self.call("POST", f"/streams/{sid}/inputs", "入力 知らない protocol", 400, body=dict(body, protocol="ftp_pull"))
+        self.call("POST", f"/streams/{sid}/inputs", "入力 URL に資格情報", 400, body=dict(body, url="rtmp://user:pass@127.0.0.1/live/x"))
+        self.call("POST", f"/streams/{sid}/inputs", "入力 スキーム違い", 400, body=dict(body, url="http://127.0.0.1/live"))
+        self.call("POST", f"/streams/{sid}/inputs", "入力 ホストが無い", 400, body={"protocol": "rtsp_pull", "url": "rtsp:///x"})
+        self.call("POST", f"/streams/{sid}/inputs", "入力 無い秘密値", 400, body=dict(body, credential_ref="secret:nosuch"))
+        self.call("POST", f"/streams/{sid}/inputs", "入力 credential_ref の形", 400, body=dict(body, credential_ref="pull-key"))
+        self.call("POST", f"/streams/{sid}/inputs", "入力 options が多すぎ", 400, body=dict(body, options={f"k{i}": "v" for i in range(17)}))
+        self.call("POST", f"/streams/{sid}/inputs", "入力 未知のフィールド", 400, body=dict(body, x=1))
+        self.call("POST", f"/streams/{sid}/inputs", "入力 必須が無い", 400, body={"protocol": "rtmp_pull"})
+        self.call("POST", f"/streams/{sid}/inputs", "入力 Content-Type 違い", 415, body=b"{}", headers={"Content-Type": "text/plain"})
+        self.call("POST", "/streams/nosuch/inputs", "入力 stream が無い", 404, body=body)
+        self.call("POST", f"/streams/{sid}/inputs", "入力 stream:read では作れない", 403, token=ro, body=body)
+        # SSRF: リンクローカルの宛先は接続時に拒否する
+        s, _, ss = self.call("POST", f"/streams/{sid}/inputs", "入力の作成 hls_pull（169.254.169.254）", 201,
+                             body={"protocol": "hls_pull", "url": "http://169.254.169.254/x.m3u8"})
+        ssrf = ss["id"] if s == 201 else "x"
+        got = None
+        for _ in range(100):
+            st, _, b = self.raw("GET", f"/api/v1/inputs/{ssrf}")
+            j = json.loads(b) if st == 200 else {}
+            if (j.get("status") or {}).get("last_error"):
+                got = j
+                break
+            time.sleep(0.1)
+        s, h, g = self.call("GET", f"/inputs/{ssrf}", "入力の取得（宛先の拒否）", 200)
+        st_ = (g.get("status") or {}) if isinstance(g, dict) else {}
+        check(got is not None and "許されていない宛先" in (st_.get("last_error") or "") and st_.get("state") in ("error", "backoff"),
+              "SSRF: 169.254.169.254 は接続時に拒否され status に出る", f"{st_}")
+        check(st_.get("connects") == 0, "SSRF: 接続していない")
+        s, _, l = self.call("GET", f"/streams/{sid}/inputs", "入力の一覧", 200)
+        check(isinstance(l, dict) and len(l.get("items", [])) == 2, "入力の一覧に 2 件")
+        s, _, l1 = self.call("GET", f"/streams/{sid}/inputs?limit=1", "入力の一覧 limit=1", 200)
+        if isinstance(l1, dict) and l1.get("next_cursor"):
+            self.call("GET", f"/streams/{sid}/inputs?limit=1&cursor={l1['next_cursor']}", "入力の一覧 次のページ", 200)
+        self.call("GET", f"/streams/{sid}/inputs", "入力の一覧 stream:read", 200, token=ro)
+        self.call("GET", f"/streams/{sid}/inputs?x=1", "入力の一覧 知らないクエリ", 400)
+        self.call("GET", "/streams/nosuch/inputs", "入力の一覧 stream が無い", 404)
+        self.call("GET", "/inputs/nosuch", "入力 無い", 404)
+        # 更新
+        self.call("PATCH", f"/inputs/{iid}", "入力 PATCH If-Match 無し", 428, body={"enabled": False})
+        self.call("PATCH", f"/inputs/{iid}", "入力 PATCH 古い", 412, headers={"If-Match": '"9"'}, body={"enabled": False})
+        self.call("PATCH", f"/inputs/{iid}", "入力 PATCH 未知のフィールド", 400, headers={"If-Match": '"1"'}, body={"protocol": "hls_pull"})
+        self.call("PATCH", f"/inputs/{iid}", "入力 PATCH URL に資格情報", 400, headers={"If-Match": '"1"'}, body={"url": "rtmp://a:b@h/live/x"})
+        self.call("PATCH", f"/inputs/{iid}", "入力 PATCH Content-Type 違い", 415, headers={"If-Match": '"1"', "Content-Type": "text/plain"}, body=b"{}")
+        self.call("PATCH", "/inputs/nosuch", "入力 PATCH 無い", 404, headers={"If-Match": '"1"'}, body={})
+        self.call("PATCH", f"/inputs/{iid}", "入力 PATCH stream:read", 403, token=ro, headers={"If-Match": '"1"'}, body={})
+        s, h, p = self.call("PATCH", f"/inputs/{iid}", "入力 PATCH", 200, headers={"If-Match": '"1"'},
+                            body={"enabled": False, "url": "rtmps://127.0.0.1:1/live/y", "options": {}})
+        check(isinstance(p, dict) and p.get("generation") == 2 and h.get("etag") == '"2"' and p.get("enabled") is False,
+              "入力 PATCH で generation が進む")
+        for _ in range(50):
+            st, _, b = self.raw("GET", f"/api/v1/inputs/{iid}")
+            if st == 200 and json.loads(b).get("status") is None:
+                break
+            time.sleep(0.1)
+        s, _, g = self.call("GET", f"/inputs/{iid}", "無効にした入力", 200)
+        check(isinstance(g, dict) and g.get("status") is None, "無効にした入力の status は null", f"{g}")
+        # 使っている秘密値は消せない
+        self.call("DELETE", f"/secrets/{sec_id}", "使っている秘密値は消せない", 409)
+        s, h, p = self.call("PATCH", f"/inputs/{iid}", "入力 PATCH credential_ref: null", 200, headers={"If-Match": '"2"'}, body={"credential_ref": None})
+        check(isinstance(p, dict) and p.get("credential_ref") is None, "credential_ref: null で参照を外す")
+        # 上限（stream ごとに 4 つ）
+        extra = []
+        self.call("POST", f"/streams/{sid}/inputs", "入力 device の url の形", 400, body={"protocol": "device", "url": "v4l2:/dev/video0"})
+        for i, b in enumerate([{"protocol": "srt_pull", "url": "srt://127.0.0.1:1", "enabled": False},
+                               {"protocol": "device", "url": "device:synthetic-0", "enabled": False, "options": {"width": "640"}}]):
+            s, _, e = self.call("POST", f"/streams/{sid}/inputs", f"入力 {i + 3} つ目（{b['protocol']}）", 201, body=b)
+            if s == 201:
+                extra.append(e["id"])
+        self.call("POST", f"/streams/{sid}/inputs", "入力 5 つ目は 403", 403, body={"protocol": "srt_pull", "url": "srt://127.0.0.1:9", "enabled": False})
+        self.call("DELETE", f"/inputs/{iid}", "入力 削除 stream:read", 403, token=ro)
+
+        # 出力
+        ob = {"protocol": "rtmp_push", "url": "rtmp://127.0.0.1:1/live/key", "credential_ref": "secret:pull-key"}
+        s, h, out = self.call("POST", f"/streams/{sid}/outputs", "出力の作成 rtmp_push", 201, body=ob)
+        oid = out["id"] if s == 201 else "x"
+        check(s == 201 and h.get("location") == f"/api/v1/outputs/{oid}" and h.get("etag") == '"1"', "出力の Location・ETag")
+        s, _, o2 = self.call("POST", f"/streams/{sid}/outputs", "出力の作成 srt_push（無効）", 201,
+                             body={"protocol": "srt_push", "url": "srt://127.0.0.1:1", "enabled": False})
+        self.call("POST", f"/streams/{sid}/outputs", "出力 知らない protocol", 400, body=dict(ob, protocol="ftp_push"))
+        self.call("POST", f"/streams/{sid}/outputs", "出力 URL に資格情報", 400, body=dict(ob, url="rtmp://u:p@127.0.0.1/live/k"))
+        self.call("POST", f"/streams/{sid}/outputs", "出力 url が無い", 400, body={"protocol": "rtmp_push"})
+        self.call("POST", f"/streams/{sid}/outputs", "出力 paas に provider が無い", 400, body={"protocol": "paas", "credential_ref": "secret:pull-key"})
+        self.call("POST", f"/streams/{sid}/outputs", "出力 paas 知らない provider", 400,
+                  body={"protocol": "paas", "provider": "acme", "credential_ref": "secret:pull-key"})
+        self.call("POST", f"/streams/{sid}/outputs", "出力 paas に credential_ref が無い", 400, body={"protocol": "paas", "provider": "aws_ivs"})
+        self.call("POST", f"/streams/{sid}/outputs", "出力 無い秘密値", 400, body=dict(ob, credential_ref="secret:nosuch"))
+        self.call("POST", f"/streams/{sid}/outputs", "出力 未知のフィールド", 400, body=dict(ob, x=1))
+        self.call("POST", f"/streams/{sid}/outputs", "出力 Content-Type 違い", 415, body=b"{}", headers={"Content-Type": "text/plain"})
+        self.call("POST", "/streams/nosuch/outputs", "出力 stream が無い", 404, body=ob)
+        self.call("POST", f"/streams/{sid}/outputs", "出力 stream:read では作れない", 403, token=ro, body=ob)
+        # 配信していないので waiting_input になる
+        for _ in range(50):
+            st, _, b = self.raw("GET", f"/api/v1/outputs/{oid}")
+            if st == 200 and (json.loads(b).get("status") or {}).get("state") == "waiting_input":
+                break
+            time.sleep(0.1)
+        s, h, g = self.call("GET", f"/outputs/{oid}", "出力の取得", 200)
+        check(isinstance(g, dict) and (g.get("status") or {}).get("state") == "waiting_input", "配信前の出力は waiting_input", f"{g.get('status') if isinstance(g, dict) else g}")
+        self.call("GET", "/outputs/nosuch", "出力 無い", 404)
+        s, _, l = self.call("GET", f"/streams/{sid}/outputs", "出力の一覧", 200)
+        check(isinstance(l, dict) and len(l.get("items", [])) == 2, "出力の一覧に 2 件")
+        self.call("GET", f"/streams/{sid}/outputs?limit=1", "出力の一覧 limit=1", 200)
+        self.call("GET", f"/streams/{sid}/outputs?x=1", "出力の一覧 知らないクエリ", 400)
+        self.call("GET", "/streams/nosuch/outputs", "出力の一覧 stream が無い", 404)
+        self.call("PATCH", f"/outputs/{oid}", "出力 PATCH If-Match 無し", 428, body={"enabled": False})
+        self.call("PATCH", f"/outputs/{oid}", "出力 PATCH 古い", 412, headers={"If-Match": '"9"'}, body={"enabled": False})
+        self.call("PATCH", f"/outputs/{oid}", "出力 PATCH 未知のフィールド", 400, headers={"If-Match": '"1"'}, body={"provider": "aws_ivs"})
+        self.call("PATCH", f"/outputs/{oid}", "出力 PATCH スキーム違い", 400, headers={"If-Match": '"1"'}, body={"url": "srt://127.0.0.1:1"})
+        self.call("PATCH", f"/outputs/{oid}", "出力 PATCH Content-Type 違い", 415, headers={"If-Match": '"1"', "Content-Type": "text/plain"}, body=b"{}")
+        self.call("PATCH", "/outputs/nosuch", "出力 PATCH 無い", 404, headers={"If-Match": '"1"'}, body={})
+        self.call("PATCH", f"/outputs/{oid}", "出力 PATCH stream:read", 403, token=ro, headers={"If-Match": '"1"'}, body={})
+        s, h, p = self.call("PATCH", f"/outputs/{oid}", "出力 PATCH", 200, headers={"If-Match": '"1"'},
+                            body={"enabled": False, "credential_ref": None, "url": "rtmp://127.0.0.1:2/live/k2"})
+        check(isinstance(p, dict) and p.get("generation") == 2 and p.get("credential_ref") is None,
+              "出力 PATCH で generation が進む")
+        self.call("DELETE", f"/outputs/{oid}", "出力 削除 stream:read", 403, token=ro)
+        self.call("DELETE", f"/outputs/{oid}", "出力の削除", 204)
+        self.call("DELETE", f"/outputs/{oid}", "出力の削除 2 回目", 404)
+        if isinstance(o2, dict) and o2.get("id"):
+            self.call("DELETE", f"/outputs/{o2['id']}", "出力の削除 srt", 204)
+        for x in [iid, ssrf] + extra:
+            self.call("DELETE", f"/inputs/{x}", "入力の削除", 204)
+        self.call("DELETE", f"/inputs/{iid}", "入力の削除 2 回目", 404)
+        self.call("DELETE", f"/secrets/{sec_id}", "参照が無くなった秘密値の削除", 204)
+        self.raw("DELETE", f"/api/v1/streams/{sid}")
+
+    def graph(self, src, dst, vcodec="vp9", enc="av1"):
+        return {"version": 1, "options": {"status_interval_ms": 200}, "nodes": [
+            {"type": "source", "id": "cam", "stream": src,
+             "video": {"codec": vcodec, "width": 640, "height": 360, "fps": 30},
+             "audio": {"codec": "opus", "sample_rate": 48000, "channels": 2}},
+            {"type": "decode", "id": "d", "input": "cam.video"},
+            {"type": "scale", "id": "s", "input": "d", "width": 320, "height": 180, "filter": "bilinear"},
+            {"type": "encode", "id": "e", "input": "s", "codec": enc, "bitrate_kbps": 500},
+            {"type": "sink", "id": "o", "inputs": ["e", "cam.audio"], "stream": dst},
+        ]}
+
+    def pipelines(self, ro):
+        rf = {"codec_profile": "royalty_free", "hls": {"container": "fmp4"}}
+        src = self.mk_stream("pl-src", **rf)
+        dst = self.mk_stream("pl-dst", **rf)
+        anyp = self.mk_stream("pl-any")
+        if not (src and dst and anyp):
+            return
+        g = self.graph(src, dst)
+        s, h, p = self.call("POST", "/pipelines", "パイプラインの作成（VP9 → AV1）", 201, body={"name": "pl", "graph": g})
+        if s != 201:
+            return
+        pid = p["id"]
+        check(h.get("location") == f"/api/v1/pipelines/{pid}" and h.get("etag") == '"1"' and p.get("observed_state") == "stopped"
+              and p.get("plan") is None and p.get("meters") is None, "パイプラインの Location・ETag、既定は stopped")
+        self.call("POST", "/pipelines", "パイプライン 名前の重複", 409, body={"name": "pl", "graph": g})
+        bad_g = json.loads(json.dumps(g))
+        bad_g["nodes"][0]["stream"] = "nosuch"
+        s, _, e = self.call("POST", "/pipelines", "パイプライン 知らない stream", 400, body={"name": "pl2", "graph": bad_g})
+        check(isinstance(e, dict) and e.get("code") == "INVALID_CONFIG", "知らない stream は INVALID_CONFIG")
+        s, _, e = self.call("POST", "/pipelines", "パイプライン 知らない参照", 400,
+                            body={"name": "pl2", "graph": {"version": 1, "nodes": [{"type": "decode", "id": "d", "input": "x"}]}})
+        check(isinstance(e, dict) and any(i.get("code") == "UNKNOWN_REFERENCE" for i in (e.get("details") or {}).get("issues", [])),
+              "details.issues に UNKNOWN_REFERENCE", f"{e}")
+        if isinstance(e, dict):
+            errs = [x for i in (e.get("details") or {}).get("issues", []) for x in self.v.errors(i, {"$ref": "#/components/schemas/PipelineIssue"})]
+            check(not errs, "details.issues が PipelineIssue に合う", "; ".join(errs))
+        self.call("POST", "/pipelines", "パイプライン royalty_free に H.264", 400, body={"name": "pl2", "graph": self.graph(src, dst, "h264", "h264")})
+        self.call("POST", "/pipelines", "パイプライン グラフの版", 400, body={"name": "pl2", "graph": dict(g, version=2)})
+        self.call("POST", "/pipelines", "パイプライン 知らない部品", 400, body={"name": "pl2", "graph": {"version": 1, "nodes": [{"type": "magic", "id": "m"}]}})
+        self.call("POST", "/pipelines", "パイプライン 名前の形", 400, body={"name": ".pl", "graph": g})
+        self.call("POST", "/pipelines", "パイプライン desired_state の値", 400, body={"name": "pl2", "graph": g, "desired_state": "paused"})
+        self.call("POST", "/pipelines", "パイプライン 未知のフィールド", 400, body={"name": "pl2", "graph": g, "x": 1})
+        self.call("POST", "/pipelines", "パイプライン Content-Type 違い", 415, body=b"{}", headers={"Content-Type": "text/plain"})
+        self.call("POST", "/pipelines", "パイプライン stream:read では作れない", 403, token=ro, body={"name": "pl2", "graph": g})
+        # H.264 は装置（ハードウェア）が無ければ 503
+        self.call("POST", "/pipelines", "パイプライン H.264（装置が無ければ 503）", [201, 503],
+                  body={"name": "pl-h264", "graph": self.graph(anyp, anyp, "h264", "h264")})
+        # 一覧・取得
+        s, _, l = self.call("GET", "/pipelines", "パイプラインの一覧", 200)
+        s, _, l1 = self.call("GET", "/pipelines?limit=1", "パイプラインの一覧 limit=1", 200)
+        if isinstance(l1, dict) and l1.get("next_cursor"):
+            self.call("GET", f"/pipelines?limit=1&cursor={l1['next_cursor']}", "パイプラインの一覧 次のページ", 200)
+        self.call("GET", "/pipelines", "パイプラインの一覧 stream:read", 200, token=ro)
+        self.call("GET", "/pipelines?x=1", "パイプラインの一覧 知らないクエリ", 400)
+        self.call("GET", f"/pipelines/{pid}", "パイプラインの取得", 200)
+        self.call("GET", "/pipelines/nosuch", "パイプライン 無い", 404)
+        # 検証
+        s, _, v = self.call("POST", f"/pipelines/{pid}/validate", "パイプラインの検証（保存したグラフ）", 200)
+        check(isinstance(v, dict) and (v.get("plan") or {}).get("order") == ["cam", "d", "s", "e", "o"], "検証の計画に実行の順")
+        self.call("POST", f"/pipelines/{pid}/validate", "パイプラインの検証（本文のグラフ）", 200, body=self.graph(src, dst, "av1", "vp9"))
+        self.call("POST", f"/pipelines/{pid}/validate", "パイプラインの検証 知らない stream", 400, body=bad_g)
+        self.call("POST", f"/pipelines/{pid}/validate", "パイプラインの検証 H.264（装置が無ければ 503）", [200, 503], body=self.graph(anyp, anyp, "h264", "h264"))
+        self.call("POST", f"/pipelines/{pid}/validate", "パイプラインの検証 stream:read", 200, token=ro)
+        self.call("POST", f"/pipelines/{pid}/validate", "パイプラインの検証 Content-Type 違い", 415, body=b"{}", headers={"Content-Type": "text/plain"})
+        self.call("POST", "/pipelines/nosuch/validate", "パイプラインの検証 無い", 404)
+        # 止まっているパイプラインへの操作は 409
+        self.call("POST", f"/pipelines/{pid}/control", "操作 止まっているパイプライン", 409, body={"op": "request_keyframe"})
+        self.call("POST", f"/pipelines/{pid}/control", "操作 世代の操作は 400", 400, body={"op": "commit", "generation": 1})
+        self.call("POST", f"/pipelines/{pid}/control", "操作 知らない op", 400, body={"op": "explode"})
+        self.call("POST", f"/pipelines/{pid}/control", "操作 未知のフィールド", 400, body={"op": "set_master", "node": "m", "gain_db": 0, "x": 1})
+        self.call("POST", f"/pipelines/{pid}/control", "操作 Content-Type 違い", 415, body=b"{}", headers={"Content-Type": "text/plain"})
+        self.call("POST", f"/pipelines/{pid}/control", "操作 stream:read", 403, token=ro, body={"op": "request_keyframe"})
+        self.call("POST", "/pipelines/nosuch/control", "操作 無い", 404, body={"op": "request_keyframe"})
+        # 更新・開始
+        self.call("PATCH", f"/pipelines/{pid}", "パイプライン PATCH If-Match 無し", 428, body={"desired_state": "running"})
+        self.call("PATCH", f"/pipelines/{pid}", "パイプライン PATCH 古い", 412, headers={"If-Match": '"9"'}, body={"desired_state": "running"})
+        self.call("PATCH", f"/pipelines/{pid}", "パイプライン PATCH desired_state の値", 400, headers={"If-Match": '"1"'}, body={"desired_state": "x"})
+        self.call("PATCH", f"/pipelines/{pid}", "パイプライン PATCH 不正なグラフ", 400, headers={"If-Match": '"1"'}, body={"graph": bad_g})
+        self.call("PATCH", f"/pipelines/{pid}", "パイプライン PATCH 未知のフィールド", 400, headers={"If-Match": '"1"'}, body={"x": 1})
+        self.call("PATCH", f"/pipelines/{pid}", "パイプライン PATCH Content-Type 違い", 415, headers={"If-Match": '"1"', "Content-Type": "text/plain"}, body=b"{}")
+        self.call("PATCH", "/pipelines/nosuch", "パイプライン PATCH 無い", 404, headers={"If-Match": '"1"'}, body={})
+        self.call("PATCH", f"/pipelines/{pid}", "パイプライン PATCH stream:read", 403, token=ro, headers={"If-Match": '"1"'}, body={})
+        s, h, p = self.call("PATCH", f"/pipelines/{pid}", "パイプラインの開始", 200, headers={"If-Match": '"1"'},
+                            body={"desired_state": "running", "graph": self.graph(src, dst, "vp9", "vp9")})
+        check(isinstance(p, dict) and p.get("generation") == 2 and h.get("etag") == '"2"' and p.get("desired_state") == "running",
+              "PATCH で generation が進み desired_state=running")
+        running = None
+        for _ in range(100):
+            st, _, b = self.raw("GET", f"/api/v1/pipelines/{pid}")
+            j = json.loads(b) if st == 200 else {}
+            if j.get("observed_state") == "running" and j.get("status"):
+                running = j
+                break
+            time.sleep(0.1)
+        s, _, g2 = self.call("GET", f"/pipelines/{pid}", "動いているパイプライン", 200)
+        check(running is not None, "パイプラインが running になり status が出る", f"{g2.get('observed_state') if isinstance(g2, dict) else g2} {g2.get('last_error') if isinstance(g2, dict) else ''}")
+        if running is not None:
+            check(isinstance(g2.get("plan"), dict) and isinstance(g2.get("meters"), dict), "動いていれば plan と meters がある")
+            for _ in range(30):
+                st, _, b = self.raw("GET", f"/api/v1/pipelines/{pid}")
+                if (json.loads(b).get("status") or {}).get("event") == "status":
+                    break
+                time.sleep(0.1)
+            s, _, g3 = self.call("GET", f"/pipelines/{pid}", "動いているパイプライン（status）", 200)
+            ev = ((g3 if isinstance(g3, dict) else {}).get("status") or {})
+            check(ev.get("event") == "status" and [x.get("id") for x in ev.get("sources", [])] == ["cam"],
+                  "status に入力の状態がある", f"{ev.get('event')}")
+            self.call("POST", f"/pipelines/{pid}/control", "操作 request_keyframe", 200, body={"op": "request_keyframe"})
+            self.call("POST", f"/pipelines/{pid}/control", "操作 request_keyframe（部品の指定）", 200, body={"op": "request_keyframe", "node": "e"})
+            self.call("POST", f"/pipelines/{pid}/control", "操作 知らない部品（実装は 409）", 409, body={"op": "set_master", "node": "nosuch", "gain_db": 0})
+        s, _, p2 = self.call("POST", "/pipelines", "パイプライン 2 本目", 201, body={"name": "pl-other", "graph": g})
+        self.call("PATCH", f"/pipelines/{pid}", "パイプライン PATCH 名前の重複", 409, headers={"If-Match": '"2"'}, body={"name": "pl-other"})
+        s, h, p = self.call("PATCH", f"/pipelines/{pid}", "パイプラインの停止", 200, headers={"If-Match": '"2"'}, body={"desired_state": "stopped", "name": "pl-renamed"})
+        check(isinstance(p, dict) and p.get("name") == "pl-renamed" and p.get("desired_state") == "stopped", "停止と名前の変更")
+        self.call("DELETE", f"/pipelines/{pid}", "パイプライン 削除 stream:read", 403, token=ro)
+        self.call("DELETE", f"/pipelines/{pid}", "パイプラインの削除", 204)
+        self.call("DELETE", f"/pipelines/{pid}", "パイプラインの削除 2 回目", 404)
+        self.call("GET", f"/pipelines/{pid}", "削除したパイプライン", 404)
+        s, _, l = self.raw("GET", "/api/v1/pipelines")
+        for x in json.loads(l).get("items", []):
+            self.raw("DELETE", f"/api/v1/pipelines/{x['id']}")
+        for x in (src, dst, anyp):
+            self.raw("DELETE", f"/api/v1/streams/{x}")
 
     def events(self, sub_tok):
         # 認証なし・権限なし

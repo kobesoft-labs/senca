@@ -12,15 +12,18 @@ echo "== (a) 静的検査"
 python3 "$CHECK" routes "$SPEC" "$ROOT/crates/senca-node/src/api" | tee /dev/stderr | grep -q '^== .* 0 failed$' \
   && pass "static: 経路表と openapi.yaml" || fail "static: 経路表と openapi.yaml"
 
-[ -n "${NODE_BIN_PREBUILT:-}" ] || (cd "$ROOT" && "$CARGO" build -q -p senca-node)
+[ -n "${NODE_BIN_PREBUILT:-}" ] || (cd "$ROOT" && "$CARGO" build -q -p senca-node -p senca-codec-worker)
 [ -x "$NODE_BIN" ] || { echo "node binary not found: $NODE_BIN"; exit 1; }
 
 W=$(mktemp -d); NODE_PID=
 cleanup() { [ -n "$NODE_PID" ] && kill "$NODE_PID" 2>/dev/null || true; wait 2>/dev/null || true; [ -n "${KEEP:-}" ] && echo "kept $W" || rm -rf "$W"; }
 trap cleanup EXIT
 HTTP=$(port); RTMP=$(port)
+# パイプラインの検証・実行にコーデック worker を使う（ロイヤリティフリーのコーデック: dav1d・libvpx・SVT-AV1・Opus）
+CODEC_LIB_DIR=${CODEC_LIB_DIR:-$HOME/tools/codeclibs/usr/lib/x86_64-linux-gnu}
 "$NODE_BIN" --data-dir "$W/data" --http 127.0.0.1:$HTTP --rtmp 127.0.0.1:$RTMP \
-  --public-rtmp-url rtmp://127.0.0.1:$RTMP --public-http-url http://127.0.0.1:$HTTP --reconnect-grace 1000 >>"$W/node.log" 2>&1 &
+  --public-rtmp-url rtmp://127.0.0.1:$RTMP --public-http-url http://127.0.0.1:$HTTP --reconnect-grace 1000 \
+  --codec-lib-dir "$CODEC_LIB_DIR" --codec-workers 1 >>"$W/node.log" 2>&1 &
 NODE_PID=$!
 for _ in $(seq 100); do curl -sf http://127.0.0.1:$HTTP/readyz >/dev/null && break; sleep 0.1; done
 curl -sf http://127.0.0.1:$HTTP/readyz >/dev/null || { echo "node did not start"; cat "$W/node.log"; exit 1; }
@@ -36,4 +39,5 @@ if python3 "$CHECK" live "$SPEC" "http://127.0.0.1:$HTTP" "$TOKEN" "rtmp://127.0
 cat "$W/live.out"
 [ $r = 0 ] && pass "live: すべての操作が文書どおり" || fail "live: 文書と違う応答がある（上の FAIL 行）"
 grep -q "sk_" "$W/node.log" && fail "stream key がログに出た" || pass "stream key はログに出ない"
+grep -q "s3cr3t-VALUE" "$W/node.log" && fail "秘密値がログに出た" || pass "秘密値はログに出ない"
 summary
