@@ -843,6 +843,23 @@ dependencies = [
 ]
 
 [[package]]
+name = "senca-capture"
+version = "0.1.0"
+dependencies = [
+ "bytes",
+ "libc",
+ "libloading",
+ "senca-codec",
+ "senca-codec-worker",
+ "senca-core",
+ "senca-fmp4",
+ "senca-image",
+ "serde",
+ "serde_json",
+ "tokio",
+]
+
+[[package]]
 name = "senca-codec"
 version = "0.1.0"
 dependencies = [
@@ -959,6 +976,15 @@ dependencies = [
 ]
 
 [[package]]
+name = "senca-h3"
+version = "0.1.0"
+dependencies = [
+ "bytes",
+ "senca-quic",
+ "senca-tls",
+]
+
+[[package]]
 name = "senca-hls"
 version = "0.1.0"
 dependencies = [
@@ -1009,6 +1035,7 @@ dependencies = [
  "hmac",
  "senca-aac",
  "senca-av1",
+ "senca-caption",
  "senca-codec",
  "senca-codec-worker",
  "senca-control",
@@ -1021,6 +1048,7 @@ dependencies = [
  "senca-http",
  "senca-image",
  "senca-mpegts",
+ "senca-paas",
  "senca-pipeline",
  "senca-raft",
  "senca-record",

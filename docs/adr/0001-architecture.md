@@ -30,6 +30,7 @@
 | senca-rtp / senca-sdp / senca-rtsp | RTP/RTCP と各コーデックのペイロード形式、SDP と offer/answer、RTSP 1.0 のクライアントとサーバー |
 | senca-tls | TLS 1.3（クライアント・サーバー、mTLS、チケット、QUIC 向けの使い方） |
 | senca-dtls / senca-srtp | DTLS 1.2（WebRTC 用）と SRTP/SRTCP（AES-CM・AEAD-GCM） |
+| senca-sctp / senca-webrtc | SCTP（DataChannel）と WebRTC のピア接続（ICE・DTLS-SRTP・NACK/RTX・帯域推定・サイマルキャスト）、SFU |
 | senca-raft | 自前の Raft（PreVote・CheckQuorum・joint consensus・ReadIndex・スナップショット、ファイルの保存） |
 | senca-pipeline | パイプライン（DAG）の検証・世代・実行（復号・板書補正・合成・ミキサー・符号化）。codec worker の中で動く |
 | senca-paas | クラウドの PaaS（Cloudflare Stream・Amazon IVS・MediaLive）の要求の組み立てと応答の解析、SigV4、後片付けの判断 |

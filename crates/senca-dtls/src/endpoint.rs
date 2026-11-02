@@ -29,6 +29,9 @@ const MAX_HELLO_VERIFY: u32 = 4;
 /// 鍵がまだ無い epoch の record を取っておく数と量。
 const MAX_DEFERRED: usize = 16;
 const MAX_DEFERRED_BYTES: usize = 64 * 1024;
+/// 分割された最初の ClientHello を組み立てる上限（byte）。Chrome は DTLS 1.3 の鍵共有（ML-KEM など）を載せた
+/// 1.4 KB ほどの ClientHello を 2 つの record に分けて送る。
+const MAX_SPLIT_CLIENT_HELLO: usize = 8 * 1024;
 /// handshake 完了前に届いた application data を取っておく数。
 const MAX_EARLY_APP: usize = 16;
 /// exporter で使えない label（RFC 5705 4）。
@@ -178,6 +181,8 @@ pub struct DtlsEndpoint {
     deadline: Instant,
     deferred: Vec<Vec<u8>>,
     deferred_bytes: usize,
+    /// 分割された最初の ClientHello（message seq, 全体の長さ, 中身, 届いた範囲, 最初の record の番号）。
+    split_hello: Option<SplitHello>,
     early_app: Vec<Bytes>,
     out: VecDeque<Vec<u8>>,
     events: VecDeque<DtlsEvent>,
@@ -240,6 +245,7 @@ impl DtlsEndpoint {
             deadline,
             deferred: Vec::new(),
             deferred_bytes: 0,
+            split_hello: None,
             early_app: Vec::new(),
             out: VecDeque::new(),
             events: VecDeque::new(),
@@ -582,7 +588,18 @@ impl DtlsEndpoint {
         for f in &frags {
             if self.hs == Hs::ServerWaitClientHello {
                 if epoch == 0 && f.msg_type == hs::HT_CLIENT_HELLO {
-                    self.on_initial_client_hello(rseq, f, now)?;
+                    if f.offset == 0 && f.data.len() == f.length as usize {
+                        self.on_initial_client_hello(rseq, f, now)?;
+                    } else if let Some((seq, rs, data)) = self.feed_split_hello(rseq, f) {
+                        let whole = Fragment {
+                            msg_type: hs::HT_CLIENT_HELLO,
+                            length: data.len() as u32,
+                            seq,
+                            offset: 0,
+                            data: &data,
+                        };
+                        self.on_initial_client_hello(rs, &whole, now)?;
+                    }
                 }
                 continue;
             }
@@ -600,6 +617,45 @@ impl DtlsEndpoint {
             self.on_message(m, now)?;
         }
         Ok(())
+    }
+
+    /// 分割された最初の ClientHello の断片を入れる。揃ったら (message seq, 最大の record 番号, 中身) を返す。
+    ///
+    /// 状態は 1 つの ClientHello 分（上限 [`MAX_SPLIT_CLIENT_HELLO`]）だけ持つ。別の長さ・番号の断片が来たら
+    /// 作り直す（偽の断片で埋められても、正しい ClientHello の再送で回復する）。
+    fn feed_split_hello(&mut self, rseq: u64, f: &Fragment<'_>) -> Option<(u16, u64, Vec<u8>)> {
+        let len = f.length as usize;
+        let off = f.offset as usize;
+        if len == 0 || len > MAX_SPLIT_CLIENT_HELLO || off.checked_add(f.data.len())? > len {
+            return None;
+        }
+        let fresh = self
+            .split_hello
+            .as_ref()
+            .is_none_or(|h| h.seq != f.seq || h.data.len() != len);
+        if fresh {
+            self.split_hello = Some(SplitHello {
+                seq: f.seq,
+                data: vec![0; len],
+                have: vec![false; len],
+                missing: len,
+                rseq,
+            });
+        }
+        let h = self.split_hello.as_mut()?;
+        h.data[off..off + f.data.len()].copy_from_slice(f.data);
+        for b in &mut h.have[off..off + f.data.len()] {
+            if !*b {
+                *b = true;
+                h.missing -= 1;
+            }
+        }
+        h.rseq = h.rseq.max(rseq);
+        if h.missing > 0 {
+            return None;
+        }
+        let h = self.split_hello.take()?;
+        Some((h.seq, h.rseq, h.data))
     }
 
     /// 相手が前の flight を再送してきた = こちらの最後の flight が失われた。
@@ -1390,10 +1446,76 @@ impl DtlsEndpoint {
     }
 }
 
+/// 組み立て中の分割された ClientHello。
+#[derive(Debug)]
+struct SplitHello {
+    seq: u16,
+    data: Vec<u8>,
+    have: Vec<bool>,
+    missing: usize,
+    rseq: u64,
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
     use crate::DtlsCertificate;
+
+    /// 最初の ClientHello が 2 つ（逆順・重なりあり）の record に分かれていても handshake できる（Chrome 156 の形）。
+    #[test]
+    fn fragmented_initial_client_hello() {
+        let now = Instant::now();
+        let cc = DtlsCertificate::generate_self_signed("c").unwrap();
+        let mut c = DtlsEndpoint::new(DtlsConfig::client(cc), now).unwrap();
+        let mut s = server();
+        let ch = c.poll_transmit().unwrap();
+        // record を外し、handshake message を 2 つの断片に分けて別の record にする
+        let recs = record::split_records(&ch);
+        let rec = &recs[0];
+        let frags = hs::parse_fragments(rec.body).unwrap();
+        let m = &frags[0];
+        let cut = m.data.len() * 2 / 3;
+        let mk = |rseq: u64, off: usize, end: usize| {
+            let mut frag = Vec::new();
+            frag.push(m.msg_type);
+            frag.extend_from_slice(&m.length.to_be_bytes()[1..]);
+            frag.extend_from_slice(&m.seq.to_be_bytes());
+            frag.extend_from_slice(&(off as u32).to_be_bytes()[1..]);
+            frag.extend_from_slice(&((end - off) as u32).to_be_bytes()[1..]);
+            frag.extend_from_slice(&m.data[off..end]);
+            let mut out = Vec::new();
+            record::encode_header(&mut out, CT_HANDSHAKE, DTLS12, 0, rseq, frag.len());
+            out.extend_from_slice(&frag);
+            out
+        };
+        let second = mk(1, cut - 10, m.data.len());
+        let first = mk(0, 0, cut);
+        s.handle_datagram(&second, now).unwrap();
+        assert!(s.poll_transmit().is_none());
+        // 偽の断片（長さが違う）は無視されて組み立て直す
+        s.handle_datagram(&mk(5, 0, 3)[..], now).ok();
+        s.handle_datagram(&second, now).unwrap();
+        s.handle_datagram(&first, now).unwrap();
+        for _ in 0..10 {
+            while let Some(d) = s.poll_transmit() {
+                let _ = c.handle_datagram(&d, now);
+            }
+            while let Some(d) = c.poll_transmit() {
+                let _ = s.handle_datagram(&d, now);
+            }
+        }
+        assert!(c.is_connected() && s.is_connected());
+        // 上限を超える長さは受けない
+        let mut s = server();
+        // 長さ 0x010000（64 KiB）を名乗る断片
+        let mut frag = vec![hs::HT_CLIENT_HELLO];
+        frag.extend_from_slice(&[0x01, 0, 0, 0, 0, 0, 0, 0, 0, 0, 4, 1, 2, 3, 4]);
+        let mut out = Vec::new();
+        record::encode_header(&mut out, CT_HANDSHAKE, DTLS12, 0, 0, frag.len());
+        out.append(&mut frag);
+        s.handle_datagram(&out, now).unwrap();
+        assert!(s.split_hello.is_none());
+    }
 
     #[test]
     fn sequence_exhaustion_refused() {

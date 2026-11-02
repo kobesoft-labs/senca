@@ -1,0 +1,27 @@
+[package]
+name = "senca-webrtc"
+description = "Sans-io WebRTC server endpoint (ICE/DTLS-SRTP/RTP/SCTP) and SFU core for SENCA"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+
+[dependencies]
+bytes.workspace = true
+getrandom.workspace = true
+sha2.workspace = true
+subtle.workspace = true
+senca-core = { path = "../senca-core" }
+senca-stun = { path = "../senca-stun" }
+senca-ice = { path = "../senca-ice" }
+senca-dtls = { path = "../senca-dtls" }
+senca-srtp = { path = "../senca-srtp" }
+senca-rtp = { path = "../senca-rtp" }
+senca-sdp = { path = "../senca-sdp" }
+senca-sctp = { path = "../senca-sctp" }
+
+[dev-dependencies]
+senca-h264 = { path = "../senca-h264" }
+senca-av1 = { path = "../senca-av1" }
+
+[lints]
+workspace = true

@@ -1,0 +1,16 @@
+[package]
+name = "senca-sctp"
+description = "Sans-io SCTP over DTLS and WebRTC DataChannels (RFC 8261, RFC 4960/9260, RFC 3758, RFC 6525, RFC 8831, RFC 8832) for SENCA"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+
+[dependencies]
+bytes.workspace = true
+getrandom.workspace = true
+subtle.workspace = true
+sha2.workspace = true
+hmac = "0.12"
+
+[lints]
+workspace = true
