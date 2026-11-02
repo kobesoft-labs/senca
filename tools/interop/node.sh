@@ -8,7 +8,7 @@ CODEC_LIB_DIR=${CODEC_LIB_DIR:-$HOME/tools/codeclibs/usr/lib/x86_64-linux-gnu}
 W=$(mktemp -d); NODE_PID=
 cleanup() { [ -n "$NODE_PID" ] && kill "$NODE_PID" 2>/dev/null || true; wait 2>/dev/null || true; [ -n "${KEEP:-}" ] && echo "kept $W" || rm -rf "$W"; }
 trap cleanup EXIT
-ONLY=${ONLY:-ABCDEFGHI}
+ONLY=${ONLY:-ABCDEFGHIJ}
 HTTP=$(port); RTMP=$(port); SRT=$(port); API=http://127.0.0.1:$HTTP/api/v1
 start_node() {
   "$NODE_BIN" --data-dir "$W/data" --http 127.0.0.1:$HTTP --rtmp 127.0.0.1:$RTMP --srt 127.0.0.1:$SRT \
@@ -269,6 +269,52 @@ sys.exit(0 if len(p)>=100 and sum(x in s for x in p) >= 0.98*len(p) else 1)
 PY
   else
     echo "SKIP I RTSP (no mediamtx image)"
+  fi
+fi
+if [[ $ONLY == *J* ]]; then
+  # J. パイプライン（M5）: VP9 の 2 本を PinP に合成して AV1 で出す。オペレーターの操作。
+  if [ ! -e "$CODEC_LIB_DIR/libvpx.so.12" ]; then echo "SKIP J (no libvpx)"; else
+  for n in 1 2; do
+    "$FFMPEG" -v error -f lavfi -i "testsrc2=size=640x360:rate=30" -f lavfi -i "sine=frequency=$((300*n)):sample_rate=48000" -t 12 \
+      -c:v libvpx-vp9 -deadline realtime -cpu-used 8 -g 30 -b:v 800k -c:a libopus "$W/j$n.mp4"
+    "$TARGET/debug/mp4-to-flv" "$W/j$n.mp4" "$W/j$n.flv"
+  done
+  api POST /streams -d '{"name":"jt","codec_profile":"royalty_free","hls":{"container":"fmp4"}}' > "$W/jt.json"
+  api POST /streams -d '{"name":"jb","codec_profile":"royalty_free","hls":{"container":"fmp4"}}' > "$W/jb.json"
+  api POST /streams -d '{"name":"jout","codec_profile":"royalty_free","hls":{"container":"fmp4"}}' > "$W/jout.json"
+  cat > "$W/graph.json" <<J
+{"version":1,"options":{"clock":"realtime"},"nodes":[
+ {"type":"source","id":"t","stream":"$(sid jt)","video":{"codec":"vp9"},"audio":{"codec":"opus"}},
+ {"type":"source","id":"b","stream":"$(sid jb)","video":{"codec":"vp9"}},
+ {"type":"decode","id":"dt","input":"t.video"},{"type":"decode","id":"db","input":"b.video"},{"type":"decode","id":"at","input":"t.audio"},
+ {"type":"compose","id":"prod","inputs":{"board":"db","teacher":"dt"},"canvas":{"width":640,"height":360,"fps_num":30},
+  "scenes":{"pinp":{"layers":[{"source":"board","x":0,"y":0,"width":640,"height":360},{"source":"teacher","x":440,"y":250,"width":192,"height":108,"z":1}]},
+            "teacher":{"layers":[{"source":"teacher","x":0,"y":0,"width":640,"height":360}]}},
+  "program":"pinp","preview":"teacher","transition":{"kind":"fade","duration_ms":300}},
+ {"type":"audio_mix","id":"mix","inputs":{"mic":{"from":"at","gain_db":0}}},
+ {"type":"encode","id":"venc","input":"prod","codec":"av1","bitrate_kbps":800,"gop":30},
+ {"type":"encode","id":"aenc","input":"mix","codec":"opus","bitrate_kbps":96},
+ {"type":"sink","id":"out","inputs":["venc","aenc"],"stream":"$(sid jout)"}]}
+J
+  python3 -c "import json,sys;print(json.dumps({'name':'pinp','graph':json.load(open(sys.argv[1])),'desired_state':'running'}))" "$W/graph.json" > "$W/pbody.json"
+  c=$(api POST /pipelines --data-binary @"$W/pbody.json" -o "$W/pipe.json" -w '%{http_code}')
+  [ "$c" = 201 ] && pass "J pipeline created" || { fail "J create $c: $(cat "$W/pipe.json")"; }
+  PID=$(json "['id']" < "$W/pipe.json")
+  "$TARGET/debug/examples/rtmp_push" 127.0.0.1:$RTMP live "$(key jt)" "$W/j1.flv" >/dev/null 2>&1 &
+  "$TARGET/debug/examples/rtmp_push" 127.0.0.1:$RTMP live "$(key jb)" "$W/j2.flv" >/dev/null 2>&1 &
+  # rtmp_push は速く送るので、出力が出るまで待つ
+  for _ in $(seq 60); do api GET /streams/$(sid jout) | grep -q '"observed_state":"live"' && break; sleep 0.5; done
+  api GET /streams/$(sid jout) | grep -q '"observed_state":"live"' && pass "J output stream is live" || fail "J output not live: $(api GET /pipelines/$PID | head -c 400)"
+  c=$(api POST /pipelines/$PID/control -d '{"op":"take","node":"prod"}' -o /dev/null -w '%{http_code}')
+  [ "$c" = 200 ] && pass "J operator take (preview → program)" || fail "J control $c"
+  sleep 4
+  URL=$(api POST /streams/$(sid jout)/playback-url | json "['playback']['hls']")
+  n=$(frames "$URL" v | wc -l)
+  [ "$n" -ge 30 ] && pass "J composed AV1 output decodes ($n frames)" || fail "J output frames $n"
+  api GET /pipelines/$PID | json "['observed_state']" | grep -q running && pass "J pipeline running" || fail "J state"
+  c=$(api POST /pipelines -d '{"name":"bad","graph":{"version":1,"nodes":[{"type":"source","id":"s","stream":"'"$(sid jt)"'","video":{"codec":"h264"}},{"type":"decode","id":"d","input":"s.video"},{"type":"encode","id":"e","input":"d","codec":"h264","bitrate_kbps":500},{"type":"sink","id":"o","inputs":["e"],"stream":"'"$(sid jout)"'"}]}}' -o "$W/bad.json" -w '%{http_code}')
+  [ "$c" = 400 ] || [ "$c" = 503 ] && pass "J H.264 pipeline rejected with reasons ($c)" || fail "J bad pipeline $c"
+  api DELETE /pipelines/$PID >/dev/null
   fi
 fi
 summary

@@ -1021,6 +1021,7 @@ dependencies = [
  "senca-http",
  "senca-image",
  "senca-mpegts",
+ "senca-pipeline",
  "senca-raft",
  "senca-record",
  "senca-rtmp",
@@ -1070,6 +1071,23 @@ dependencies = [
  "senca-image",
  "serde",
  "serde_json",
+]
+
+[[package]]
+name = "senca-quic"
+version = "0.1.0"
+dependencies = [
+ "aes",
+ "aes-gcm",
+ "bytes",
+ "chacha20",
+ "chacha20poly1305",
+ "getrandom 0.3.4",
+ "hmac",
+ "senca-tls",
+ "sha2",
+ "subtle",
+ "zeroize",
 ]
 
 [[package]]

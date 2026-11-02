@@ -50,6 +50,7 @@ pub struct App {
     pub secret_box: crate::secrets::SecretBox,
     pub cluster: std::sync::OnceLock<Arc<crate::cluster::Cluster>>,
     pub io: crate::io::IoManager,
+    pub pipelines: crate::pipelines::PipelineManager,
 }
 
 impl App {
@@ -78,6 +79,7 @@ impl App {
             secret_box,
             cluster: std::sync::OnceLock::new(),
             io: crate::io::IoManager::default(),
+            pipelines: crate::pipelines::PipelineManager::default(),
         });
         *app.me.lock().unwrap() = Arc::downgrade(&app);
         if let Ok(h) = tokio::runtime::Handle::try_current() {
@@ -650,6 +652,13 @@ impl App {
         // API のスレッド（tokio の外）からも呼ばれる
         if let Some(rt) = self.rt.get() {
             rt.spawn(async move { me.io.reconcile(&me) });
+        }
+    }
+
+    pub fn pipelines_reconcile(&self) {
+        let me = self.arc();
+        if let Some(rt) = self.rt.get() {
+            rt.spawn(async move { me.pipelines.reconcile(&me) });
         }
     }
 

@@ -354,3 +354,17 @@ pub struct Ownership {
     pub token: u64,
     pub since_ms: i64,
 }
+
+/// パイプライン（REQ-005・REQ-008）。グラフは senca-pipeline の JSON（ここでは解釈しない）。
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct Pipeline {
+    pub id: String,
+    pub tenant: String,
+    pub name: String,
+    pub generation: u64,
+    pub graph: serde_json::Value,
+    /// "running" か "stopped"。
+    pub desired_state: String,
+    pub created_at_ms: i64,
+    pub updated_at_ms: i64,
+}

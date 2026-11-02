@@ -8,6 +8,7 @@
 //! - エラーは problem+json。`X-Request-Id` を返す。
 
 pub mod io;
+pub mod pipelines;
 pub mod recordings;
 pub mod schedules;
 pub mod streams;
@@ -441,6 +442,14 @@ fn route(ctx: &Ctx) -> ApiResult {
         ("GET", ["secrets"]) => io::list_secrets(ctx),
         ("DELETE", ["secrets", id]) => io::delete_secret(ctx, id),
 
+        ("POST", ["pipelines"]) => pipelines::create(ctx),
+        ("GET", ["pipelines"]) => pipelines::list(ctx),
+        ("GET", ["pipelines", id]) => pipelines::get(ctx, id),
+        ("PATCH", ["pipelines", id]) => pipelines::patch(ctx, id),
+        ("DELETE", ["pipelines", id]) => pipelines::delete(ctx, id),
+        ("POST", ["pipelines", id, "validate"]) => pipelines::validate(ctx, id),
+        ("POST", ["pipelines", id, "control"]) => pipelines::control(ctx, id),
+
         ("POST", ["tokens"]) => tokens::create(ctx),
         ("GET", ["tokens"]) => tokens::list(ctx),
         ("GET", ["tokens", id]) => tokens::get(ctx, id),
@@ -452,7 +461,8 @@ fn route(ctx: &Ctx) -> ApiResult {
             | ["tokens", ..]
             | ["inputs", ..]
             | ["outputs", ..]
-            | ["secrets", ..],
+            | ["secrets", ..]
+            | ["pipelines", ..],
         ) => not_allowed(),
         _ => Err(Problem::not_found()),
     }

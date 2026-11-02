@@ -16,6 +16,8 @@ use std::time::Duration;
 
 pub struct CodecService {
     pool: WorkerPool,
+    /// 常駐の処理（パイプライン）のための worker（1 セッション = 1 プロセス）。
+    pub sessions: senca_codec_worker::session_pool::SessionPool,
     /// プールを動かしている実行環境（tokio の外のスレッドからも依頼できるように）。
     rt: tokio::runtime::Handle,
 }
@@ -41,8 +43,12 @@ impl CodecService {
             pc.env.push(("SENCA_CODEC_LIB_DIR".into(), d.clone().into_os_string()));
         }
         pc.job_timeout = Duration::from_secs(30);
+        let mut sc = senca_codec_worker::session_pool::SessionPoolConfig::new(pc.program.clone());
+        sc.worker.env = pc.env.clone();
+        sc.worker.env_clear = pc.env_clear;
+        let sessions = senca_codec_worker::session_pool::SessionPool::new(sc);
         let pool = WorkerPool::start(pc).await.map_err(|e| e.to_string())?;
-        Ok(CodecService { pool, rt: tokio::runtime::Handle::current() })
+        Ok(CodecService { pool, sessions, rt: tokio::runtime::Handle::current() })
     }
 
     fn caps(&self) -> Vec<senca_codec::Capability> {
@@ -81,6 +87,10 @@ impl CodecService {
             })
             .unwrap_or_default();
         json!({ "providers": statuses, "sandbox": info.map(|i| i.sandbox) })
+    }
+
+    pub fn capability_list(&self) -> Vec<senca_codec::Capability> {
+        self.caps()
     }
 
     pub fn can_transcode_hw(&self) -> bool {

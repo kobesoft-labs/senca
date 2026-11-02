@@ -20,6 +20,8 @@ pub const IDEMPOTENCY_TTL_MS: i64 = 24 * 3600 * 1000;
 #[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
 pub struct ControlState {
     #[serde(default)]
+    pub pipelines: BTreeMap<String, Pipeline>,
+    #[serde(default)]
     pub streams: BTreeMap<String, Stream>,
     #[serde(default)]
     pub tokens: BTreeMap<String, ApiToken>,
@@ -77,6 +79,8 @@ pub enum Command {
     PutOutput { output: Output },
     DeleteOutput { tenant: String, id: String },
     PutSecret { secret: SecretEntry },
+    PutPipeline { pipeline: Pipeline, expect_generation: Option<u64> },
+    DeletePipeline { tenant: String, id: String },
     /// stream の所有権を取る（新しい fencing token を払い出す。古い所有者は送り手を切る）。
     ClaimStream { stream: String, node: String, now_ms: i64 },
     /// 所有権を手放す（token が今のものと同じときだけ）。
@@ -309,6 +313,34 @@ impl ControlState {
             Command::DeleteSecret { tenant, id } => {
                 self.secrets.get(&id).filter(|s| s.tenant == tenant).ok_or_else(Problem::not_found)?;
                 self.secrets.remove(&id);
+            }
+            Command::PutPipeline { mut pipeline, expect_generation } => {
+                match self.pipelines.get(&pipeline.id) {
+                    Some(cur) => {
+                        if cur.tenant != pipeline.tenant {
+                            return Err(Problem::not_found());
+                        }
+                        if expect_generation.is_some_and(|g| g != cur.generation) {
+                            return Err(stale());
+                        }
+                        pipeline.generation = cur.generation + 1;
+                        pipeline.created_at_ms = cur.created_at_ms;
+                    }
+                    None => {
+                        if self.pipelines.values().any(|p| p.tenant == pipeline.tenant && p.name == pipeline.name) {
+                            return Err(conflict("同じ名前のパイプラインがあります"));
+                        }
+                        if self.pipelines.values().filter(|p| p.tenant == pipeline.tenant).count() >= 100 {
+                            return Err(Problem::new(ProblemCode::QuotaExceeded, "パイプラインの数が上限です"));
+                        }
+                        pipeline.generation = 1;
+                    }
+                }
+                self.pipelines.insert(pipeline.id.clone(), pipeline);
+            }
+            Command::DeletePipeline { tenant, id } => {
+                self.pipelines.get(&id).filter(|p| p.tenant == tenant).ok_or_else(Problem::not_found)?;
+                self.pipelines.remove(&id);
             }
             Command::ClaimStream { stream, node, now_ms } => {
                 if !self.streams.contains_key(&stream) {

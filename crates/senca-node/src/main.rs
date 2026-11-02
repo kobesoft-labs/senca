@@ -18,6 +18,7 @@ mod live;
 mod media;
 mod packager;
 mod paas;
+mod pipelines;
 mod plan;
 mod recorder;
 mod recovery;
@@ -226,6 +227,7 @@ async fn run(cfg: Config) -> Result<(), String> {
             }
         });
     }
+    app.pipelines_reconcile();
     if !clustered {
         app.io_reconcile();
         app.set_ready();
