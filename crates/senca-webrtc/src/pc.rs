@@ -302,6 +302,8 @@ pub struct PeerConnection {
     bundle_mid: Option<String>,
     bundle_m_line: String,
     datachannel_negotiated: bool,
+    /// 自分の offer で DataChannel の m 行を置いた位置（再交渉の offer でも同じ位置・同じ mid に置く。JSEP 5.2.2）。
+    offer_dc_index: Option<usize>,
     remote_max_message_size: Option<u64>,
     ext_ids: ExtIds,
     // 輸送
@@ -407,6 +409,7 @@ impl PeerConnection {
             bundle_mid: None,
             bundle_m_line: "audio 9 UDP/TLS/RTP/SAVPF 0".into(),
             datachannel_negotiated: false,
+            offer_dc_index: None,
             remote_max_message_size: None,
             ext_ids: ExtIds::default(),
             dtls: None,
@@ -1114,9 +1117,16 @@ impl PeerConnection {
         for (i, uri) in caps.header_extensions.iter().enumerate().take(14) {
             extmaps.push(((i + 1) as u8, uri.clone()));
         }
+        // DataChannel の m 行の位置: 前の offer にあればそこ（後から足した m 行はその後ろ）、無ければ最後
+        let dc_at = (spec.datachannel && self.cfg.datachannel)
+            .then(|| self.offer_dc_index.unwrap_or(spec.media.len()).min(spec.media.len()));
+        let pos = |i: usize| match dc_at {
+            Some(k) if i >= k => i + 1,
+            _ => i,
+        };
         let mut media = Vec::new();
         for (i, m) in spec.media.iter().enumerate() {
-            let mid = i.to_string();
+            let mid = pos(i).to_string();
             let mut codecs = Vec::new();
             for c in caps
                 .codecs
@@ -1183,10 +1193,10 @@ impl PeerConnection {
                 datachannel: false,
             });
         }
-        if spec.datachannel && self.cfg.datachannel {
-            media.push(OfferMedia {
+        if let Some(k) = dc_at {
+            media.insert(k, OfferMedia {
                 kind: senca_sdp::MediaKind::Application,
-                mid: spec.media.len().to_string(),
+                mid: k.to_string(),
                 direction: Direction::SendRecv,
                 codecs: Vec::new(),
                 extmaps: Vec::new(),
@@ -1229,7 +1239,7 @@ impl PeerConnection {
             if m.kind != MediaKind::Video || !m.direction.sends() || m.simulcast.is_empty() {
                 continue;
             }
-            if let Some(md) = sdp.media.get_mut(i) {
+            if let Some(md) = sdp.media.get_mut(pos(i)) {
                 for r in &m.simulcast {
                     md.push_attr("rid", format!("{r} send"));
                 }
@@ -1246,6 +1256,9 @@ impl PeerConnection {
                 m.protocol,
                 m.formats.first().map_or("0", |s| s)
             );
+        }
+        if dc_at.is_some() {
+            self.offer_dc_index = dc_at;
         }
         self.local_offer = Some((sdp, spec.clone()));
         Ok(text)

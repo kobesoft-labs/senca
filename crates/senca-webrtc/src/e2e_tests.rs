@@ -1005,3 +1005,72 @@ fn close_notifies_peer() {
         "{ev:?}"
     );
 }
+
+/// 再交渉の offer（m 行を足す）でも DataChannel の m 行は同じ位置・同じ mid に残り（JSEP 5.2.2）、
+/// DataChannel もメディアも続く。足した受信の m 行には server からメディアが届く。
+#[test]
+fn reoffer_keeps_datachannel_mline_and_adds_media() {
+    let mut sim = Sim::new();
+    let c = sim.add(client_config(), "10.0.0.1:5000");
+    let s = sim.add(PeerConfig::default(), "10.0.0.2:6000");
+    let now = sim.now;
+    sim.pcs[c]
+        .create_data_channel(
+            now,
+            ChannelOptions {
+                label: "chat".into(),
+                ..Default::default()
+            },
+        )
+        .unwrap();
+    let first = spec(Direction::SendOnly, false, &[], true);
+    connect_pair(&mut sim, c, s, &first);
+    sim.run(Duration::from_millis(500));
+    let mut second = first.clone();
+    second.media.push(OfferMediaSpec {
+        kind: MediaKind::Video,
+        direction: Direction::RecvOnly,
+        codecs: Some(vec![Codec::Vp8]),
+        simulcast: Vec::new(),
+    });
+    let now = sim.now;
+    let offer = sim.pcs[c].create_offer(now, &second).unwrap();
+    let sdp = senca_sdp::SessionDescription::parse(&offer).unwrap();
+    let lines: Vec<(String, String)> = sdp
+        .media
+        .iter()
+        .map(|m| (m.media.clone(), m.mid().unwrap_or("").to_string()))
+        .collect();
+    assert_eq!(
+        lines,
+        vec![
+            ("video".to_string(), "0".to_string()),
+            ("application".to_string(), "1".to_string()),
+            ("video".to_string(), "2".to_string())
+        ]
+    );
+    let answer = sim.pcs[s].accept_offer(now, &offer).unwrap();
+    sim.pcs[c].apply_answer(now, &answer).unwrap();
+    sim.run(Duration::from_millis(300));
+    let t = sim.pcs[s]
+        .send_tracks()
+        .into_iter()
+        .find(|t| t.mid == "2")
+        .expect("send track for the added m-line")
+        .track;
+    for n in 0..30u32 {
+        let now = sim.now;
+        let key = n == 0;
+        sim.pcs[s]
+            .send_access_unit(now, t, &video_au(n, vp8_frame(0, n, 800, key), key, 1), None)
+            .unwrap();
+        sim.run(Duration::from_millis(33));
+    }
+    let id = sim.pcs[s].data_channel_by_label("chat").expect("chat still open");
+    let now = sim.now;
+    sim.pcs[s].send_data_text(now, id, "after re-offer").unwrap();
+    sim.run(Duration::from_millis(300));
+    let ev = sim.take_events(c);
+    assert!(received_aus(&ev).len() >= 25, "client got {}", received_aus(&ev).len());
+    assert!(ev.iter().any(|e| matches!(e, Event::DataChannelMessage { data, .. } if &data[..] == b"after re-offer")));
+}

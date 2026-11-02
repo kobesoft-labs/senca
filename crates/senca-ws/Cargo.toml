@@ -1,0 +1,16 @@
+[package]
+name = "senca-ws"
+description = "Sans-io WebSocket (RFC 6455) server and client for SENCA"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+
+[dependencies]
+bytes.workspace = true
+base64.workspace = true
+getrandom.workspace = true
+sha1 = "0.10"
+senca-http = { path = "../senca-http" }
+
+[lints]
+workspace = true

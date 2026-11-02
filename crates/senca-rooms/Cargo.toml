@@ -1,0 +1,28 @@
+[package]
+name = "senca-rooms"
+description = "Sans-io realtime rooms (SFU orchestration): signaling v1, room state, spotlight, filters, auth tokens and webhooks"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+
+[dependencies]
+bytes.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+sha2.workspace = true
+base64.workspace = true
+subtle.workspace = true
+getrandom.workspace = true
+hmac = "0.12"
+ed25519-dalek = { version = "2", default-features = false, features = ["std"] }
+p256 = { version = "0.13", default-features = false, features = ["ecdsa", "std"] }
+senca-core = { path = "../senca-core" }
+senca-sdp = { path = "../senca-sdp" }
+senca-webrtc = { path = "../senca-webrtc" }
+
+[dev-dependencies]
+senca-ws = { path = "../senca-ws" }
+senca-http = { path = "../senca-http" }
+
+[lints]
+workspace = true
