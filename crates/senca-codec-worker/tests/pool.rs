@@ -236,8 +236,8 @@ async fn missing_executable_is_unavailable() {
 
 #[tokio::test]
 async fn protocol_version_mismatch_is_rejected() {
-    // 版 2 の Hello（本体 18 バイト）を出して止まる偽の worker。
-    let script = r"printf '\000\000\000\022\001\000\002\000\000\000\001\000\000\000\000\000\000\000\000\000\000\000\000'; read x";
+    // 知らない版（3）の Hello（本体 18 バイト）を出して止まる偽の worker。
+    let script = r"printf '\000\000\000\022\001\000\003\000\000\000\001\000\000\000\000\000\000\000\000\000\000\000\000'; read x";
     let mut c = config(1, &[]);
     c.program = "/bin/sh".into();
     c.args = vec!["-c".into(), script.into()];

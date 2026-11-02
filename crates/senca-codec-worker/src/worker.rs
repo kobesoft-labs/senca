@@ -32,6 +32,8 @@ pub enum Fault {
     Oversize,
     /// 各ジョブの前に眠る（公平さの試験用）。
     Slow(Duration),
+    /// セッションの入力を `--fault-after` 個受けたら abort する（セッションの異常終了の試験用）。
+    SessionCrash,
 }
 
 impl Fault {
@@ -41,6 +43,7 @@ impl Fault {
             "hang" => Fault::Hang,
             "lie" => Fault::Lie,
             "oversize" => Fault::Oversize,
+            "session-crash" => Fault::SessionCrash,
             _ => {
                 let ms = s.strip_prefix("slow:")?.parse::<u64>().ok()?;
                 Fault::Slow(Duration::from_millis(ms.min(600_000)))
@@ -68,7 +71,7 @@ pub enum Mode {
 }
 
 pub const USAGE: &str = "usage: senca-codec-worker [--no-sandbox] [--no-seccomp] [--no-landlock] \
-[--max-memory-mb N] [--max-cpu-secs N] [--fault crash|hang|lie|oversize|slow:MS] [--fault-after N] \
+[--max-memory-mb N] [--max-cpu-secs N] [--fault crash|hang|lie|oversize|slow:MS|session-crash] [--fault-after N] \
 [--self-test-sandbox]";
 
 /// 引数を解釈する。
@@ -110,7 +113,7 @@ pub fn parse_args<I: IntoIterator<Item = String>>(args: I) -> Result<Mode, Strin
     })
 }
 
-fn log(msg: &str) {
+pub(crate) fn log(msg: &str) {
     eprintln!("senca-codec-worker[{}]: {msg}", std::process::id());
 }
 
@@ -141,7 +144,7 @@ pub fn run_self_test(o: &WorkerOptions) -> i32 {
 }
 
 /// 標準入力から 1 フレームを読む。入力の終わりなら `Ok(None)`。
-fn read_message(r: &mut impl Read) -> Result<Option<Message>, String> {
+pub(crate) fn read_message(r: &mut impl Read) -> Result<Option<Message>, String> {
     let mut h = [0u8; protocol::HEADER_LEN];
     let mut got = 0;
     while got < h.len() {
@@ -253,6 +256,7 @@ pub fn serve(o: &WorkerOptions) -> i32 {
                             continue;
                         }
                         Fault::Slow(d) => std::thread::sleep(d),
+                        Fault::SessionCrash => {}
                     }
                 }
                 if let Some(s) = o.sandbox.max_cpu_secs_per_job.filter(|_| o.sandbox.enabled) {
@@ -281,6 +285,10 @@ pub fn serve(o: &WorkerOptions) -> i32 {
                 }
             }
             Message::Shutdown => return 0,
+            Message::SessionOpen(open) => {
+                // このプロセスはセッション専用になる（終わったら終了する）。
+                return crate::session::serve_session(o, registry, open, input, out);
+            }
             other => {
                 log(&format!("unexpected message from parent: {other:?}"));
                 return 3;

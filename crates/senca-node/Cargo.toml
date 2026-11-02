@@ -24,6 +24,7 @@ senca-codec-worker = { path = "../senca-codec-worker" }
 senca-image = { path = "../senca-image" }
 senca-srt = { path = "../senca-srt" }
 senca-raft = { path = "../senca-raft" }
+senca-tls = { path = "../senca-tls" }
 senca-rtp = { path = "../senca-rtp" }
 senca-sdp = { path = "../senca-sdp" }
 senca-rtsp = { path = "../senca-rtsp" }

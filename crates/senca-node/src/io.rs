@@ -142,6 +142,19 @@ async fn connect_tcp(app: &App, host: &str, port: u16) -> Result<tokio::net::Tcp
     Ok(s)
 }
 
+pub trait IoStream: tokio::io::AsyncRead + tokio::io::AsyncWrite + Unpin + Send {}
+impl<T: tokio::io::AsyncRead + tokio::io::AsyncWrite + Unpin + Send> IoStream for T {}
+
+/// TCP（rtmps なら TLS を通す）でつなぐ。
+async fn connect_stream(app: &App, host: &str, port: u16, tls: bool) -> Result<Box<dyn IoStream>, String> {
+    let tcp = connect_tcp(app, host, port).await?;
+    if !tls {
+        return Ok(Box::new(tcp));
+    }
+    let cfg = crate::tls_io::client_config(&[])?;
+    Ok(Box::new(crate::tls_io::connect(tcp, cfg, host).await?))
+}
+
 // ---- 出力 ----
 
 async fn run_output(app: Arc<App>, o: Output, st: Arc<Mutex<IoStatus>>) {
@@ -178,12 +191,9 @@ async fn rtmp_push(app: &Arc<App>, o: &Output, st: &Mutex<IoStatus>) -> Result<(
     };
     let url = o.url.clone().ok_or("url がありません")?;
     let (tls, host, port, rtmp_app, key_in_url) = split_rtmp(&url).ok_or("url の形が違います")?;
-    if tls {
-        return Err("rtmps はまだこのノードで使えません（TLS の統合待ち）".into());
-    }
     let key = secret_value(app, &o.tenant, &o.credential_ref)?.or(key_in_url).ok_or("stream key がありません（url の最後か credential_ref）")?;
     set(st, "connecting", None);
-    let mut sock = connect_tcp(app, &host, port).await?;
+    let mut sock = connect_stream(app, &host, port, tls).await?;
     let tc = format!("rtmp://{host}:{port}/{rtmp_app}");
     let mut c = ClientSession::new(ClientConfig::new(&rtmp_app, &tc, ClientMode::Publish { stream_key: Secret::new(key), publish_type: "live".into() }));
     let mut buf = vec![0u8; 64 * 1024];
@@ -217,7 +227,7 @@ async fn rtmp_push(app: &Arc<App>, o: &Output, st: &Mutex<IoStatus>) -> Result<(
     }
     set(st, "active", None);
     let mut sub = hub.subscribe();
-    let (mut rd, mut wr) = sock.into_split();
+    let (mut rd, mut wr) = tokio::io::split(sock);
     let mut tags = Vec::new();
     let mut pending: Vec<HubEvent> = sub.initial();
     loop {
@@ -293,12 +303,9 @@ async fn rtmp_pull(app: &Arc<App>, i: &Input, st: &Mutex<IoStatus>) -> Result<()
     use senca_flv::ingest::{FlvIngest, IngestEvent, IngestOptions};
     use senca_rtmp::{ClientConfig, ClientEvent, ClientMode, ClientSession, MediaType, Secret};
     let (tls, host, port, rtmp_app, key_in_url) = split_rtmp(&i.url).ok_or("url の形が違います")?;
-    if tls {
-        return Err("rtmps はまだこのノードで使えません（TLS の統合待ち）".into());
-    }
     let key = secret_value(app, &i.tenant, &i.credential_ref)?.or(key_in_url).ok_or("stream 名がありません")?;
     set(st, "connecting", None);
-    let mut sock = connect_tcp(app, &host, port).await?;
+    let mut sock = connect_stream(app, &host, port, tls).await?;
     let tc = format!("rtmp://{host}:{port}/{rtmp_app}");
     let mut c = ClientSession::new(ClientConfig::new(&rtmp_app, &tc, ClientMode::Play { stream_key: Secret::new(key), start: -2.0 }));
     sock.write_all(&c.take_output()).await.map_err(|e| e.to_string())?;

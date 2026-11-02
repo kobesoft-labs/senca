@@ -7,6 +7,15 @@ use std::time::Duration;
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
 
 #[allow(dead_code)] // headers は PaaS の応答（Location など）で使う
+trait Stream: tokio::io::AsyncRead + tokio::io::AsyncWrite + Unpin + Send {}
+impl<T: tokio::io::AsyncRead + tokio::io::AsyncWrite + Unpin + Send> Stream for T {}
+
+/// 外向きの TLS の設定（一度だけ作る）。
+pub fn client_tls() -> Result<std::sync::Arc<senca_tls::ClientConfig>, String> {
+    static CFG: std::sync::OnceLock<Result<std::sync::Arc<senca_tls::ClientConfig>, String>> = std::sync::OnceLock::new();
+    CFG.get_or_init(|| crate::tls_io::client_config(&[b"http/1.1"])).clone()
+}
+
 pub struct HttpResponse {
     pub status: u16,
     pub headers: Vec<(String, String)>,
@@ -80,12 +89,10 @@ pub async fn request(
     timeout: Duration,
 ) -> Result<HttpResponse, String> {
     let u = parse_url(url).ok_or("url の形が違います")?;
-    if u.tls {
-        return Err("https はまだこのノードで使えません（TLS の統合待ち）".into());
-    }
     let addr = crate::egress::resolve(&u.host, u.port, allow).await?;
     let fut = async {
-        let mut sock = tokio::net::TcpStream::connect(addr).await.map_err(|e| e.to_string())?;
+        let tcp = tokio::net::TcpStream::connect(addr).await.map_err(|e| e.to_string())?;
+        let mut sock: Box<dyn Stream> = if u.tls { Box::new(crate::tls_io::connect(tcp, client_tls()?, &u.host).await?) } else { Box::new(tcp) };
         let host = if (u.port == 80 && !u.tls) || (u.port == 443 && u.tls) { u.host.clone() } else { format!("{}:{}", u.host, u.port) };
         let mut req = Request::new(method.clone(), u.path.clone()).header("Host", host).map_err(|e| e.to_string())?;
         req = req.header("User-Agent", "senca").map_err(|e| e.to_string())?;

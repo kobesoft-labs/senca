@@ -16,6 +16,23 @@
 //! 1. worker は起動すると最初に [`Message::Hello`]（版・能力・サンドボックスの状態）を送る。版が違えば親は使わない。
 //! 2. 親は [`Message::Job`] を 1 つ送り、worker は同じ `id` の [`Message::JobResult`] を 1 つ返す（1 つずつ順に）。
 //! 3. 親は [`Message::Shutdown`] で終了を求める。
+//!
+//! # セッション（版 2）
+//!
+//! ジョブとは別に、パイプライン（`senca-pipeline`）を worker の中で動かし続ける。1 つの worker のプロセスは
+//! 1 つのセッションだけを受け持つ（落ちても他のセッションに波及しない）。生のフレームはパイプを通らない
+//! （符号化済みの AU と小さな通知だけ、REQ-010 R10-8）。
+//!
+//! 1. 親 → [`Message::SessionOpen`]（テナント・方針・グラフの JSON）。worker は検証して動かし始め、
+//!    [`SessionEventKind::Opened`]（計画の JSON）か [`SessionEventKind::Error`] を返す。
+//! 2. 親 → [`Message::SessionInput`]（入力ごとの AU の束、設定、終わりの印）。返事は無い。
+//! 3. 親 → [`Message::SessionControl`]（操作の JSON、要求番号）。worker は同じ番号の
+//!    [`SessionEventKind::ControlOk`] か [`SessionEventKind::ControlErr`] を返す（順不同）。
+//! 4. worker → [`Message::SessionOutput`]（sink ごとの AU の束、または変化の静止画）と
+//!    [`SessionEventKind::Event`]（状態・メーター・誤り、JSON）。
+//! 5. 親 → [`Message::SessionClose`]。worker は出し切ってから [`SessionEventKind::Closed`] を返して終わる。
+//!
+//! JSON の本体は長さの上限を置き、ここでは UTF-8 だけを確かめる（形は受け手が `deny_unknown_fields` で検査する）。
 
 use bytes::{Bytes, BytesMut};
 use senca_codec::caps::{Capability, Direction, ProviderId, ProviderStatus};
@@ -31,7 +48,7 @@ use senca_core::{AccessUnit, Codec, CodecConfig, Timebase, TrackId};
 use std::fmt;
 
 /// プロトコルの版。互換の無い変更で増やす。
-pub const PROTOCOL_VERSION: u16 = 1;
+pub const PROTOCOL_VERSION: u16 = 2;
 /// フレームの頭（長さ 4 バイト + 種類 1 バイト）。
 pub const HEADER_LEN: usize = 5;
 /// 本体の長さの上限（64 MiB + 64 KiB）。
@@ -48,6 +65,14 @@ pub const MAX_CAPS: usize = 1024;
 pub const MAX_PREFER: usize = 16;
 /// 画素形式の数の上限。
 pub const MAX_FORMATS: usize = 8;
+/// セッションのグラフ・操作の JSON の上限（画像を base64 で含められる）。
+pub const MAX_SESSION_JSON: usize = 16 * 1024 * 1024;
+/// セッションの通知の JSON の上限。
+pub const MAX_EVENT_JSON: usize = 1024 * 1024;
+/// セッションの 1 つの束の AU の数の上限。
+pub const MAX_SESSION_AUS: usize = 4096;
+/// 部品・入力・出力の id の長さの上限。
+pub const MAX_ID: usize = 256;
 
 const T_HELLO: u8 = 1;
 const T_JOB: u8 = 2;
@@ -55,6 +80,12 @@ const T_JOB_RESULT: u8 = 3;
 const T_SHUTDOWN: u8 = 4;
 const T_PING: u8 = 5;
 const T_PONG: u8 = 6;
+const T_SESSION_OPEN: u8 = 7;
+const T_SESSION_INPUT: u8 = 8;
+const T_SESSION_CONTROL: u8 = 9;
+const T_SESSION_OUTPUT: u8 = 10;
+const T_SESSION_EVENT: u8 = 11;
+const T_SESSION_CLOSE: u8 = 12;
 
 /// プロトコル違反。
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -164,6 +195,122 @@ pub struct JobResult {
     pub result: Result<JobOutput, CodecError>,
 }
 
+/// セッションを開く。
+#[derive(Debug, Clone, PartialEq)]
+pub struct SessionOpen {
+    pub session_id: u64,
+    pub tenant: String,
+    pub policy: Policy,
+    /// パイプラインの定義（JSON、`senca_pipeline::Graph`）。
+    pub graph: String,
+}
+
+/// セッションの入力（1 つの入力の AU の束）。
+#[derive(Debug, Clone)]
+pub struct SessionInput {
+    pub session_id: u64,
+    /// グラフの `source` の id。
+    pub source: String,
+    /// トラックの設定（最初と、変わったとき）。
+    pub config: Option<CodecConfig>,
+    pub aus: Vec<AccessUnit>,
+    /// この入力の終わり。
+    pub end: bool,
+}
+
+/// セッションの操作。
+#[derive(Debug, Clone, PartialEq)]
+pub struct SessionControl {
+    pub session_id: u64,
+    pub request_id: u64,
+    /// 操作（JSON、`senca_pipeline::Control`）。
+    pub control: String,
+}
+
+/// セッションの出力の中身。
+#[derive(Debug, Clone)]
+pub enum SessionOutputKind {
+    /// 符号化済みの AU（sink のトラックごと）。
+    Media {
+        track: u32,
+        generation: u64,
+        config: Option<CodecConfig>,
+        aus: Vec<AccessUnit>,
+    },
+    /// 板書の変化の静止画（JPEG）。
+    Snapshot {
+        generation: u64,
+        pts_us: i64,
+        width: u32,
+        height: u32,
+        changed_fraction: f64,
+        jpeg: Bytes,
+    },
+}
+
+/// セッションの出力。
+#[derive(Debug, Clone)]
+pub struct SessionOutput {
+    pub session_id: u64,
+    /// sink の id（静止画なら `snapshot_on_change` の id）。
+    pub node: String,
+    /// 出力先の stream id（静止画では空）。
+    pub stream: String,
+    pub kind: SessionOutputKind,
+}
+
+/// セッションの通知の種類。
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum SessionEventKind {
+    /// 開いた（本体は計画の JSON）。
+    Opened,
+    /// パイプラインの通知（本体は `senca_pipeline::Event` の JSON）。
+    Event,
+    /// 操作が成功（本体は `ControlReply` の JSON）。
+    ControlOk,
+    /// 操作が失敗（本体は `{"code","message","issues"}` の JSON）。
+    ControlErr,
+    /// セッションの誤り（開けなかった等。本体は `{"code","message","issues"}`）。
+    Error,
+    /// 閉じた（出し切った）。
+    Closed,
+}
+
+impl SessionEventKind {
+    fn to_u8(self) -> u8 {
+        match self {
+            SessionEventKind::Opened => 0,
+            SessionEventKind::Event => 1,
+            SessionEventKind::ControlOk => 2,
+            SessionEventKind::ControlErr => 3,
+            SessionEventKind::Error => 4,
+            SessionEventKind::Closed => 5,
+        }
+    }
+    fn from_u8(v: u8) -> Option<Self> {
+        Some(match v {
+            0 => SessionEventKind::Opened,
+            1 => SessionEventKind::Event,
+            2 => SessionEventKind::ControlOk,
+            3 => SessionEventKind::ControlErr,
+            4 => SessionEventKind::Error,
+            5 => SessionEventKind::Closed,
+            _ => return None,
+        })
+    }
+}
+
+/// セッションの通知。
+#[derive(Debug, Clone, PartialEq)]
+pub struct SessionEvent {
+    pub session_id: u64,
+    pub kind: SessionEventKind,
+    /// 操作への返事なら、その要求番号（それ以外は 0）。
+    pub request_id: u64,
+    /// JSON。
+    pub body: String,
+}
+
 /// メッセージ。
 #[derive(Debug, Clone)]
 pub enum Message {
@@ -173,6 +320,12 @@ pub enum Message {
     Shutdown,
     Ping(u64),
     Pong(u64),
+    SessionOpen(SessionOpen),
+    SessionInput(SessionInput),
+    SessionControl(SessionControl),
+    SessionOutput(SessionOutput),
+    SessionEvent(SessionEvent),
+    SessionClose(u64),
 }
 
 // ---------------------------------------------------------------------------
@@ -221,6 +374,19 @@ impl Enc {
             end -= 1;
         }
         self.bytes(&s.as_bytes()[..end])
+    }
+    /// 長い文字列（切り詰めない。上限を超えれば `Err`）。
+    fn long_str(&mut self, s: &str, max: usize) -> PResult<()> {
+        if s.len() > max {
+            return Err(perr("string too long"));
+        }
+        self.bytes(s.as_bytes())
+    }
+    fn id(&mut self, s: &str) -> PResult<()> {
+        if s.is_empty() || s.len() > MAX_ID {
+            return Err(perr("bad id"));
+        }
+        self.bytes(s.as_bytes())
     }
     fn opt_str(&mut self, s: &Option<String>) -> PResult<()> {
         match s {
@@ -310,6 +476,19 @@ impl Dec {
     fn str(&mut self) -> PResult<String> {
         let b = self.bytes(MAX_STRING)?;
         String::from_utf8(b.to_vec()).map_err(|_| perr("invalid UTF-8"))
+    }
+    /// 長い UTF-8 の文字列（JSON）。
+    fn long_str(&mut self, max: usize) -> PResult<String> {
+        let b = self.bytes(max)?;
+        String::from_utf8(b.to_vec()).map_err(|_| perr("invalid UTF-8"))
+    }
+    /// id（空でなく、上限内）。
+    fn id(&mut self) -> PResult<String> {
+        let s = self.str()?;
+        if s.is_empty() || s.len() > MAX_ID {
+            return Err(perr("bad id"));
+        }
+        Ok(s)
     }
     fn opt_str(&mut self) -> PResult<Option<String>> {
         Ok(if self.bool()? {
@@ -1031,6 +1210,80 @@ pub fn encode_message(m: &Message) -> PResult<Vec<u8>> {
             e.u64(*n);
             T_PONG
         }
+        Message::SessionOpen(o) => {
+            e.u64(o.session_id);
+            e.id(&o.tenant)?;
+            put_policy(&mut e, &o.policy)?;
+            e.long_str(&o.graph, MAX_SESSION_JSON)?;
+            T_SESSION_OPEN
+        }
+        Message::SessionInput(i) => {
+            e.u64(i.session_id);
+            e.id(&i.source)?;
+            put_opt_codec_config(&mut e, &i.config)?;
+            e.count(i.aus.len(), MAX_SESSION_AUS)?;
+            for a in &i.aus {
+                put_au(&mut e, a)?;
+            }
+            e.bool(i.end);
+            T_SESSION_INPUT
+        }
+        Message::SessionControl(c) => {
+            e.u64(c.session_id);
+            e.u64(c.request_id);
+            e.long_str(&c.control, MAX_SESSION_JSON)?;
+            T_SESSION_CONTROL
+        }
+        Message::SessionOutput(o) => {
+            e.u64(o.session_id);
+            e.id(&o.node)?;
+            e.str(&o.stream)?;
+            match &o.kind {
+                SessionOutputKind::Media {
+                    track,
+                    generation,
+                    config,
+                    aus,
+                } => {
+                    e.u8(0);
+                    e.u32(*track);
+                    e.u64(*generation);
+                    put_opt_codec_config(&mut e, config)?;
+                    e.count(aus.len(), MAX_SESSION_AUS)?;
+                    for a in aus {
+                        put_au(&mut e, a)?;
+                    }
+                }
+                SessionOutputKind::Snapshot {
+                    generation,
+                    pts_us,
+                    width,
+                    height,
+                    changed_fraction,
+                    jpeg,
+                } => {
+                    e.u8(1);
+                    e.u64(*generation);
+                    e.i64(*pts_us);
+                    e.u32(*width);
+                    e.u32(*height);
+                    e.u64(changed_fraction.to_bits());
+                    e.bytes(jpeg)?;
+                }
+            }
+            T_SESSION_OUTPUT
+        }
+        Message::SessionEvent(ev) => {
+            e.u64(ev.session_id);
+            e.u8(ev.kind.to_u8());
+            e.u64(ev.request_id);
+            e.long_str(&ev.body, MAX_EVENT_JSON)?;
+            T_SESSION_EVENT
+        }
+        Message::SessionClose(id) => {
+            e.u64(*id);
+            T_SESSION_CLOSE
+        }
     };
     let body = e.0.len() - HEADER_LEN;
     if body > MAX_BODY {
@@ -1047,7 +1300,7 @@ pub fn parse_header(h: &[u8; HEADER_LEN]) -> PResult<(usize, u8)> {
     if len > MAX_BODY {
         return Err(perr(format!("frame too large ({len} bytes)")));
     }
-    if !(T_HELLO..=T_PONG).contains(&h[4]) {
+    if !(T_HELLO..=T_SESSION_CLOSE).contains(&h[4]) {
         return Err(perr("unknown message type"));
     }
     Ok((len, h[4]))
@@ -1101,6 +1354,93 @@ pub fn decode_body(ty: u8, body: Bytes) -> PResult<Message> {
         T_SHUTDOWN => Message::Shutdown,
         T_PING => Message::Ping(d.u64()?),
         T_PONG => Message::Pong(d.u64()?),
+        T_SESSION_OPEN => Message::SessionOpen(SessionOpen {
+            session_id: d.u64()?,
+            tenant: d.id()?,
+            policy: get_policy(&mut d)?,
+            graph: d.long_str(MAX_SESSION_JSON)?,
+        }),
+        T_SESSION_INPUT => {
+            let session_id = d.u64()?;
+            let source = d.id()?;
+            let config = get_opt_codec_config(&mut d)?;
+            let n = d.count(MAX_SESSION_AUS, AU_MIN)?;
+            let aus = (0..n)
+                .map(|_| get_au(&mut d))
+                .collect::<PResult<Vec<_>>>()?;
+            Message::SessionInput(SessionInput {
+                session_id,
+                source,
+                config,
+                aus,
+                end: d.bool()?,
+            })
+        }
+        T_SESSION_CONTROL => Message::SessionControl(SessionControl {
+            session_id: d.u64()?,
+            request_id: d.u64()?,
+            control: d.long_str(MAX_SESSION_JSON)?,
+        }),
+        T_SESSION_OUTPUT => {
+            let session_id = d.u64()?;
+            let node = d.id()?;
+            let stream = d.str()?;
+            let kind = match d.u8()? {
+                0 => {
+                    let track = d.u32()?;
+                    let generation = d.u64()?;
+                    let config = get_opt_codec_config(&mut d)?;
+                    let n = d.count(MAX_SESSION_AUS, AU_MIN)?;
+                    let aus = (0..n)
+                        .map(|_| get_au(&mut d))
+                        .collect::<PResult<Vec<_>>>()?;
+                    SessionOutputKind::Media {
+                        track,
+                        generation,
+                        config,
+                        aus,
+                    }
+                }
+                1 => {
+                    let generation = d.u64()?;
+                    let pts_us = d.i64()?;
+                    let width = d.u32()?;
+                    let height = d.u32()?;
+                    let changed_fraction = f64::from_bits(d.u64()?);
+                    if !changed_fraction.is_finite() {
+                        return Err(perr("bad changed fraction"));
+                    }
+                    let jpeg = d.bytes(MAX_BODY)?;
+                    SessionOutputKind::Snapshot {
+                        generation,
+                        pts_us,
+                        width,
+                        height,
+                        changed_fraction,
+                        jpeg,
+                    }
+                }
+                _ => return Err(perr("unknown session output kind")),
+            };
+            Message::SessionOutput(SessionOutput {
+                session_id,
+                node,
+                stream,
+                kind,
+            })
+        }
+        T_SESSION_EVENT => {
+            let session_id = d.u64()?;
+            let kind = SessionEventKind::from_u8(d.u8()?)
+                .ok_or_else(|| perr("unknown session event kind"))?;
+            Message::SessionEvent(SessionEvent {
+                session_id,
+                kind,
+                request_id: d.u64()?,
+                body: d.long_str(MAX_EVENT_JSON)?,
+            })
+        }
+        T_SESSION_CLOSE => Message::SessionClose(d.u64()?),
         _ => return Err(perr("unknown message type")),
     };
     d.finish()?;
@@ -1377,8 +1717,142 @@ mod tests {
             }
             g[0] = 0;
             g[1] = 0;
-            g[4] = (g[4] % 6) + 1;
+            g[4] = (g[4] % 12) + 1;
             let _ = try_decode_frame(&mut BytesMut::from(&g[..]));
+        }
+    }
+
+    #[test]
+    fn session_messages_roundtrip() {
+        let cfg = CodecConfig {
+            codec: Codec::Vp8,
+            generation: 2,
+            record: Bytes::from_static(b"r"),
+            video: None,
+            audio: None,
+        };
+        let msgs = vec![
+            Message::SessionOpen(SessionOpen {
+                session_id: 7,
+                tenant: "t1".into(),
+                policy: Policy::royalty_free(),
+                graph: "{\"version\":1,\"nodes\":[]}".into(),
+            }),
+            Message::SessionInput(SessionInput {
+                session_id: 7,
+                source: "cam".into(),
+                config: Some(cfg.clone()),
+                aus: vec![au(b"abc"), au(b"")],
+                end: true,
+            }),
+            Message::SessionControl(SessionControl {
+                session_id: 7,
+                request_id: 9,
+                control: "{\"op\":\"request_keyframe\"}".into(),
+            }),
+            Message::SessionOutput(SessionOutput {
+                session_id: 7,
+                node: "out".into(),
+                stream: "program".into(),
+                kind: SessionOutputKind::Media {
+                    track: 1,
+                    generation: 3,
+                    config: Some(cfg),
+                    aus: vec![au(b"x")],
+                },
+            }),
+            Message::SessionOutput(SessionOutput {
+                session_id: 7,
+                node: "snap".into(),
+                stream: String::new(),
+                kind: SessionOutputKind::Snapshot {
+                    generation: 1,
+                    pts_us: -5,
+                    width: 64,
+                    height: 32,
+                    changed_fraction: 0.25,
+                    jpeg: Bytes::from_static(&[0xff, 0xd8]),
+                },
+            }),
+            Message::SessionEvent(SessionEvent {
+                session_id: 7,
+                kind: SessionEventKind::ControlErr,
+                request_id: 9,
+                body: "{}".into(),
+            }),
+            Message::SessionClose(7),
+        ];
+        for m in msgs {
+            let back = roundtrip(&m);
+            assert_eq!(format!("{back:?}"), format!("{m:?}"));
+        }
+    }
+
+    #[test]
+    fn session_messages_enforce_bounds() {
+        // 空の id
+        let m = Message::SessionInput(SessionInput {
+            session_id: 1,
+            source: String::new(),
+            config: None,
+            aus: vec![],
+            end: false,
+        });
+        assert!(encode_message(&m).is_err());
+        // AU の数の上限
+        let m = Message::SessionInput(SessionInput {
+            session_id: 1,
+            source: "a".into(),
+            config: None,
+            aus: vec![au(b""); MAX_SESSION_AUS + 1],
+            end: false,
+        });
+        assert!(encode_message(&m).is_err());
+        // 通知の JSON の上限
+        let m = Message::SessionEvent(SessionEvent {
+            session_id: 1,
+            kind: SessionEventKind::Event,
+            request_id: 0,
+            body: "x".repeat(MAX_EVENT_JSON + 1),
+        });
+        assert!(encode_message(&m).is_err());
+        // 知らない通知の種類・出力の種類
+        let mut body = 1u64.to_be_bytes().to_vec();
+        body.push(9);
+        body.extend_from_slice(&0u64.to_be_bytes());
+        body.extend_from_slice(&[0, 0, 0, 0]);
+        assert!(decode_body(T_SESSION_EVENT, Bytes::from(body)).is_err());
+        let mut body = 1u64.to_be_bytes().to_vec();
+        body.extend_from_slice(&[0, 0, 0, 1, b'o', 0, 0, 0, 0, 7]);
+        assert!(decode_body(T_SESSION_OUTPUT, Bytes::from(body)).is_err());
+        // 壊れた UTF-8 の JSON
+        let mut body = 1u64.to_be_bytes().to_vec();
+        body.extend_from_slice(&2u64.to_be_bytes());
+        body.extend_from_slice(&[0, 0, 0, 2, 0xff, 0xfe]);
+        assert!(decode_body(T_SESSION_CONTROL, Bytes::from(body)).is_err());
+        // 個数が残りを超える（確保前に拒否）
+        let mut body = 1u64.to_be_bytes().to_vec();
+        body.extend_from_slice(&[0, 0, 0, 1, b's', 0, 0, 0, 0x0f, 0xff]);
+        assert!(decode_body(T_SESSION_INPUT, Bytes::from(body)).is_err());
+        // 壊したバイト列でもパニックしない
+        let enc = encode_message(&Message::SessionOutput(SessionOutput {
+            session_id: 7,
+            node: "out".into(),
+            stream: "p".into(),
+            kind: SessionOutputKind::Media {
+                track: 0,
+                generation: 1,
+                config: None,
+                aus: vec![au(b"abc")],
+            },
+        }))
+        .unwrap();
+        for i in 0..enc.len() {
+            for v in [0u8, 1, 0x7f, 0xff] {
+                let mut c = enc.clone();
+                c[i] = v;
+                let _ = try_decode_frame(&mut BytesMut::from(&c[..]));
+            }
         }
     }
 

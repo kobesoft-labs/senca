@@ -1,0 +1,23 @@
+[package]
+name = "senca-pipeline"
+description = "Pipeline graph model, validation, generations and the in-worker streaming runtime (decode, board, compose, mix, encode) for SENCA"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+
+[dependencies]
+senca-core = { path = "../senca-core" }
+senca-codec = { path = "../senca-codec" }
+senca-image = { path = "../senca-image" }
+senca-board = { path = "../senca-board" }
+senca-compose = { path = "../senca-compose" }
+bytes.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+base64.workspace = true
+
+[dev-dependencies]
+senca-fmp4 = { path = "../senca-fmp4" }
+
+[lints]
+workspace = true

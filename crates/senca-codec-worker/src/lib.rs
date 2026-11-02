@@ -3,15 +3,24 @@
 //! - [`protocol`] — 親と worker の間のフレーム形式とメッセージ（I/O なし、上限付きの厳格な解析）
 //! - [`pool`] — 親側の `WorkerPool`（数の指定、テナントごとの公平さ、時間切れ、異常終了の検出と作り直し）
 //! - [`worker`] — worker プロセスの本体（ジョブの実行、試験用の故障の注入）
+//! - [`session`] — worker の中のセッション（パイプラインを動かし続ける。`senca-pipeline` の `Runtime`）
+//! - [`session_pool`] — 親側のセッションの管理（`SessionPool`・`SessionHandle`、非同期の API）
 //! - [`sandbox`] — Linux のサンドボックス（no_new_privs、rlimit、Landlock、seccomp）
 //!
-//! ノード本体は [`pool::WorkerPool`] だけを使い、コーデックのライブラリを自分のプロセスに読み込まない。
+//! ノード本体は [`pool::WorkerPool`]（ジョブ）と [`session_pool::SessionPool`]（パイプラインのセッション）だけを使い、
+//! コーデックのライブラリを自分のプロセスに読み込まない。
 
 pub mod pool;
 pub mod protocol;
 #[allow(unsafe_code)]
 pub mod sandbox;
+pub mod session;
+pub mod session_pool;
 pub mod worker;
 
 pub use pool::{FailureCause, PoolConfig, PoolError, PoolStats, WorkerInfo, WorkerPool};
 pub use protocol::{JobKind, JobOutput};
+pub use session_pool::{
+    SessionError, SessionEventItem, SessionHandle, SessionOutputItem, SessionPool,
+    SessionPoolConfig, SessionPoolStats,
+};

@@ -29,6 +29,7 @@ mod secrets;
 mod snapshot;
 mod store;
 mod thumbnail;
+mod tls_io;
 mod util;
 
 use app::App;
@@ -141,6 +142,48 @@ async fn run(cfg: Config) -> Result<(), String> {
                 tokio::spawn(async move { http::serve(app, sock, peer.to_string()).await });
             }
         });
+    }
+    // TLS の受け口（HTTPS・RTMPS）
+    if cfg.https_listen.is_some() || cfg.rtmps_listen.is_some() {
+        let (cert, key) = (cfg.tls_cert.clone().unwrap(), cfg.tls_key.clone().unwrap());
+        if let Some(addr) = cfg.https_listen {
+            let tcfg = tls_io::server_config(&cert, &key, &[b"http/1.1"])?;
+            let l = TcpListener::bind(addr).await.map_err(|e| format!("https {addr}: {e}"))?;
+            app.log(&format!("https listening on {addr}"));
+            let app = app.clone();
+            tokio::spawn(async move {
+                loop {
+                    let Ok((sock, peer)) = l.accept().await else { continue };
+                    let _ = sock.set_nodelay(true);
+                    let (app, tcfg) = (app.clone(), tcfg.clone());
+                    tokio::spawn(async move {
+                        match tls_io::accept(sock, tcfg).await {
+                            Ok(s) => http::serve(app, s, peer.to_string()).await,
+                            Err(e) => app.log(&format!("https {peer}: {e}")),
+                        }
+                    });
+                }
+            });
+        }
+        if let Some(addr) = cfg.rtmps_listen {
+            let tcfg = tls_io::server_config(&cert, &key, &[])?;
+            let l = TcpListener::bind(addr).await.map_err(|e| format!("rtmps {addr}: {e}"))?;
+            app.log(&format!("rtmps listening on {addr}"));
+            let app = app.clone();
+            tokio::spawn(async move {
+                loop {
+                    let Ok((sock, peer)) = l.accept().await else { continue };
+                    let _ = sock.set_nodelay(true);
+                    let (app, tcfg) = (app.clone(), tcfg.clone());
+                    tokio::spawn(async move {
+                        match tls_io::accept(sock, tcfg).await {
+                            Ok(s) => rtmp::serve(app, s, peer.to_string()).await,
+                            Err(e) => app.log(&format!("rtmps {peer}: {e}")),
+                        }
+                    });
+                }
+            });
+        }
     }
     if let Some(addr) = cfg.rtmp_listen {
         let l = TcpListener::bind(addr).await.map_err(|e| format!("rtmp {addr}: {e}"))?;

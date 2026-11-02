@@ -662,19 +662,19 @@ enum Fatal {
     Shutdown,
 }
 
-struct Worker {
-    child: Child,
-    stdin: ChildStdin,
-    stdout: BufReader<ChildStdout>,
+pub(crate) struct Worker {
+    pub(crate) child: Child,
+    pub(crate) stdin: ChildStdin,
+    pub(crate) stdout: BufReader<ChildStdout>,
 }
 
-enum ReadError {
+pub(crate) enum ReadError {
     Eof(String),
     Violation(ProtocolError),
 }
 
 impl Worker {
-    async fn start(cfg: &PoolConfig) -> Result<(Worker, WorkerInfo), String> {
+    pub(crate) async fn start(cfg: &PoolConfig) -> Result<(Worker, WorkerInfo), String> {
         let mut cmd = Command::new(&cfg.program);
         cmd.args(&cfg.args)
             .stdin(Stdio::piped())
@@ -747,19 +747,8 @@ impl Worker {
         ))
     }
 
-    async fn read(&mut self) -> Result<Message, ReadError> {
-        let mut h = [0u8; protocol::HEADER_LEN];
-        self.stdout
-            .read_exact(&mut h)
-            .await
-            .map_err(|e| ReadError::Eof(e.to_string()))?;
-        let (len, ty) = protocol::parse_header(&h).map_err(ReadError::Violation)?;
-        let mut body = vec![0u8; len];
-        self.stdout
-            .read_exact(&mut body)
-            .await
-            .map_err(|e| ReadError::Eof(e.to_string()))?;
-        protocol::decode_body(ty, Bytes::from(body)).map_err(ReadError::Violation)
+    pub(crate) async fn read(&mut self) -> Result<Message, ReadError> {
+        read_frame(&mut self.stdout).await
     }
 
     async fn run(&mut self, job: &Pending) -> Result<Reply, Fatal> {
@@ -790,7 +779,7 @@ impl Worker {
         }
     }
 
-    async fn kill(&mut self) {
+    pub(crate) async fn kill(&mut self) {
         let _ = self.child.start_kill();
         let _ = tokio::time::timeout(Duration::from_secs(5), self.child.wait()).await;
     }
@@ -807,6 +796,20 @@ impl Worker {
             self.kill().await;
         }
     }
+}
+
+/// worker の標準出力から 1 フレームを読む（長さの上限は頭で確かめてから確保する）。
+pub(crate) async fn read_frame(r: &mut BufReader<ChildStdout>) -> Result<Message, ReadError> {
+    let mut h = [0u8; protocol::HEADER_LEN];
+    r.read_exact(&mut h)
+        .await
+        .map_err(|e| ReadError::Eof(e.to_string()))?;
+    let (len, ty) = protocol::parse_header(&h).map_err(ReadError::Violation)?;
+    let mut body = vec![0u8; len];
+    r.read_exact(&mut body)
+        .await
+        .map_err(|e| ReadError::Eof(e.to_string()))?;
+    protocol::decode_body(ty, Bytes::from(body)).map_err(ReadError::Violation)
 }
 
 /// 出力がジョブの種類と合っているか。

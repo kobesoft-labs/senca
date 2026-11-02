@@ -1028,6 +1028,7 @@ dependencies = [
  "senca-rtsp",
  "senca-sdp",
  "senca-srt",
+ "senca-tls",
  "serde",
  "serde_json",
  "sha2",
@@ -1136,6 +1137,23 @@ dependencies = [
  "hmac",
  "sha2",
  "subtle",
+]
+
+[[package]]
+name = "senca-sdk"
+version = "0.1.0"
+dependencies = [
+ "bytes",
+ "getrandom 0.3.4",
+ "senca-aac",
+ "senca-core",
+ "senca-flv",
+ "senca-h264",
+ "senca-h265",
+ "senca-mpegts",
+ "senca-opus",
+ "senca-rtmp",
+ "senca-srt",
 ]
 
 [[package]]
