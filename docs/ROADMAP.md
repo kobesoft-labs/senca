@@ -10,14 +10,14 @@
 | M3 | 制御 API（stream・録画・予約・トークン、認証、Idempotency、OpenAPI） | 10 章、REQ-002 | 完了（2026-11-02） |
 | M4 | codec worker（隔離・プール）、ハードウェアのコーデック（NVENC/NVDEC・oneVPL・AMF・VA-API）、ロイヤリティフリーのコーデック、静止画・サムネイル | 2.1、3.1、R6-8/9、REQ-004、REQ-007、REQ-010 | 完了（GPU の実機は未検証）（2026-11-02） |
 | M5 | 板書補正、複数チャネル・合成、制作機能（シーン・切り替え・音声ミキサー） | R6-5/6/7、REQ-005、REQ-008 | 完了（2026-11-02。H.264/H.265 の経路は GPU の実機で未検証） |
-| M6 | 字幕と翻訳（WebVTT） | R6-4 | |
+| M6 | 字幕と翻訳（WebVTT） | R6-4 | 完了（2026-11-02。録画への字幕の保存・WebRTC の DataChannel は未） |
 | M7 | 入力の追加（SRT、RTSP pull、RTP、TS demux、HLS pull） | P2 | 完了（2026-11-02。RTSP pull は TCP interleaved） |
 | M8 | WebRTC（ICE/STUN/TURN、DTLS-SRTP、SDP、WHIP/WHEP、SFU）、ブラウザーからの送出 | P3、R6-3、REQ-008 | |
-| M9 | 分散（自前 Raft、配置、fencing、振り直し、ノードの追加） | P4、REQ-005、REQ-010 | 進行中（制御面の複製は完了。配置・中継は未） |
+| M9 | 分散（自前 Raft、配置、fencing、振り直し、ノードの追加） | P4、REQ-005、REQ-010 | 完了（2026-11-02。制御面の複製・mTLS・所有権と fencing・所有者への案内。中継の木と共有ストレージは未） |
 | M10 | QUIC・TLS 1.3・HTTP/3・WebTransport・MoQ | P5・P6 | |
-| M11 | H.265・AV1/VP9/Opus の経路、fMP4、LL-HLS、Enhanced RTMP | P6、REQ-007 | |
-| M12 | 管理画面（GUI、パイプライン編集、ノード管理、制作画面） | REQ-002、REQ-005、REQ-008 | 進行中（パイプライン・制作の API 待ち） |
-| M13 | Docker 導入、キャプチャボード、PaaS 連携 | REQ-003/004/001 | 進行中（Docker は完了） |
+| M11 | H.265・AV1/VP9/Opus の経路、fMP4、LL-HLS、Enhanced RTMP | P6、REQ-007 | 完了（2026-11-02。LL-HLS は Apple の検証器・Safari で未確認） |
+| M12 | 管理画面（GUI、パイプライン編集、ノード管理、制作画面） | REQ-002、REQ-005、REQ-008 | 進行中（パイプライン・制作の画面を API につなぐ作業が残り） |
+| M13 | Docker 導入、キャプチャボード、PaaS 連携 | REQ-003/004/001 | 進行中（Docker・PaaS 連携は完了。キャプチャ機器は作業中） |
 | M15 | 送り手のアプリ（ブラウザー WHIP、iOS/iPadOS/Android/macOS、senca-sdk、QR で設定、カメラ制御） | REQ-009 | |
 | M14 | 本番の仕上げ（長時間試験、fuzz、SBOM、署名付き配布） | 13 章、15 章 | |
 

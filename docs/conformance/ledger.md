@@ -32,6 +32,9 @@
 | IMG-01 | JPEG（ISO/IEC 10918-1 基本方式）、PNG | senca-image | image.sh | 相互接続済み（FFmpeg） |
 | AC-17 | codec worker の障害の隔離 | senca-codec-worker | codec_sw.sh（crash・hang・lie・oversize） | 自前の試験のみ |
 | EGRESS-01 | 本仕様 9.4（SSRF） | senca-node egress | node.sh H、単体試験 | 自前の試験のみ |
+| AC-01 | 本仕様 9.4・15.3（coverage-guided fuzz） | fuzz/（28 target） | tools/fuzz/all.sh | 60 秒の smoke のみ（全 target で crash なし、2026-11-02）。24 時間の campaign は未実施 |
+| AC-12・AC-21 | 本仕様 13.2 | senca-node | tools/loadgen/load.sh、tools/soak/soak.sh | 開発機の小規模な測定のみ（docs/conformance/performance.md）。基準環境・72 時間は未実施 |
+| AC-25 | 本仕様 9.5、REQ-007 AC-R7-03 | 配布物 | tools/release/sbom.sh・license_check.py | 自前の試験のみ（許可外・禁止部品なし、2026-11-02） |
 
 ## 仕様との違い（記録）
 

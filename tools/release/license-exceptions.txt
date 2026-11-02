@@ -1,0 +1,2 @@
+# license_check.py の例外（1 行 1 件）: <crate 名>[@<版>]  <ALLOW|REVIEWED>  <理由・確認者・日付>
+# 禁止部品（ソフトウェアの H.264/H.265/AAC コーデック・FFmpeg）は例外にできない。

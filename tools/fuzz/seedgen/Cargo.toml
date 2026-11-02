@@ -1,0 +1,27 @@
+# fuzz の種（seed corpus）のうち、プロトコルの往復が要るもの（RTMP・SRT・DTLS・TLS・STUN・JWT・Raft・画像）を
+# 各 crate の自前の client・符号化器で作る。tools/fuzz/seed.sh から呼ぶ。ワークスペースの外。
+[package]
+name = "senca-fuzz-seedgen"
+version = "0.0.0"
+publish = false
+edition = "2024"
+license = "Apache-2.0"
+
+[workspace]
+
+[dependencies]
+bytes = "1"
+base64 = "0.22"
+ed25519-dalek = "2"
+senca-core = { path = "../../../crates/senca-core" }
+senca-amf0 = { path = "../../../crates/senca-amf0" }
+senca-flv = { path = "../../../crates/senca-flv" }
+senca-rtmp = { path = "../../../crates/senca-rtmp" }
+senca-stun = { path = "../../../crates/senca-stun" }
+senca-rtp = { path = "../../../crates/senca-rtp" }
+senca-srt = { path = "../../../crates/senca-srt" }
+senca-dtls = { path = "../../../crates/senca-dtls" }
+senca-tls = { path = "../../../crates/senca-tls" }
+senca-raft = { path = "../../../crates/senca-raft" }
+senca-image = { path = "../../../crates/senca-image" }
+senca-record = { path = "../../../crates/senca-record" }

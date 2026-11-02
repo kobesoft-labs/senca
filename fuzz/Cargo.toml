@@ -1,0 +1,244 @@
+# SENCA の coverage-guided fuzz（cargo-fuzz / libFuzzer）。仕様 15.3・AC-01。
+# ワークスペースの外に置く（nightly と sanitizer の設定を本体の build に持ち込まない）。
+# 使い方は docs/RELEASE.md の「fuzz」。
+[package]
+name = "senca-fuzz"
+version = "0.0.0"
+publish = false
+edition = "2024"
+license = "Apache-2.0"
+
+[package.metadata]
+cargo-fuzz = true
+
+[workspace]
+
+[dependencies]
+libfuzzer-sys = "0.4"
+bytes = "1"
+base64 = "0.22"
+ed25519-dalek = "2"
+senca-core = { path = "../crates/senca-core" }
+senca-amf0 = { path = "../crates/senca-amf0" }
+senca-flv = { path = "../crates/senca-flv" }
+senca-rtmp = { path = "../crates/senca-rtmp" }
+senca-mpegts = { path = "../crates/senca-mpegts" }
+senca-fmp4 = { path = "../crates/senca-fmp4" }
+senca-hls = { path = "../crates/senca-hls" }
+senca-http = { path = "../crates/senca-http" }
+senca-sdp = { path = "../crates/senca-sdp" }
+senca-stun = { path = "../crates/senca-stun" }
+senca-rtp = { path = "../crates/senca-rtp" }
+senca-rtsp = { path = "../crates/senca-rtsp" }
+senca-srt = { path = "../crates/senca-srt" }
+senca-dtls = { path = "../crates/senca-dtls" }
+senca-h264 = { path = "../crates/senca-h264" }
+senca-h265 = { path = "../crates/senca-h265" }
+senca-aac = { path = "../crates/senca-aac" }
+senca-av1 = { path = "../crates/senca-av1" }
+senca-opus = { path = "../crates/senca-opus" }
+senca-record = { path = "../crates/senca-record" }
+senca-control = { path = "../crates/senca-control" }
+senca-image = { path = "../crates/senca-image" }
+senca-raft = { path = "../crates/senca-raft" }
+senca-tls = { path = "../crates/senca-tls" }
+
+[profile.release]
+debug = 1
+
+
+[[bin]]
+name = "amf0"
+path = "fuzz_targets/amf0.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "flv"
+path = "fuzz_targets/flv.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "rtmp_server"
+path = "fuzz_targets/rtmp_server.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "mpegts"
+path = "fuzz_targets/mpegts.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "fmp4"
+path = "fuzz_targets/fmp4.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "hls"
+path = "fuzz_targets/hls.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "http"
+path = "fuzz_targets/http.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "sdp"
+path = "fuzz_targets/sdp.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "stun"
+path = "fuzz_targets/stun.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "rtp"
+path = "fuzz_targets/rtp.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "rtcp"
+path = "fuzz_targets/rtcp.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "rtp_depack"
+path = "fuzz_targets/rtp_depack.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "rtsp_client"
+path = "fuzz_targets/rtsp_client.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "rtsp_message"
+path = "fuzz_targets/rtsp_message.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "srt_listener"
+path = "fuzz_targets/srt_listener.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "srt_packet"
+path = "fuzz_targets/srt_packet.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "dtls_server"
+path = "fuzz_targets/dtls_server.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "h264"
+path = "fuzz_targets/h264.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "h265"
+path = "fuzz_targets/h265.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "aac"
+path = "fuzz_targets/aac.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "av1"
+path = "fuzz_targets/av1.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "opus"
+path = "fuzz_targets/opus.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "record"
+path = "fuzz_targets/record.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "jwt"
+path = "fuzz_targets/jwt.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "png"
+path = "fuzz_targets/png.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "jpeg"
+path = "fuzz_targets/jpeg.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "raft"
+path = "fuzz_targets/raft.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "tls_server"
+path = "fuzz_targets/tls_server.rs"
+test = false
+doc = false
+bench = false
