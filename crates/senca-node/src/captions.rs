@@ -132,7 +132,7 @@ pub async fn run(app: Arc<App>, stream: Stream) {
         tokio::spawn(async move {
             let mut prompt: Option<String> = None;
             while let Some(ch) = asr_rx.recv().await {
-                let info = ch.info.clone();
+                let info = ch.info;
                 let r = match asr.build_request(&ch, prompt.as_deref()) {
                     Ok(call) => match exec(&app, &call).await {
                         Ok(reply) => asr.parse_response(&info, &reply).map_err(|e| senca_caption::translate::describe_error(&e)),
