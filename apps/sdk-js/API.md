@@ -219,6 +219,7 @@ text/event-stream の解析器（行を足すと、まとまったイベント�
 
 | メンバー | 説明 |
 |---|---|
+| `snapshots: { /** @param {string} id @param {CallOptions} [o] @returns {Promise<import('./openapi.gen.js').SnapshotList['items']>} */ list: (id: string, o?: CallOptions) => Promise<import("./openapi.gen.js").SnapshotList["items"]>; /** @param {string} id @param {string} sid @param {CallOptions} [o] @returns {Promise<Blob>} */ get: (id: string, sid: string, o?: CallOptions) => Promise<Blob>; /** @param {string} id @param {string} sid @param {CallOptions} [o] */ delete: (id: string, sid: string, o?: CallOptions) => Promise<void>; }` | `snapshot_on_change`（板書の変化）で保存した静止画。 |
 | `validate(id: string, graph: import("./openapi.gen.js").PipelineGraph, o?: CallOptions): Promise<import("./openapi.gen.js").PipelineValidation>` | グラフを検証する（保存前のグラフも）。 |
 | `control(id: string, op: import("./openapi.gen.js").PipelineControl, o?: CreateOptions): Promise<import("./openapi.gen.js").PipelineControlResult>` | 動いているパイプラインを操作する（スイッチャーの take など）。 |
 | `create(body: C, o?: CreateOptions): Promise<T>` | 作る（POST、Idempotency-Key を自動で付ける）。 |
