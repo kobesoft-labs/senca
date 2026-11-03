@@ -38,7 +38,7 @@ SENCA から外へつないで映像を取りに行く**入力**（pull）と、
 | protocol | `url` のスキーム |
 |---|---|
 | `rtmp_pull`・`rtmp_push` | `rtmp`・`rtmps` |
-| `rtsp_pull` | `rtsp`（`rtsps` も受け付けるが、今は TLS を使わずにつなぐ） |
+| `rtsp_pull` | `rtsp`・`rtsps`（TLS でつなぐ） |
 | `srt_pull`・`srt_push` | `srt` |
 | `hls_pull` | `http`・`https` |
 | `device` | `device:{機器 ID}`（[4.7](04-ingest-playback.md)） |
@@ -72,6 +72,17 @@ curl -s -X POST "$API/streams/$SID/inputs" "${H[@]}" -d '{"protocol":"rtsp_pull"
 
 - 転送は **TCP interleaved だけ**（NAT・ファイアウォールを越えやすい）。ポートの既定は 554。
 - 資格情報は秘密値に `user:password` の形で入れる。Basic 認証は `options.allow_basic: "true"` のときだけ使う（平文でパスワードを送るため）。
+- `rtsps://` は TLS でつなぐ（ポートの既定は 322）。サーバーの証明書は OS が信頼する認証局で検証する（ノードの環境変数 `SSL_CERT_FILE`
+  で認証局のファイルを指定することもできる）。自己署名の証明書を使うカメラは、`options.tls_spki_sha256` に証明書の公開鍵（SPKI）の
+  SHA-256 を base64 か 16 進で書いて固定する（`,` で区切って複数書ける）。固定したときは、認証局・期限・ホスト名は確かめない。
+  固定の値が合わなければ TLS で失敗し、平文には切り替えない。値の形が違えば 400。
+
+  ```sh
+  # カメラの証明書から固定の値を作る
+  openssl x509 -in cam.crt -pubkey -noout | openssl pkey -pubin -outform der | openssl dgst -sha256 -binary | base64
+  curl -s -X POST "$API/streams/$SID/inputs" "${H[@]}" \
+    -d '{"protocol":"rtsp_pull","url":"rtsps://192.0.2.10:322/stream1","credential_ref":"secret:cam-login","options":{"tls_spki_sha256":"<上の値>"}}'
+  ```
 - 社内のカメラなど私設アドレスへつなぐには `--egress-allow` が要る（§6.7）。
 
 ### srt_pull

@@ -53,7 +53,7 @@ impl Scope {
     }
 }
 
-/// standard = HLS、low = LL-HLS、interactive = WebRTC・MoQ
+/// standard = HLS、low = LL-HLS（part は min(500 ms, segment_ms / 4)）、interactive = WebRTC・MoQ 向け（LL-HLS の part は 200 ms、出だしの待ちと送りの溜まりを小さくする）
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
 pub enum LatencyProfile {
     #[serde(rename = "standard")]
@@ -152,8 +152,10 @@ impl HlsSettingsContainer {
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize, Default)]
 pub struct Limits {
+    /// 入力のビットレートの上限（直近 3 秒の平均）。5 秒続けて超えたら送り手を切り、10 秒は新しい送り手を断る
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub max_ingress_bps: Option<u64>,
+    /// ノードごとの同時の視聴者の上限（最近プレイリストを取得した HLS のクライアントと、RTMP・SRT・RTSP・WHEP・MoQ の接続の合計）。超える新しい視聴は断る（HLS・WHEP・RTSP は 503）
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub max_viewers: Option<u64>,
 }
@@ -261,7 +263,30 @@ pub struct LiveInfo {
     pub tracks: Vec<Value>,
     /// rtmp・srt など
     pub transport: String,
+    /// このノードの視聴者の数（`limits.max_viewers` で数えるもの）。`hls` は最近プレイリストを取得した別々の HLS のクライアント
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub viewers: Option<LiveInfoViewers>,
+    /// hub の購読の数（中継・録画以外の内部の購読も含む目安）
     pub viewers_hint: u64,
+}
+
+/// このノードの視聴者の数（`limits.max_viewers` で数えるもの）。`hls` は最近プレイリストを取得した別々の HLS のクライアント
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, Default)]
+pub struct LiveInfoViewers {
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub hls: Option<u64>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub moq: Option<u64>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub rtmp: Option<u64>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub rtsp: Option<u64>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub srt: Option<u64>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub total: Option<u64>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub webrtc: Option<u64>,
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
@@ -419,6 +444,9 @@ pub struct LivePlayback {
 pub struct LivePlaybackPlayback {
     /// `{http}/s/{exp}/{sig}/live/{id}/index.m3u8`
     pub hls: String,
+    /// MoQ（draft-22）の WebTransport の URL `https://{host}:{quic port}/moq?exp=&sig=`。namespace は `senca/live/{id}`（`--quic` を設定したときだけ）
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub moq: Option<String>,
     /// `{rtmp}/play/{id}?exp=&sig=`
     pub rtmp: String,
     /// `{public-rtsp-url}/live/{id}?exp=&sig=`（`--public-rtsp-url` を設定したときだけ）
@@ -583,8 +611,14 @@ pub struct SnapshotList {
 pub struct SnapshotListItemsItem {
     /// JPEG の大きさ
     pub bytes: u64,
+    /// 前回の保存からの変化の割合（パイプラインの静止画だけ）
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub changed_fraction: Option<f64>,
     pub height: u64,
     pub id: String,
+    /// `snapshot_on_change` の部品の ID（パイプラインの静止画だけ）
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub node: Option<String>,
     /// 撮った理由
     pub reason: SnapshotListItemsItemReason,
     pub taken_at: Timestamp,
@@ -1035,6 +1069,12 @@ pub struct CapabilitiesIngest {
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize, Default)]
 pub struct CapabilitiesOutput {
     pub hls: CapabilitiesOutputHls,
+    /// HTTP/3（`--quic`）
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub http3: Option<bool>,
+    /// MoQ（draft-22）の購読と送出（`--quic`）
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub moq: Option<bool>,
     pub rtmp_play: bool,
     pub whep: bool,
 }
@@ -1069,6 +1109,9 @@ pub struct Node {
     /// ノード間の中継（ADR-0014）の様子。応答したノード自身（`self: true`）で、クラスタを組んでいるときだけ値がある（単一ノード・他ノードは null）。
     #[serde(default)]
     pub relay: Option<RelayStatus>,
+    /// 部屋の係の様子（カスケード・イベント Webhook の配送・中継の購読の数）。応答したノード自身（`self: true`）で WebRTC（`--webrtc-udp`）があるときだけ値がある（他は null）。
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub rooms: Option<Value>,
     /// 応答したノード自身か
     #[serde(rename = "self")]
     pub is_self: bool,
@@ -1297,6 +1340,9 @@ pub struct GridNodesItem {
     pub roles: Vec<GridNodesItemRolesItem>,
     /// 心拍が届いている（5 秒途絶えると false）
     pub up: bool,
+    /// 最後の心拍の実測の使用量（CPU は /proc/stat の差、メモリは /proc/meminfo の MemTotal − MemAvailable、帯域はループバックを除く /proc/net/dev の差）。配置係のノードだけが知っている。違えば null。配置は予約（reserved）で数え、この値は使わない
+    #[serde(default)]
+    pub usage: Option<Resources>,
     /// このノードに割り当てた仕事の数
     pub workloads: u64,
 }
@@ -1532,7 +1578,7 @@ impl TranscodeCapabilityDirection {
 /// `secret:{name}`（`POST /secrets` で登録した秘密値の名前）。無い秘密値・形の違いは 400。
 pub type CredentialRef = Option<String>;
 
-/// プロトコルごとの設定（例: RTSP の `transport: tcp|udp`、device の `width`・`height`・`fps`・`codec`・`bitrate_bps`・`audio_device`・`audio_codec`）。16 個まで、キー 64 文字・値 256 文字まで。
+/// プロトコルごとの設定（例: rtsp_pull の `allow_basic: "true"`・`tls_spki_sha256`（rtsps の公開鍵の固定。SHA-256 の base64 か 16 進）、device の `width`・`height`・`fps`・`codec`・`bitrate_bps`・`audio_device`・`audio_codec`）。16 個まで、キー 64 文字・値 256 文字まで。RTSP は TCP interleaved だけで受ける。
 pub type IoOptions = BTreeMap<String, String>;
 
 /// このノードでの実行の様子（制御状態には保存しない）。

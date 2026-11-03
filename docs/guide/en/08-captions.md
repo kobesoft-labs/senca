@@ -28,7 +28,9 @@ audio AUs ─▶ repackaged into 5 s windows (1 s overlap) ─▶ speech recogni
 - The captioning task starts when a sender connects and stops when the broadcast ends (the reconnect grace expires). Changes to
   `captions` during a broadcast take effect from the next broadcast.
 - In a cluster it runs on the node that received the sender (the owner). Relay mirrors do not produce captions. The caption files live
-  only in the owner node's memory, so on a non-owner node serving from a mirror, the caption files (`master.m3u8`, …) return 404.
+  in the owner node's memory; on a non-owner node serving from a mirror, that node fetches the caption files (`master.m3u8`,
+  `sub_{lang}.m3u8`, `sub_{lang}_{n}.vtt`) from the owner node and returns them (playlists are reused for 1 second, caption segments
+  for 30 seconds). Captions work with a playback URL on any node.
 
 ## 8.2 Settings (the stream's `captions`)
 

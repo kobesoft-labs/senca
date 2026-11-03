@@ -193,6 +193,8 @@ export type Grid = {
     roles: Array<"control" | "media">;
     /** 心拍が届いている（5 秒途絶えると false） */
     up: boolean;
+    /** 最後の心拍の実測の使用量（CPU は /proc/stat の差、メモリは /proc/meminfo の MemTotal − MemAvailable、帯域はループバックを除く /proc/net/dev の差）。配置係のノードだけが知っている。違えば null。配置は予約（reserved）で数え、この値は使わない */
+    usage: Resources | null;
     /** このノードに割り当てた仕事の数 */
     workloads: number;
   }>;
@@ -288,7 +290,7 @@ export type InputList = {
   next_cursor: string | null;
 };
 
-/** プロトコルごとの設定（例: RTSP の `transport: tcp|udp`、device の `width`・`height`・`fps`・`codec`・`bitrate_bps`・`audio_device`・`audio_codec`）。16 個まで、キー 64 文字・値 256 文字まで。 */
+/** プロトコルごとの設定（例: rtsp_pull の `allow_basic: "true"`・`tls_spki_sha256`（rtsps の公開鍵の固定。SHA-256 の base64 か 16 進）、device の `width`・`height`・`fps`・`codec`・`bitrate_bps`・`audio_device`・`audio_codec`）。16 個まで、キー 64 文字・値 256 文字まで。RTSP は TCP interleaved だけで受ける。 */
 export type IoOptions = { [key: string]: string };
 
 /** 書いたフィールドだけ置き換える。`credential_ref: null` で参照を外す、`placement: null` で配置の指定を外す（配置係に任せる）。他の null は「変えない」。 */
@@ -329,11 +331,13 @@ export type LabelSelector = {
   values: string[];
 };
 
-/** standard = HLS、low = LL-HLS、interactive = WebRTC・MoQ */
+/** standard = HLS、low = LL-HLS（part は min(500 ms, segment_ms / 4)）、interactive = WebRTC・MoQ 向け（LL-HLS の part は 200 ms、出だしの待ちと送りの溜まりを小さくする） */
 export type LatencyProfile = "standard" | "low" | "interactive";
 
 export type Limits = {
+  /** 入力のビットレートの上限（直近 3 秒の平均）。5 秒続けて超えたら送り手を切り、10 秒は新しい送り手を断る */
   max_ingress_bps?: number | null;
+  /** ノードごとの同時の視聴者の上限（最近プレイリストを取得した HLS のクライアントと、RTMP・SRT・RTSP・WHEP・MoQ の接続の合計）。超える新しい視聴は断る（HLS・WHEP・RTSP は 503） */
   max_viewers?: number | null;
 };
 
@@ -345,6 +349,17 @@ export type LiveInfo = {
   tracks: Array<Record<string, unknown>>;
   /** rtmp・srt など */
   transport: string;
+  /** このノードの視聴者の数（`limits.max_viewers` で数えるもの）。`hls` は最近プレイリストを取得した別々の HLS のクライアント */
+  viewers?: {
+    hls?: number;
+    moq?: number;
+    rtmp?: number;
+    rtsp?: number;
+    srt?: number;
+    total?: number;
+    webrtc?: number;
+  };
+  /** hub の購読の数（中継・録画以外の内部の購読も含む目安） */
   viewers_hint: number;
 };
 
@@ -525,6 +540,8 @@ export type Node = {
   registered_at: Timestamp;
   /** ノード間の中継（ADR-0014）の様子。応答したノード自身（`self: true`）で、クラスタを組んでいるときだけ値がある（単一ノード・他ノードは null）。 */
   relay: RelayStatus | null;
+  /** 部屋の係の様子（カスケード・イベント Webhook の配送・中継の購読の数）。応答したノード自身（`self: true`）で WebRTC（`--webrtc-udp`）があるときだけ値がある（他は null）。 */
+  rooms?: Record<string, unknown> | null;
   /** 応答したノード自身か */
   self: boolean;
 };
@@ -1419,8 +1436,12 @@ export type SnapshotList = {
   items: Array<{
     /** JPEG の大きさ */
     bytes: number;
+    /** 前回の保存からの変化の割合（パイプラインの静止画だけ） */
+    changed_fraction?: number;
     height: number;
     id: string;
+    /** `snapshot_on_change` の部品の ID（パイプラインの静止画だけ） */
+    node?: string;
     /** 撮った理由 */
     reason: "interval" | "schedule" | "board_change";
     taken_at: Timestamp;

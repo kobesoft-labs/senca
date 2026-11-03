@@ -44,6 +44,9 @@ H.264/H.265 の**ビットストリームの解析・形式変換**（Annex B �
 | 字幕 | AAC・Opus の音声を詰め替えて送る（[8. 字幕](08-captions.md)） |
 
 `POST /streams/{id}/plan` は、今の入力の各トラックが各出力でどう扱われるか（`remux`・`repacketize`・`passthrough`・`unsupported` と理由）を返す。
+stream の処理は再エンコードしないので、計画に変換は出ない。`royalty_free` の stream に届いた H.264・H.265・AAC のトラックは破棄され、
+計画ではすべての出力で `unsupported`（理由付き）になる。AV1 などへ変換したいときは、パイプライン（[7. パイプライン](07-pipelines.md)）の
+`decode`・`encode` で別の stream に出す（H.264・H.265 の復号には GPU が要る。§14.3）。
 
 ## 14.3 符号化・復号が要る操作
 

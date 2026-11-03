@@ -776,6 +776,12 @@ class Live:
         s, h, mp4 = self.call("GET", f"/recordings/{rid}/export.mp4", "MP4 書き出し", 200)
         check(s == 200 and mp4[4:8] == b"ftyp", "書き出しは MP4（ftyp）")
         self.call("GET", "/recordings/nosuch/export.mp4", "MP4 書き出し 無い", 404)
+        s, _, mp4 = self.call("GET", f"/recordings/{rid}/export.mp4?start=2000-01-01T00:00:00Z&end=2100-01-01T00:00:00Z", "MP4 書き出し start・end", 200)
+        check(s == 200 and mp4[4:8] == b"ftyp", "範囲つきの書き出しも MP4（ftyp）")
+        self.call("GET", f"/recordings/{rid}/export.mp4?start=yesterday", "MP4 書き出し start の形", 400)
+        self.call("GET", f"/recordings/{rid}/export.mp4?start=2100-01-01T00:00:00Z&end=2000-01-01T00:00:00Z", "MP4 書き出し end が start より前", 400)
+        self.call("GET", f"/recordings/{rid}/export.mp4?x=1", "MP4 書き出し 知らないクエリ", 400)
+        self.call("GET", f"/recordings/{rid}/export.mp4?start=2100-01-01T00:00:00Z", "MP4 書き出し 範囲に何も無い", 409)
         self.call("GET", "/recordings/nosuch/thumbnail", "代表画 無い", 404)
         self.call("GET", f"/recordings/{rid}", "録画 recording:read が無い", 403,
                   token=self.mk_token("norec", ["stream:read"]))
@@ -1252,6 +1258,14 @@ class Live:
         self.call("POST", f"/pipelines/{pid}/control", "操作 Content-Type 違い", 415, body=b"{}", headers={"Content-Type": "text/plain"})
         self.call("POST", f"/pipelines/{pid}/control", "操作 stream:read", 403, token=ro, body={"op": "request_keyframe"})
         self.call("POST", "/pipelines/nosuch/control", "操作 無い", 404, body={"op": "request_keyframe"})
+        # 板書の変化の静止画（パイプラインごと）
+        s, _, sl = self.call("GET", f"/pipelines/{pid}/snapshots", "パイプラインの静止画の一覧", 200)
+        check(isinstance(sl, dict) and sl.get("items") == [], "動かしていないパイプラインの静止画は空")
+        self.call("GET", f"/pipelines/{pid}/snapshots", "パイプラインの静止画の一覧 stream:read", 200, token=ro)
+        self.call("GET", "/pipelines/nosuch/snapshots", "パイプラインの静止画 無いパイプライン", 404)
+        self.call("GET", f"/pipelines/{pid}/snapshots/00000000000000000000000000000000", "パイプラインの静止画 無い", 404)
+        self.call("DELETE", f"/pipelines/{pid}/snapshots/00000000000000000000000000000000", "パイプラインの静止画の削除 無い", 404)
+        self.call("DELETE", f"/pipelines/{pid}/snapshots/00000000000000000000000000000000", "パイプラインの静止画の削除 stream:read", 403, token=ro)
         # 更新・開始
         self.call("PATCH", f"/pipelines/{pid}", "パイプライン PATCH If-Match 無し", 428, body={"desired_state": "running"})
         self.call("PATCH", f"/pipelines/{pid}", "パイプライン PATCH 古い", 412, headers={"If-Match": '"9"'}, body={"desired_state": "running"})

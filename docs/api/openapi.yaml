@@ -810,8 +810,14 @@ paths:
       tags: [recordings]
       operationId: exportRecordingMp4
       summary: MP4 書き出し
-      description: '録画中・空の録画は 409。大きすぎれば 413（`PAYLOAD_TOO_LARGE`）。`Content-Disposition: attachment` が付く。'
+      description: |
+        録画中・空の録画は 409。大きすぎれば 413（`PAYLOAD_TOO_LARGE`）。`Content-Disposition: attachment` が付く。
+        `start`・`end` で範囲を切り出せる（予約の録画では予約の範囲との重なり）。始まりは直前のキーフレームまで広がる。
+        時刻の形の誤り・`end` が `start` 以前・知らないクエリは 400、範囲に録画が無ければ 409。
       x-senca-scope: recording:read
+      parameters:
+        - { name: start, in: query, required: false, schema: { $ref: '#/components/schemas/Timestamp' }, description: 書き出す範囲の始まり（RFC 3339） }
+        - { name: end, in: query, required: false, schema: { $ref: '#/components/schemas/Timestamp' }, description: 書き出す範囲の終わり（RFC 3339） }
       responses:
         '200':
           description: MP4
@@ -820,6 +826,7 @@ paths:
             X-Request-Id: { $ref: '#/components/headers/X-Request-Id' }
           content:
             video/mp4: { schema: { type: string, contentMediaType: video/mp4 } }
+        '400': { $ref: '#/components/responses/BadRequest' }
         '401': { $ref: '#/components/responses/Unauthorized' }
         '403': { $ref: '#/components/responses/Forbidden' }
         '404': { $ref: '#/components/responses/NotFound' }
@@ -1561,6 +1568,53 @@ paths:
         '409': { $ref: '#/components/responses/Conflict' }
         '415': { $ref: '#/components/responses/UnsupportedMediaType' }
         '500': { $ref: '#/components/responses/InternalError' }
+  /pipelines/{id}/snapshots:
+    parameters:
+      - $ref: '#/components/parameters/PipelineId'
+    get:
+      tags: [pipelines]
+      operationId: listPipelineSnapshots
+      summary: 板書の変化の静止画の一覧
+      description: '`snapshot_on_change` が保存した静止画（`reason: board_change`、`node` に部品の ID）。撮った時刻の順。パイプラインを動かしているノードのものだけ。'
+      x-senca-scope: stream:read
+      responses:
+        '200':
+          description: 静止画の一覧
+          headers: { X-Request-Id: { $ref: '#/components/headers/X-Request-Id' } }
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/SnapshotList' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '403': { $ref: '#/components/responses/Forbidden' }
+        '404': { $ref: '#/components/responses/NotFound' }
+  /pipelines/{id}/snapshots/{sid}:
+    parameters:
+      - $ref: '#/components/parameters/PipelineId'
+      - $ref: '#/components/parameters/SnapshotId'
+    get:
+      tags: [pipelines]
+      operationId: getPipelineSnapshotById
+      summary: 板書の変化の静止画
+      x-senca-scope: stream:read
+      responses:
+        '200':
+          description: 静止画
+          headers: { X-Request-Id: { $ref: '#/components/headers/X-Request-Id' } }
+          content:
+            image/jpeg: { schema: { type: string, contentMediaType: image/jpeg } }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '403': { $ref: '#/components/responses/Forbidden' }
+        '404': { $ref: '#/components/responses/NotFound' }
+    delete:
+      tags: [pipelines]
+      operationId: deletePipelineSnapshot
+      summary: 板書の変化の静止画の削除
+      x-senca-scope: stream:write
+      responses:
+        '204': { $ref: '#/components/responses/NoContent' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '403': { $ref: '#/components/responses/Forbidden' }
+        '404': { $ref: '#/components/responses/NotFound' }
 
   # ------------------------------------------------------------------ rooms
   /rooms:
@@ -2459,7 +2513,7 @@ components:
     LatencyProfile:
       type: string
       enum: [standard, low, interactive]
-      description: standard = HLS、low = LL-HLS、interactive = WebRTC・MoQ
+      description: standard = HLS、low = LL-HLS（part は min(500 ms, segment_ms / 4)）、interactive = WebRTC・MoQ 向け（LL-HLS の part は 200 ms、出だしの待ちと送りの溜まりを小さくする）
     CodecProfile:
       type: string
       enum: [any, royalty_free]
@@ -2488,8 +2542,8 @@ components:
       type: object
       additionalProperties: false
       properties:
-        max_viewers: { type: [integer, 'null'], minimum: 0 }
-        max_ingress_bps: { type: [integer, 'null'], minimum: 0 }
+        max_viewers: { type: [integer, 'null'], minimum: 0, description: 'ノードごとの同時の視聴者の上限（最近プレイリストを取得した HLS のクライアントと、RTMP・SRT・RTSP・WHEP・MoQ の接続の合計）。超える新しい視聴は断る（HLS・WHEP・RTSP は 503）' }
+        max_ingress_bps: { type: [integer, 'null'], minimum: 0, description: '入力のビットレートの上限（直近 3 秒の平均）。5 秒続けて超えたら送り手を切り、10 秒は新しい送り手を断る' }
     Metadata:
       type: object
       maxProperties: 32
@@ -2566,7 +2620,18 @@ components:
         epoch: { type: integer, minimum: 0, description: 再接続ごとに増える }
         tracks: { type: array, items: { type: object } }
         bitrate_bps: { type: integer, minimum: 0 }
-        viewers_hint: { type: integer, minimum: 0 }
+        viewers_hint: { type: integer, minimum: 0, description: hub の購読の数（中継・録画以外の内部の購読も含む目安） }
+        viewers:
+          type: object
+          description: このノードの視聴者の数（`limits.max_viewers` で数えるもの）。`hls` は最近プレイリストを取得した別々の HLS のクライアント
+          properties:
+            total: { type: integer, minimum: 0 }
+            hls: { type: integer, minimum: 0 }
+            rtmp: { type: integer, minimum: 0 }
+            srt: { type: integer, minimum: 0 }
+            rtsp: { type: integer, minimum: 0 }
+            webrtc: { type: integer, minimum: 0 }
+            moq: { type: integer, minimum: 0 }
     Stream:
       type: object
       additionalProperties: false
@@ -2707,6 +2772,8 @@ components:
               width: { type: integer, minimum: 1 }
               height: { type: integer, minimum: 1 }
               bytes: { type: integer, minimum: 0, description: JPEG の大きさ }
+              node: { type: string, description: '`snapshot_on_change` の部品の ID（パイプラインの静止画だけ）' }
+              changed_fraction: { type: number, description: 前回の保存からの変化の割合（パイプラインの静止画だけ） }
     RecordingStart:
       type: object
       additionalProperties: false
@@ -3002,6 +3069,9 @@ components:
           oneOf:
             - { $ref: '#/components/schemas/RelayStatus' }
             - { type: 'null' }
+        rooms:
+          description: '部屋の係の様子（カスケード・イベント Webhook の配送・中継の購読の数）。応答したノード自身（`self: true`）で WebRTC（`--webrtc-udp`）があるときだけ値がある（他は null）。'
+          type: [object, 'null']
     RelayStatus:
       type: object
       additionalProperties: false
@@ -3226,7 +3296,7 @@ components:
       maxProperties: 16
       additionalProperties: { type: string, maxLength: 256 }
       propertyNames: { minLength: 1, maxLength: 64 }
-      description: 'プロトコルごとの設定（例: RTSP の `transport: tcp|udp`、device の `width`・`height`・`fps`・`codec`・`bitrate_bps`・`audio_device`・`audio_codec`）。16 個まで、キー 64 文字・値 256 文字まで。'
+      description: 'プロトコルごとの設定（例: rtsp_pull の `allow_basic: "true"`・`tls_spki_sha256`（rtsps の公開鍵の固定。SHA-256 の base64 か 16 進）、device の `width`・`height`・`fps`・`codec`・`bitrate_bps`・`audio_device`・`audio_codec`）。16 個まで、キー 64 文字・値 256 文字まで。RTSP は TCP interleaved だけで受ける。'
     IoStatus:
       type: object
       additionalProperties: false

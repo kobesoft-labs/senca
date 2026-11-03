@@ -76,9 +76,12 @@ curl -s -X POST "$API/streams" "${H[@]}" -d '{"name":"cam1","recording":{"enable
 
 ```json
 "live": {"transport": "rtmp", "epoch": 0, "started_at": "2026-11-03T01:15:53.255Z", "bitrate_bps": 956271, "viewers_hint": 0,
+         "viewers": {"total": 3, "hls": 2, "rtmp": 1, "srt": 0, "rtsp": 0, "webrtc": 0, "moq": 0},
          "tracks": [{"track": 0, "codec": "h264", "width": 640, "height": 360},
                     {"track": 1, "codec": "aac", "sample_rate": 48000, "channels": 1}]}
 ```
+
+- `viewers` は、このノードで見ている視聴者の数です（数え方は §4.3 の「視聴者と入力の上限」）。`viewers_hint` は内部の購読も含む目安です。
 
 `epoch` は、同じストリームに配信者が再接続するたびに増えます（§4.17）。
 
@@ -89,7 +92,7 @@ curl -s -X POST "$API/streams" "${H[@]}" -d '{"name":"cam1","recording":{"enable
 | フィールド | 既定 | 制約 | 説明 |
 |---|---|---|---|
 | `name` | （必須） | 1〜64 文字。英数字と `-` `_` `.` が使え、`.` で始めることはできません。テナント内で一意（重複は 409） | 表示名 |
-| `latency_profile` | `standard` | `standard`・`low`・`interactive` | `low` にすると LL-HLS の part を出力します（§4.9）。`interactive` は現在 `standard` と同じ動作です |
+| `latency_profile` | `standard` | `standard`・`low`・`interactive` | `low` にすると LL-HLS の part を出力します。`interactive` は WebRTC・MoQ で見る前提で、さらに遅延を小さくします（§4.9） |
 | `codec_profile` | `any` | `any`・`royalty_free` | `royalty_free` にすると、特許プールのあるコーデック（H.264・H.265・AAC）のトラックを破棄します。`hls.container` は `fmp4` にする必要があります（[14. コーデックと特許](14-codecs-and-patents.md)） |
 | `hls.segment_ms` | `2000` | 500〜10000 | セグメントの目標の長さ（ミリ秒）。実際にはキーフレームの位置で区切ります |
 | `hls.window` | `6` | 3〜60 | ライブのプレイリストに含めるセグメントの数 |
@@ -97,8 +100,8 @@ curl -s -X POST "$API/streams" "${H[@]}" -d '{"name":"cam1","recording":{"enable
 | `recording.enabled` | `false` | | 配信が始まったら自動で録画します（[5. 録画](05-recording.md)） |
 | `recording.retention_days` | `null` | 1〜36500 | 自動録画の保持日数（`null` は無期限） |
 | `snapshots` | `null` | `interval_secs` 1〜86400、`keep` 1〜10000 | 一定の間隔で静止画を保存します（§4.16） |
-| `limits.max_viewers` | `null` | | 値は保存されますが、現在は制限に使われません |
-| `limits.max_ingress_bps` | `null` | | 同上 |
+| `limits.max_viewers` | `null` | 0 以上 | 同時に見られる視聴者の数の上限（ノードごと）。下の「視聴者と入力の上限」を参照 |
+| `limits.max_ingress_bps` | `null` | 0 以上 | 配信者から受けるビットレートの上限（bps）。下の「視聴者と入力の上限」を参照 |
 | `metadata` | `{}` | 32 個まで。キーは 1〜64 文字、値は 1024 文字まで | 利用者が自由に付けられるメタデータ（文字列のみ） |
 | `desired_state` | `running` | `running`・`stopped` | `stopped` の間は配信を拒否します。配信中に `stopped` にすると、配信者からの受信を止め、その時点で配信を終了します |
 | `captions` | `null` | [8. 字幕](08-captions.md) を参照 | 音声認識・翻訳の設定 |
@@ -112,7 +115,26 @@ curl -s -X PATCH "$API/streams/$SID" "${H[@]}" -H "If-Match: $ETAG" \
   -d '{"latency_profile":"low","hls":{"segment_ms":2000,"window":6,"container":"fmp4"}}'
 ```
 
-`hls`・`latency_profile` の変更は、次の配信開始から反映されます（配信中のパッケージャーは作り直しません）。
+`hls`・`latency_profile` の変更は、次の配信開始から反映されます（配信中のパッケージャーは作り直しません）。`limits` の変更はすぐに反映されます。
+
+### 視聴者と入力の上限（`limits`）
+
+**`limits.max_viewers`**: 視聴者の数が上限に達すると、新しい視聴を断ります（すでに見ている人はそのまま見られます）。
+
+- 数えるのは、HLS の視聴者と、RTMP・SRT・RTSP の play、WHEP、MoQ の接続の合計です。録画・字幕・出力・パイプライン、クラスターの中継は数えません。
+- HLS は接続を持たないので、プレイリスト（`index.m3u8`・`master.m3u8`）を取得したクライアントを、送り元の IP アドレスと User-Agent の組で見分けて数えます。
+  最後の取得から `segment_ms` の 3 倍（10 秒以上）の間は、見ている人として数えます。同じ NAT の内側の同じブラウザーは 1 人に数えます。
+- 数はノードごとです。クラスターでは、視聴者を受けたノードがそれぞれ上限まで受けます。
+- 断るときの応答は、HLS・WHEP が 503（`Retry-After: 5`）、RTSP が 503、RTMP play が `NetStream.Play.Failed`（too many viewers）、
+  SRT play が接続の拒否（`SRT_REJX_OVERLOAD`）、MoQ が `REQUEST_ERROR`（`EXCESSIVE_LOAD`）です。
+- 今の数は、ストリームの `live.viewers` で確認できます。
+
+**`limits.max_ingress_bps`**: 配信者から受けるビットレートを、直近 3 秒の平均で見ます。上限を超えた状態が 5 秒続くと配信者を切断し、
+ログに `publisher disconnected: ingress bitrate exceeded limits.max_ingress_bps=…` と出力します。
+
+- 切断から 10 秒の間は、新しい配信者を拒否します（RTMP は `NetStream.Publish.Rejected`、ingress bitrate limit exceeded）。
+  10 秒が過ぎてから再接続した場合、再接続の猶予時間（§4.17）の中であれば同じ配信として続きます。
+- 数えるのはエンコード済みのデータ（映像・音声の AU）の大きさで、プロトコルのヘッダーは含みません。
 
 ## 4.4 RTMP / RTMPS で配信する
 
@@ -120,8 +142,8 @@ curl -s -X PATCH "$API/streams/$SID" "${H[@]}" -H "If-Match: $ETAG" \
 - application 名は `live`、`live` で始まる名前、`play` を受け付けます。それ以外の名前では connect を拒否します。
 - ストリームキーの `?` 以降は無視します。
 - 同じストリームに 2 つ目の配信者が接続した場合は、後から接続した方を `NetStream.Publish.BadName`（already publishing）で拒否します。
-- キーの誤りと `stopped` の場合は `NetStream.Publish.BadName` で、`live` 予約の時間帯の外（[5. 録画](05-recording.md)）の場合は
-  `NetStream.Publish.Rejected` で拒否します。
+- キーの誤りと `stopped` の場合は `NetStream.Publish.BadName` で、`live` 予約の時間帯の外（[5. 録画](05-recording.md)）と、
+  入力のビットレートの上限で切断された直後（§4.3）の場合は `NetStream.Publish.Rejected` で拒否します。
 - 30 秒間何も受信しない場合は切断します。
 
 ```sh
@@ -270,10 +292,23 @@ curl -s -X POST "$API/streams/$SID/playback-url" "${H[@]}" -d '{"ttl_secs":600}'
 - 配信が終了する（再接続の猶予時間が過ぎる）と、プレイリストに `#EXT-X-ENDLIST` が付きます。
 - コンテナに格納できないコーデックは、HLS には出力されません。TS: H.264・H.265・AAC・Opus。fMP4: H.264・H.265・AV1・VP9・AAC・Opus。
   `POST /streams/{id}/plan` を使うと、現在の入力が各出力でどう扱われるか（remux・unsupported とその理由）を確認できます。
+  ストリームのタスクは再エンコードをしないため、計画に変換（`transcode`）は出ません。`royalty_free` で破棄したトラックは、
+  すべての出力で `unsupported` になり、理由が付きます。コーデックの変換が必要な場合は、パイプライン（[7. パイプライン](07-pipelines.md)）を使ってください。
 
 **LL-HLS**（`latency_profile: "low"`）: part の目標の長さは `min(500 ms, segment_ms / 4)`（200 ms 以上）です。プレイリストには
 `EXT-X-SERVER-CONTROL:CAN-BLOCK-RELOAD=YES,CAN-SKIP-UNTIL=…,PART-HOLD-BACK=…`・`EXT-X-PART-INF`・`EXT-X-PART`・
 `EXT-X-PRELOAD-HINT` が出力されます。
+
+**`latency_profile: "interactive"`**: WebRTC（WHEP）や MoQ で見ることを前提に、各所の待ちを小さくします。`standard`・`low` の動作は変わりません。
+
+| 項目 | `low` | `interactive` |
+|---|---|---|
+| LL-HLS の part の目標の長さ | `min(500 ms, segment_ms / 4)` | 200 ms（`PART-HOLD-BACK` は 0.6 秒） |
+| 映像・音声の片方が届かないときに、HLS の出力を始めるまで待つ時間 | 1 秒 | 0.25 秒 |
+| RTMP play で、送信待ちがたまったときに次のキーフレームまで飛ばす量 | 8 MiB | 1 MiB |
+| SRT（publish・play）でノードが申告する受信遅延 | 200 ms | 80 ms（実際の遅延は両端の大きい方） |
+
+セグメントの長さ（`hls.segment_ms`）は変えません。ノード間の中継は、溜めずにすぐ送るため、プロファイルによる違いはありません。
 
 | クエリ | 動作 |
 |---|---|
@@ -439,8 +474,9 @@ moq --connect "moqt://media.example.com:4433/?$Q" --connect-version moq-transpor
 - 静止画は、直近の GOP を**デコード**して作成します。デコードは codec worker で行います。H.264・H.265 は、GPU のデコーダーがないと 503
   `CAPACITY_UNAVAILABLE`（`retryable: false`）になります。AV1（dav1d）・VP8/VP9（libvpx）はソフトウェアでデコードできます
   （[14. コーデックと特許](14-codecs-and-patents.md)）。配信中でない場合は 409、キーフレームを待っている間も 409 になります。
-- 静止画は次の 3 つの理由（`reason`）で保存されます: `interval`（ストリームの `snapshots` の設定。`keep` 枚を超えると古いものから削除）、
-  `schedule`（`snapshot` の予約。[5. 録画](05-recording.md)）、`board_change`（パイプラインの `snapshot_on_change`。[7. パイプライン](07-pipelines.md)）。
+- 静止画は次の 2 つの理由（`reason`）で保存されます: `interval`（ストリームの `snapshots` の設定。`keep` 枚を超えると古いものから削除）、
+  `schedule`（`snapshot` の予約。[5. 録画](05-recording.md)）。パイプラインの `snapshot_on_change` の静止画（`board_change`）は、
+  ストリームではなくパイプラインごとに保存されます（`GET /pipelines/{id}/snapshots`。[7. パイプライン](07-pipelines.md)）。
 - 保存先は `{data-dir}/snapshots/{stream_id}/` です。ストリームを削除すると、静止画も一緒に削除されます。
 - 録画のサムネイルについては [5. 録画](05-recording.md) を参照してください。
 
@@ -462,14 +498,18 @@ curl -s -X PATCH "$API/streams/$SID" "${H[@]}" -H "If-Match: $ETAG" -d '{"snapsh
 クラスターでは、配信者からの接続を受けたノードが、そのストリームの所有者になります。所有者でないノードに再生のリクエスト
 （HLS・RTMP/SRT/RTSP play・WHEP）が届くと、そのノードは所有者から中継で AU を受け取ってローカルにミラーを作り、そこから配信します。
 同じストリームの視聴者が何人いても、上流からの転送は 1 本です。最初の HLS のリクエストでは、ミラーの最初のプレイリストができるまで
-最長 6 秒待ちます。使われなくなったミラーは 30 秒後に削除されます。ミラーでは録画と字幕は行いません（これらは所有者のノードが行います）。
+最長 6 秒待ちます。使われなくなったミラーは 30 秒後に削除されます。ミラーでは録画と字幕の作成は行いません（これらは所有者のノードが行います）。
+字幕のファイル（`master.m3u8`・`sub_{lang}.m3u8`・`sub_{lang}_{n}.vtt`）は、ミラーのノードが所有者のノードから取得して返すので、
+どのノードの再生 URL でも字幕を見られます（プレイリストは 1 秒、字幕のセグメントは 30 秒の間、ミラーのノードで使い回します）。
 中継が使えない場合は、所有者のノード（`media_addr`）へ 307 でリダイレクトします。詳しくは [9. クラスタとグリッド](09-cluster-grid.md) を参照してください。
 
 ## 4.19 よくあるトラブル
 
 | 症状 | 原因 |
 |---|---|
-| RTMP の配信が拒否される | `BadName`: キーの誤り、すでに別の配信者がいる、`stopped`。`Rejected`: `live` 予約の時間帯の外 |
+| RTMP の配信が拒否される | `BadName`: キーの誤り、すでに別の配信者がいる、`stopped`。`Rejected`: `live` 予約の時間帯の外、入力のビットレートの上限で切断された直後 |
+| 配信が数秒で切断される | 入力のビットレートが `limits.max_ingress_bps` を超え続けた（ログに `ingress bitrate exceeded`） |
+| 再生が 503 になる・RTMP play が `NetStream.Play.Failed` になる | 視聴者の数が `limits.max_viewers` に達している（`live.viewers` で確認） |
 | SRT の接続がすぐに拒否される | Stream ID の形式の誤り、キーの誤り、テナントに `srt-passphrase` があるのにパスフレーズを指定していない（ログに `unsecure` と出力） |
 | SRT play が拒否される | `streamid` の値をパーセントエンコードしていない |
 | HLS が 404 になる | 最初のセグメントがまだできていない（キーフレームの間隔が長い）、URL のホストが誤っている（`--public-http-url`） |

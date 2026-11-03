@@ -191,8 +191,17 @@
 
 ### `snapshot_on_change`（板書の変化で静止画）
 
-`{input, params}`。生の映像を解析し、内容が変わって落ち着いたら JPEG を保存する。保存先は**最初の `sink` の stream** の静止画
-（`GET /streams/{id}/snapshots`、`reason: board_change`、`changed_fraction` 付き）。この経路の静止画は枚数の上限で消されない。
+`{input, params}`。生の映像を解析し、内容が変わって落ち着いたら JPEG を保存する。保存先は**パイプラインごとの場所**
+（`{data-dir}/pipeline-snapshots/{pipeline_id}/`）で、`sink` の無いグラフでも使える。部品ごとに `params.keep` 枚まで残し、超えたら古いものから消す。
+パイプラインを消すと、静止画も消す（パイプラインを動かしていたノードの分）。
+
+| 操作 | API | 権限 | 結果 |
+|---|---|---|---|
+| 一覧 | `GET /pipelines/{id}/snapshots` | `stream:read` | `{"items":[{id, taken_at, reason: "board_change", node, width, height, bytes, changed_fraction}]}`（古い順。`node` は部品の ID） |
+| 1 枚の取得 | `GET /pipelines/{id}/snapshots/{snapshot_id}` | `stream:read` | JPEG |
+| 削除 | `DELETE /pipelines/{id}/snapshots/{snapshot_id}` | `stream:write` | 204 |
+
+静止画は、パイプラインを動かしているノードのディスクに置く。クラスターでは、そのノード（`placement_status.node_name`）の API で取得する。
 
 | `params` の項目 | 既定 | 範囲 |
 |---|---|---|
@@ -202,6 +211,7 @@
 | `stable_frames` | 3 | 1〜10000 |
 | `change_fraction` | 0.004 | 0 より大きく 1 より小さい |
 | `jpeg_quality` | 85 | 1〜100 |
+| `keep` | 1000 | 1〜10000（残す枚数） |
 
 ### `sink`（出力）
 

@@ -473,6 +473,9 @@ fn route(ctx: &Ctx) -> ApiResult {
         ("DELETE", ["pipelines", id]) => pipelines::delete(ctx, id),
         ("POST", ["pipelines", id, "validate"]) => pipelines::validate(ctx, id),
         ("POST", ["pipelines", id, "control"]) => pipelines::control(ctx, id),
+        ("GET", ["pipelines", id, "snapshots"]) => pipelines::snapshots_list(ctx, id),
+        ("GET", ["pipelines", id, "snapshots", sid]) => pipelines::snapshot_get(ctx, id, sid),
+        ("DELETE", ["pipelines", id, "snapshots", sid]) => pipelines::snapshot_delete(ctx, id, sid),
 
         ("POST", ["tokens"]) => tokens::create(ctx),
         ("GET", ["tokens"]) => tokens::list(ctx),

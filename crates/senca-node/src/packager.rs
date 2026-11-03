@@ -42,6 +42,19 @@ pub enum PackagerOut {
 
 /// 映像・音声の設定を待つ間にためる長さ（これを超えたら、そろっている方だけで始める）。
 const WAIT_VIDEO_US: i64 = 1_000_000;
+/// `latency_profile: interactive` での待ち（片方のトラックが来ない配信で、出だしを遅らせない）。
+const WAIT_VIDEO_US_INTERACTIVE: i64 = 250_000;
+/// LL-HLS の part の目標の長さ。`low` は min(500 ms, segment_ms / 4)、`interactive` は 200 ms（どちらも 200 ms 以上）。
+const PART_MIN_US: u64 = 200_000;
+
+/// プロファイルごとの part の目標の長さ（µs）。`standard` は part を作らない。
+pub fn part_target_us(profile: LatencyProfile, segment_ms: u32) -> Option<u64> {
+    match profile {
+        LatencyProfile::Standard => None,
+        LatencyProfile::Low => Some(500_000u64.min(segment_ms as u64 * 250).max(PART_MIN_US)),
+        LatencyProfile::Interactive => Some(PART_MIN_US),
+    }
+}
 
 /// URI の付け方。初期化セグメントは作り直しても名前が重ならないように通し番号にする。
 struct Uris {
@@ -89,16 +102,18 @@ pub struct Packager {
     init_counter: u64,
     /// 映像の設定を待つ間の AU。
     held: Vec<AccessUnit>,
+    /// 映像・音声の設定を待つ長さ（µs）。
+    wait_us: i64,
 }
 
 impl Packager {
     pub fn new(s: &Stream) -> Self {
         let container = if s.hls.container == "fmp4" { "fmp4" } else { "ts" };
-        let part_us = (s.latency_profile == LatencyProfile::Low).then_some(500_000u64.min(s.hls.segment_ms as u64 * 250));
+        let part_us = part_target_us(s.latency_profile, s.hls.segment_ms);
         Packager {
             container,
             target_us: s.hls.segment_ms as u64 * 1000,
-            part_us: part_us.map(|p| p.max(200_000)),
+            part_us,
             window: s.hls.window as usize,
             configs: BTreeMap::new(),
             seg: None,
@@ -116,6 +131,7 @@ impl Packager {
             init_names: BTreeMap::new(),
             init_counter: 0,
             held: Vec::new(),
+            wait_us: if s.latency_profile == LatencyProfile::Interactive { WAIT_VIDEO_US_INTERACTIVE } else { WAIT_VIDEO_US },
         }
     }
 
@@ -230,7 +246,7 @@ impl Packager {
             let span = self.held.last().zip(self.held.first()).map(|(l, f)| {
                 (l.dts - f.dts).rescale(l.timebase, Timebase::MICROS).unwrap_or(0)
             });
-            if span.unwrap_or(0) < WAIT_VIDEO_US {
+            if span.unwrap_or(0) < self.wait_us {
                 return out;
             }
         }

@@ -199,7 +199,8 @@ receives AUs from the owner over the relay and serves them from a local **mirror
 - However many viewers watch a stream on a node, only one copy crosses between the nodes. The mirror's packager
   and GOP cache behave exactly as on the owner.
 - Only encoded AUs are carried (no transcoding).
-- Mirrors never record, caption or claim ownership (that is the owner's job).
+- Mirrors never record, produce captions or claim ownership (that is the owner's job). Caption files are fetched from the owner node
+  ([8. Captions](08-captions.md)).
 - A freshly created mirror waits up to 6 seconds for its first playlist.
 - A mirror unused for 30 seconds is torn down. When ownership moves to this node, the mirror stops and yields
   to the real publisher.

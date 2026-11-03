@@ -193,9 +193,18 @@ Each layer (`layers[]`) has **exactly one** of `source` (an `inputs` name), `ima
 
 ### `snapshot_on_change` (still images when the board changes)
 
-`{input, params}`. Analyzes raw video and saves a JPEG when the content has changed and settled. Images are stored as still images of
-**the first `sink`'s stream** (`GET /streams/{id}/snapshots`, `reason: board_change`, with `changed_fraction`). Images saved this way
-are not pruned by any count limit.
+`{input, params}`. Analyzes raw video and saves a JPEG when the content has changed and settled. Images are stored **per pipeline**
+(`{data-dir}/pipeline-snapshots/{pipeline_id}/`), so the graph does not need a `sink`. Up to `params.keep` images are kept per node;
+older ones are deleted. Deleting the pipeline deletes its images (on the node that ran it).
+
+| Operation | API | Scope | Result |
+|---|---|---|---|
+| List | `GET /pipelines/{id}/snapshots` | `stream:read` | `{"items":[{id, taken_at, reason: "board_change", node, width, height, bytes, changed_fraction}]}` (oldest first; `node` is the node ID in the graph) |
+| Get one | `GET /pipelines/{id}/snapshots/{snapshot_id}` | `stream:read` | JPEG |
+| Delete | `DELETE /pipelines/{id}/snapshots/{snapshot_id}` | `stream:write` | 204 |
+
+Images are stored on the disk of the node running the pipeline. In a cluster, fetch them through that node's API
+(`placement_status.node_name`).
 
 | `params` item | Default | Range |
 |---|---|---|
@@ -205,6 +214,7 @@ are not pruned by any count limit.
 | `stable_frames` | 3 | 1–10000 |
 | `change_fraction` | 0.004 | Greater than 0 and less than 1 |
 | `jpeg_quality` | 85 | 1–100 |
+| `keep` | 1000 | 1–10000 (number of images to keep) |
 
 ### `sink` (output)
 

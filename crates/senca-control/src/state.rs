@@ -290,7 +290,10 @@ impl ControlState {
                     .get_mut(&id)
                     .filter(|s| s.tenant == tenant)
                     .ok_or_else(Problem::not_found)?;
-                s.state = state;
+                // 取り消した予約は取り消したまま（実行中の回の記録が後から届いても running に戻さない）
+                if s.state != ScheduleState::Canceled {
+                    s.state = state;
+                }
                 match s.runs.iter_mut().find(|r| r.occurrence == run.occurrence) {
                     Some(r) => *r = run,
                     None => {

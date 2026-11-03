@@ -38,7 +38,7 @@ Body:
 | protocol | `url` scheme |
 |---|---|
 | `rtmp_pull`, `rtmp_push` | `rtmp`, `rtmps` |
-| `rtsp_pull` | `rtsp` (`rtsps` is accepted, but the connection is currently made without TLS) |
+| `rtsp_pull` | `rtsp`, `rtsps` (over TLS) |
 | `srt_pull`, `srt_push` | `srt` |
 | `hls_pull` | `http`, `https` |
 | `device` | `device:{device id}` ([4.7](04-ingest-playback.md)) |
@@ -72,6 +72,18 @@ curl -s -X POST "$API/streams/$SID/inputs" "${H[@]}" -d '{"protocol":"rtsp_pull"
 
 - Transport is **TCP interleaved only** (works through NAT and firewalls). Default port 554.
 - Store credentials in the secret as `user:password`. Basic authentication is used only with `options.allow_basic: "true"` (it sends the password in clear text).
+- `rtsps://` connects over TLS (default port 322). The server certificate is verified against the certificate authorities the OS
+  trusts (the node's `SSL_CERT_FILE` environment variable can point to a CA file). For cameras with a self-signed certificate, pin the
+  certificate's public key: put the SHA-256 of its SPKI, in base64 or hex, in `options.tls_spki_sha256` (several values can be separated
+  with `,`). With a pin, the CA, validity period and host name are not checked. If the pin does not match, the TLS handshake fails;
+  there is no fallback to plain RTSP. A malformed value is rejected with 400.
+
+  ```sh
+  # Compute the pin from the camera's certificate
+  openssl x509 -in cam.crt -pubkey -noout | openssl pkey -pubin -outform der | openssl dgst -sha256 -binary | base64
+  curl -s -X POST "$API/streams/$SID/inputs" "${H[@]}" \
+    -d '{"protocol":"rtsp_pull","url":"rtsps://192.0.2.10:322/stream1","credential_ref":"secret:cam-login","options":{"tls_spki_sha256":"<value above>"}}'
+  ```
 - Connecting to private addresses such as on-premises cameras requires `--egress-allow` (§6.7).
 
 ### srt_pull
