@@ -359,6 +359,25 @@ pub async fn http(app: &Arc<App>, rtc: &Rtc, h: &senca_http::RequestHead, body: 
             if !ok {
                 return plain(401, "unauthorized");
             }
+            // 排出中のノードは新しい送り手を受けない: 排出中でない別のノードへ 307 で案内する（WHIP の
+            // クライアントは同じ要求を案内先へ送り直す）。案内先が無ければ 503
+            if app.draining() {
+                return match app.undrained_peer_api() {
+                    Some(api) => Reply {
+                        status: 307,
+                        headers: vec![
+                            ("Location".into(), format!("{}/whip/{stream}", api.trim_end_matches('/'))),
+                            ("Access-Control-Allow-Origin".into(), "*".into()),
+                        ],
+                        body: Bytes::new(),
+                    },
+                    None => {
+                        let mut r = plain(503, "this node is draining; publish to another node");
+                        r.headers.push(("Retry-After".into(), "10".into()));
+                        r
+                    }
+                };
+            }
             let offer = String::from_utf8_lossy(&body).to_string();
             let (reply, rx) = oneshot::channel();
             if rtc.tx.send(Cmd::Whip { offer, reply }).await.is_err() {

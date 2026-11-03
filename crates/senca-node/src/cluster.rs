@@ -5,8 +5,10 @@
 //!   リーダーが分からない・過半数と連絡が取れないときは 503（retryable）。
 //! - 適用は全ノードで同じ順に `ControlState::apply`。失敗するコマンドも同じ結果になる（決定的）。
 //! - スナップショット: 1000 件ごとに制御状態を写して古いログを捨てる。
-//! - ノード間の通信は TCP の枠（種類 1 バイト＋長さ 4 バイト）。最初の枠でクラスタの合言葉（共有の秘密）を確かめる。
-//!   mTLS は TLS の統合で入れる（ADR-0009 の未了の項目）。
+//! - ノード間の通信は TCP（`tls_*` があれば mTLS）の上の枠（種類 1 バイト＋長さ 4 バイト）。枠の前に、クラスタの
+//!   合言葉による相互の挑戦応答（`cluster_auth`）で互いの番号を確かめる（合言葉も固定のハッシュも送らない）。
+//! - 過半数との連絡: リーダーは過半数の投票者から最後に返事を受けた時刻、フォロワーはリーダーから最後に受けた時刻を
+//!   「確かめた時刻」として持つ。これが古くなったノードは `/readyz` を 503 にし、グリッドの仕事を止める（ADR-0013 fencing）。
 
 use crate::app::App;
 use bytes::{Buf, Bytes};
@@ -28,7 +30,6 @@ const PROPOSE_TIMEOUT: Duration = Duration::from_secs(5);
 const SNAPSHOT_EVERY: u64 = 1000;
 const MAX_FRAME: usize = 64 << 20;
 
-const K_HELLO: u8 = 0;
 const K_RAFT: u8 = 1;
 const K_FORWARD: u8 = 2;
 const K_RESULT: u8 = 3;
@@ -53,6 +54,8 @@ pub struct Cluster {
     pub peers: HashMap<u64, SocketAddr>,
     /// 相手ごとの送信のキュー（心拍のように Raft の外で送るもの）。
     out: HashMap<u64, mpsc::Sender<Vec<u8>>>,
+    /// 過半数（またはリーダー）との連絡を最後に確かめた時刻（`util::mono_ms() + 1`。0 = まだ無い）。
+    contact: Arc<AtomicU64>,
 }
 
 fn unavailable(t: &str) -> Problem {
@@ -64,6 +67,14 @@ impl Cluster {
         match self.leader.load(Ordering::Relaxed) {
             0 => None,
             n => Some(n),
+        }
+    }
+
+    /// 過半数との連絡を最後に確かめてからの時間（ミリ秒。まだ無ければ `u64::MAX`）。
+    pub fn contact_age_ms(&self) -> u64 {
+        match self.contact.load(Ordering::Relaxed) {
+            0 => u64::MAX,
+            t => (crate::util::mono_ms() + 1).saturating_sub(t),
         }
     }
 
@@ -145,6 +156,9 @@ pub fn start(app: Arc<App>, me: u64, listen: SocketAddr, peers: HashMap<u64, Soc
     let raw = RawNode::new(cfg, init).map_err(|e| e.to_string())?;
     let (tx, rx) = smpsc::channel();
     let leader = Arc::new(AtomicU64::new(0));
+    let contact = Arc::new(AtomicU64::new(0));
+    let key = crate::cluster_auth::AuthKey::derive(&secret, crate::cluster_auth::Purpose::Raft);
+    let voters: Vec<u64> = peers.keys().copied().collect();
     // 相手ごとの送信のキュー（あふれたら落とす。Raft は落ちても安全）
     let mut outq: HashMap<u64, mpsc::Sender<Vec<u8>>> = HashMap::new();
     let rt = tokio::runtime::Handle::current();
@@ -154,24 +168,24 @@ pub fn start(app: Arc<App>, me: u64, listen: SocketAddr, peers: HashMap<u64, Soc
         }
         let (otx, orx) = mpsc::channel(4096);
         outq.insert(id, otx);
-        rt.spawn(dial(app.clone(), me, id, addr, secret.clone(), orx, tls.clone()));
+        rt.spawn(dial(app.clone(), me, id, addr, key.clone(), orx, tls.clone()));
     }
-    rt.spawn(accept(app.clone(), listen, secret.clone(), tx.clone(), tls.clone()));
-    let c = Arc::new(Cluster { me, tx: tx.clone(), leader: leader.clone(), peers, out: outq.clone() });
+    let l = std::net::TcpListener::bind(listen).map_err(|e| format!("cluster: bind {listen}: {e}"))?;
+    l.set_nonblocking(true).map_err(|e| e.to_string())?;
+    let l = tokio::net::TcpListener::from_std(l).map_err(|e| e.to_string())?;
+    rt.spawn(accept(app.clone(), l, me, voters.clone(), key, tx.clone(), tls.clone()));
+    let c = Arc::new(Cluster { me, tx: tx.clone(), leader: leader.clone(), peers, out: outq.clone(), contact: contact.clone() });
     let app2 = app.clone();
     std::thread::Builder::new()
         .name("senca-raft".into())
-        .spawn(move || drive(app2, raw, storage, rx, outq, leader, me))
+        .spawn(move || drive(app2, raw, storage, rx, outq, leader, contact, voters, me))
         .map_err(|e| e.to_string())?;
     Ok(c)
 }
 
-async fn dial(app: Arc<App>, me: u64, peer: u64, addr: SocketAddr, secret: String, mut rx: mpsc::Receiver<Vec<u8>>, tls: Option<ClusterTls>) {
-    let hello = {
-        let mut h = me.to_be_bytes().to_vec();
-        h.extend_from_slice(senca_control::secret::hash(&secret).as_bytes());
-        frame(K_HELLO, &h)
-    };
+async fn dial(app: Arc<App>, me: u64, peer: u64, addr: SocketAddr, key: crate::cluster_auth::AuthKey, mut rx: mpsc::Receiver<Vec<u8>>, tls: Option<ClusterTls>) {
+    // 同じ失敗を 500 ms ごとに書かない
+    let mut last_auth_error = String::new();
     loop {
         let tcp = match tokio::net::TcpStream::connect(addr).await {
             Ok(s) => s,
@@ -194,9 +208,16 @@ async fn dial(app: Arc<App>, me: u64, peer: u64, addr: SocketAddr, secret: Strin
                 }
             },
         };
-        if s.write_all(&hello).await.is_err() {
+        if let Err(e) = crate::cluster_auth::client(&mut s, &key, me, peer).await {
+            if e != last_auth_error {
+                app.log(&format!("cluster: authentication to node {peer} failed: {e}"));
+                last_auth_error = e;
+            }
+            while rx.try_recv().is_ok() {}
+            tokio::time::sleep(Duration::from_millis(1000)).await;
             continue;
         }
+        last_auth_error.clear();
         loop {
             let Some(f) = rx.recv().await else { return };
             if s.write_all(&f).await.is_err() {
@@ -207,21 +228,28 @@ async fn dial(app: Arc<App>, me: u64, peer: u64, addr: SocketAddr, secret: Strin
     }
 }
 
-async fn accept(app: Arc<App>, listen: SocketAddr, secret: String, tx: smpsc::Sender<DriverMsg>, tls: Option<ClusterTls>) {
-    let l = match tokio::net::TcpListener::bind(listen).await {
-        Ok(l) => l,
-        Err(e) => {
-            app.log(&format!("cluster: bind {listen}: {e}"));
-            return;
-        }
-    };
-    let want = senca_control::secret::hash(&secret);
+#[allow(clippy::too_many_arguments)]
+async fn accept(
+    app: Arc<App>,
+    l: tokio::net::TcpListener,
+    me: u64,
+    voters: Vec<u64>,
+    key: crate::cluster_auth::AuthKey,
+    tx: smpsc::Sender<DriverMsg>,
+    tls: Option<ClusterTls>,
+) {
+    let voters = Arc::new(voters);
     loop {
-        let Ok((tcp, peer)) = l.accept().await else { continue };
+        let Ok((tcp, peer)) = l.accept().await else {
+            // EMFILE などで回り続けない
+            tokio::time::sleep(Duration::from_millis(50)).await;
+            continue;
+        };
         let tx = tx.clone();
-        let want = want.clone();
         let app = app.clone();
         let tls = tls.clone();
+        let key = key.clone();
+        let voters = voters.clone();
         tokio::spawn(async move {
             let mut s: Box<dyn crate::io::IoStream> = match tls {
                 None => Box::new(tcp),
@@ -233,8 +261,15 @@ async fn accept(app: Arc<App>, listen: SocketAddr, secret: String, tx: smpsc::Se
                     }
                 },
             };
+            // 相互の挑戦応答（名乗った番号を合言葉で確かめる。名乗る前の枠は受けない）
+            let from = match crate::cluster_auth::server(&mut s, &key, me, &|id| voters.contains(&id)).await {
+                Ok(id) => id,
+                Err(e) => {
+                    app.log(&format!("cluster: rejected connection from {peer}: {e}"));
+                    return;
+                }
+            };
             let mut hdr = [0u8; 5];
-            let mut from = 0u64;
             loop {
                 if s.read_exact(&mut hdr).await.is_err() {
                     return;
@@ -249,15 +284,6 @@ async fn accept(app: Arc<App>, listen: SocketAddr, secret: String, tx: smpsc::Se
                 }
                 let body = Bytes::from(body);
                 match hdr[0] {
-                    K_HELLO => {
-                        use subtle::ConstantTimeEq;
-                        if body.len() != 8 + 64 || !bool::from(body[8..].ct_eq(want.as_bytes())) {
-                            app.log(&format!("cluster: rejected connection from {peer} (bad cluster secret)"));
-                            return;
-                        }
-                        from = (&body[..8]).get_u64();
-                    }
-                    _ if from == 0 => return, // 名乗る前の枠は受けない
                     K_RAFT => {
                         if let Ok(m) = senca_raft::codec::decode_message_body(body)
                             && m.from == from
@@ -329,6 +355,7 @@ enum Waiter {
     Remote { from: u64, req: u64 },
 }
 
+#[allow(clippy::too_many_arguments)]
 fn drive(
     app: Arc<App>,
     mut raw: RawNode,
@@ -336,8 +363,12 @@ fn drive(
     rx: smpsc::Receiver<DriverMsg>,
     outq: HashMap<u64, mpsc::Sender<Vec<u8>>>,
     leader: Arc<AtomicU64>,
+    contact: Arc<AtomicU64>,
+    voters: Vec<u64>,
     me: u64,
 ) {
+    // 相手ごとに、最後に Raft のメッセージを受けた時刻（mono_ms + 1）
+    let mut heard: HashMap<u64, u64> = HashMap::new();
     let mut next_tick = Instant::now() + TICK;
     // index → (term, waiter)
     let mut waiting: HashMap<u64, (u64, Waiter)> = HashMap::new();
@@ -354,6 +385,7 @@ fn drive(
         let wait = next_tick.saturating_duration_since(Instant::now());
         match rx.recv_timeout(wait) {
             Ok(DriverMsg::Step(m)) => {
+                heard.insert(m.from, crate::util::mono_ms() + 1);
                 let _ = raw.step(m);
             }
             Ok(DriverMsg::Propose { cmd, reply }) => match raw.status().leader {
@@ -452,6 +484,9 @@ fn drive(
         }
         let st = raw.status();
         leader.store(st.leader.unwrap_or(0), Ordering::Relaxed);
+        if let Some(t) = confirmed_at(st.leader, me, &voters, &heard, crate::util::mono_ms() + 1) {
+            contact.fetch_max(t, Ordering::Relaxed);
+        }
         // リーダーでなくなったら、待っている提案は失敗させる
         if st.leader != Some(me) && !waiting.is_empty() {
             for (_, (_, w)) in waiting.drain() {
@@ -460,6 +495,20 @@ fn drive(
                 }
             }
         }
+    }
+}
+
+/// 過半数との連絡を確かめた時刻。リーダーなら、過半数（自分を含む）から返事を受けた最も古い時刻
+/// （= 投票者の時刻を新しい順に並べた過半数番目）。フォロワーならリーダーから最後に受けた時刻。リーダーが分からなければ None。
+fn confirmed_at(leader: Option<u64>, me: u64, voters: &[u64], heard: &HashMap<u64, u64>, now: u64) -> Option<u64> {
+    match leader {
+        Some(l) if l == me => {
+            let mut ts: Vec<u64> = voters.iter().map(|v| if *v == me { now } else { heard.get(v).copied().unwrap_or(0) }).collect();
+            ts.sort_unstable_by(|a, b| b.cmp(a));
+            ts.get(voters.len() / 2).copied().filter(|t| *t > 0)
+        }
+        Some(l) => heard.get(&l).copied(),
+        None => None,
     }
 }
 
@@ -481,5 +530,28 @@ fn propose_local(raw: &mut RawNode, cmd: &Command, w: Waiter, waiting: &mut Hash
                 Waiter::Remote { .. } => {}
             }
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn confirmed_at_needs_a_quorum() {
+        let voters = [1, 2, 3];
+        let mut heard = HashMap::new();
+        // リーダー 1: 誰からも聞いていない → 過半数を確かめていない
+        assert_eq!(confirmed_at(Some(1), 1, &voters, &heard, 100), None);
+        heard.insert(2, 90);
+        // 自分 + 2 で過半数。確かめた時刻は 2 の時刻
+        assert_eq!(confirmed_at(Some(1), 1, &voters, &heard, 100), Some(90));
+        heard.insert(3, 95);
+        assert_eq!(confirmed_at(Some(1), 1, &voters, &heard, 100), Some(95));
+        // フォロワー: リーダーから最後に受けた時刻
+        assert_eq!(confirmed_at(Some(3), 1, &voters, &heard, 100), Some(95));
+        assert_eq!(confirmed_at(None, 1, &voters, &heard, 100), None);
+        // 1 台のクラスタのリーダーはいつも確か
+        assert_eq!(confirmed_at(Some(1), 1, &[1], &HashMap::new(), 7), Some(7));
     }
 }

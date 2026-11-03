@@ -43,6 +43,8 @@ impl CodecService {
             pc.env.push(("SENCA_CODEC_LIB_DIR".into(), d.clone().into_os_string()));
         }
         pc.job_timeout = Duration::from_secs(30);
+        // --log-json: worker の標準エラーの行も JSON のログにまとめる
+        pc.stderr_log = crate::util::worker_log_sink();
         let mut sc = senca_codec_worker::session_pool::SessionPoolConfig::new(pc.program.clone());
         sc.worker.env = pc.env.clone();
         sc.worker.env_clear = pc.env_clear;
@@ -91,6 +93,11 @@ impl CodecService {
 
     pub fn capability_list(&self) -> Vec<senca_codec::Capability> {
         self.caps()
+    }
+
+    /// 新しい worker で装置を調べ直す（ブロックする。tokio の外のスレッドから呼ぶ）。起動できなければ None。
+    pub fn probe(&self) -> Option<senca_codec_worker::pool::WorkerInfo> {
+        self.rt.block_on(self.pool.probe()).ok()
     }
 
     pub fn can_transcode_hw(&self) -> bool {

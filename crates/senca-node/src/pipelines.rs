@@ -65,7 +65,10 @@ impl PipelineManager {
     /// 制御状態と突き合わせる: このノードに割り当てられたパイプラインだけを、割り当ての段で動かす（ADR-0013）。
     /// 縮退の段では、段で止める節点を図から外して動かす。
     pub fn reconcile(&self, app: &Arc<App>) {
-        let want: Vec<(Pipeline, u64, usize)> = {
+        // 過半数と連絡が取れないノードは何も動かさない（自分での fencing。ADR-0013）
+        let want: Vec<(Pipeline, u64, usize)> = if app.fenced() {
+            Vec::new()
+        } else {
             let core = app.control.lock().unwrap();
             core.state
                 .pipelines
@@ -97,7 +100,8 @@ impl PipelineManager {
             }
             let rt = Arc::new(Mutex::new(PipelineRuntime { state: "starting".into(), ..Default::default() }));
             let (control_tx, control_rx) = tokio::sync::mpsc::channel(32);
-            let task = tokio::spawn(supervise(app.clone(), pl, rt.clone(), control_rx));
+            let wid = format!("{}{}", senca_control::workloads::PIPELINE, p.id);
+            let task = tokio::spawn(crate::grid::guarded(app.clone(), wid, token, supervise(app.clone(), pl, rt.clone(), control_rx)));
             run.insert(p.id.clone(), Running { generation: p.generation, token, level, task, rt, control_tx });
         }
     }

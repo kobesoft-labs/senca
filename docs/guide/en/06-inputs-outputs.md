@@ -201,7 +201,7 @@ curl -s -X POST "$API/secrets" "${H[@]}" -d '{"name":"cam-login","value":"viewer
 ```
 
 - `name` follows the stream name rules (1–64 letters, digits and `-_.`) and is unique within the tenant (409 on duplicates). `value` is 1–8192 bytes.
-- Values are encrypted with AES-256-GCM using the node key (`{data-dir}/control/secret-key`). **A value can never be read back through
+- Values are encrypted with AES-256-GCM (with the node key `{data-dir}/control/secret-key` on a single node, with a cluster-wide key in a cluster; see [12. Security](12-security.md)). **A value can never be read back through
   the API** (lists show only `id`, `name`, `ref`, `created_at`). To change a value, delete and recreate the secret.
 - A tenant can have up to 500 secrets.
 - Secrets referenced by inputs, outputs or stream captions cannot be deleted (409).

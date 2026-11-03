@@ -38,6 +38,8 @@ pub enum PublishError {
     BadKey,
     Busy,
     Stopped,
+    /// このノードは排出中（drain）。新しい送り手は別のノードへ。
+    Draining,
     Rejected(String),
 }
 

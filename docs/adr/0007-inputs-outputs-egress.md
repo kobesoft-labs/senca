@@ -10,7 +10,7 @@
 - **ノードの係が定義と実体を突き合わせる。** 定義（制御状態）の世代が変われば止めて起動し直す。失敗は指数バックオフ（1〜60 秒、揺らぎ付き）でつなぎ直す。状態（`connecting`・`active`・`backoff`・`waiting_input`・`ended`・`error`）と最後のエラーを `status` に出す。
 - **pull の入力は内部の送り手として stream の hub につなぐ。** publish 鍵は使わない。同じ stream に別の送り手がいれば `Busy`。
 - **VOD（ENDLIST）の HLS pull は読み終えたら止める**（繰り返さない）。
-- **秘密値**（`POST /secrets`、値は書くだけ）。`credential_ref: "secret:{name}"` で参照する。値はノードの鍵（`control/secret-key`、0600）で AES-256-GCM により封じ、AAD に `tenant/id` を入れる（別の資源に写しても開けない）。制御状態・ログ・バックアップには封じた形だけが残る。使用中の秘密値は消せない（409）。
+- **秘密値**（`POST /secrets`、値は書くだけ）。`credential_ref: "secret:{name}"` で参照する。値は AES-256-GCM により封じ（単一ノードはノードの鍵 `control/secret-key`、0600。分散はクラスタ共通のデータ鍵。ADR-0009）、AAD に `tenant/id` を入れる（別の資源に写しても開けない）。制御状態・ログ・バックアップには封じた形だけが残る。使用中の秘密値は消せない（409）。
 - **URL に資格情報を入れさせない**（`user:pass@` は 400）。鍵・パスワードは `credential_ref` で渡す。
 
 ## 外へ出る接続の制限（SSRF、仕様 9.4）

@@ -291,7 +291,7 @@ impl Recorder {
     }
 
     fn fail(&mut self, id: &str, err: &str) {
-        eprintln!("recorder: recording {id}: {err}");
+        crate::util::log(&format!("recorder: recording {id}: {err}"));
         if let Some(mut a) = self.active.remove(id) {
             let now = crate::util::now_ms();
             let _ = append(&mut a.file, &Entry::End { ended_at_ms: now, state: "interrupted".into(), not_after_ms: None });

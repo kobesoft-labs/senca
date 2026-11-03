@@ -55,7 +55,11 @@ impl IoManager {
     pub fn reconcile(&self, app: &Arc<App>) {
         use senca_control::workloads::{INPUT, OUTPUT};
         type Assigned<T> = Vec<(T, u64)>;
-        let (inputs, outputs): (Assigned<Input>, Assigned<Output>) = {
+        // 過半数と連絡が取れないノードは何も動かさない（自分での fencing。ADR-0013）
+        let fenced = app.fenced();
+        let (inputs, outputs): (Assigned<Input>, Assigned<Output>) = if fenced {
+            (Vec::new(), Vec::new())
+        } else {
             let core = app.control.lock().unwrap();
             let token = |wid: String| core.state.grid.assignments.get(&wid).filter(|a| a.node == app.node_id).map(|a| a.token);
             (
@@ -83,16 +87,18 @@ impl IoManager {
                 continue;
             }
             let status = Arc::new(Mutex::new(IoStatus { state: "starting".into(), ..Default::default() }));
-            let task = tokio::spawn(run_input(app.clone(), i.clone(), status.clone()));
-            run.insert(i.id.clone(), Running { generation: i.generation, workload: format!("{INPUT}{}", i.id), token, task, status });
+            let wid = format!("{INPUT}{}", i.id);
+            let task = tokio::spawn(crate::grid::guarded(app.clone(), wid.clone(), token, run_input(app.clone(), i.clone(), status.clone())));
+            run.insert(i.id.clone(), Running { generation: i.generation, workload: wid, token, task, status });
         }
         for (o, token) in outputs {
             if run.contains_key(&o.id) {
                 continue;
             }
             let status = Arc::new(Mutex::new(IoStatus { state: "starting".into(), ..Default::default() }));
-            let task = tokio::spawn(run_output(app.clone(), o.clone(), status.clone()));
-            run.insert(o.id.clone(), Running { generation: o.generation, workload: format!("{OUTPUT}{}", o.id), token, task, status });
+            let wid = format!("{OUTPUT}{}", o.id);
+            let task = tokio::spawn(crate::grid::guarded(app.clone(), wid.clone(), token, run_output(app.clone(), o.clone(), status.clone())));
+            run.insert(o.id.clone(), Running { generation: o.generation, workload: wid, token, task, status });
         }
     }
 }
@@ -147,7 +153,9 @@ pub fn secret_value(app: &App, tenant: &str, r: &Option<String>) -> Result<Optio
     let name = r.strip_prefix("secret:").ok_or("bad credential_ref")?;
     let core = app.control.lock().unwrap();
     let s = core.state.secrets.values().find(|s| s.tenant == tenant && s.name == name).ok_or("credential_ref の秘密値がありません")?;
-    let v = app.secret_box.open_sealed(&s.sealed, &format!("{tenant}/{}", s.id)).ok_or("秘密値を開けません")?;
+    let (sealed, aad) = (s.sealed.clone(), format!("{tenant}/{}", s.id));
+    drop(core);
+    let v = app.open_secret(&sealed, &aad).ok_or("秘密値を開けません")?;
     String::from_utf8(v).map(Some).map_err(|_| "秘密値が文字列ではありません".into())
 }
 
@@ -179,6 +187,11 @@ async fn connect_stream(app: &App, host: &str, port: u16, tls: bool) -> Result<B
 async fn run_output(app: Arc<App>, o: Output, st: Arc<Mutex<IoStatus>>) {
     let mut attempt = 0u32;
     loop {
+        // 接続する前に、今も自分の割り当てかを確かめる（fencing）
+        if let Err(e) = crate::grid::current_work_ok(&app) {
+            app.log(&format!("output {}: {e}", o.id));
+            return;
+        }
         let res = match o.protocol.as_str() {
             "rtmp_push" => rtmp_push(&app, &o, &st).await,
             "srt_push" => crate::srt::push(&app, &o, &st).await,
@@ -296,6 +309,11 @@ pub async fn rtmp_push_to(app: &Arc<App>, stream: &str, url: &str, key: &str, st
 async fn run_input(app: Arc<App>, i: Input, st: Arc<Mutex<IoStatus>>) {
     let mut attempt = 0u32;
     loop {
+        // つなぐ前に、今も自分の割り当てかを確かめる（fencing）
+        if let Err(e) = crate::grid::current_work_ok(&app) {
+            app.log(&format!("input {}: {e}", i.id));
+            return;
+        }
         let res = match i.protocol.as_str() {
             "rtmp_pull" => rtmp_pull(&app, &i, &st).await,
             "hls_pull" => crate::hls_pull::run(&app, &i, &st).await,
@@ -322,6 +340,8 @@ async fn run_input(app: Arc<App>, i: Input, st: Arc<Mutex<IoStatus>>) {
 
 /// 入力の stream に送り手としてつなぐ（publish 鍵を使わない内部の経路）。
 pub async fn attach(app: &Arc<App>, stream: &str, transport: &'static str, peer: &str) -> Result<crate::hub::Publisher, String> {
+    // グリッドの仕事の中なら、送り手として公開する前に今も自分の割り当てかを確かめる（fencing）
+    crate::grid::current_work_ok(app)?;
     let s = app.control.lock().unwrap().state.streams.get(stream).cloned().ok_or("stream がありません")?;
     app.attach_stream(&s, transport, peer).await.map_err(|e| format!("{e:?}"))
 }

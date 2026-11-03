@@ -25,8 +25,12 @@
 - 単一ノードは、起動の処理（制御状態の読み込み、録画の回収、待ち受け）が済むと ready になる。
 - クラスタでは、リーダーが決まり、自分の登録（と最初のノードなら初期化）が合意されてから ready になる。
 - 終了の合図を受けると `/readyz` は 503 を返す。
-- **ready は一度 ready になると、終了まで下がらない。** クラスタで過半数を失っても `/readyz` は 200 のまま
-  （そのとき書き込みの API は 503）。排出（[13.9](#139-ノードの排出)）も ready に影響しない。
+- **クラスタでは、過半数との通信が途絶えると 503 になります。** リーダーは過半数の投票者からの応答を、フォロワーは
+  リーダーからのメッセージを最後に受け取ってから **4 秒**を超えると、そのノードは自分に割り当てられたワークロード
+  （pull の入力・push の出力・パイプライン）を停止し（フェンシング。ログに `grid: fenced`）、`/readyz` は 503 を返します
+  （書き込みの API も 503 です）。通信が回復すると 200 に戻り、割り当てられたワークロードを再開します（ログに
+  `quorum contact restored`）。起動直後も、リーダーと通信できるまでは 503 です。
+- 単一ノードは、一度 ready になると終了まで 200 のままです。drain（[13.9](#139-ノードの排出)）は ready に影響しません。
 
 コンテナ向けに、curl の無いイメージでも使える確認の入口がある。
 
@@ -49,9 +53,10 @@ senca-node --healthcheck http://127.0.0.1:8080/readyz
 {"msg":"senca-node 0.0.0 started (node f1be5f27675d35f8dd72b88676be8754)","node":"f1be5f27675d35f8dd72b88676be8754","ts":"2026-11-03T01:11:38.915Z"}
 ```
 
-`--log-json` でも、次は標準エラーに平文で出る: codec worker の行（`senca-codec-worker[PID]: sandbox: ...` など）、
-単一ノードの最初の管理者トークンの作成の行、`codec worker unavailable: ...`、`fatal: ...`。
-ログを集めるときは標準出力と標準エラーの両方を取る。
+`--log-json` を指定すると、ノードのすべてのログが標準出力の JSON になります。最初の管理者トークンの作成、
+`codec worker unavailable: ...`、`fatal: ...`（起動の失敗。ノード ID が決まる前は `node` が null）、設定の誤り、
+codec worker・capture worker の標準エラー出力（ノードが 1 行ずつ読み取って `msg` に入れます。1 行 4096 バイトまで）も含みます。
+`--log-json` を指定しない場合は従来どおり、worker の出力は標準エラーにそのまま出ます。
 
 ログに出る主なもの: 待ち受けの開始、送り手の接続（`publisher attached`）と切断、録画の失敗、回収
 （`recovery: ...`）、保持期限による削除（`retention: deleting recording ...`）、認証の失敗の理由と request_id、
@@ -72,7 +77,7 @@ stream key・トークンの値は出さない。
 |---|---|
 | `GET /api/v1/nodes` | 登録されたノードの一覧: `id`・`name`・`draining`・`registered_at`・`labels`・`live_streams`（答えたノード自身の分だけ数える）・`self`・`relay`（自分の中継の状態） |
 | `GET /api/v1/nodes/{id}` | 1 つのノード |
-| `GET /api/v1/grid` | グリッドの様子: `scheduler`（配置を決めているノード。リーダーに聞いたときだけ）、ノードごとの `up`・`draining`・`roles`・`labels`・`capacity`・`reserved`・`gpus`（セッション数と予約）・`capture`・`last_heartbeat`・`workloads`、仕事ごとの `state`（`running`・`degraded`・`pending`・`unschedulable`）・`node`・`device`・`level`・`reason` |
+| `GET /api/v1/grid` | グリッドの様子: `scheduler`（配置を決めているノード。リーダーに聞いたときだけ）、ノードごとの `up`・`draining`・`roles`・`labels`・`capacity`・`reserved`・`gpus`（セッション数と予約）・`capture`・`usage`（ハートビートの実測の使用量）・`last_heartbeat`・`workloads`、仕事ごとの `state`（`running`・`degraded`・`pending`・`unschedulable`）・`node`・`device`・`level`・`reason` |
 | `GET /api/v1/devices` | このノードのコーデックの提供者（使えるか・理由）、サンドボックスの状態、キャプチャ機器 |
 | `GET /api/v1/capabilities` | このノードの受信・出力・コーデック（`codecs.transcode` は読み込めたもの）・機能の一覧 |
 
@@ -131,7 +136,7 @@ SIGTERM で止めたときは `finalized` だった。
 | 対象 | 重要度 | 内容 |
 |---|---|---|
 | `control/`（単一ノード: `log`・`snapshot.json`） | 必須 | 制御状態のすべて（stream・トークン・録画の記録・予約・入力・出力・秘密値・再生用の鍵） |
-| `control/secret-key` | 必須 | 秘密値を開く鍵。失うと預けた秘密値は戻せない |
+| `control/secret-key` | 必須（単一ノード） | 秘密値を開く鍵。失うと預けた秘密値は戻せない。クラスタでは秘密値をクラスタ共通の鍵（クラスタシークレットで暗号化して制御状態で複製）で暗号化するため、クラスタシークレット（`secret_file`）を別に安全に保管してください（[12. セキュリティ](12-security.md)） |
 | `recordings/` と `segments/` | 録画を守るなら必須 | 索引とセグメントは**組で**取る（索引がセグメントを参照する） |
 | `snapshots/` | 任意 | 定期の静止画 |
 | `node-id` | 推奨 | ノードの ID。替わると別のノードとして登録される |
@@ -175,9 +180,14 @@ curl -s -X POST -H "Authorization: Bearer $TOKEN" http://127.0.0.1:8080/api/v1/n
 - `node:admin` が要る。ノードの `draining` が立ち、イベント `node.updated` が出る。
 - グリッドは、このノードに新しい仕事（pull 入力・push 出力・パイプライン・部屋・メディアパイプライン）を置かず、
   置いてある仕事を移せるものから他のノードへ移す（[9. クラスタとグリッド](09-cluster-grid.md)）。
-- **排出は RTMP・SRT・WHIP の送り手や視聴者の接続を断らない。** `/readyz` も 200 のまま。ロードバランサーや
-  DNS からは別に外す。送り手は切れた後、別のノードへつなぎ直してもらう。
-- 単一ノードでは移す先が無いので、仕事はそのまま残る（確かめた: 排出の後も pull 入力は `running` のまま、`/readyz` は 200）。
+- **drain 中のノードは新しい送り手を拒否します。** RTMP の publish は `NetStream.Publish.Rejected`（説明
+  `this node is draining; publish to another node`）、SRT の publish はハンドシェイクで拒否（理由 1503）、WHIP の
+  `POST /whip/{stream}` は drain 中でない別のノードの同じパス（そのノードの `peers[].api`）へ 307 でリダイレクトします
+  （該当するノードが無ければ 503 と `Retry-After: 10`）。WHIP クライアントはリダイレクトに従います。RTMP・SRT の送り手には、
+  ノードをロードバランサーや DNS から外したうえで別のノードへ接続し直してもらってください。
+- **接続済みの送り手と視聴者は切断しません。** `/readyz` も 200 のままです（ロードバランサーからは別途外してください）。
+- 単一ノードでは移動先が無いため、ワークロードはそのまま残ります（drain の後も pull 入力は `running`、`/readyz` は 200）。
+  新しい送り手は拒否します（WHIP は 503）。
 
 装置（GPU・キャプチャ機器）だけを止めるときは `POST /api/v1/nodes/{node}/devices/{device}/disable`（戻すのは `enable`）。
 

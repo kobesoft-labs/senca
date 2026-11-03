@@ -47,6 +47,7 @@ subtle.workspace = true
 getrandom.workspace = true
 hmac = "0.12"
 aes-gcm = "0.10"
+hkdf = "0.12"
 
 [lints]
 workspace = true

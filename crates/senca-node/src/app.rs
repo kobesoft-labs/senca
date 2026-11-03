@@ -125,11 +125,7 @@ impl App {
     }
 
     pub fn log(&self, msg: &str) {
-        if self.cfg.log_json {
-            println!("{}", json!({ "ts": crate::util::rfc3339(crate::util::now_ms()), "node": self.node_id, "msg": msg }));
-        } else {
-            eprintln!("{} {msg}", crate::util::rfc3339(crate::util::now_ms()));
-        }
+        crate::util::log(msg);
     }
 
     /// 監査ログ（仕様 9.5）。秘密・本文は書かない。
@@ -153,7 +149,56 @@ impl App {
     }
 
     pub fn ready(&self) -> bool {
-        self.ready.load(Ordering::Relaxed) && !self.shutting_down()
+        self.ready.load(Ordering::Relaxed) && !self.shutting_down() && !self.fenced()
+    }
+
+    /// 分散で、過半数（またはリーダー）との連絡が `FENCE_AFTER_MS` を超えて途絶えている。
+    /// このノードはグリッドの仕事を止め、`/readyz` は 503（ADR-0013 の fencing）。単一ノードではいつも false。
+    pub fn fenced(&self) -> bool {
+        self.cluster.get().is_some_and(|c| c.contact_age_ms() > crate::grid::FENCE_AFTER_MS)
+    }
+
+    /// グリッドの仕事 `workload` の token `token` が、今もこのノードの割り当てで、過半数と連絡が取れているか。
+    /// 外への副作用（pull の送り手としてつなぐ・push の接続・パイプラインの公開）の前と、動いている間に確かめる。
+    pub fn work_current(&self, workload: &str, token: u64) -> bool {
+        !self.fenced() && self.control.lock().unwrap().state.grid.is_current(workload, &self.node_id, token)
+    }
+
+    /// このノードが排出中（drain）か。
+    pub fn draining(&self) -> bool {
+        self.control.lock().unwrap().state.nodes.get(&self.node_id).is_some_and(|n| n.draining)
+    }
+
+    /// 排出中でない別のノードの管理 API の URL（WHIP の案内先。分散で、`peers[].api` があるものだけ）。
+    pub fn undrained_peer_api(&self) -> Option<String> {
+        self.cluster.get()?;
+        let core = self.control.lock().unwrap();
+        let st = &core.state;
+        st.nodes
+            .values()
+            .filter(|n| n.id != self.node_id && !n.draining)
+            .filter(|n| st.grid.nodes.get(&n.id).is_none_or(|g| g.status.up))
+            .find_map(|n| n.media_addr.clone())
+    }
+
+    /// 秘密値を封じる（分散ではクラスタ共通のデータ鍵。まだ届いていなければ 503）。
+    pub fn seal_secret(&self, plain: &[u8], aad: &str) -> Result<String, Problem> {
+        let wrapped = self.control.lock().unwrap().state.secret_data_key.clone();
+        self.secret_box.seal(wrapped.as_deref(), plain, aad).map_err(|e| match e {
+            crate::secrets::SealError::NotReady => {
+                Problem::new(ProblemCode::CapacityUnavailable, "秘密値の鍵がまだこのノードに届いていません").with_retryable(true)
+            }
+            crate::secrets::SealError::BadKey => {
+                Problem::new(ProblemCode::CapacityUnavailable, "秘密値の鍵を開けません（クラスタの合言葉がノードで違う）").with_retryable(false)
+            }
+            crate::secrets::SealError::Internal => Problem::internal(),
+        })
+    }
+
+    /// 秘密値を開く。
+    pub fn open_secret(&self, sealed: &str, aad: &str) -> Option<Vec<u8>> {
+        let wrapped = self.control.lock().unwrap().state.secret_data_key.clone();
+        self.secret_box.open_sealed(wrapped.as_deref(), sealed, aad)
     }
 
     pub fn set_ready(&self) {
@@ -207,7 +252,31 @@ impl App {
         h
     }
 
-    fn on_hub_idle(&self, _id: &str) {}
+    /// stream の入力が終わった（再接続の猶予が切れた）・hub が閉じた。分散では、自分が持つ所有権を手放す
+    /// （`ReleaseStream`。token が今のものと同じときだけ外れる）。視聴者は止まった所有者へ案内されず、404 などになる。
+    fn on_hub_idle(&self, id: &str) {
+        if self.cluster.get().is_none() || self.shutting_down() {
+            return;
+        }
+        // 写し（中継で受けている hub）は所有権を持たない
+        if self.relay.get().is_some_and(|r| r.is_mirror(id)) {
+            return;
+        }
+        let token = self.control.lock().unwrap().state.owners.get(id).filter(|o| o.node == self.node_id).map(|o| o.token);
+        let (Some(token), Some(rt)) = (token, self.rt.get()) else { return };
+        let me = self.arc();
+        let sid = id.to_string();
+        rt.spawn_blocking(move || {
+            // 猶予の間に送り手が戻っていれば手放さない
+            if me.hubs.lock().unwrap().get(&sid).is_some_and(|h| h.is_live()) {
+                return;
+            }
+            match me.propose(Command::ReleaseStream { stream: sid.clone(), token }) {
+                Ok(()) => me.log(&format!("cluster: released ownership of stream {sid} (input ended)")),
+                Err(e) => me.log(&format!("cluster: release of stream {sid} failed: {}", e.title)),
+            }
+        });
+    }
 
     pub async fn attach_publisher(&self, key: &str, transport: &'static str, peer: &str) -> Result<Publisher, PublishError> {
         if !key.starts_with(crate::api::streams::KEY_PREFIX) || key.len() > 128 {
@@ -219,6 +288,10 @@ impl App {
             core.state.streams.values().find(|s| s.key_hash == h).cloned()
         };
         let Some(stream) = stream else { return Err(PublishError::BadKey) };
+        // 排出中のノードは新しい送り手を受けない（今つながっている送り手はそのまま）
+        if self.draining() {
+            return Err(PublishError::Draining);
+        }
         if !self.publish_allowed(&stream) {
             return Err(PublishError::Rejected("outside of the live schedule".into()));
         }
@@ -415,16 +488,56 @@ impl App {
         }
     }
 
+    /// 録画を閉じた記録を残す。分散では副作用の前に確かめる（ADR-0013 の fencing）:
+    /// - 録画を持つノード（`node`）だけが閉じる。
+    /// - 録画の間に stream の所有権が別のノードへ移っていれば（配信はそちらで続いた）、`interrupted` で閉じる。
+    /// - 過半数と連絡が取れない間は書けないので、取れるまで待ってやり直す（最長 10 分）。
     fn finish_recording(&self, id: &str, ended: i64, state: RecordingState) {
-        let r = self.control.lock().unwrap().state.recordings.get(id).cloned();
-        if let Some(mut r) = r
-            && r.state == RecordingState::Recording
+        if let Err(e) = self.finish_recording_once(id, ended, state)
+            && e.retryable
+            && self.cluster.get().is_some()
         {
-            r.state = state;
-            r.ended_at_ms = Some(ended);
-            r.generation += 1;
-            let _ = self.propose(Command::PutRecording { recording: r });
+            let me = self.arc();
+            let id = id.to_string();
+            std::thread::spawn(move || {
+                for _ in 0..600 {
+                    std::thread::sleep(Duration::from_secs(1));
+                    if me.shutting_down() {
+                        return;
+                    }
+                    match me.finish_recording_once(&id, ended, state) {
+                        Err(e) if e.retryable => continue,
+                        _ => return,
+                    }
+                }
+                me.log(&format!("recording {id}: could not record the end (no quorum for 10 minutes)"));
+            });
         }
+    }
+
+    fn finish_recording_once(&self, id: &str, ended: i64, state: RecordingState) -> Result<(), Problem> {
+        let (r, moved) = {
+            let core = self.control.lock().unwrap();
+            let r = core.state.recordings.get(id).cloned();
+            let moved = r.as_ref().is_some_and(|r| core.state.owners.get(&r.stream).is_some_and(|o| o.node != self.node_id));
+            (r, moved)
+        };
+        let Some(mut r) = r.filter(|r| r.state == RecordingState::Recording) else { return Ok(()) };
+        if self.cluster.get().is_some() && r.node.as_deref().is_some_and(|n| n != self.node_id) {
+            return Ok(());
+        }
+        if self.fenced() {
+            return Err(Problem::new(ProblemCode::CapacityUnavailable, "過半数と連絡が取れません").with_retryable(true));
+        }
+        r.state = if moved && state == RecordingState::Finalized {
+            self.log(&format!("recording {id}: ownership of the stream moved to another node; closing as interrupted"));
+            RecordingState::Interrupted
+        } else {
+            state
+        };
+        r.ended_at_ms = Some(ended);
+        r.generation += 1;
+        self.propose(Command::PutRecording { recording: r })
     }
 
     fn on_recorder_event(&self, e: RecorderEvent) {

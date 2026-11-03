@@ -140,14 +140,27 @@ curl -s -X POST http://127.0.0.1:8080/api/v1/secrets \
   caption setting still uses cannot be deleted (409).
 - Inputs and outputs reference it with `credential_ref: "secret:{name}"`; captions with `asr_credential_ref` and
   `translate_credential_ref`.
-- Values are sealed with AES-256-GCM using the node key `data_dir/control/secret-key` (32 bytes, mode 0600, created on
-  first start), and only the sealed form is kept in the control state. The tenant and secret ID are bound as
-  associated data, so a sealed value copied to another resource cannot be opened.
-- **In a cluster, every node must have the same `secret-key`.** Each node creates its own key and there is no
-  mechanism to distribute it yet. Sealed values are replicated, so an input or output placed on a node with a
-  different key fails with "秘密値を開けません" ("cannot open secret"). Before the first cluster start, copy
-  `control/secret-key` from one node to the same path on the others (keep mode 0600).
-- If `secret-key` is lost, stored secrets cannot be recovered; store them again.
+- Values are sealed with AES-256-GCM, and only the sealed form is kept in the control state. The tenant and secret
+  ID are bound as associated data, so a sealed value copied to another resource cannot be opened.
+- **Single node**: the key is the node key `data_dir/control/secret-key` (32 bytes, mode 0600, created on first start).
+- **Cluster**: the key is a cluster-wide **data key**. The data key is wrapped with AES-256-GCM under a key derived
+  from the cluster secret (`secret_file`) with HKDF-SHA256, and replicated to every node in the control state
+  (`secret_data_key`). If there is none yet, every node proposes its own `secret-key`, wrapped, and the first one
+  applied is used (it is never replaced). Each node unwraps it from the state, so a secret stored through any node
+  can be opened on every node. No key files need to be copied.
+  - The cluster secret must be the same on every node. A node with a different secret cannot unwrap the key, logs
+    `cannot open the cluster-wide secret key`, and cannot use secrets (storing one returns 503).
+  - Storing a secret on a node that has not received the data key yet returns 503 (`retryable: true`).
+  - A copy of the control state (a backup, the Raft log) alone does not reveal secrets without the cluster secret.
+    Use an unguessable cluster secret such as 32 random bytes (`openssl rand -hex 32`).
+  - **Migration from earlier versions**: earlier cluster versions sealed a secret with the `secret-key` of the node
+    that received it. The new version also tries the local `secret-key` after the data key when opening, and after
+    startup initialization it re-seals every secret that only the local key can open with the data key (log:
+    `re-sealed N secret(s)`). Once the node that sealed an old value has started the new version, every node can
+    open it.
+  - Changing the cluster secret makes the wrapped key unreadable (rotating the cluster secret is not supported yet).
+- If `secret-key` is lost on a single node, stored secrets cannot be recovered; store them again. In a cluster,
+  the cluster secret and the control state are enough to recover them.
 
 ## 12.6 Egress restrictions (SSRF protection)
 
@@ -193,20 +206,33 @@ openssl x509 -req -in n1.csr -CA cluster-ca.pem -CAkey cluster-ca.key -CAcreates
 - Install `cluster-ca.pem` plus the node's own `nN.pem` and `nN.key` on each node and reference them in its
   cluster configuration.
 - A node presenting a certificate from a different CA is rejected.
-- On Raft connections the cluster secret (`secret_file`) is additionally checked inside TLS.
+- On Raft and relay connections, a mutual challenge-response with the cluster secret (`secret_file`) also runs
+  inside TLS (see below).
 
 We verified that a two-node cluster forms over mTLS with exactly these commands (the same shape as
 `CLUSTER_TLS=1` in `tools/interop/cluster.sh`).
 
+### Node authentication with the cluster secret
+
+Every Raft and relay connection starts with a mutual challenge-response, with or without mTLS:
+
+1. The dialing node sends its node ID and a fresh 32-byte nonce.
+2. The accepting node answers with its node ID, its own fresh nonce, and `HMAC-SHA256(K, "server" ‖ purpose ‖ IDs ‖ both nonces)`.
+3. The dialing node checks that the peer is the node it dialed and that the MAC is correct, and only then sends
+   `HMAC-SHA256(K, "client" ‖ ...)`, which the accepting node checks.
+
+`K` is derived from the cluster secret with HKDF-SHA256, separately for Raft and for the relay. Neither the secret
+nor a fixed value crosses the network, every MAC covers nonces chosen by the other side (a recorded handshake
+cannot be replayed), and the client proves itself only after verifying the server. Messages have fixed lengths
+and the whole exchange must finish within 5 seconds.
+
 ### Plaintext (shared secret only)
 
-Without `tls_*`, nodes talk plain TCP and authenticate each other only with the shared secret.
+Without `tls_*`, nodes talk plain TCP and authenticate each other only with the challenge-response above.
 
-- Control-state replication (token and stream-key hashes, **the playback key**, sealed secrets, ...) and relayed
-  media cross the network unencrypted.
-- The secret is sent as a fixed hash every time (`SHA-256(secret)` for Raft,
-  `SHA-256("senca-relay/1:" + secret)` for the relay). Anyone who can observe the traffic can replay that hash and
-  connect as a node.
+- Control-state replication (token and stream-key hashes, **the playback key**, sealed secrets, the wrapped
+  secret key, ...) and relayed media cross the network unencrypted, and nothing protects a connection from being
+  modified after the handshake.
 - Use plaintext mode only for tests on an isolated network.
 
 ## 12.8 Protecting the data directory

@@ -1,5 +1,6 @@
 #!/usr/bin/env bash
 # M9: 3 台の制御面（自前の Raft）。転送・リーダーの停止・追いつき・過半数の喪失（AC-15 の一部）。
+# ノード間の挑戦応答・分断での fencing（SIGSTOP）・所有権の手放し・/readyz・排出・心拍の使用量も確かめる。
 source "$(dirname "$0")/lib.sh"
 [ -n "${NODE_BIN_PREBUILT:-}" ] || (cd "$ROOT" && cargo build -q -p senca-node)
 W=$(mktemp -d); PIDS=()
@@ -40,6 +41,34 @@ ready() { for _ in $(seq 100); do curl -sf http://127.0.0.1:${HTTP[$1]}/readyz >
 for i in 1 2 3; do start $i; done
 for i in 1 2 3; do ready $i || { fail "node $i not ready"; cat "$W/n$i.log"; summary; exit 1; }; done
 pass "3 nodes ready"
+# ---- ノード間の認証（挑戦応答）: 合言葉を知らない相手は、名乗っても入れない（固定の値は送られない） ----
+if [ -z "${CLUSTER_TLS:-}" ]; then
+  probe_auth() { python3 - "$1" "$2" <<'PY'
+import os, socket, struct, sys
+port, purpose = int(sys.argv[1]), int(sys.argv[2])
+s = socket.create_connection(("127.0.0.1", port), timeout=5)
+s.sendall(b"SNCA" + bytes([1, purpose]) + struct.pack(">Q", 2) + os.urandom(32))
+ch = b""
+while len(ch) < 72:
+    d = s.recv(72 - len(ch))
+    if not d:
+        break
+    ch += d
+s.sendall(os.urandom(32))  # 偽の証明
+try:
+    rest = s.recv(16)
+except OSError:
+    rest = b""
+print("challenge" if len(ch) == 72 else "no-challenge", "closed" if rest == b"" else "open")
+PY
+  }
+  r=$(probe_auth ${RAFT[1]} 1); sleep 0.3
+  [ "$r" = "challenge closed" ] && grep -q "cluster: rejected connection from .*合言葉が違います" "$W/n1.log" \
+    && pass "raft: a peer without the cluster secret is refused (challenge-response)" || fail "raft auth probe: $r"
+  r=$(probe_auth ${RELAY[1]} 2); sleep 0.3
+  [ "$r" = "challenge closed" ] && grep -q "relay: connection from .* refused: .*合言葉が違います" "$W/n1.log" \
+    && pass "relay: a peer without the cluster secret is refused" || fail "relay auth probe: $r"
+fi
 TOKEN=$(cat "$W/d1/control/bootstrap-admin-token")
 [ ! -e "$W/d2/control/bootstrap-admin-token" ] && [ ! -e "$W/d3/control/bootstrap-admin-token" ] && pass "only one admin token created" || fail "multiple bootstrap tokens"
 api() { local n=$1 m=$2 p=$3; shift 3; curl -s -X "$m" -H "Authorization: Bearer $TOKEN" -H 'Content-Type: application/json' "http://127.0.0.1:${HTTP[$n]}/api/v1$p" "$@"; }
@@ -64,10 +93,14 @@ ok=0; for _ in $(seq 40); do n=$(api 1 GET /streams | json "['items'].__len__()"
 kill -9 ${PIDS[2]} ${PIDS[3]}; PIDS[2]=; PIDS[3]=; sleep 2
 c=$(code 1 POST /streams -d '{"name":"minority"}' --max-time 10); [ "$c" = 503 ] && pass "minority cannot write (503)" || fail "minority write $c"
 c=$(code 1 GET /streams); [ "$c" = 200 ] && pass "minority can still read local state" || fail "minority read $c"
+ok=0; for _ in $(seq 40); do c=$(curl -s -o /dev/null -w '%{http_code}' http://127.0.0.1:${HTTP[1]}/readyz); [ "$c" = 503 ] && { ok=1; break; }; sleep 0.25; done
+[ $ok = 1 ] && pass "minority node is not ready (/readyz 503)" || fail "minority readyz $c"
 # 戻すと書ける
 start 2; start 3; ready 2; ready 3
 ok=0; for _ in $(seq 40); do c=$(code 3 POST /streams -d '{"name":"healed"}'); [ "$c" = 201 ] && { ok=1; break; }; sleep 0.5; done
 [ $ok = 1 ] && pass "writes resume after heal" || fail "heal write $c"
+ok=0; for _ in $(seq 40); do curl -sf http://127.0.0.1:${HTTP[1]}/readyz >/dev/null && { ok=1; break; }; sleep 0.25; done
+[ $ok = 1 ] && pass "node 1 is ready again after heal" || fail "node 1 readyz after heal"
 sleep 1
 n1=$(api 1 GET /streams | json "['items'].__len__()"); n3=$(api 3 GET /streams | json "['items'].__len__()")
 [ "$n1" = 5 ] && [ "$n3" = 5 ] && pass "all nodes converge (5 streams)" || fail "converge n1=$n1 n3=$n3"
@@ -120,10 +153,29 @@ frames "$URL1" v | tail -n 100 > "$W/m.v"
 wait $PUB3 || true
 # node 1 の写しには前の所有者の分・不連続・新しい所有者の分が順に並ぶ（ライブの再生リストとして正しい）。終わりを比べる
 contiguous "$W/src.v" "$W/m.v" 100 && pass "playback on node 1 relays from the new owner (node 3)" || fail "playback via new owner ($(wc -l < "$W/m.v"))"
+# ---- 入力が終わったら所有権を手放す（ReleaseStream）: 止まった所有者へ案内しない（404） ----
+R=$(api 1 POST /streams -d '{"name":"released"}'); RID=$(echo "$R" | json "['id']"); RKEY=$(echo "$R" | json "['ingest']['stream_key']")
+"$FFMPEG" -v error -re -i "$W/src.flv" -t 3 -c copy -f flv rtmp://127.0.0.1:${RTMPP[2]}/live/$RKEY || true
+ok=0; for _ in $(seq 40); do grep -q "released ownership of stream $RID" "$W/n2.log" && { ok=1; break; }; sleep 0.25; done
+[ $ok = 1 ] && pass "owner node 2 released the stream after its input ended (reconnect grace)" || fail "no release on node 2"
+sleep 0.5
+RURL3=$(api 3 POST /streams/$RID/playback-url | json "['playback']['hls']")
+c=$(curl -s -o /dev/null -w '%{http_code}' "$RURL3")
+[ "$c" = 404 ] && pass "viewer on node 3 gets 404 for an ended stream (no redirect to a stale owner)" || fail "after release: $c"
 # ---- グリッド（ADR-0013）: 手動の割り当て・ノードの停止での移動・戻り・strict の割り当て ----
 g=$(api 1 GET /grid)
 nup=$(echo "$g" | python3 -c "import json,sys; d=json.load(sys.stdin); print(sum(1 for n in d['nodes'] if n['up']))")
 [ "$nup" = 3 ] && pass "grid: 3 nodes registered and up" || fail "grid nodes up: $nup"
+# 心拍の使用量は実測（/proc）。配置係（リーダー）の GET /grid に出る
+ok=0; r=""
+for _ in $(seq 20); do
+  for i in 1 2 3; do
+    r=$(api $i GET /grid | python3 -c "import json,sys; d=json.load(sys.stdin); print('lead' if d['scheduler'] else 'no', all((n.get('usage') or {}).get('memory_mb',0)>0 for n in d['nodes'] if n['up']))")
+    [ "$r" = "lead True" ] && { ok=1; break 2; }
+  done
+  sleep 0.5
+done
+[ $ok = 1 ] && pass "grid: heartbeats carry measured usage (memory from /proc/meminfo)" || fail "grid usage: $r"
 # 元の配信（node 1 で受け続ける）
 G=$(api 1 POST /streams -d '{"name":"grid-src"}'); GSID=$(echo "$G" | json "['id']"); GKEY=$(echo "$G" | json "['ingest']['stream_key']")
 "$FFMPEG" -v error -re -stream_loop -1 -i "$W/src.flv" -c copy -f flv rtmp://127.0.0.1:${RTMPP[1]}/live/$GKEY & GPUB=$!
@@ -173,6 +225,32 @@ start 2; ready 2 || fail "node 2 restart"
 ok=0; for _ in $(seq 60); do [ "$(placed2)" = n2 ] && { ok=1; break; }; sleep 0.5; done
 [ $ok = 1 ] && pass "grid: strict pin runs on n2 again after it recovered" || fail "grid: strict pin after recovery $(placed2)"
 kill $GPUB 2>/dev/null || true
+# ---- 分断（ADR-0013 の fencing）: n1・n2 を止める（SIGSTOP）→ 少数側の n3 は割り当てを確かめられないので、
+#      pull の入力を止め、/readyz は 503。SIGCONT で戻り、入力はどれか 1 台で動き直す ----
+F=$(api 1 POST /streams -d '{"name":"fence-src"}'); FSID=$(echo "$F" | json "['id']"); FKEY=$(echo "$F" | json "['ingest']['stream_key']")
+"$FFMPEG" -v error -re -stream_loop -1 -i "$W/src.flv" -c copy -f flv rtmp://127.0.0.1:${RTMPP[3]}/live/$FKEY & FPUB=$!
+sleep 2
+FURL=$(api 3 POST /streams/$FSID/playback-url -d '{"ttl_secs":3600}' | json "['playback']['rtmp']" | sed "s#rtmp://[^/]*/#rtmp://127.0.0.1:${RTMPP[3]}/#")
+FD=$(api 1 POST /streams -d '{"name":"fence-dst"}'); FDID=$(echo "$FD" | json "['id']")
+FIN=$(api 1 POST /streams/$FDID/inputs -d "{\"protocol\":\"rtmp_pull\",\"url\":\"$FURL\",\"placement\":{\"node\":\"n3\",\"pin_policy\":\"prefer\"}}")
+FIID=$(echo "$FIN" | json "['id']")
+fstate() { api $1 GET /inputs/$FIID | json "['status']['state']" 2>/dev/null || echo none; }
+ok=0; for _ in $(seq 60); do [ "$(fstate 3)" = active ] && { ok=1; break; }; sleep 0.5; done
+[ $ok = 1 ] && pass "fencing: input pinned to n3 is active on n3" || fail "fencing: input not active on n3 ($(fstate 3))"
+kill -STOP ${PIDS[1]} ${PIDS[2]}
+t0=$(date +%s); s=""
+ok=0; for _ in $(seq 60); do s=$(fstate 3); [ "$s" != active ] && grep -q "grid: fenced" "$W/n3.log" && { ok=1; break; }; sleep 0.25; done
+[ $ok = 1 ] && pass "fencing: minority node n3 stopped its pulled input ($(( $(date +%s) - t0 )) s after losing the quorum)" || fail "fencing: n3 still runs the input ($s)"
+c=$(curl -s -o /dev/null -w '%{http_code}' http://127.0.0.1:${HTTP[3]}/readyz); [ "$c" = 503 ] && pass "fencing: /readyz on the minority node is 503" || fail "fencing: readyz $c"
+sleep 3; s=$(fstate 3)
+[ "$s" != active ] && pass "fencing: the input stays stopped while partitioned" || fail "fencing: restarted while partitioned ($s)"
+kill -CONT ${PIDS[1]} ${PIDS[2]}
+ok=0; for _ in $(seq 60); do curl -sf http://127.0.0.1:${HTTP[3]}/readyz >/dev/null && { ok=1; break; }; sleep 0.5; done
+[ $ok = 1 ] && pass "fencing: n3 is ready again after the partition healed" || fail "fencing: n3 not ready after heal"
+act=0; ok=0
+for _ in $(seq 80); do act=0; for i in 1 2 3; do [ "$(fstate $i)" = active ] && act=$((act+1)); done; [ $act = 1 ] && { ok=1; break; }; sleep 0.5; done
+[ $ok = 1 ] && pass "fencing: the input runs again on exactly one node after heal" || fail "fencing: active on $act nodes after heal"
+kill $FPUB 2>/dev/null || true
 # ---- 部屋（ADR-0015）: グリッドで置く・別のノードからの案内・REST の中継・ノードの停止で移る ----
 c=$(code 1 POST /rooms -d '{"id":"r-grid","settings":{"max_participants":4},"placement":{"node":"n2","pin_policy":"prefer"}}')
 [ "$c" = 201 ] && pass "rooms: room created with a prefer pin to n2" || fail "rooms: create $c"
@@ -200,6 +278,25 @@ else
 fi
 grep -q "rooms: room r-grid hosted here" "$W/n$mi.log" && pass "rooms: $moved hosts the room" || fail "rooms: $moved did not host"
 start 2; ready 2 || fail "node 2 restart"
+# ---- 排出（drain）: 新しい送り手は断る（WHIP は排出中でないノードへ 307）。つながっている送り手はそのまま ----
+N2ID=$(api 1 GET /nodes | python3 -c "import json,sys; print([n['id'] for n in json.load(sys.stdin)['items'] if n['name']=='n2'][0])")
+DA=$(api 1 POST /streams -d '{"name":"drain-live"}'); DAID=$(echo "$DA" | json "['id']"); DAKEY=$(echo "$DA" | json "['ingest']['stream_key']")
+DB=$(api 1 POST /streams -d '{"name":"drain-new"}'); DBID=$(echo "$DB" | json "['id']"); DBKEY=$(echo "$DB" | json "['ingest']['stream_key']")
+"$FFMPEG" -v error -re -stream_loop -1 -i "$W/src.flv" -c copy -f flv rtmp://127.0.0.1:${RTMPP[2]}/live/$DAKEY & DPUB=$!
+sleep 2
+c=$(code 1 POST /nodes/$N2ID/drain); [ "$c" = 202 ] && pass "drain: node n2 drained (202)" || fail "drain: $c"
+ok=0; for _ in $(seq 20); do [ "$(api 2 GET /nodes/$N2ID | json "['draining']")" = True ] && { ok=1; break; }; sleep 0.25; done
+rc=0; timeout 15 "$FFMPEG" -v error -re -i "$W/src.flv" -t 2 -c copy -f flv rtmp://127.0.0.1:${RTMPP[2]}/live/$DBKEY 2>/dev/null || rc=$?
+[ "$rc" != 0 ] && grep -q "rtmp publish rejected .*Draining" "$W/n2.log" && pass "drain: a new RTMP publisher on the draining node is refused" || fail "drain: RTMP publish rc=$rc"
+w=$(curl -s -o /dev/null -w '%{http_code} %{redirect_url}' -X POST -H "Authorization: Bearer $DBKEY" -H 'Content-Type: application/sdp' --data-binary 'v=0' "http://127.0.0.1:${HTTP[2]}/whip/$DBID")
+case "$w" in "307 http://127.0.0.1:${HTTP[1]}/whip/$DBID"|"307 http://127.0.0.1:${HTTP[3]}/whip/$DBID") pass "drain: WHIP on the draining node is redirected (307) to another node";; *) fail "drain: WHIP $w";; esac
+t=$(api 2 GET /streams/$DAID | json "['live']['transport']" 2>/dev/null || echo none)
+kill -0 $DPUB 2>/dev/null && [ "$t" = rtmp ] && pass "drain: the existing publisher on n2 keeps streaming" || fail "drain: existing publisher ($t)"
+c=$(code 1 POST /nodes/$N2ID/undrain); [ "$c" = 202 ] || fail "undrain $c"
+ok=0; for _ in $(seq 20); do [ "$(api 2 GET /nodes/$N2ID | json "['draining']")" = False ] && { ok=1; break; }; sleep 0.25; done
+rc=0; timeout 15 "$FFMPEG" -v error -re -i "$W/src.flv" -t 2 -c copy -f flv rtmp://127.0.0.1:${RTMPP[2]}/live/$DBKEY 2>/dev/null || rc=$?
+[ "$rc" = 0 ] && pass "drain: after undrain, n2 accepts new publishers again" || fail "undrain: publish rc=$rc"
+kill $DPUB 2>/dev/null || true
 if [ -n "${CLUSTER_TLS:-}" ]; then
   # 別の認証局の証明書を持つノードは、合言葉を知っていても入れない
   python3 - "$W" <<'PY'

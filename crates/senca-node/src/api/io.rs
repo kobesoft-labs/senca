@@ -358,7 +358,7 @@ pub fn create_secret(ctx: &Ctx) -> ApiResult {
         return Err(bad("value は 1〜8192 バイト"));
     }
     let id = new_id()?;
-    let sealed = ctx.app.secret_box.seal(b.value.as_bytes(), &format!("{}/{id}", ctx.tenant())).map_err(|_| Problem::internal())?;
+    let sealed = ctx.app.seal_secret(b.value.as_bytes(), &format!("{}/{id}", ctx.tenant()))?;
     let s = SecretEntry { id: id.clone(), tenant: ctx.tenant().into(), name: b.name, sealed, created_at_ms: ctx.now_ms };
     ctx.app.propose(Command::PutSecret { secret: s.clone() })?;
     ctx.app.audit(ctx, "secret.create", &id);

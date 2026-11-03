@@ -172,6 +172,8 @@ paths:
       description: |
         `draining: true` にしたノードを返す。本文は読まない。仕様は 202 と operation 資源だが、実装は 202 で Node をそのまま返す。
         グリッドに登録されたノードなら、グリッドの `draining` も変える: 新しい仕事を置かず、置いてある仕事は移せるものから別のノードへ移す（`reason.code: draining`）。
+        排出中のノードは新しい送り手（RTMP・SRT・WHIP の publish）を断る（RTMP は `NetStream.Publish.Rejected`、SRT は拒否の理由 1503、
+        WHIP は排出中でない別のノードの `/whip/...` へ 307、無ければ 503）。つながっている送り手・視聴者はそのまま。
       x-senca-scope: node:admin
       parameters:
         - $ref: '#/components/parameters/IdempotencyKey'
@@ -2159,7 +2161,7 @@ paths:
       tags: [health]
       operationId: readyz
       summary: 要求を受けられるか
-      description: 起動処理の後に 200。停止中（SIGTERM 後）は 503。
+      description: 起動処理の後に 200。停止中（SIGTERM 後）は 503。クラスタでは、過半数（またはリーダー）との連絡が 4 秒を超えて途絶えている間も 503（そのノードはグリッドの仕事を止めている）。
       security: []
       x-senca-scope: null
       responses:
@@ -3071,7 +3073,7 @@ components:
           items:
             type: object
             additionalProperties: false
-            required: [id, name, up, draining, roles, labels, capacity, reserved, gpus, capture, last_heartbeat, workloads]
+            required: [id, name, up, draining, roles, labels, capacity, reserved, gpus, capture, usage, last_heartbeat, workloads]
             properties:
               id: { type: string }
               name: { type: [string, 'null'], description: 'ノードの名前（`GET /nodes` に無ければ null）' }
@@ -3107,6 +3109,7 @@ components:
                     kind: { type: string, description: '機器の種類（機器の一覧の `backend`、例: `synthetic`・`v4l2`）' }
                     healthy: { type: boolean }
                     disabled: { type: boolean, description: '運用者が手で止めた（止めたときだけ現れる）' }
+              usage: { oneOf: [{ $ref: '#/components/schemas/Resources' }, { type: 'null' }], description: '最後の心拍の実測の使用量（CPU は /proc/stat の差、メモリは /proc/meminfo の MemTotal − MemAvailable、帯域はループバックを除く /proc/net/dev の差）。配置係のノードだけが知っている。違えば null。配置は予約（reserved）で数え、この値は使わない' }
               last_heartbeat: { oneOf: [{ $ref: '#/components/schemas/Timestamp' }, { type: 'null' }], description: '最後の心拍（配置係のノードだけが知っている。違えば null）' }
               workloads: { type: integer, minimum: 0, description: 'このノードに割り当てた仕事の数' }
         workloads:

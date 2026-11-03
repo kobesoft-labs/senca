@@ -96,6 +96,7 @@ where
                                     PublishError::BadKey => ("NetStream.Publish.BadName", "bad stream key"),
                                     PublishError::Busy => ("NetStream.Publish.BadName", "stream is already being published"),
                                     PublishError::Stopped => ("NetStream.Publish.BadName", "stream is stopped"),
+                                    PublishError::Draining => ("NetStream.Publish.Rejected", "this node is draining; publish to another node"),
                                     PublishError::Rejected(_) => ("NetStream.Publish.Rejected", "publish rejected"),
                                 };
                                 app.log(&format!("rtmp publish rejected peer={peer}: {e:?}"));

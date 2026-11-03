@@ -63,8 +63,77 @@ pub struct PoolConfig {
     pub restart_backoff_max: Duration,
     pub max_queue_per_tenant: usize,
     pub max_queue_total: usize,
-    /// worker の標準エラーを親に引き継ぐ（`false` なら捨てる）。
+    /// worker の標準エラーを親に引き継ぐ（`false` なら捨てる）。`stderr_log` があればそちらが優先。
     pub inherit_stderr: bool,
+    /// worker の標準エラーの行と、プールの監督の知らせを渡す先（親のログ。JSON のログにまとめるときなど）。
+    pub stderr_log: Option<LogSink>,
+}
+
+/// ログの行を受け取る関数（worker の標準エラーを 1 行ずつ渡す）。
+#[derive(Clone)]
+pub struct LogSink(pub std::sync::Arc<dyn Fn(&str) + Send + Sync>);
+
+impl std::fmt::Debug for LogSink {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str("LogSink")
+    }
+}
+
+impl PartialEq for LogSink {
+    fn eq(&self, o: &Self) -> bool {
+        std::sync::Arc::ptr_eq(&self.0, &o.0)
+    }
+}
+
+impl Eq for LogSink {}
+
+/// 1 行の上限（これを超える分は切る。読みすぎない）。
+const MAX_STDERR_LINE: usize = 4096;
+
+impl LogSink {
+    pub fn new(f: impl Fn(&str) + Send + Sync + 'static) -> Self {
+        LogSink(std::sync::Arc::new(f))
+    }
+
+    pub fn log(&self, line: &str) {
+        (self.0)(line)
+    }
+
+    /// 子プロセスの標準エラーを 1 行ずつ渡す（終わるまで読む task を作る）。行は `MAX_STDERR_LINE` で切る。
+    pub fn relay<R: tokio::io::AsyncRead + Unpin + Send + 'static>(&self, r: R) {
+        let sink = self.clone();
+        tokio::spawn(async move {
+            use tokio::io::AsyncBufReadExt;
+            let mut r = tokio::io::BufReader::with_capacity(8192, r);
+            let mut buf = Vec::new();
+            loop {
+                buf.clear();
+                // 上限 + 1 バイトまで読み、長すぎる行は残りを捨てる
+                let n = match (&mut r).take(MAX_STDERR_LINE as u64 + 1).read_until(b'\n', &mut buf).await {
+                    Ok(0) | Err(_) => return,
+                    Ok(n) => n,
+                };
+                let complete = buf.last() == Some(&b'\n');
+                if !complete && n > MAX_STDERR_LINE {
+                    // 行の残りを読み捨てる
+                    let mut rest = Vec::new();
+                    loop {
+                        rest.clear();
+                        match (&mut r).take(MAX_STDERR_LINE as u64).read_until(b'\n', &mut rest).await {
+                            Ok(0) | Err(_) => break,
+                            Ok(_) if rest.last() == Some(&b'\n') => break,
+                            Ok(_) => {}
+                        }
+                    }
+                }
+                let text = String::from_utf8_lossy(&buf[..buf.len().min(MAX_STDERR_LINE)]);
+                let line = text.trim_end_matches(['\r', '\n']);
+                if !line.is_empty() {
+                    sink.log(line);
+                }
+            }
+        });
+    }
 }
 
 impl PoolConfig {
@@ -92,6 +161,7 @@ impl PoolConfig {
             max_queue_per_tenant: 64,
             max_queue_total: 1024,
             inherit_stderr: true,
+            stderr_log: None,
         }
     }
 }
@@ -475,6 +545,25 @@ impl WorkerPool {
         self.shared.lock().info.clone()
     }
 
+    /// 新しい worker を 1 つ起動して Hello（能力・供給元の状態）を受け、すぐ止める。受けた内容は
+    /// [`WorkerPool::worker_info`]・[`WorkerPool::capabilities`] にも反映する。装置の抜けやドライバーの異常を
+    /// 周期的に見つけるのに使う（動いている worker は起動のときに調べた能力を持ち続けるため）。
+    pub async fn probe(&self) -> Result<WorkerInfo, PoolError> {
+        if self.shared.is_shutdown() {
+            return Err(PoolError::unavailable(FailureCause::ShuttingDown, "worker pool is shutting down"));
+        }
+        // 調べるだけの worker の標準エラー（起動ごとのサンドボックスの知らせ）は捨てる（周期的に呼ばれてもログを埋めない）
+        let mut cfg = self.shared.cfg.clone();
+        cfg.stderr_log = None;
+        cfg.inherit_stderr = false;
+        let (mut w, info) = Worker::start(&cfg)
+            .await
+            .map_err(|e| PoolError::unavailable(FailureCause::NoWorkers, e))?;
+        w.stop().await;
+        self.shared.lock().info = Some(info.clone());
+        Ok(info)
+    }
+
     pub fn stats(&self) -> PoolStats {
         let st = self.shared.lock();
         let mut s = st.stats.clone();
@@ -539,7 +628,11 @@ async fn slot_loop(shared: Arc<Shared>, i: usize) {
             }
             Err(e) => {
                 fails = fails.saturating_add(1);
-                eprintln!("senca codec pool: worker slot {i} failed to start: {e}");
+                let m = format!("senca codec pool: worker slot {i} failed to start: {e}");
+                match &shared.cfg.stderr_log {
+                    Some(l) => l.log(&m),
+                    None => eprintln!("{m}"),
+                }
                 shared.lock().stats.start_failures += 1;
                 shared.set_slot(i, SlotState::Down);
                 let mult = 1u32 << (fails - 1).min(16);
@@ -679,7 +772,9 @@ impl Worker {
         cmd.args(&cfg.args)
             .stdin(Stdio::piped())
             .stdout(Stdio::piped())
-            .stderr(if cfg.inherit_stderr {
+            .stderr(if cfg.stderr_log.is_some() {
+                Stdio::piped()
+            } else if cfg.inherit_stderr {
                 Stdio::inherit()
             } else {
                 Stdio::null()
@@ -692,6 +787,9 @@ impl Worker {
         let mut child = cmd
             .spawn()
             .map_err(|e| format!("spawn {}: {e}", cfg.program.display()))?;
+        if let (Some(l), Some(e)) = (&cfg.stderr_log, child.stderr.take()) {
+            l.relay(e);
+        }
         let stdin = child.stdin.take().ok_or("no stdin pipe")?;
         let stdout =
             BufReader::with_capacity(1 << 16, child.stdout.take().ok_or("no stdout pipe")?);

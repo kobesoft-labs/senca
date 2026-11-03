@@ -49,7 +49,7 @@ impl ControlCore {
         if let Some(store) = self.store.as_mut()
             && let Err(e) = store.append(&cmd, &next)
         {
-            eprintln!("control: failed to persist command: {e}");
+            crate::util::log(&format!("control: failed to persist command: {e}"));
             return Err(Problem::internal().with_retryable(true));
         }
         self.state = next;

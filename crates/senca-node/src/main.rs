@@ -5,6 +5,7 @@ mod app;
 mod capture;
 mod captions;
 mod cluster;
+mod cluster_auth;
 mod codec;
 mod config;
 mod control;
@@ -61,16 +62,19 @@ fn main() {
         println!("{}", config::USAGE);
         return;
     }
+    // 設定の誤りも、--log-json があれば JSON の行で出す
+    util::init_log(args.iter().any(|a| a == "--log-json"));
     let cfg = match Config::from_args(&args) {
         Ok(c) => c,
         Err(e) => {
-            eprintln!("{e}");
+            util::log(&e);
             std::process::exit(2);
         }
     };
+    util::init_log(cfg.log_json);
     let rt = tokio::runtime::Builder::new_multi_thread().enable_all().thread_name("senca").build().expect("tokio runtime");
     if let Err(e) = rt.block_on(run(cfg)) {
-        eprintln!("fatal: {e}");
+        util::log(&format!("fatal: {e}"));
         std::process::exit(1);
     }
 }
@@ -110,6 +114,7 @@ async fn run(cfg: Config) -> Result<(), String> {
             id
         }
     };
+    util::set_log_node(&node_id);
     let _ = &mut state;
     let clustered = cfg.cluster.is_some();
     // 分散では制御状態の永続化は Raft のログ（単一ノードのログは使わない）
@@ -120,18 +125,28 @@ async fn run(cfg: Config) -> Result<(), String> {
     let codec = match codec::CodecService::start(&cfg).await {
         Ok(c) => Some(Arc::new(c)),
         Err(e) => {
-            eprintln!("codec worker unavailable: {e} (静止画・サムネイル・変換は 503 になります)");
+            util::log(&format!("codec worker unavailable: {e} (静止画・サムネイル・変換は 503 になります)"));
             None
         }
     };
-    let secret_box = secrets::SecretBox::open(&cfg.data_dir.join("control").join("secret-key"))?;
-    let app = App::new(cfg.clone(), core, node_id, codec, secret_box);
-    if let Some(cc) = &cfg.cluster {
-        let secret = std::fs::read_to_string(&cc.secret_file).map_err(|e| format!("{}: {e}", cc.secret_file.display()))?;
-        let secret = secret.trim().to_string();
-        if secret.len() < 16 {
-            return Err("cluster: 合言葉は 16 文字以上にしてください".into());
+    let cluster_secret = match &cfg.cluster {
+        Some(cc) => {
+            let secret = std::fs::read_to_string(&cc.secret_file).map_err(|e| format!("{}: {e}", cc.secret_file.display()))?;
+            let secret = secret.trim().to_string();
+            if secret.len() < 16 {
+                return Err("cluster: 合言葉は 16 文字以上にしてください".into());
+            }
+            Some(secret)
         }
+        None => None,
+    };
+    let mut secret_box = secrets::SecretBox::open(&cfg.data_dir.join("control").join("secret-key"))?;
+    if let Some(s) = &cluster_secret {
+        // 分散: 秘密値はクラスタ共通のデータ鍵で封じる（合言葉から導いた鍵で包んで複製する）
+        secret_box = secret_box.with_cluster_secret(s);
+    }
+    let app = App::new(cfg.clone(), core, node_id, codec, secret_box);
+    if let (Some(cc), Some(secret)) = (&cfg.cluster, cluster_secret) {
         let peers = cc.peers.iter().map(|p| (p.id, p.addr)).collect();
         let c = cluster::start(app.clone(), cc.node_id, cc.listen, peers, secret.clone())?;
         let _ = app.cluster.set(c);
@@ -330,7 +345,7 @@ fn bootstrap(cfg: &Config, core: &mut ControlCore, node_id: &str) -> Result<(), 
             },
         })
         .map_err(|e| e.to_string())?;
-        eprintln!("created the first admin token in {} (mode 0600)", path.display());
+        util::log(&format!("created the first admin token in {} (mode 0600)", path.display()));
     }
     Ok(())
 }
@@ -349,6 +364,34 @@ fn healthcheck(url: &str) -> i32 {
     match s.read(&mut b) {
         Ok(n) if b[..n].starts_with(b"HTTP/1.1 200") => 0,
         _ => 1,
+    }
+}
+
+/// 分散: 秘密値のデータ鍵を確かめ、以前の版でこのノードの鍵で封じた秘密値をデータ鍵で封じ直す（ADR-0009）。
+fn migrate_secrets(app: &std::sync::Arc<App>) {
+    let (wrapped, secrets) = {
+        let core = app.control.lock().unwrap();
+        (core.state.secret_data_key.clone(), core.state.secrets.values().cloned().collect::<Vec<_>>())
+    };
+    if let Err(e) = app.secret_box.check(wrapped.as_deref()) {
+        app.log(&format!(
+            "cluster: cannot open the cluster-wide secret key ({e:?}); the cluster secret (secret_file) must be the same on every node. Secrets will not be usable on this node"
+        ));
+        return;
+    }
+    let mut n = 0;
+    for mut s in secrets {
+        let aad = format!("{}/{}", s.tenant, s.id);
+        let Some(re) = app.secret_box.reseal(wrapped.as_deref(), &s.sealed, &aad) else { continue };
+        s.sealed = re;
+        let id = s.id.clone();
+        match app.propose(Command::PutSecret { secret: s }) {
+            Ok(()) => n += 1,
+            Err(e) => app.log(&format!("cluster: re-sealing secret {id} failed: {}", e.title)),
+        }
+    }
+    if n > 0 {
+        app.log(&format!("cluster: re-sealed {n} secret(s) with the cluster-wide key"));
     }
 }
 
@@ -388,6 +431,13 @@ fn cluster_bootstrap(app: &std::sync::Arc<App>, cc: &config::ClusterConfig, node
             let _ = getrandom::fill(&mut k);
             ok &= app.propose(Command::SetPlaybackKey { key_hex: senca_control::secret::hex(&k) }).is_ok();
         }
+        // 秘密値のデータ鍵: まだ無ければ、どのノードも自分の鍵を包んで提案する（最初に適用されたものが使われる）
+        if app.control.lock().unwrap().state.secret_data_key.is_none() {
+            match app.secret_box.wrap_local() {
+                Ok(wrapped) => ok &= app.propose(Command::SetSecretDataKey { wrapped }).is_ok(),
+                Err(_) => ok = false,
+            }
+        }
         if first && !has_tokens {
             match senca_control::secret::generate(senca_control::auth::TOKEN_PREFIX) {
                 Ok(value) => {
@@ -419,6 +469,7 @@ fn cluster_bootstrap(app: &std::sync::Arc<App>, cc: &config::ClusterConfig, node
             }
         }
         if ok {
+            migrate_secrets(app);
             app.set_ready();
             app.io_reconcile();
             return;

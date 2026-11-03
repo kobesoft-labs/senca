@@ -90,7 +90,7 @@ API の応答（`ingest`）と再生 URL に入れる、外から見た URL。�
 | オプション | 値 | 既定 | 意味 |
 |---|---|---|---|
 | `--node-name` | 名前 | `node-1` | ノードの表示名。グリッドのラベル `senca.io/name` になる。装置の API ではノード ID の代わりに使える |
-| `--label` | KEY=VALUE | なし | 配置の条件（`placement.labels`）に使うラベル。何度でも書ける。キーは 1〜128 文字、値は 128 文字まで、`senca.io/` で始まるキーは予約 |
+| `--label` | KEY=VALUE | なし | 配置の条件（`placement.labels`）に使うラベル。何度でも書ける。キーは 1〜128 文字、値は 128 文字まで、制御文字は不可、`senca.io/` で始まるキーと `raft_id` は予約、64 個まで |
 | `--net-mbps` | Mbit/s | `10000` | このノードの帯域（上り・下りそれぞれ）。グリッドの配置で数える |
 | `--capacity-cpu-millis` | ミリコア | CPU の数 × 1000 × 90% | 仕事に貸す CPU |
 | `--capacity-memory-mb` | MB | `MemTotal` の 85% | 仕事に貸すメモリ |
@@ -152,7 +152,7 @@ API の応答（`ingest`）と再生 URL に入れる、外から見た URL。�
 - JSON では `rtmp_listen` を省略すると既定（`0.0.0.0:1935`）になる。無効にするなら `null` を書く。
 - `public` の中で省略したキーは既定値（`rtmp`・`http` は [3.2](#公開-url) の既定、`srt`・`rtsp` は無し）。
   `"http": null` と明示すると、再生 URL の `hls` が `/s/...` から始まる相対の形になり、`ingest.whip_url` は出ない。
-- `labels` の形の検査（長さ・`senca.io/` の予約）はコマンドラインの `--label` でだけ行われる。
+- `labels` も `--label` と同じ規則で検査します（合わない場合は起動せず、終了コード 2 で終わります）。
 
 例:
 
@@ -205,7 +205,9 @@ API の応答（`ingest`）と再生 URL に入れる、外から見た URL。�
 | `relay` | いいえ | ADDR | そのノードの中継の宛先。既定は `addr` のポート + 1 |
 
 中継のポートの既定は「Raft のポート + 1」なので、その番号を空けておく。1 台の機械で複数のノードを動かすとき（試験）は、
-`relay_listen` と `peers[].relay` を明示する。
+`relay_listen` と `peers[].relay` を明示してください。いずれかのノードの中継アドレスが、別のノードの Raft または中継のアドレスと
+重なる設定（例: 同じホストで Raft を 7000・7001 にし、中継を既定のままにする）は、起動時の検査でエラーになります
+（終了コード 2。重なったアドレスをメッセージに示します）。
 
 ```json
 {
@@ -254,7 +256,7 @@ API の応答（`ingest`）と再生 URL に入れる、外から見た URL。�
 | `control/log` | 単一ノードの制御状態の追記ログ（`長さ:u32be | crc32:u32be | JSON`、1 件ごとに fsync） |
 | `control/snapshot.json` | 単一ノードの制御状態の写し。ログが 1000 件を超えると作り直し、ログを空にする |
 | `control/raft/` | クラスタの Raft の保存（`hardstate`・`snap-*.snap`・`log/*.seg`）。クラスタでは `control/log` は使わない |
-| `control/secret-key` | 秘密値を封じる鍵（32 バイト、0600）。無ければ初回に作る |
+| `control/secret-key` | 秘密値を封じる鍵（32 バイト、0600）。無ければ初回に作る。クラスタでは、いずれか 1 台の鍵がクラスタ共通の鍵になり、クラスタシークレットで暗号化して全ノードへ複製されます |
 | `control/bootstrap-admin-token` | 最初の管理者トークンの値（0600）。最初の起動でだけ作る |
 | `recordings/{録画 ID}/index.jsonl` | 録画の索引（追記のみの JSON Lines: `begin`・`init`・`segment`・`gap`・`end`） |
 | `recordings/{録画 ID}/thumbnail.jpg`・`thumbnail.json` | 録画のサムネイルとその情報 |
