@@ -1,0 +1,9 @@
+SENCA
+Copyright 2026 The SENCA Authors
+
+This product includes software developed by the SENCA Authors
+and is licensed under the Apache License, Version 2.0 (see LICENSE).
+
+Third-party components and their licenses are listed in docs/licenses/.
+H.264/H.265 codecs are not included; GPU vendor SDKs are loaded at run time
+from the host system and are subject to their own licenses.
