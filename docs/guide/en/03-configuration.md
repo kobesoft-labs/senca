@@ -97,7 +97,7 @@ See [12. Security](12-security.md).
 | Option | Value | Default | Meaning |
 |---|---|---|---|
 | `--node-name` | name | `node-1` | Display name of the node. Becomes the grid label `senca.io/name`; device endpoints accept it in place of the node ID |
-| `--label` | KEY=VALUE | none | Label used by placement constraints (`placement.labels`). Repeatable. Key 1–128 characters, value up to 128; keys starting with `senca.io/` are reserved |
+| `--label` | KEY=VALUE | none | Label used by placement constraints (`placement.labels`). Repeatable. Key 1–128 characters, value up to 128, no control characters; keys starting with `senca.io/` and `raft_id` are reserved; at most 64 labels |
 | `--net-mbps` | Mbit/s | `10000` | Bandwidth of this node, applied to both directions. Counted by grid placement |
 | `--capacity-cpu-millis` | millicores | CPUs × 1000 × 90% | CPU offered to workloads |
 | `--capacity-memory-mb` | MB | 85% of `MemTotal` | Memory offered to workloads |
@@ -160,7 +160,7 @@ Notes:
 - Keys omitted inside `public` take their defaults (`rtmp` and `http` as in [Public URLs](#public-urls); `srt` and
   `rtsp` unset). An explicit `"http": null` makes the `hls` playback URL relative (starting with `/s/...`) and drops
   `ingest.whip_url`.
-- The label checks (length, reserved `senca.io/` prefix) are applied only to `--label` on the command line.
+- `labels` are checked with the same rules as `--label` (the node does not start otherwise; exit code 2).
 
 Example:
 
@@ -213,7 +213,9 @@ plaintext ([12. Security](12-security.md#127-cluster-mtls)).
 | `relay` | no | ADDR | The peer's relay address. Defaults to the `addr` port + 1 |
 
 Because the relay ports default to "Raft port + 1", make sure that port is free. When several nodes share one host
-(tests), set `relay_listen` and `peers[].relay` explicitly.
+(tests), set `relay_listen` and `peers[].relay` explicitly. A configuration where some node's relay address
+collides with another node's Raft or relay address (for example Raft on 7000 and 7001 on one host with default
+relay ports) is refused at startup (exit code 2, naming the colliding addresses).
 
 ```json
 {
@@ -262,7 +264,7 @@ Contents of `--data-dir`. The node creates what it needs.
 | `control/log` | Single-node control-state log (`len:u32be | crc32:u32be | JSON` records, each fsynced) |
 | `control/snapshot.json` | Single-node control-state snapshot. Rewritten when the log exceeds 1000 records, after which the log is emptied |
 | `control/raft/` | Raft storage in a cluster (`hardstate`, `snap-*.snap`, `log/*.seg`). `control/log` is not used in a cluster |
-| `control/secret-key` | Key that seals stored secrets (32 bytes, mode 0600). Created on first start if missing |
+| `control/secret-key` | Key that seals stored secrets (32 bytes, mode 0600). Created on first start if missing. In a cluster, one node's key becomes the cluster-wide key, wrapped with the cluster secret and replicated |
 | `control/bootstrap-admin-token` | Value of the first admin token (mode 0600). Written only on the very first start |
 | `recordings/{recording ID}/index.jsonl` | Recording index (append-only JSON Lines: `begin`, `init`, `segment`, `gap`, `end`) |
 | `recordings/{recording ID}/thumbnail.jpg`, `thumbnail.json` | Recording thumbnail and its metadata |

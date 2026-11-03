@@ -52,6 +52,8 @@ fn tenant_passphrase(app: &App, tenant: &str) -> Option<Passphrase> {
 fn decide(app: &App, req: &senca_srt::AcceptRequest) -> AcceptDecision {
     let Some(raw) = req.stream_id else { return AcceptDecision::Reject(RejectReason::X_FORBIDDEN) };
     let tenant = match parse_mode(raw) {
+        // 排出中のノードは新しい送り手を受けない（再生は受ける）
+        Some(Mode::Publish(_)) if app.draining() => return AcceptDecision::Reject(RejectReason::X_UNAVAILABLE),
         Some(Mode::Publish(key)) => {
             let h = senca_control::secret::hash(&key);
             let core = app.control.lock().unwrap();

@@ -62,6 +62,10 @@ pub struct ControlState {
     /// 部屋のメディアパイプライン（ADR-0016）。
     #[serde(default)]
     pub media_pipelines: BTreeMap<String, MediaPipeline>,
+    /// 分散: 秘密値を封じるクラスタ共通の鍵（データ鍵）を、クラスタの合言葉から導いた鍵で包んだもの
+    /// （base64。中身はノードだけが開ける）。最初に適用されたものが使われ、後から置き換えない（ADR-0009）。
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub secret_data_key: Option<String>,
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
@@ -83,6 +87,8 @@ pub enum Command {
     PutIdempotency { record: IdempotencyRecord },
     ExpireIdempotency { before_ms: i64 },
     SetPlaybackKey { key_hex: String },
+    /// 分散: 秘密値のデータ鍵（包んだもの）を置く。すでにあれば何もしない（最初のものが勝つ。何度送っても同じ）。
+    SetSecretDataKey { wrapped: String },
     PutNode { node: NodeInfo },
     PutInput { input: Input },
     DeleteInput { tenant: String, id: String },
@@ -315,6 +321,14 @@ impl ControlState {
                 }
                 self.playback_key = Some(key_hex);
             }
+            Command::SetSecretDataKey { wrapped } => {
+                if wrapped.is_empty() || wrapped.len() > 256 || !wrapped.bytes().all(|c| c.is_ascii_alphanumeric() || matches!(c, b'+' | b'/' | b'=')) {
+                    return Err(Problem::invalid("鍵の形が違います"));
+                }
+                if self.secret_data_key.is_none() {
+                    self.secret_data_key = Some(wrapped);
+                }
+            }
             Command::PutNode { node } => {
                 self.nodes.insert(node.id.clone(), node);
             }
@@ -494,6 +508,12 @@ impl ControlState {
                 {
                     return Err(Problem::invalid("資源から導く仕事は直接変えられません"));
                 }
+                // 停止と見なしたノードの stream の所有者の記録を外す（視聴者を止まったノードへ案内しない。
+                // ノードが戻って送り手を受けていれば、そのノードが所有権を取り直す）
+                let down = match &cmd {
+                    senca_grid::GridCommand::NodeDown { node, .. } => Some(node.clone()),
+                    _ => None,
+                };
                 self.grid.apply(cmd).map_err(|e| match e {
                     senca_grid::GridError::StalePlan { .. } | senca_grid::GridError::InvalidDecision { .. } => {
                         Problem::new(ProblemCode::Conflict, e.to_string())
@@ -503,6 +523,9 @@ impl ControlState {
                     | senca_grid::GridError::UnknownWorkload { .. } => Problem::not_found(),
                     senca_grid::GridError::Invalid { .. } => Problem::invalid(e.to_string()),
                 })?;
+                if let Some(node) = down {
+                    self.owners.retain(|_, o| o.node != node);
+                }
             }
         }
         Ok(())
@@ -578,6 +601,45 @@ mod tests {
         assert_eq!(st.applied_index, 3);
         st.apply(Command::DeleteStream { tenant: "t1".into(), id: "a".into(), expect_generation: Some(2) }).unwrap();
         assert!(!st.streams.contains_key("a"));
+    }
+
+    #[test]
+    fn secret_data_key_first_wins() {
+        let mut st = ControlState::default();
+        assert_eq!(st.apply(Command::SetSecretDataKey { wrapped: "bad key!".into() }).unwrap_err().status, 400);
+        st.apply(Command::SetSecretDataKey { wrapped: "QUFB".into() }).unwrap();
+        st.apply(Command::SetSecretDataKey { wrapped: "QkJC".into() }).unwrap();
+        assert_eq!(st.secret_data_key.as_deref(), Some("QUFB"));
+    }
+
+    #[test]
+    fn node_down_clears_its_stream_ownership() {
+        let mut st = ControlState::default();
+        st.apply(Command::CreateStream { stream: stream("a", "t1", "a") }).unwrap();
+        st.apply(Command::CreateStream { stream: stream("b", "t1", "b") }).unwrap();
+        for n in ["n1", "n2"] {
+            let spec = senca_grid::NodeSpec {
+                id: n.into(),
+                roles: Default::default(),
+                capacity: Default::default(),
+                gpus: vec![],
+                capture: vec![],
+                labels: Default::default(),
+                draining: false,
+            };
+            st.apply(Command::Grid { cmd: senca_grid::GridCommand::RegisterNode { spec, now_ms: 0 } }).unwrap();
+        }
+        st.apply(Command::ClaimStream { stream: "a".into(), node: "n1".into(), now_ms: 1 }).unwrap();
+        st.apply(Command::ClaimStream { stream: "b".into(), node: "n2".into(), now_ms: 1 }).unwrap();
+        st.apply(Command::Grid { cmd: senca_grid::GridCommand::NodeDown { node: "n1".into(), now_ms: 9, last_heartbeat_ms: 1 } }).unwrap();
+        assert!(!st.owners.contains_key("a"));
+        assert_eq!(st.owners["b"].node, "n2");
+        // 古い token の手放しは何もしない。今の token なら外れる
+        let t = st.owners["b"].token;
+        st.apply(Command::ReleaseStream { stream: "b".into(), token: t - 1 }).unwrap();
+        assert!(st.owners.contains_key("b"));
+        st.apply(Command::ReleaseStream { stream: "b".into(), token: t }).unwrap();
+        assert!(!st.owners.contains_key("b"));
     }
 
     #[test]

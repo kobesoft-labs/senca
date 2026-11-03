@@ -1,6 +1,6 @@
 # Changelog / 変更履歴
 
-## Unreleased
+## Unreleased / 未公開
 
 ### Added / 追加
 
@@ -32,6 +32,55 @@
   catalog の rendition に `description`
 - `tools/interop/node_quic.sh`: aioquic (HTTP/3), moq-dev `moq export fmp4`/`fetch`, Chrome (HTTP/3 and WebTransport)
   ／ `tools/interop/node_quic.sh`: aioquic（HTTP/3）、moq-dev の `moq export fmp4`・`fetch`、Chrome（HTTP/3・WebTransport）
+
+### Security / セキュリティ
+
+- Node-to-node authentication (Raft and relay) is now a mutual challenge-response with fresh nonces and HMAC keys
+  derived from the cluster secret (HKDF-SHA256); the old fixed secret hash, which could be replayed, is gone. It also
+  runs inside mTLS. Nodes of earlier versions cannot join; upgrade the whole cluster together
+  ／ ノード間（Raft・中継）の認証を、新しい乱数とクラスタシークレットから導出した鍵（HKDF-SHA256）の HMAC による相互の
+  チャレンジレスポンス認証にしました。再送で通ってしまう固定のハッシュは送りません。mTLS の中でも行います。以前のバージョンの
+  ノードとは接続できないため、クラスタはまとめて更新してください
+- Secrets are sealed with a cluster-wide data key, wrapped with a key derived from the cluster secret and replicated
+  in the control state, so a secret stored on one node opens on every node. Secrets sealed by earlier versions with a
+  node's own `secret-key` are re-sealed automatically. Single-node behavior is unchanged
+  ／ 秘密値をクラスタ共通のデータ鍵で暗号化するようにしました（データ鍵はクラスタシークレットから導出した鍵で暗号化して制御状態で
+  複製）。どのノードで登録した秘密値もすべてのノードで使えます。以前のバージョンでノードの `secret-key` で暗号化した値は自動で
+  暗号化し直します。単一ノードの動作は変わりません
+
+### Cluster and grid / クラスタとグリッド
+
+- Fencing: grid work (pull inputs, push outputs, pipelines) checks that it still holds the current assignment before
+  external side effects and every 0.5 s while running. A node that has lost contact with a quorum for more than 4 s
+  stops its grid work and reports 503 on `/readyz` until contact returns. Recording finalization waits for a quorum
+  and closes as `interrupted` if the stream's ownership moved
+  ／ フェンシング: ワークロード（pull の入力・push の出力・パイプライン）は、外部への副作用の前と実行中 0.5 秒ごとに、現在も
+  自ノードへの割り当てかを確認します。過半数との通信が 4 秒を超えて途絶えたノードはワークロードを停止し、回復するまで
+  `/readyz` は 503 を返します。録画の確定は過半数との通信を待ち、所有権が移っていれば `interrupted` で閉じます
+- Stream ownership is released (`ReleaseStream`) when the input ends after the reconnect grace, and cleared for nodes
+  marked down; viewers on other nodes get 404 instead of a redirect to a stale owner
+  ／ 入力が終わる（再接続の猶予の後）と所有権を解放し、停止と判定したノードの所有権も解放します。他のノードの視聴者は停止した
+  所有者へリダイレクトされず 404 になります
+- Draining nodes refuse new RTMP, SRT and WHIP publishers (WHIP is redirected with 307 to a node that is not draining);
+  connected sessions are kept
+  ／ drain 中のノードは新しい RTMP・SRT・WHIP の送り手を拒否します（WHIP は drain 中でないノードへ 307）。接続済みの送り手は継続します
+- Heartbeats report measured CPU, memory and network usage from `/proc`, shown as `usage` in `GET /api/v1/grid`.
+  Devices are re-probed every 10 s (fresh codec worker Hello, capture device list) and devices that disappear raise
+  `device.down` automatically (`device.up` when back); the manual disable flag stays separate
+  ／ ハートビートに `/proc` から測定した CPU・メモリ・帯域の使用量を含めます（`GET /api/v1/grid` の `usage`）。デバイスは 10 秒ごとに
+  再検出し（新しい codec worker の Hello、キャプチャデバイスの一覧）、検出されなくなると自動で `device.down`、戻ると `device.up` に
+  なります。手動の無効化とは別です
+- The node refuses to start when a relay address (default Raft port + 1) collides with another node's Raft or relay
+  address, or when peer IDs are duplicated
+  ／ 中継アドレス（既定は Raft のポート + 1）が他のノードの Raft・中継のアドレスと重なる設定や、peers の番号の重複は起動時にエラーにします
+
+### Configuration and logs / 設定とログ
+
+- `labels` in the JSON config file are validated like `--label` (also: no control characters, `raft_id` reserved,
+  at most 64) ／ 設定ファイルの `labels` も `--label` と同じ規則で検査します（制御文字は不可、`raft_id` も予約、64 個まで）
+- `--log-json` now also covers the first-admin-token notice, codec/capture worker stderr lines, configuration errors
+  and fatal errors ／ `--log-json` で、最初の管理者トークンの通知・codec/capture worker の標準エラー出力・設定の誤り・
+  起動の失敗も JSON で出力します
 
 ## v0.0.0 — 2026-11-03
 

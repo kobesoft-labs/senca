@@ -146,6 +146,23 @@ impl Default for Config {
     }
 }
 
+/// ノードのラベルの数の上限。
+pub const MAX_LABELS: usize = 64;
+
+/// ラベルの形: キーは 1〜128 文字、値は 0〜128 文字、どちらも制御文字を含まない。`senca.io/` で始まるキーは予約。
+pub fn check_label(k: &str, v: &str) -> Result<(), &'static str> {
+    if k.is_empty() || k.len() > 128 || v.len() > 128 {
+        return Err("の長さが違います（キーは 1〜128 文字、値は 128 文字まで）");
+    }
+    if k.chars().chain(v.chars()).any(char::is_control) {
+        return Err("に制御文字は使えません");
+    }
+    if k.starts_with("senca.io/") || k == "raft_id" {
+        return Err("のキーは予約です（senca.io/ で始まるもの・raft_id）");
+    }
+    Ok(())
+}
+
 pub const USAGE: &str = "senca-node [--config FILE] [--data-dir DIR] [--http ADDR] [--rtmp ADDR|off] [--rtmps ADDR] [--https ADDR]
   [--srt ADDR] [--rtsp ADDR] [--webrtc-udp ADDR] [--quic ADDR] [--tls-cert FILE --tls-key FILE]
   [--public-rtmp-url URL] [--public-http-url URL] [--public-srt-url URL] [--public-rtsp-url URL] [--capture-synthetic]
@@ -226,9 +243,7 @@ impl Config {
                 _ if flag("--label") => {
                     let v = val()?;
                     let (k, x) = v.split_once('=').ok_or_else(|| format!("--label は key=value: {v}"))?;
-                    if k.is_empty() || k.len() > 128 || x.len() > 128 || k.starts_with("senca.io/") {
-                        return Err(format!("--label の形が違います（senca.io/ で始まるキーは予約）: {v}"));
-                    }
+                    check_label(k, x).map_err(|e| format!("--label {e}: {v}"))?;
                     cfg.labels.insert(k.to_string(), x.to_string());
                 }
                 _ if flag("--cluster-config") => {
@@ -245,6 +260,13 @@ impl Config {
     }
 
     fn validate(&self) -> Result<(), String> {
+        // 設定ファイルの labels も --label と同じ規則で確かめる
+        for (k, v) in &self.labels {
+            check_label(k, v).map_err(|e| format!("labels {e}: {k}={v}"))?;
+        }
+        if self.labels.len() > MAX_LABELS {
+            return Err(format!("labels は {MAX_LABELS} 個まで"));
+        }
         if self.jwks.is_some() && (self.jwt_issuer.is_none() || self.jwt_audience.is_none()) {
             return Err("--jwks needs --jwt-issuer and --jwt-audience".into());
         }
@@ -264,6 +286,11 @@ impl Config {
             if !(1..=7).contains(&c.peers.len()) {
                 return Err("cluster: 投票するノードは 1〜7 台".into());
             }
+            let mut ids = std::collections::HashSet::new();
+            if !c.peers.iter().all(|p| p.id != 0 && ids.insert(p.id)) {
+                return Err("cluster: peers の id は 1 以上で重ならないように".into());
+            }
+            crate::relay::check_addrs(c)?;
         }
         for c in &self.egress_allow {
             crate::egress::Cidr::parse(c).ok_or_else(|| format!("--egress-allow: bad CIDR {c}"))?;
@@ -272,5 +299,35 @@ impl Config {
             return Err("--max-playback-ttl must be > 0".into());
         }
         Ok(())
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn args(a: &[&str]) -> Vec<String> {
+        a.iter().map(|s| s.to_string()).collect()
+    }
+
+    #[test]
+    fn labels_from_the_file_are_validated_like_the_flag() {
+        let d = std::env::temp_dir().join(format!("senca-cfg-{}", std::process::id()));
+        std::fs::create_dir_all(&d).unwrap();
+        let f = d.join("c.json");
+        let file = f.to_str().unwrap();
+        std::fs::write(&f, r#"{"labels": {"senca.io/name": "x"}}"#).unwrap();
+        let e = Config::from_args(&args(&["--config", file])).unwrap_err();
+        assert!(e.contains("予約"), "{e}");
+        std::fs::write(&f, format!(r#"{{"labels": {{"{}": "x"}}}}"#, "k".repeat(129))).unwrap();
+        assert!(Config::from_args(&args(&["--config", file])).is_err());
+        std::fs::write(&f, "{\"labels\": {\"zone\": \"a\\u0007b\"}}").unwrap();
+        assert!(Config::from_args(&args(&["--config", file])).is_err());
+        std::fs::write(&f, r#"{"labels": {"zone": "a"}}"#).unwrap();
+        let c = Config::from_args(&args(&["--config", file])).unwrap();
+        assert_eq!(c.labels.get("zone").map(String::as_str), Some("a"));
+        assert!(Config::from_args(&args(&["--label", "senca.io/webrtc=true"])).is_err());
+        assert!(Config::from_args(&args(&["--label", "zone=b"])).is_ok());
+        std::fs::remove_dir_all(&d).unwrap();
     }
 }

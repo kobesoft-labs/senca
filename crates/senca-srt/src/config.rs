@@ -144,6 +144,8 @@ impl RejectReason {
     pub const X_CONFLICT: Self = Self(1409);
     pub const X_ISE: Self = Self(1500);
     pub const X_UNIMPLEMENTED: Self = Self(1501);
+    /// 一時的に受けられない（`SRT_REJX_UNAVAILABLE`。保守・排出中など）。
+    pub const X_UNAVAILABLE: Self = Self(1503);
 
     /// ハンドシェイクの要求種別の値（1000 + 理由）。
     pub fn to_req_type(self) -> u32 {
@@ -180,6 +182,7 @@ impl std::fmt::Display for RejectReason {
             1403 => "forbidden",
             1404 => "not found",
             1409 => "conflict",
+            1503 => "unavailable",
             _ => "",
         };
         write!(f, "{} {}", self.0, name)

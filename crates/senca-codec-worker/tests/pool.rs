@@ -371,3 +371,25 @@ fn sandbox_self_test_cli() {
     assert!(out.status.success(), "{s}");
     assert!(s.contains("socket_denied=1"), "{s}");
 }
+
+/// 新しい worker で調べ直す（装置の健康の周期的な確認）。worker の標準エラーは渡す先へ 1 行ずつ届く。
+#[tokio::test]
+async fn probe_and_stderr_relay() {
+    let lines = Arc::new(std::sync::Mutex::new(Vec::<String>::new()));
+    let mut c = config(1, &[]);
+    let l2 = lines.clone();
+    c.stderr_log = Some(senca_codec_worker::pool::LogSink::new(move |l| l2.lock().unwrap().push(l.to_string())));
+    let pool = WorkerPool::start(c).await.unwrap();
+    let info = pool.probe().await.expect("probe starts a fresh worker");
+    assert_eq!(Some(&info), pool.worker_info().as_ref());
+    // プールの worker のサンドボックスの知らせは渡す先へ（調べるだけの worker の分は捨てる）
+    let deadline = tokio::time::Instant::now() + Duration::from_secs(5);
+    while lines.lock().unwrap().is_empty() && tokio::time::Instant::now() < deadline {
+        tokio::time::sleep(Duration::from_millis(20)).await;
+    }
+    tokio::time::sleep(Duration::from_millis(200)).await;
+    let got = lines.lock().unwrap().clone();
+    assert!(got.iter().any(|l| l.contains("senca-codec-worker[") && l.contains("sandbox:")), "{got:?}");
+    assert_eq!(got.iter().filter(|l| l.contains("sandbox:")).count(), 1, "{got:?}");
+    pool.shutdown().await;
+}

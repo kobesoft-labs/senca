@@ -1,6 +1,7 @@
 //! ノード間の中継の統合（ADR-0014、senca-relay）。
 //!
-//! - ノードの組ごとに 1 本の接続（mTLS。証明書が無いときはクラスタの合言葉で確かめる平文の TCP）。
+//! - ノードの組ごとに 1 本の接続（mTLS。証明書が無いときは平文の TCP）。どちらでも、中継の握手の前にクラスタの
+//!   合言葉による相互の挑戦応答（`cluster_auth`、用途 relay）で互いの番号を確かめる。
 //! - 所有者のノード: 相手からの購読を受け、手元の hub の購読をそのまま中継のチャネルへ流す。
 //! - 所有者でないノード: 視聴（HLS・RTMP/SRT/RTSP play・WHEP）や処理の入力が来たら、その stream の
 //!   「写し（mirror）」を作る。写しは中継の購読を送り手として手元の hub へつなぐので、パッケージャー・
@@ -19,7 +20,7 @@ use std::net::SocketAddr;
 use std::sync::atomic::{AtomicI64, AtomicU64, Ordering};
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
-use tokio::io::{AsyncReadExt, AsyncWriteExt};
+use crate::cluster_auth::{AuthKey, Purpose};
 use tokio::net::{TcpListener, TcpSocket, TcpStream};
 use tokio::sync::watch;
 
@@ -62,18 +63,44 @@ fn peer_addr(p: &crate::config::ClusterPeer) -> SocketAddr {
     p.relay.unwrap_or_else(|| SocketAddr::new(p.addr.ip(), p.addr.port().wrapping_add(1)))
 }
 
-fn auth_line(secret: &str) -> [u8; 64] {
-    let h = senca_control::secret::hash(&format!("senca-relay/1:{secret}"));
-    let mut out = [0u8; 64];
-    out.copy_from_slice(&h.as_bytes()[..64]);
-    out
+/// 中継の宛先が Raft の宛先や他のノードの中継とぶつからないか（既定の「Raft + 1」は、同じホストで Raft の番号を
+/// 続けて取ると隣のノードの Raft と重なる）。ぶつかれば起動しない（明示の `relay_listen`・`peers[].relay` を求める）。
+pub fn check_addrs(cc: &ClusterConfig) -> Result<(), String> {
+    use std::collections::HashMap;
+    let mut seen: HashMap<SocketAddr, String> = HashMap::new();
+    let mut put = |a: SocketAddr, what: String| -> Result<(), String> {
+        // 0.0.0.0 などの待ち受けは、同じ番号の宛先とぶつかるものとして比べる
+        let key = if a.ip().is_unspecified() { SocketAddr::new(std::net::Ipv4Addr::UNSPECIFIED.into(), a.port()) } else { a };
+        if let Some(prev) = seen.insert(key, what.clone()) {
+            return Err(format!(
+                "cluster: {what} と {prev} が同じ宛先 {a} です。中継の既定は Raft の番号 + 1 なので、同じホストで Raft の番号を続けて使うときは relay_listen と peers[].relay を明示してください"
+            ));
+        }
+        Ok(())
+    };
+    for p in &cc.peers {
+        put(p.addr, format!("node {} の Raft（peers[].addr）", p.id))?;
+    }
+    for p in &cc.peers {
+        let explicit = if p.relay.is_some() { "peers[].relay" } else { "peers[].relay の既定 = addr + 1" };
+        put(peer_addr(p), format!("node {} の中継（{explicit}）", p.id))?;
+    }
+    // 自分の待ち受け: Raft の待ち受けと中継の待ち受けが同じ番号でない
+    let l = listen_addr(cc);
+    if l.port() == cc.listen.port() && (l.ip() == cc.listen.ip() || l.ip().is_unspecified() || cc.listen.ip().is_unspecified()) {
+        return Err(format!("cluster: relay_listen {l} が listen {} と同じです", cc.listen));
+    }
+    if cc.relay_listen.is_none() && cc.listen.port() == u16::MAX {
+        return Err("cluster: listen の番号が 65535 なので中継の既定（+1）が作れません。relay_listen を書いてください".into());
+    }
+    Ok(())
 }
 
 fn tune(tcp: &TcpStream) {
     let _ = tcp.set_nodelay(true);
 }
 
-async fn dial(addr: SocketAddr, tls: Option<ClusterTls>, secret: Arc<String>) -> Result<Box<dyn RelayStream>, String> {
+async fn dial(addr: SocketAddr, tls: Option<ClusterTls>, key: Arc<AuthKey>, me: u64, peer: u64) -> Result<Box<dyn RelayStream>, String> {
     let sock = if addr.is_ipv4() { TcpSocket::new_v4() } else { TcpSocket::new_v6() }.map_err(|e| e.to_string())?;
     let _ = sock.set_send_buffer_size(SEND_BUFFER);
     let tcp = tokio::time::timeout(Duration::from_secs(5), sock.connect(addr))
@@ -81,14 +108,12 @@ async fn dial(addr: SocketAddr, tls: Option<ClusterTls>, secret: Arc<String>) ->
         .map_err(|_| format!("relay connect {addr}: timeout"))?
         .map_err(|e| format!("relay connect {addr}: {e}"))?;
     tune(&tcp);
-    match tls {
-        Some(t) => Ok(Box::new(crate::tls_io::connect(tcp, t.client, CLUSTER_SERVER_NAME).await?)),
-        None => {
-            let mut tcp = tcp;
-            tcp.write_all(&auth_line(&secret)).await.map_err(|e| e.to_string())?;
-            Ok(Box::new(tcp))
-        }
-    }
+    let mut s: Box<dyn RelayStream> = match tls {
+        Some(t) => Box::new(crate::tls_io::connect(tcp, t.client, CLUSTER_SERVER_NAME).await?),
+        None => Box::new(tcp),
+    };
+    crate::cluster_auth::client(&mut s, &key, me, peer).await.map_err(|e| format!("relay auth to node {peer}: {e}"))?;
+    Ok(s)
 }
 
 /// 所有者のノード（Raft の番号）。
@@ -111,21 +136,23 @@ pub fn start(app: &Arc<App>, cc: &ClusterConfig, secret: String) -> Result<Arc<R
         (Some(ca), Some(cert), Some(key)) => Some(ClusterTls::load(ca, cert, key)?),
         _ => None,
     };
-    let secret = Arc::new(secret);
+    let key = Arc::new(AuthKey::derive(&secret, Purpose::Relay));
+    let me = cc.node_id;
+    let known: Arc<Vec<u64>> = Arc::new(cc.peers.iter().map(|p| p.id).collect());
     let mut ecfg = senca_relay::net::EndpointConfig::default();
     ecfg.conn.node_id = cc.node_id;
     let (endpoint, mut incoming) = RelayEndpoint::new(ecfg);
     let addrs: HashMap<u64, SocketAddr> = cc.peers.iter().map(|p| (p.id, peer_addr(p))).collect();
     {
         let tls = tls.clone();
-        let secret = secret.clone();
+        let key = key.clone();
         endpoint.set_dialer(Arc::new(move |peer| {
             let addr = addrs.get(&peer).copied();
             let tls = tls.clone();
-            let secret = secret.clone();
+            let key = key.clone();
             Box::pin(async move {
                 let addr = addr.ok_or_else(|| format!("relay: unknown node {peer}"))?;
-                dial(addr, tls, secret).await
+                dial(addr, tls, key, me, peer).await
             })
         }));
     }
@@ -155,29 +182,25 @@ pub fn start(app: &Arc<App>, cc: &ClusterConfig, secret: String) -> Result<Arc<R
                 tune(&tcp);
                 let ep = ep.clone();
                 let tls = tls.clone();
-                let secret = secret.clone();
+                let key = key.clone();
+                let known = known.clone();
                 let app = app.clone();
                 tokio::spawn(async move {
-                    let r = match tls {
-                        Some(t) => match crate::tls_io::accept(tcp, t.server).await {
-                            Ok(s) => ep.accept(s).await.map(|_| ()).map_err(|e| e.to_string()),
-                            Err(e) => Err(e),
-                        },
-                        None => {
-                            let mut tcp = tcp;
-                            let mut got = [0u8; 64];
-                            let ok = tokio::time::timeout(Duration::from_secs(5), tcp.read_exact(&mut got)).await.is_ok_and(|r| r.is_ok());
-                            if ok && senca_control::secret::verify(
-                                    std::str::from_utf8(&got).unwrap_or(""),
-                                    &senca_control::secret::hash(std::str::from_utf8(&auth_line(&secret)).unwrap_or("x")),
-                                )
-                            {
-                                ep.accept(tcp).await.map(|_| ()).map_err(|e| e.to_string())
-                            } else {
-                                Err("bad cluster secret".into())
-                            }
+                    let r = async {
+                        let mut s: Box<dyn RelayStream> = match tls {
+                            Some(t) => Box::new(crate::tls_io::accept(tcp, t.server).await?),
+                            None => Box::new(tcp),
+                        };
+                        let who = crate::cluster_auth::server(&mut s, &key, me, &|id| known.contains(&id)).await?;
+                        let c = ep.accept(s).await.map_err(|e| e.to_string())?;
+                        // 中継の握手で名乗った番号が、合言葉で確かめた番号と同じか
+                        if c.peer_id() != Some(who) {
+                            c.close("node id mismatch");
+                            return Err(format!("node {who} introduced itself as {:?}", c.peer_id()));
                         }
-                    };
+                        Ok::<(), String>(())
+                    }
+                    .await;
                     if let Err(e) = r {
                         app.log(&format!("relay: connection from {peer} refused: {e}"));
                     }
@@ -526,5 +549,40 @@ impl Relay {
             .collect();
         let mirrors: Vec<String> = self.mirrors.lock().unwrap().keys().cloned().collect();
         serde_json::json!({ "peers": peers, "mirrors": mirrors })
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::config::ClusterPeer;
+
+    fn cc(peers: &[(u64, &str, Option<&str>)], relay_listen: Option<&str>) -> ClusterConfig {
+        ClusterConfig {
+            node_id: 1,
+            listen: peers[0].1.parse().unwrap(),
+            peers: peers.iter().map(|(id, a, r)| ClusterPeer { id: *id, addr: a.parse().unwrap(), api: None, relay: r.map(|r| r.parse().unwrap()) }).collect(),
+            secret_file: "/dev/null".into(),
+            tls_ca: None,
+            tls_cert: None,
+            tls_key: None,
+            relay_listen: relay_listen.map(|r| r.parse().unwrap()),
+        }
+    }
+
+    #[test]
+    fn consecutive_raft_ports_on_one_host_are_refused() {
+        let c = cc(&[(1, "127.0.0.1:7000", None), (2, "127.0.0.1:7001", None)], None);
+        let e = check_addrs(&c).unwrap_err();
+        assert!(e.contains("relay_listen"), "{e}");
+        // 明示すれば通る
+        let c = cc(&[(1, "127.0.0.1:7000", Some("127.0.0.1:7100")), (2, "127.0.0.1:7001", Some("127.0.0.1:7101"))], Some("127.0.0.1:7100"));
+        check_addrs(&c).unwrap();
+        // 別のホストなら既定で足りる
+        let c = cc(&[(1, "10.0.0.1:7000", None), (2, "10.0.0.2:7000", None)], None);
+        check_addrs(&c).unwrap();
+        // 2 つおきなら既定でもぶつからない
+        let c = cc(&[(1, "127.0.0.1:7000", None), (2, "127.0.0.1:7002", None)], None);
+        check_addrs(&c).unwrap();
     }
 }

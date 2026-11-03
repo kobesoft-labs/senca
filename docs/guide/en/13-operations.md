@@ -26,8 +26,13 @@ draining a node and shutting it down.
 - In a cluster, a node becomes ready once a leader is known and its own registration (and, on the first node,
   cluster initialization) has been committed.
 - After a shutdown signal, `/readyz` returns 503.
-- **Once ready, a node stays ready until shutdown.** A cluster node that loses the majority keeps answering 200 on
-  `/readyz` (while write APIs return 503). Draining ([13.9](#139-draining-a-node)) does not affect readiness either.
+- **In a cluster, readiness drops when contact with a quorum is lost.** When more than **4 seconds** have passed since
+  the leader last heard from a quorum of voters (or a follower last heard from the leader), the node stops its grid
+  work (pull inputs, push outputs, pipelines; fencing, log `grid: fenced`) and `/readyz` returns 503 (write APIs return
+  503 too). Once contact is back it returns 200 again and resumes the work assigned to it (log
+  `quorum contact restored`). Right after startup it is also 503 until the leader has been reached.
+- A single node stays ready until shutdown once ready. Draining ([13.9](#139-draining-a-node)) does not affect
+  readiness.
 
 For containers without curl there is a built-in probe:
 
@@ -51,9 +56,10 @@ senca-node --healthcheck http://127.0.0.1:8080/readyz
 {"msg":"senca-node 0.0.0 started (node f1be5f27675d35f8dd72b88676be8754)","node":"f1be5f27675d35f8dd72b88676be8754","ts":"2026-11-03T01:11:38.915Z"}
 ```
 
-Even with `--log-json`, a few lines go to stderr as plain text: codec worker output
-(`senca-codec-worker[PID]: sandbox: ...` and the like), the single-node "created the first admin token" line,
-`codec worker unavailable: ...` and `fatal: ...`. Collect both stdout and stderr.
+With `--log-json`, every line of the node goes to stdout as JSON: the "created the first admin token" line,
+`codec worker unavailable: ...`, `fatal: ...` (startup failures; `node` is null before the node ID is known),
+configuration errors, and the stderr lines of the codec and capture workers (the node reads them line by line and
+puts each into `msg`; at most 4096 bytes per line). Without `--log-json`, worker lines still go to stderr as before.
 
 Things that are logged: listeners starting, publishers attaching (`publisher attached`) and leaving, recording
 failures, recovery (`recovery: ...`), retention deletes (`retention: deleting recording ...`), authentication failures
@@ -75,7 +81,7 @@ All require `node:admin` (`capabilities` only requires authentication).
 |---|---|
 | `GET /api/v1/nodes` | Registered nodes: `id`, `name`, `draining`, `registered_at`, `labels`, `live_streams` (counted only for the node answering), `self`, `relay` (that node's relay status) |
 | `GET /api/v1/nodes/{id}` | A single node |
-| `GET /api/v1/grid` | Grid overview: `scheduler` (the node doing placement; filled in only when asking the leader); per node `up`, `draining`, `roles`, `labels`, `capacity`, `reserved`, `gpus` (sessions and reservations), `capture`, `last_heartbeat`, `workloads`; per workload `state` (`running`, `degraded`, `pending`, `unschedulable`), `node`, `device`, `level`, `reason` |
+| `GET /api/v1/grid` | Grid overview: `scheduler` (the node doing placement; filled in only when asking the leader); per node `up`, `draining`, `roles`, `labels`, `capacity`, `reserved`, `gpus` (sessions and reservations), `capture`, `usage` (measured usage from heartbeats), `last_heartbeat`, `workloads`; per workload `state` (`running`, `degraded`, `pending`, `unschedulable`), `node`, `device`, `level`, `reason` |
 | `GET /api/v1/devices` | This node's codec providers (available or not, and why), sandbox state and capture devices |
 | `GET /api/v1/capabilities` | This node's ingest, output and codec features (`codecs.transcode` lists what was actually loaded) |
 
@@ -137,7 +143,7 @@ its three segments intact; stopping with SIGTERM left it `finalized`.
 | What | Importance | Contents |
 |---|---|---|
 | `control/` (single node: `log`, `snapshot.json`) | required | The whole control state (streams, tokens, recording metadata, schedules, inputs, outputs, secrets, playback key) |
-| `control/secret-key` | required | Key that opens stored secrets. Without it, stored secrets cannot be recovered |
+| `control/secret-key` | required (single node) | Key that opens stored secrets. Without it, stored secrets cannot be recovered. In a cluster, secrets are sealed with a cluster-wide key replicated in the control state, wrapped with the cluster secret; keep the cluster secret (`secret_file`) safe separately ([12. Security](12-security.md)) |
 | `recordings/` and `segments/` | required if recordings matter | Back up the index and the segments **together** (indexes reference segments) |
 | `snapshots/` | optional | Periodic snapshots |
 | `node-id` | recommended | The node's ID; a new ID registers as a different node |
@@ -183,10 +189,15 @@ curl -s -X POST -H "Authorization: Bearer $TOKEN" http://127.0.0.1:8080/api/v1/n
 - Requires `node:admin`. Sets the node's `draining` flag and emits `node.updated`.
 - The grid stops placing new work (pull inputs, push outputs, pipelines, rooms, media pipelines) on the node and moves
   the work already there to other nodes where it can ([9. Cluster and grid](09-cluster-grid.md)).
-- **Draining does not refuse RTMP, SRT or WHIP publishers or viewers**, and `/readyz` keeps returning 200. Remove the
-  node from your load balancer or DNS separately, and have publishers reconnect elsewhere.
-- On a single node there is nowhere to move work, so it stays (verified: after draining, a pull input stayed
-  `running` and `/readyz` stayed 200).
+- **A draining node refuses new publishers.** An RTMP publish gets `NetStream.Publish.Rejected` (description
+  `this node is draining; publish to another node`), an SRT publish is rejected in the handshake (reason 1503), and
+  a WHIP `POST /whip/{stream}` gets 307 to the same path on another node that is not draining (its `peers[].api`;
+  503 with `Retry-After: 10` if there is none). WHIP clients follow the redirect. Take the node out of your load
+  balancer or DNS so that RTMP and SRT publishers reconnect elsewhere.
+- **Connected publishers and viewers are kept**, and `/readyz` keeps returning 200 (remove the node from your load
+  balancer separately).
+- On a single node there is nowhere to move grid work, so it stays (after draining, a pull input stays `running`
+  and `/readyz` stays 200). New publishers are refused (WHIP gets 503).
 
 To take a single device (GPU or capture device) out of service, use
 `POST /api/v1/nodes/{node}/devices/{device}/disable` (and `enable` to bring it back).

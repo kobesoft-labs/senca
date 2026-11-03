@@ -39,6 +39,8 @@ pub struct WorkerCommand {
     pub args: Vec<String>,
     /// 追加の環境変数（`SENCA_CODEC_LIB_DIR`・`SENCA_CAPTURE_LIB_DIR` など）。
     pub env: Vec<(String, String)>,
+    /// worker の標準エラーの行を渡す先（無ければ親の標準エラーに引き継ぐ）。
+    pub stderr_log: Option<senca_codec_worker::pool::LogSink>,
 }
 
 impl WorkerCommand {
@@ -47,6 +49,7 @@ impl WorkerCommand {
             program: program.into(),
             args: Vec::new(),
             env: Vec::new(),
+            stderr_log: None,
         }
     }
 
@@ -57,9 +60,17 @@ impl WorkerCommand {
             .envs(self.env.iter().map(|(k, v)| (k, v)))
             .stdin(Stdio::piped())
             .stdout(Stdio::piped())
-            .stderr(Stdio::inherit())
+            .stderr(if self.stderr_log.is_some() { Stdio::piped() } else { Stdio::inherit() })
             .kill_on_drop(true);
         c
+    }
+
+    fn spawn(&self, mode: &str) -> std::io::Result<Child> {
+        let mut child = self.command(mode).spawn()?;
+        if let (Some(l), Some(e)) = (&self.stderr_log, child.stderr.take()) {
+            l.relay(e);
+        }
+        Ok(child)
     }
 }
 
@@ -69,7 +80,7 @@ fn spawn_err(e: std::io::Error) -> CaptureError {
 
 /// 機器の一覧を得る。
 pub async fn list_devices(cmd: &WorkerCommand, timeout: Duration) -> Result<DeviceListing> {
-    let mut child = cmd.command("list").spawn().map_err(spawn_err)?;
+    let mut child = cmd.spawn("list").map_err(spawn_err)?;
     drop(child.stdin.take());
     let mut stdout = child
         .stdout
@@ -179,7 +190,7 @@ impl CaptureWorker {
         start_timeout: Duration,
     ) -> Result<(CaptureWorker, mpsc::Receiver<WorkerEvent>)> {
         spec.validate()?;
-        let mut child = cmd.command("serve").spawn().map_err(spawn_err)?;
+        let mut child = cmd.spawn("serve").map_err(spawn_err)?;
         let mut stdin = child
             .stdin
             .take()

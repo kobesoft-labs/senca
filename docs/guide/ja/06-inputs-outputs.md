@@ -195,7 +195,7 @@ curl -s -X POST "$API/secrets" "${H[@]}" -d '{"name":"cam-login","value":"viewer
 ```
 
 - `name` は stream の名前と同じ規則（1〜64 文字の英数字と `-_.`）、テナント内で一意（重複は 409）。`value` は 1〜8192 バイト。
-- 値はノードの鍵（`{data-dir}/control/secret-key`）で AES-256-GCM で暗号化して保存する。**値は API から二度と読み出せない**
+- 値は AES-256-GCM で暗号化して保存します（単一ノードではノードの鍵 `{data-dir}/control/secret-key`、クラスタではクラスタ共通の鍵を使います。[12. セキュリティ](12-security.md)）。**値は API から二度と読み出せない**
   （一覧は `id`・`name`・`ref`・`created_at` だけ）。値を変えるには消して作り直す。
 - テナントの秘密値は 500 個まで。
 - 入力・出力・stream の字幕が参照している秘密値は消せない（409）。
