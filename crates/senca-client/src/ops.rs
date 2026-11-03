@@ -41,6 +41,7 @@ pub const OPERATIONS: &[(&str, &str)] = &[
     ("patchSchedule", "Schedules::update"),
     ("deleteSchedule", "Schedules::delete"),
     ("listScheduleRuns", "Schedules::runs"),
+    ("listAudit", "Audit::list"),
     ("createToken", "Tokens::create"),
     ("listTokens", "Tokens::list"),
     ("getToken", "Tokens::get"),
@@ -152,6 +153,8 @@ mod tests {
         let _ = c.rooms().update("", &Default::default(), 1u64);
         let _ = (crate::MediaPipelines::create, crate::MediaPipelines::list, crate::MediaPipelines::get, crate::MediaPipelines::delete);
         let _ = c.media_pipelines().update("", &Default::default(), 1u64);
+        let _ = (crate::Audit::list, crate::Audit::list_page);
+        let _ = c.audit();
         let _ = c.media_pipelines().set_state("", crate::models::MediaPipelineState::Stopped, 1u64);
         // If-Match を impl Into で取る更新は呼び出しの形で確かめる
         let _ = c.streams().update("", &Default::default(), 1u64);

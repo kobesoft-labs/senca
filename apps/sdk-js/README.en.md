@@ -160,7 +160,8 @@ await senca.rooms.participants('daily').updateMetadata(connectionId, { name: 'Al
 Resources: `streams` (`rotateKey`, `playbackUrl`, `startRecording`, `plan`, `snapshot`, `snapshots`), `recordings` (`stop`, `playbackUrl`, `thumbnail`,
 `exportMp4`), `schedules` (`check`, `runs`), `tokens`, `inputs`, `outputs` (created per stream), `secrets`, `pipelines` (`validate`, `control`),
 `nodes` (`drain`, `undrain`, `devices.disable/enable`), `rooms` (`participants(id)`, `sendMessage`, `stats`, `createToken`),
-`mediaPipelines` (exporting, recording, compositing, pushing out and transcribing a room; `list({room})`, `start`, `stop`), plus
+`mediaPipelines` (exporting, recording, compositing, pushing out and transcribing a room; `list({room})`, `start`, `stop`),
+`audit` (the audit log, newest first; `list({since, until, action, subject, resource, q, node})`, `listPage`), plus
 `capabilities()`, `devices()`, `grid()` and `events()`. Every operation in the specification has an SDK method (`test/rest.test.mjs` checks
 this against `operations.gen.js`). Operations not yet in the SDK can be called with `senca.request(method, path, opts)`.
 

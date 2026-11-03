@@ -55,7 +55,7 @@ impl Scope {
     }
 }
 
-/// standard = HLS、low = LL-HLS（part は min(500 ms, segment_ms / 4)）、interactive = WebRTC・MoQ 向け（LL-HLS の part は 200 ms、出だしの待ちと送りの溜まりを小さくする）
+/// standard = HLS、low = LL-HLS（part は min(500 ms, segment_ms / 4)）、interactive = WebRTC・MoQ 向け（LL-HLS の part は 200 ms。開始時の待ち時間と送信のバッファーを小さくします）
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
 pub enum LatencyProfile {
     #[serde(rename = "standard")]
@@ -154,10 +154,10 @@ impl HlsSettingsContainer {
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize, Default)]
 pub struct Limits {
-    /// 入力のビットレートの上限（直近 3 秒の平均）。5 秒続けて超えたら送り手を切り、10 秒は新しい送り手を断る
+    /// 入力のビットレートの上限（直近 3 秒の平均）。5 秒続けて超えると配信者を切断し、その後 10 秒間は新しい配信者を受け付けません
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub max_ingress_bps: Option<u64>,
-    /// ノードごとの同時の視聴者の上限（最近プレイリストを取得した HLS のクライアントと、RTMP・SRT・RTSP・WHEP・MoQ の接続の合計）。超える新しい視聴は断る（HLS・WHEP・RTSP は 503）
+    /// ノードごとの同時の視聴者の上限（最近プレイリストを取得した HLS のクライアントと、RTMP・SRT・RTSP・WHEP・MoQ の接続の合計）。上限を超える新しい視聴は断ります（HLS・WHEP・RTSP は 503）
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub max_viewers: Option<u64>,
 }
@@ -265,14 +265,14 @@ pub struct LiveInfo {
     pub tracks: Vec<Value>,
     /// rtmp・srt など
     pub transport: String,
-    /// このノードの視聴者の数（`limits.max_viewers` で数えるもの）。`hls` は最近プレイリストを取得した別々の HLS のクライアント
+    /// このノードの視聴者の数（`limits.max_viewers` で数えるもの）。`hls` は最近プレイリストを取得した HLS のクライアントの数です
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub viewers: Option<LiveInfoViewers>,
-    /// hub の購読の数（中継・録画以外の内部の購読も含む目安）
+    /// ストリームの内部の購読の数（中継・録画以外の内部の購読も含む目安）
     pub viewers_hint: u64,
 }
 
-/// このノードの視聴者の数（`limits.max_viewers` で数えるもの）。`hls` は最近プレイリストを取得した別々の HLS のクライアント
+/// このノードの視聴者の数（`limits.max_viewers` で数えるもの）。`hls` は最近プレイリストを取得した HLS のクライアントの数です
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize, Default)]
 pub struct LiveInfoViewers {
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -1023,6 +1023,35 @@ pub struct TokenList {
     pub items: Vec<Token>,
     #[serde(default)]
     pub next_cursor: Option<String>,
+}
+
+/// 監査ログの 1 件（`audit.log` の 1 行に `node`・`node_name` を足したもの）。秘密情報やリクエストの本文は含みません。
+/// 操作によってフィールドが増えることがあります。
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, Default)]
+pub struct AuditEntry {
+    /// 操作の種類（`stream.create`・`token.delete`・`node.drain` など。`{資源}.{操作}` の形）
+    pub action: String,
+    /// 記録したノード（要求を受けたノード）の ID
+    pub node: String,
+    /// 記録したノードの名前
+    pub node_name: String,
+    /// 要求 ID（応答の `X-Request-Id`）
+    pub request_id: String,
+    /// 対象の資源の ID（装置・参加者などは `{ノード}/{装置}`・`{部屋}/{接続}` の形）
+    pub resource: String,
+    /// 操作した主体。API トークンなら `token:{ID}`、JWT なら `sub` の値
+    pub subject: String,
+    pub tenant: String,
+    pub ts: Timestamp,
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, Default)]
+pub struct AuditList {
+    pub items: Vec<AuditEntry>,
+    #[serde(default)]
+    pub next_cursor: Option<String>,
+    /// 時間内に答えなかったノードの ID（その記録は含まれません。単一ノードでは常に空）
+    pub unavailable_nodes: Vec<String>,
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize, Default)]

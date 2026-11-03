@@ -25,6 +25,7 @@
 //! # Ok(()) }
 //! ```
 
+pub mod audit;
 pub mod client;
 pub mod error;
 pub mod media_pipelines;
@@ -36,6 +37,7 @@ pub mod rooms;
 pub mod sse;
 pub mod transport;
 
+pub use audit::{Audit, AuditQuery};
 pub use client::{ClientBuilder, IfMatch, RequestOptions, RetryPolicy, SencaClient, Versioned, new_idempotency_key};
 pub use error::{ApiError, Error, Result};
 pub use models::ProblemCode;
