@@ -463,6 +463,7 @@ class Live:
         self.room_recording_and_e2ee()
         self.media_pipelines(ro)
         self.events(sub_tok)
+        self.audit(ro)
         self.methods()
         self.cleanup(sid, other, ro)
         self.coverage()
@@ -1804,6 +1805,23 @@ class Live:
             replay = [ln[7:] for ln in txt.splitlines() if ln.startswith("event: ")]
             check("resync" not in replay and "stream.deleted" in replay and "media_pipeline.deleted" in replay,
                   "SSE Last-Event-ID で取りこぼしを再送する（resync なし）", f"{replay}")
+
+    def audit(self, ro):
+        s, _, a = self.call("GET", "/audit?limit=5", "監査ログ", 200)
+        items = a.get("items", []) if isinstance(a, dict) else []
+        check(len(items) == 5 and all(x.get("node") == self.node_id for x in items), "監査ログ: 記録したノードが付く", f"{items[:1]}")
+        check(all(x["ts"] >= y["ts"] for x, y in zip(items, items[1:])), "監査ログ: 新しい順")
+        if isinstance(a, dict) and a.get("next_cursor"):
+            s, _, b = self.call("GET", f"/audit?limit=5&cursor={a['next_cursor']}", "監査ログ 次のページ", 200)
+            check(isinstance(b, dict) and b["items"] and b["items"][0]["ts"] <= items[-1]["ts"]
+                  and not ({x["request_id"] for x in b["items"]} & {x["request_id"] for x in items}), "監査ログ: 次のページは続きから")
+        s, _, a = self.call("GET", "/audit?action=token.&since=2000-01-01T00:00:00Z", "監査ログ 絞り込み", 200)
+        check(isinstance(a, dict) and a["items"] and all(x["action"].startswith("token.") for x in a["items"]), "監査ログ: action の前方一致")
+        self.call("GET", "/audit?since=yesterday", "監査ログ 時刻の形", 400)
+        self.call("GET", "/audit?cursor=!!", "監査ログ cursor の形", 400)
+        self.call("GET", "/audit?node=nosuch", "監査ログ 知らないノード", 400)
+        self.call("GET", "/audit", "監査ログ stream:read では 403", 403, token=ro)
+        self.call("GET", "/audit?tenant=*", "監査ログ node:admin はすべてのテナント", 200)
 
     def methods(self):
         self.call("PUT", "/streams", "PUT /streams は 405", 405, body={})
