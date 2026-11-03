@@ -2,28 +2,28 @@
 
 [日本語](../ja/10-rooms.md)
 
-- Related: [ADR-0015](../../dev/adr/0015-realtime-rooms.md) (realtime rooms), [ADR-0013](../../dev/adr/0013-grid.md) (grid), [ADR-0014](../../dev/adr/0014-relay.md) (relay), [ADR-0016](../../dev/adr/0016-media-pipelines.md) (media pipelines)
-- Protocol: [Signaling v1](../../realtime/signaling.en.md)
-- Implementation: `crates/senca-rooms` (room core), `crates/senca-node/src/rooms.rs` (node integration), `crates/senca-node/src/api/rooms.rs` (REST)
-
-A room is where participants exchange video, audio and data over WebRTC. Rooms provide the following features:
+A room is where participants exchange video, audio and data over WebRTC. The server is an SFU: it forwards what it receives without transcoding.
+Rooms provide the following features:
 roles, multistream, simulcast, spotlight, DataChannel messaging, forwarding filters, metadata / client_id / bundle_id,
-E2EE pass-through and statistics. The server is an SFU: it forwards what it receives without transcoding.
+E2EE pass-through and statistics.
 
-## 1. Concepts
+- Background: [ADR-0015](../../dev/adr/0015-realtime-rooms.md) (realtime rooms), [ADR-0013](../../dev/adr/0013-grid.md) (grid), [ADR-0014](../../dev/adr/0014-relay.md) (relay), [ADR-0016](../../dev/adr/0016-media-pipelines.md) (media pipelines)
+- Protocol specification: [Signaling v1](../../realtime/signaling.en.md)
+
+## 10.1 Concepts
 
 - **A room is a control-state resource.** You create it with `POST /api/v1/rooms` and can read or change it through any node. Room IDs are
   **unique across tenants**.
 - **A room is a grid workload** (`room:{id}`) and is placed on exactly one node ([09. Cluster and grid](09-cluster-grid.md)).
-  The node it is placed on (the hosting node) opens the room in its room core and terminates the participants' peer connections. The result appears in the
+  The node it is placed on (the hosting node) opens the room and terminates the participants' peer connections. The result appears in the
   room's `placement_status`.
 - **Clients may connect to any node.** Signaling (`GET /signaling`) looks at the `room_id` of the first `connect` message; if the room is hosted elsewhere,
   the node replies with `redirect {location}` and closes. For participants, messages and stats, the REST API forwards the request to the hosting node.
-  Rooms with `cascade: true` are not redirected; the node the client connected to serves it (cascading, §10).
+  Rooms with `cascade: true` are not redirected; the node the client connected to serves it (cascading, 10.10).
 - **When a room moves** (drain, node stop), the old node — if it is still running — sends `redirect` to the current participants so they rejoin on the new node.
 - **Join tokens** can be issued and verified by any node: the signing key is derived from the control-state key, so it is the same on every node.
 
-## 2. Prerequisites (node startup)
+## 10.2 Prerequisites (node startup)
 
 Nodes that serve rooms must have WebRTC enabled.
 
@@ -46,9 +46,9 @@ On a node without `--webrtc-udp`:
 **Caution (clusters):** the grid does not consider whether a node runs WebRTC when placing rooms. A room placed on a node without WebRTC cannot be joined.
 In a cluster, either enable `--webrtc-udp` on every node, or label the WebRTC nodes (`--label webrtc=on`) and restrict rooms with `placement.labels`.
 Redirects and API forwarding use each peer's `api` (management API URL) from the cluster configuration. A room placed on a node without `api` is treated by the other
-nodes as "placement not decided yet" (§10).
+nodes as "placement not decided yet" (see "Requests answered by the hosting node" in 10.3).
 
-## 3. Room REST API
+## 10.3 Room REST API
 
 All paths are under `/api/v1` and follow the common conventions (Bearer, problem+json, `Idempotency-Key`, `ETag`/`If-Match`, `limit`/`cursor`, unknown fields are 400;
 see [15. API and SDKs](15-api-and-sdks.md)).
@@ -60,13 +60,13 @@ see [15. API and SDKs](15-api-and-sdks.md)).
 | Get | `GET /rooms/{id}` | `stream:read` | 200, `ETag: "{generation}"` |
 | Update | `PATCH /rooms/{id}` `{settings?, metadata?, placement?}` | `stream:write` | 200. `If-Match` is required (428 if missing, 412 if stale) |
 | Delete | `DELETE /rooms/{id}` | `stream:write` | 204. Participants are disconnected with `room_deleted` |
-| Join token | `POST /rooms/{id}/tokens` | `stream:write` | 201 (§4) |
+| Join token | `POST /rooms/{id}/tokens` | `stream:write` | 201 (10.4) |
 | List participants | `GET /rooms/{id}/participants?limit&cursor` | `stream:read` | 200 `{items, next_cursor}` |
 | Participant | `GET /rooms/{id}/participants/{connection_id}` | `stream:read` | 200 |
 | Participant metadata | `PATCH /rooms/{id}/participants/{connection_id}` `{metadata}` | `stream:write` | 200. Everyone receives `connection.updated` |
 | Disconnect | `DELETE /rooms/{id}/participants/{connection_id}` | `stream:write` | 204. Reason `kicked` |
-| Send | `POST /rooms/{id}/messages` `{to?, label?, data}` | `stream:write` | 200 `{delivered}` (§8) |
-| Stats | `GET /rooms/{id}/stats` | `stream:read` | 200 (§9) |
+| Send | `POST /rooms/{id}/messages` `{to?, label?, data}` | `stream:write` | 200 `{delivered}` (10.8) |
+| Stats | `GET /rooms/{id}/stats` | `stream:read` | 200 (10.9) |
 
 ### Create
 
@@ -84,24 +84,24 @@ with the offending fields in `details.errors`).
 | Field | Default | Range / meaning |
 |---|---|---|
 | `max_participants` | 50 | 1–10000. Participant limit for the room; also drives the grid estimate (below) |
-| `e2ee` | false | End-to-end encrypted room (§11) |
+| `e2ee` | false | End-to-end encrypted room (10.11) |
 | `video_codec` | `vp8` | `vp8`, `vp9`, `h264`, `av1`. One per room (the SFU does not transcode, so everyone sends the same codec) |
 | `audio_codec` | `opus` | `opus` only |
 | `max_video_bitrate_kbps` | none | 50–50000. Video ceiling recommended to senders in `connected` |
-| `spotlight` | none | `{number, unfocused?, focus_rid?}`. `number` 1–16, `unfocused` `lowest` (default) or `off`, `focus_rid` 1–16 alphanumerics (§7) |
+| `spotlight` | none | `{number, unfocused?, focus_rid?}`. `number` 1–16, `unfocused` `lowest` (default) or `off`, `focus_rid` 1–16 alphanumerics (10.7) |
 | `recording` | `none` | `none`, `per_participant`, `composite`. **A policy value only**: the node does not start recording because of it. Recording is done with media pipelines ([11](11-media-pipelines.md)). `composite` cannot be combined with `e2ee: true` (400) |
-| `forwarding_filter` | none | Room-wide forwarding filter (§6) |
+| `forwarding_filter` | none | Room-wide forwarding filter (10.6) |
 | `data_labels` | `["#*"]` | DataChannel label patterns allowed in the room. Each starts with `#`, up to 64 bytes, at most 32 patterns. A trailing `*` is a prefix match |
 | `empty_timeout_secs` | 60 | For auto-created rooms (`auto: true`): seconds a room may stay empty before it is deleted |
-| `cascade` | false | If true, participants who connect to a node other than the room's node are served on that node (cascading, §10). If false they are redirected to the room's node |
-| `auth_webhook_url` | none | Auth webhook URL for this room (`http://` or `https://`). Takes precedence over the node's `--rooms-auth-webhook` (§4) |
+| `cascade` | false | If true, participants who connect to a node other than the room's node are served on that node (cascading, 10.10). If false they are redirected to the room's node |
+| `auth_webhook_url` | none | Auth webhook URL for this room (`http://` or `https://`). Takes precedence over the node's `--rooms-auth-webhook` (10.4) |
 
 ### Update
 
 - Sending `settings` **replaces the whole object** (fields you leave out revert to their defaults). Read the current settings and send all of them, not just the changed field.
 - `e2ee`, `video_codec` and `audio_codec` cannot change while participants are present (409).
 - `placement: null` removes the placement spec.
-- The hosting node notices the new generation in the control state and swaps the settings in its room core. Changing the room's forwarding filter or spotlight
+- The hosting node notices the new generation in the control state and applies the new settings. Changing the room's forwarding filter or spotlight
   reassigns receive slots immediately.
 
 ### Room representation
@@ -119,7 +119,7 @@ Response of `POST`, `GET` and `PATCH` (the control-state room; it does not inclu
 
 ### Grid estimate
 
-A room's resource needs are estimated from `max_participants` (N) (`crates/senca-control/src/workloads.rs`):
+A room's resource needs are estimated from `max_participants` (N):
 
 | Resource | Estimate |
 |---|---|
@@ -134,17 +134,17 @@ size so more rooms fit on a node (node capacity comes from `--net-mbps` etc.; se
 
 ### Requests answered by the hosting node
 
-Participants, messages and stats are answered by the room core on the hosting node.
+Participants, messages and stats are answered by the hosting node.
 
 - If the room is hosted on another node, the receiving node forwards the request to that node's `/api/v1` with the same headers (`Authorization`, `Content-Type`,
   `If-Match`, `Idempotency-Key`, `X-Request-Id`) and returns the status, body and `ETag` unchanged (10-second timeout). **Forwarded requests are never forwarded again**
   (503, `retryable: true`).
 - Placement not decided yet (e.g. right after creation): 503 `CAPACITY_UNAVAILABLE` (`retryable: true`).
-- The room core does not answer within 5 seconds: 503 (`retryable: true`).
-- The room core has not opened the room yet: 404.
+- The room does not answer within 5 seconds: 503 (`retryable: true`).
+- The hosting node has not opened the room yet: 404.
 - Timestamps (`joined_at`, `at`, …) are returned as RFC 3339.
 
-## 4. Join tokens
+## 10.4 Join tokens
 
 `POST /rooms/{id}/tokens`:
 
@@ -179,9 +179,9 @@ Response (201):
 
 ### Verification rules
 
-The room core checks the token at `connect`.
+The hosting node checks the token at `connect`.
 
-- **A token is required** (by default). A `connect` without a token fails with `auth_failed` (§12). Only with `--rooms-auth-mode only`
+- **A token is required** (by default). A `connect` without a token fails with `auth_failed` ([Signaling v1 §7](../../realtime/signaling.en.md)). Only with `--rooms-auth-mode only`
   can the auth webhook admit participants instead of a token.
 - `exp` is required; clock skew of up to 30 seconds is tolerated. Tokens whose remaining lifetime (now to `exp`) exceeds 24 hours are rejected, as are tokens whose `iat` is too far in the future.
 - If the token's `room` differs from `connect.room_id`, the result is `forbidden`. If `connect.role` exceeds the token's `role`, the result is `forbidden`.
@@ -198,12 +198,12 @@ asks that URL with a signed `POST` (request and response formats: [Signaling v1]
 
 - A response with `allowed: false` fails the join with `auth_failed` (the `reason` reaches the client). The response may override
   `role`, `client_id`, `metadata` and `permissions`. No answer within 5 seconds, or a non-2xx status, is also a rejection.
-- The signing secret is passed with `--rooms-webhook-secret-file` (`Senca-Signature` header). On a node without a secret, joins to
+- The signing secret is passed with `--rooms-webhook-secret-file` (at least 16 bytes; used for the `Senca-Signature` header). On a node without a secret, joins to
   rooms that have a webhook URL are rejected.
 - Destinations are checked against the `--egress-allow` policy; allow internal addresses explicitly.
 - Rooms without either URL are admitted by token alone, as before.
 
-## 5. Signaling
+## 10.5 Signaling
 
 Signaling is JSON messages over a WebSocket at `GET /signaling` (subprotocol **`senca.rooms.v1`** is required). The message formats are defined in
 [Signaling v1](../../realtime/signaling.en.md); this section only describes the flow on a node.
@@ -213,7 +213,7 @@ Signaling is JSON messages over a WebSocket at `GET /signaling` (subprotocol **`
 3. The receiving node looks up where the room is hosted (for a just-created room it waits up to 3 seconds for placement):
    - Another node: it sends `{"type":"redirect","location":"ws://…/signaling"}` and closes with close code 4300. The client reconnects to that URL.
    - Placement not decided: it sends `{"type":"error","code":"capacity_unavailable","fatal":true,…}` and closes with close code 4503.
-   - This node: the room core processes `connect` and replies with `connected`.
+   - This node: it processes `connect` and replies with `connected`.
 4. The client sends the offer (**the client always offers**; the server is ICE-lite and only answers), and media flows after ICE and DTLS.
 5. The server sends `ping` every 10 seconds; if no `pong` arrives within 10 seconds, the connection is closed with `ping_timeout`.
 
@@ -222,21 +222,21 @@ Other close codes:
 | Close code | When |
 |---|---|
 | 4408 | No first message within 10 seconds of opening the WebSocket |
-| 1013 | The room core cannot run yet (no signing key; before cluster initialization) |
+| 1013 | The node cannot serve rooms yet (no signing key; before cluster initialization) |
 | 4300 | The redirect above |
 | 4503 | The `capacity_unavailable` above, or `room_full` |
 
 All other error codes, close codes and disconnect reasons are listed in [Signaling v1 §7](../../realtime/signaling.en.md).
-If the room does not exist (not in the control state, or not yet opened by the room core), the result is `room_not_found` (the node never creates rooms on join).
+If the room does not exist (not in the control state, or not yet opened by the hosting node), the result is `room_not_found` (the node never creates rooms on join).
 
-## 6. Multistream, simulcast, layer selection and forwarding filters
+## 10.6 Multistream, simulcast, layer selection and forwarding filters
 
 - **Receive slots**: each receiving m-line of the client is one slot. The server assigns room tracks to slots and sends `renegotiate` when more are needed.
   At most 32 slots per kind. A client never receives its own tracks or tracks from connections with the same `bundle_id`. With `multistream: false`, one track per kind.
 - **Simulcast**: `connect.simulcast {rids, default_rid?}` lists the rids of the sent layers **lowest first**, 1–4 of them (1–16 alphanumerics each, no duplicates).
 - **Layer selection** (per receiver, per track), in priority order:
   1. The client's `layer {track_id, rid}` (`rid: null` returns to automatic)
-  2. Spotlight (§7)
+  2. Spotlight (10.7)
   3. `simulcast.default_rid`
   4. Automatic: subtract 64 kbit/s for audio from the estimated bandwidth, multiply by 0.9, divide by the number of video subscriptions, and pick the highest layer that fits.
      Downgrades happen after the shortfall has lasted 1 second (immediately if the estimate is below 0.6 × what is needed); upgrades after the layer has fit for 2 seconds.
@@ -252,7 +252,7 @@ If the room does not exist (not in the control state, or not yet opened by the r
 `connection_id`, `client_id`, `bundle_id`, `kind` or `metadata.<key>` (key up to 64 bytes; matches string, number or boolean values). `operator` is `is_in` or `is_not_in`;
 `values` has 1–100 entries of up to 255 bytes (`audio`/`video` for `kind`). `action` is `block` (drop matches) or `allow` (forward only matches).
 
-## 7. Spotlight
+## 10.7 Spotlight
 
 Enabled with the room's `settings.spotlight`. Speakers are detected by audio level; the `number` focused senders are forwarded at a high layer and everyone else
 either at the lowest layer (`unfocused: "lowest"`) or not at all (`"off"`; the slot is kept and marked `paused`).
@@ -262,7 +262,7 @@ either at the lowest layer (`unfocused: "lowest"`) or not at all (`"off"`; the s
 - The layer for focused senders is `focus_rid` (automatic by bandwidth if unset).
 - A client can choose within the room's limits with `connect.spotlight {number, focus_rid?, unfocused?}` (`number` is capped at the room's value).
 
-## 8. Messaging (DataChannel and push)
+## 10.8 Messaging (DataChannel and push)
 
 - **DataChannel**: DataChannels whose label starts with `#`. Declare them in `connect.data_channels`; the client opens them. Only labels that match both the room's
   `data_labels` and the token's `permissions.data` are accepted. A received message is forwarded unchanged to **everyone else** who has the same label open in a receiving direction.
@@ -279,7 +279,7 @@ The response is `{"delivered": N}` (the number of participants it was delivered 
 
 - Limits: 64 KiB per application message, 256 KiB per signaling message, 50 messages per second per connection (beyond that `rate_limited`; above 4× the connection is closed).
 
-## 9. Participants and statistics
+## 10.9 Participants and statistics
 
 Participant (`GET …/participants`): `connection_id`, `client_id`, `bundle_id`, `role`, `metadata`, `tracks[] {track_id, connection_id, kind, rids?}`,
 `joined_at`, `peer_connected`, `signaling` (`websocket` or `datachannel`), `subscriptions[]` (slots: `mid`, `kind`, `state` (`active`, `paused`, `empty`), `track_id`, `connection_id`, `client_id`).
@@ -288,7 +288,7 @@ Stats (`GET …/stats`): `{room_id, at, participants[]}`. Per participant: `conn
 `retransmitted_packets`, `nack_requested`, `received_bytes`, `forwarded_bytes`, `forwarded_frames`, `published[] {track_id, kind, layers[] {rid, bitrate_bps}}`,
 `subscriptions[] {mid, track_id, state, rid}`, and `client` (the getStats summary the client sent in `pong.stats` or `stats`).
 
-## 10. Room moves and failures
+## 10.10 Room moves and failures
 
 - When the grid moves a room to another node because of a **drain** (`POST /nodes/{id}/drain`) or a **node stop**, the old node sends `redirect` to the current participants
   (followed by `disconnect {reason: "redirected"}` and close) and releases the room. The new node opens the room and participants rejoin (with new connection_ids and track IDs).
@@ -313,17 +313,17 @@ With the room setting `cascade: true` (or the node flag `--rooms-cascade`), part
   Media pipelines can export tracks of participants on the home node.
 - The cascade state is shown in `rooms` of this node in `GET /api/v1/nodes`.
 
-## 11. E2EE (pass-through)
+## 10.11 E2EE (pass-through)
 
 In a room with `settings.e2ee: true`, the SFU forwards media that clients have encrypted (for example with SFrame) without looking at its content.
 
 - Participants must set `connect.e2ee` to match the room's `e2ee` (otherwise `e2ee_mismatch`). `e2ee` cannot change while participants are present.
 - Encryption, decryption and key distribution are up to the application. The browser SDK only checks the flag against the room; it does not implement encryption (Encoded Transform).
 - Because the server cannot see the content, compositing, composite recording and transcription are meaningless; `recording: "composite"` is rejected with 400.
-  **The node's media pipeline API does not yet check whether the room is E2EE** (it will let you create a composite or captions). For E2EE rooms, use only
-  per-participant export and recording (which store the media still encrypted).
+  Creating or updating a media pipeline with a composite (`composite`) or transcription (`captions`) for an E2EE room fails with 422 (`details.reason: "e2ee"`).
+  E2EE rooms support only per-participant export and recording (which store the media still encrypted).
 
-## 12. Events (SSE)
+## 10.12 Events (SSE)
 
 Room events are delivered on `GET /api/v1/events` ([15](15-api-and-sdks.md)).
 
@@ -334,13 +334,13 @@ Control events (in the consensus log; they carry an SSE `id` and can be resumed 
 | `room.updated` | Room created, auto-created or updated | `{auto}` |
 | `room.deleted` | Room deleted (including auto-room cleanup) | `{}` |
 
-Room-core events (**delivered only to subscribers on the node where the participant is**; with cascading, events of an edge's participants
+In-room events (participants, tracks and so on; **delivered only to subscribers on the node where the participant is**; with cascading, events of an edge's participants
 go to the edge node and `room.started`/`room.stopped` come only from the home; they have no SSE `id`, cannot be resumed with `Last-Event-ID`, and are skipped if the subscriber lags):
 
 | `event` | When |
 |---|---|
-| `room.started` | The room core opened the room |
-| `room.stopped` | The room core closed the room (deletion, move to another node) |
+| `room.started` | The node opened the room |
+| `room.stopped` | The node closed the room (deletion, move to another node) |
 | `room.connection.created` | A participant joined |
 | `room.connection.updated` | A participant's metadata changed |
 | `room.connection.destroyed` | A participant left (`reason`, `duration_ms`) |
@@ -359,8 +359,8 @@ To receive all room-core events, subscribe to the SSE stream of the hosting node
 
 ### Event webhook
 
-With `--rooms-event-webhook URL` and `--rooms-webhook-secret-file FILE`, each node signs and `POST`s its room-core events to the URL
-(body format: [Signaling v1](../../realtime/signaling.en.md) §10; `type` uses the room-core names such as `connection.created`).
+With `--rooms-event-webhook URL` and `--rooms-webhook-secret-file FILE`, each node signs and `POST`s its in-room events to the URL
+(body format: [Signaling v1](../../realtime/signaling.en.md) §10; `type` uses the webhook names such as `connection.created`).
 
 - Delivery is at least once. Receivers deduplicate by the body's `id` (same as the `Senca-Webhook-Id` header).
 - A 2xx completes delivery. 408, 429, 5xx, connection failures and a 10-second timeout are retried after 1, 2, 4, … seconds,
@@ -368,12 +368,12 @@ With `--rooms-event-webhook URL` and `--rooms-webhook-secret-file FILE`, each no
 - The number of abandoned events and recent IDs are shown in `rooms.event_webhook` of this node in `GET /api/v1/nodes`.
 - Destinations are checked against the `--egress-allow` policy. Events are still streamed to SSE.
 
-## 13. Limits
+## 10.13 Limits
 
 | Item | Value |
 |---|---|
 | Participants per room | `max_participants` (default 50, 1–10000); beyond that `room_full` |
-| Participants and rooms per node | Room-core defaults of 10,000 each (beyond that `room_full`) |
+| Participants and rooms per node | 10,000 each (beyond that `room_full`) |
 | Rooms per tenant | 10,000 |
 | Receive slots | 32 per kind |
 | Simulcast layers | 1–4 |
@@ -385,16 +385,16 @@ With `--rooms-event-webhook URL` and `--rooms-webhook-secret-file FILE`, each no
 | Ping | every 10 seconds, `pong` deadline 10 seconds |
 | Peer connection deadline | `peer_failed` if not connected 30 seconds after joining |
 
-## 14. Not yet available in the node
+## 10.14 Not yet available in the node
 
-Some features exist in the room core (`senca-rooms`) and the Signaling v1 document but are not yet usable in `senca-node`:
+Some features are described in the [Signaling v1](../../realtime/signaling.en.md) specification but are not yet available in `senca-node`:
 
 - **Node `overflow_redirect`**: cannot be configured (a full node answers `room_full`).
 - **`settings.recording`**: a policy value only; it does not start recording (use media pipelines, [11](11-media-pipelines.md)).
 - **A message for participants to change their own metadata**: Signaling v1 has none; change it from your application server with `PATCH /rooms/{id}/participants/{connection_id}`.
 - **Resume**: after a disconnect, the client rejoins as a new connection.
 
-## 15. Examples
+## 10.15 Examples
 
 ### curl
 
@@ -429,9 +429,6 @@ curl -s -X PATCH -H "$H" -H 'Content-Type: application/json' -H 'If-Match: "1"' 
 curl -s -X DELETE -H "$H" "$API/rooms/demo/participants/$CONNECTION_ID"
 curl -s -X DELETE -H "$H" "$API/rooms/demo"
 ```
-
-`tools/interop/node_rooms.sh` exercises this flow with three Chrome pages: it creates a room over REST, joins with tokens, and checks mutual video decoding,
-DataChannel round trips, simulcast layer switching, the REST participants, stats and push, and the SSE events.
 
 ### Browser SDK (`@senca/sdk`)
 

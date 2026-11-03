@@ -7,7 +7,6 @@ per-language WebVTT subtitles in HLS.
 
 - Rationale: [ADR-0011 captions and translation](../../dev/adr/0011-captions.md), [ADR-0004 codecs and patents](../../dev/adr/0004-codecs-patents.md) (audio is not decoded)
 - Related pages: [4. Ingest and playback](04-ingest-playback.md), [6. Inputs and outputs](06-inputs-outputs.md) (secrets, egress restrictions), [11. Media pipelines](11-media-pipelines.md) (captions for room participants), [12. Security](12-security.md)
-- Implementation: `crates/senca-node/src/captions.rs`, `crates/senca-caption` (`chunk.rs`, `asr.rs`, `merge.rs`, `translate.rs`, `hls.rs`, `vtt.rs`)
 
 `API`, `TOKEN` and `H` in the examples are the same as in [4. Ingest and playback](04-ingest-playback.md).
 
@@ -148,7 +147,7 @@ SENCA uses a **captions-may-lag** model; video is never delayed.
   usually takes a few seconds, so captions trail speech by several seconds up to a dozen or so.
 - If, when a caption arrives, the video segment for its time has already closed, the caption's start is moved to the time of the open
   segment (keeping its length or 0.5 seconds, whichever is longer), so players show it with the current segment.
-- A mode that delays video to align with captions exists only as an estimator (`latency` in `senca-caption`) and is not used by the node.
+- Delaying video to keep it in sync with captions is not supported yet.
 
 ## 8.7 Troubleshooting
 

@@ -16,10 +16,10 @@ placement target). `placement`, degradation and `GET /api/v1/grid` all work on a
 
 | Component | Role |
 |---|---|
-| Raft (`senca-raft`) | Replicates every change to the control state (commands). 1 to 7 voters |
+| Raft | Replicates every change to the control state (commands). 1 to 7 voters |
 | Ownership | The node that receives a publisher becomes the owner of the stream (with a fencing token) |
 | Relay (ADR-0014) | Viewers on a non-owner node are served from a local "mirror" fed with AUs from the owner |
-| Grid (`senca-grid`) | The leader detects failures from heartbeats and, every second, decides placement and commits it to the log. Each node runs only its own share |
+| Grid | The leader detects failures from heartbeats and, every second, decides placement and commits it to the log. Each node runs only its own share |
 
 **Only the control state is replicated.** Media data (HLS segments, recording files) stays on the disk of the
 node that produced it ([5. Recording](05-recording.md)).
@@ -112,7 +112,7 @@ the same certificates.
 **Mixed versions**: the challenge-response is new in this version. Nodes of earlier versions (which sent a fixed
 hash) cannot connect to it, so upgrade all nodes of a cluster together.
 
-Example, following `tools/interop/cluster.sh` (P-256; node certificates have both serverAuth and clientAuth):
+Example of creating the certificates and the secret (P-256; node certificates have both serverAuth and clientAuth):
 
 ```sh
 # Cluster CA
@@ -168,7 +168,7 @@ senca-node --data-dir /var/lib/senca --node-name n1 \
 
 ### What is replicated
 
-All of `ControlState`: streams, API tokens (hashes), recording records (metadata), schedules, Idempotency-Key
+The whole control state: streams, API tokens (hashes), recording records (metadata), schedules, Idempotency-Key
 records, node registrations (`GET /nodes`), inputs and outputs, secrets (encrypted values) and the secret key
 (wrapped with a key derived from the cluster secret), stream owners, the
 playback URL key, the grid state (node specs, workloads, assignments, unschedulable reasons), rooms and media
@@ -179,16 +179,16 @@ events (they live on the node hosting the room).
 
 ## 9.3 Stream ownership, and serving viewers on any node
 
-- The node where a publisher (RTMP, SRT, WHIP, ..., or a pull input) connects proposes `ClaimStream`. Applying
-  it issues a new fencing token and makes that node the owner (SSE `stream.owner`).
+- The node where a publisher (RTMP, SRT, WHIP, ..., or a pull input) connects proposes to the cluster that it takes ownership of the stream. Applying
+  the proposal issues a new fencing token and makes that node the owner (SSE `stream.owner`).
 - Every other node watches for this and disconnects any local publisher of the same stream (log:
   `publisher evicted`). A stream is never published on two nodes at once; the most recent connection wins.
 - Publishers may connect to any node. Publishing again elsewhere moves ownership to that node.
 - **Ownership is released when the input ends.** After the publisher disconnects and the reconnect grace
-  (`--reconnect-grace`) expires, the owner node proposes `ReleaseStream` (it only takes effect if the token is
+  (`--reconnect-grace`) expires, the owner node proposes releasing ownership (it only takes effect if the token is
   still the current one; log: `released ownership of stream ...`). Viewers on other nodes then get 404 instead
   of being redirected to a stale owner.
-- **Ownership of a node marked down is cleared too.** Applying `NodeDown` removes the owner records of that node.
+- **Ownership of a node marked down is cleared too.** Once the node is recorded as down, its owner records are removed.
   If the node comes back still receiving the publisher, it claims the stream again (log: `re-claimed stream ...`).
 
 ### Playback: relay mirrors
@@ -252,14 +252,14 @@ re-registering if anything changed).
 - Every node sends a heartbeat to the leader **every second** (over the cluster connection; heartbeats are not
   written to the log). It lists the streams the node is receiving, the workloads it runs, and device health.
   The leader accepts a heartbeat only when the sender's Raft ID matches the `raft_id` of the node's registration.
-- Every second, the leader marks a node whose last heartbeat is **more than 5 seconds** old as down by
-  committing `NodeDown`, and commits `NodeUp` when it comes back (SSE `node.down`, `node.up`).
+- Every second, the leader marks a node whose last heartbeat is **more than 5 seconds** old as down and
+  records this in the log; it records the node's return the same way (SSE `node.down`, `node.up`).
 - When leadership changes, the detector is rebuilt. For 5 seconds after that, nodes that have not yet sent a
   heartbeat are assumed to be alive.
 - Device health: every node re-probes its devices every 10 seconds (it starts one fresh codec worker and reads
   the capabilities in its Hello, and asks the capture worker for its device list). A registered device that is
-  no longer visible is reported unhealthy in heartbeats; the leader commits `DeviceDown` (SSE `device.down`), and
-  `DeviceUp` once it is visible again. Work on an unhealthy device moves to another device or degrades. Devices
+  no longer visible is reported unhealthy in heartbeats; the leader records the device as down (SSE `device.down`), and
+  as up again once it is visible (`device.up`). Work on an unhealthy device moves to another device or degrades. Devices
   that disappear stay in the registration (as unhealthy); newly visible devices are added by re-registration
   (every 30 heartbeats). This is separate from the manual `disable` flag (9.7), which measured health never undoes.
 - Placement is planned in the round after a down notice is applied. When a workload is added, removed or
@@ -360,7 +360,7 @@ When placing into free capacity, the candidate with the highest score wins (ties
 
 ## 9.5 Estimates per workload
 
-Reservations use the fixed estimates in `crates/senca-control/src/workloads.rs`. CPU in millicores, bandwidth
+Reservations use a fixed estimate per workload type. CPU in millicores, bandwidth
 in Mbit/s.
 
 | Workload | CPU | Memory | Inbound | Outbound | Other |
@@ -387,15 +387,15 @@ Pipeline estimate (a base of 200 CPU and 128 MB, plus per node):
 
 Example: a graph that decodes VP9 and encodes two AV1 outputs, one through `scale`, is
 200 + 400 + 1500 × 2 + 300 = 3900 millicores. A level that disables `scale` (and therefore the encoder after
-it) needs 2100 millicores (`tools/interop/grid_single.sh`).
+it) needs 2100 millicores.
 
 H.264 and H.265 have no software implementation ([14. Codecs and patents](14-codecs-and-patents.md)), so a
 pipeline using them cannot be placed on a node without a GPU (reason `no_device`).
 
 ## 9.6 Degradation, eviction and restore
 
-The scheduler runs on the leader every second and always produces the same decisions from the same input
-(`crates/senca-grid/src/plan.rs`).
+The scheduler runs on the leader every second and always produces the same decisions from the same input.
+Each round works as follows.
 
 1. **Check existing assignments**: anything no longer valid because of a node failure, device failure,
    constraint change or anti-affinity is queued for re-placement. Valid assignments are left alone.
@@ -416,8 +416,8 @@ The scheduler runs on the leader every second and always produces the same decis
 5. **Voluntary moves**: work on draining nodes, and `prefer`-pinned work whose target is back, is moved (at most
    64 moves per plan).
 
-`PlanConfig` defaults: `restore_cooldown_ms` 30000, `restore_headroom_permille` 0 (no extra headroom required
-when restoring), `max_voluntary_moves` 64, `locality_bonus` 10000. These are not configurable.
+Scheduler constants (not configurable): a 30-second restore cooldown, no extra headroom required when restoring,
+at most 64 voluntary moves per plan, and a locality bonus of 10000.
 
 Work is only degraded or evicted for higher-priority work, or because of node/device failure or reduced
 capacity. It only moves to a better level after the cooldown (to avoid flapping).
@@ -575,22 +575,10 @@ Timings follow from the constants above (1 s heartbeat, 5 s down threshold, 1 to
 
 | Scenario | What happens | Expected time |
 |---|---|---|
-| A non-leader node stops | After more than 5 s without heartbeats, `node.down`. The next round moves its work (`move`, reason `node_down`) and the target node starts it. `strict` pins are not moved | About 6 to 9 s from the stop to the move (measured in `tools/interop/cluster.sh`) |
+| A non-leader node stops | After more than 5 s without heartbeats, `node.down`. The next round moves its work (`move`, reason `node_down`) and the target node starts it. `strict` pins are not moved | About 6 to 9 s from the stop to the move (measured on a three-node cluster) |
 | The leader stops | Writes return 503 (retryable) during the election. The new leader rebuilds the detector and marks the stopped node down after the 5 s grace period | About 1 to 2 s election + 5 s grace + 1 s planning (estimated from the constants) |
 | The majority is lost | Writes return 503 (after waiting up to 5 s). Reads are served from local state. Running work keeps running, but nothing is re-placed | Writes resume as soon as the majority is back |
 | A stopped node returns | `node.up` in the next round. The node catches up on the log and reconciles its work. `prefer` pins return once 30 s have passed since they moved; degraded work is restored after the cooldown | About 1 s to `node.up`; restores after the 30 s cooldown |
 | The owner node of a stream stops | The stream is interrupted. When the publisher reconnects to any node, that node becomes the new owner and mirrors re-subscribe to it | Depends on the publisher's reconnect |
 | The node hosting a room stops | The room moves to another node. Participants rejoin (any node they connect to redirects them to the new host; see [10. Rooms](10-rooms.md)) | Same as a node stop |
 | Network partition | A node on the minority side **fences itself** once contact with a quorum (or the leader) has been lost for more than 4 s: it stops its pull inputs, push outputs and pipelines, and `/readyz` returns 503 (log: `grid: fenced`). The majority moves work only after the 5 s heartbeat timeout, so the same work never runs in two places. When the partition heals, the node resumes whatever is still assigned to it after catching up. Rooms and publishers connected directly to the node (RTMP etc.) are not stopped | About 4 to 5 s to stop; a few seconds to resume after healing |
-
-`tools/interop/cluster.sh` checks, on three nodes: writes through any node, 409 on duplicate names, writes with
-one node stopped, catch-up of a returning node, 503 without a majority while reads still work, convergence of
-all nodes, HLS and RTMP playback through relay mirrors, eviction of the old publisher when ownership moves,
-releasing ownership when an input ends (viewers on other nodes get 404), measured usage in heartbeats, moving and
-returning (after the cooldown) a `prefer` pin, not moving a `strict` pin, a partition (two nodes stopped with
-SIGSTOP) where the minority node stops its pull input and reports 503 on `/readyz` and the input runs on exactly
-one node after healing, redirecting to and moving a room, and a draining node refusing a new RTMP publisher and
-redirecting WHIP with 307 while the connected publisher continues. In plain mode it checks that a peer without the
-cluster secret is refused by the Raft and relay challenge-response. With `CLUSTER_TLS=1` it uses mTLS and checks
-that a node with a certificate from another CA is refused. `tools/interop/grid_single.sh` checks, on one node, priority-based degradation, unschedulable reasons
-and restoring after the cooldown.

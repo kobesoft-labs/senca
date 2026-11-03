@@ -8,10 +8,10 @@ production switcher), transcoding and similar tasks.
 
 - Rationale: [ADR-0004 codecs and patents](../../dev/adr/0004-codecs-patents.md), [ADR-0013 grid](../../dev/adr/0013-grid.md) (placement and degradation)
 - Related pages: [4. Ingest and playback](04-ingest-playback.md), [9. Cluster and grid](09-cluster-grid.md), [14. Codecs and patents](14-codecs-and-patents.md), [15. API and SDKs](15-api-and-sdks.md)
-- Implementation: `crates/senca-pipeline` (`model.rs` definition, `validate.rs` validation, `control.rs` operations), `crates/senca-node/src/pipelines.rs`, `api/pipelines.rs`, `crates/senca-control/src/workloads.rs` (degradation)
-- End-to-end test: scenario J in `tools/interop/node.sh`
 
 `API`, `TOKEN` and `H` in the examples are the same as in [4. Ingest and playback](04-ingest-playback.md).
+
+In this chapter, "node" in a graph means a processing node (an element of the graph's `nodes` array). Servers are called SENCA nodes where the two could be confused.
 
 ## 7.1 How it works
 
@@ -215,7 +215,7 @@ Make sure the destination stream's HLS container can carry the codecs (AV1 and V
 
 ## 7.5 Example: picture-in-picture
 
-The same setup as scenario J in `tools/interop/node.sh`: the whiteboard camera (`jb`) fills the frame, the teacher (`jt`) is overlaid
+The whiteboard camera (`jb`) fills the frame, the teacher (`jt`) is overlaid
 small in the lower right, the teacher's audio is mixed to Opus, and the result is AV1. All three streams use
 `codec_profile: royalty_free` and `hls.container: fmp4`.
 
@@ -267,6 +267,8 @@ curl -s -X POST "$API/pipelines/$PID/control" "${H[@]}" -d '{"op":"switch_progra
 curl -s -X POST "$API/pipelines/$PID/control" "${H[@]}" -d '{"op":"set_audio","node":"mix","input":"mic","gain_db":-6}'
 ```
 
+`node` is the `id` of the processing node the operation targets.
+
 | `op` | Fields | Meaning |
 |---|---|---|
 | `switch_program` | `node`, `scene`, `transition?` | Switch the program scene (cut if omitted) |
@@ -300,7 +302,7 @@ curl -s -X PATCH "$API/pipelines/$PID" "${H[@]}" -H "If-Match: $ETAG" -d '{
 - `placement.degrade` lists levels from best to worst (up to 8). Each level is `{label, disable}`. Labels must be unique and cannot be
   `full` (the name of level 0). `disable` must not be empty and may contain only node IDs present in the graph.
 - Levels **accumulate**: level 2 removes the `disable` lists of both level 1 and level 2.
-- Pruning (`prune_graph`): the listed nodes are removed, and so is every downstream node whose inputs are all removed. Nodes that lose
+- Pruning: the listed nodes are removed, and so is every downstream node whose inputs are all removed. Nodes that lose
   only some inputs (multi-input `sink`, `compose`, `audio_mix`) stay, minus the removed inputs; a `compose` also drops, from every
   scene, the layers that use a removed input.
 - The pruned graph is validated too. Removing downstream nodes while leaving their upstream makes the upstream outputs

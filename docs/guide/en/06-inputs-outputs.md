@@ -7,7 +7,6 @@ Push ingest where the sender connects to SENCA (RTMP, SRT, WHIP) is authorized b
 
 - Rationale: [ADR-0007 inputs, outputs and egress](../../dev/adr/0007-inputs-outputs-egress.md), [ADR-0010 PaaS integration](../../dev/adr/0010-paas.md), [ADR-0013 grid](../../dev/adr/0013-grid.md)
 - Related pages: [4. Ingest and playback](04-ingest-playback.md), [9. Cluster and grid](09-cluster-grid.md), [12. Security](12-security.md), [15. API and SDKs](15-api-and-sdks.md)
-- Implementation: `crates/senca-node/src/io.rs`, `hls_pull.rs`, `rtsp_pull.rs`, `srt.rs`, `capture.rs`, `paas.rs`, `egress.rs`, `api/io.rs`, `crates/senca-paas`
 
 `API`, `TOKEN` and `H` in the examples are the same as in [4. Ingest and playback](04-ingest-playback.md).
 
@@ -126,7 +125,7 @@ curl -s -X POST "$API/streams/$SID/outputs" "${H[@]}" -d '{"protocol":"srt_push"
 - Connects as the caller and sends MPEG-TS in 1316-byte chunks. `streamid` and `latency` (microseconds) work as for srt_pull; the passphrase is `credential_ref`.
 - Codecs that do not fit TS (AV1, VP8, VP9) cannot be sent.
 
-`whip_push` (sending to an external WHIP server) does not exist in the current node; `protocol: "whip_push"` is rejected with 400.
+Sending to an external WHIP server (`whip_push`) is not supported yet; `protocol: "whip_push"` is rejected with 400.
 
 ## 6.4 PaaS integration (`protocol: "paas"`)
 
