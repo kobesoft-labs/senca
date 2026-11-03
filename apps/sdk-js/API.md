@@ -164,7 +164,7 @@ text/event-stream の解析器（行を足すと、まとまったイベント�
 
 | メンバー | 説明 |
 |---|---|
-| `list(o?: ListOptions & { room?: string; }): Paginator<MediaPipeline>` | 一覧（`room` で部屋を絞る。今のノードは `room` を 400 にする不備があるので、絞るときは全件から `room` で選ぶ）。 |
+| `list(o?: ListOptions & { room?: string; }): Paginator<MediaPipeline>` | 一覧（`room` で部屋を絞れる）。 |
 | `start(id: string, o?: CallOptions & { ifMatch?: IfMatch; }): Promise<MediaPipeline>` | 動かす（`desired_state: running`）。 |
 | `stop(id: string, o?: CallOptions & { ifMatch?: IfMatch; }): Promise<MediaPipeline>` | 止める（`desired_state: stopped`。合成・送り出しを片付け、書き出した stream・録画は残る）。 |
 | `create(body: C, o?: CreateOptions): Promise<T>` | 作る（POST、Idempotency-Key を自動で付ける）。 |

@@ -109,4 +109,5 @@ grep -q '"client_id":"alice"' "$W/sse.txt" && pass "SSE: events carry the token'
 c=$(code DELETE /rooms/demo); [ "$c" = 204 ] && pass "room deleted" || fail "delete $c"
 sleep 1
 grep -q "^event: room.deleted" "$W/sse.txt" && pass "SSE: room.deleted" || fail "SSE: no room.deleted"
+grep -q "^event: room.stopped" "$W/sse.txt" && pass "SSE: room.stopped after delete" || fail "SSE: no room.stopped"
 summary

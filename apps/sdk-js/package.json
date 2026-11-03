@@ -20,7 +20,7 @@
     }
   },
   "types": "./types/index.d.ts",
-  "files": ["src", "types", "README.md", "API.md"],
+  "files": ["src", "types", "README.md", "README.en.md", "API.md"],
   "engines": { "node": ">=20" },
   "scripts": {
     "gen": "python3 scripts/gen_types.py",

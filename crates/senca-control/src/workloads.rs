@@ -8,7 +8,7 @@
 
 use crate::model::{Input, MediaPipeline, Output, Pipeline, PlacementSpec, Room};
 use crate::state::ControlState;
-use senca_grid::{Constraints, GpuReq, Level, Requirements, Resources, Workload, WorkloadKind};
+use senca_grid::{Constraints, GpuReq, LabelSelector, Level, Requirements, Resources, Workload, WorkloadKind};
 use std::collections::{BTreeMap, BTreeSet};
 
 /// 仕事の ID の頭（資源の種類）。
@@ -283,7 +283,10 @@ pub fn room_workload(r: &Room, mps: &[&MediaPipeline]) -> Workload {
         req.resources.cpu_millis += 20 * max;
         req.resources.memory_mb += 8 * max;
     }
-    base(format!("{ROOM}{}", r.id), &r.tenant, WorkloadKind::Room, req, r.placement.as_ref())
+    let mut w = base(format!("{ROOM}{}", r.id), &r.tenant, WorkloadKind::Room, req, r.placement.as_ref());
+    // 参加者は WebRTC でつなぐので、WebRTC の UDP を開いているノードにだけ置く
+    w.constraints.labels.push(LabelSelector::Eq { key: "senca.io/webrtc".into(), value: "true".into() });
+    w
 }
 
 /// 今の資源から導く仕事のすべて。

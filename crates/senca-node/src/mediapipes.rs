@@ -91,6 +91,19 @@ impl MediaPipelines {
     }
 }
 
+/// 子の資源（合成のパイプライン・送り出し）を消す（stream・録画は成果物として残す）。ブロックするので API・専用のスレッドから。
+pub fn remove_children(app: &App, m: &MediaPipeline) {
+    let _ = app.propose(Command::DeletePipeline { tenant: m.tenant.clone(), id: composite_pipeline_id(&m.id) });
+    for i in 0..m.egress.len().max(8) {
+        let oid = egress_output_id(&m.id, i);
+        let o = app.control.lock().unwrap().state.outputs.get(&oid).cloned();
+        if let Some(o) = o {
+            app.paas_cleanup(&o);
+            let _ = app.propose(Command::DeleteOutput { tenant: m.tenant.clone(), id: oid });
+        }
+    }
+}
+
 pub fn start(app: &Arc<App>) {
     let app = app.clone();
     tokio::spawn(async move {
@@ -269,6 +282,8 @@ async fn step(
     let rf_room = codec != "h264" && codec != "h265";
     // 書き出す参加者: client_id（無ければ connection_id）で決める。別のノードの参加者は除く
     let mut want: BTreeMap<String, Vec<(String, Option<String>, Kind)>> = BTreeMap::new();
+    // 映像のトラック → サイマルキャストの層（低い順）
+    let mut rids_of: HashMap<String, Vec<String>> = HashMap::new();
     for p in people.into_iter().filter(|p| p.node.is_none()) {
         if !mp.participants.is_empty() && !p.client_id.as_ref().is_some_and(|c| mp.participants.contains(c)) {
             continue;
@@ -277,6 +292,7 @@ async fn step(
         let mut tracks = Vec::new();
         if let Some(v) = p.tracks.iter().find(|t| t.kind == Kind::Video) {
             tracks.push((v.track_id.clone(), v.rids.last().cloned(), Kind::Video));
+            rids_of.insert(v.track_id.clone(), v.rids.clone());
         }
         if let Some(a) = p.tracks.iter().find(|t| t.kind == Kind::Audio) {
             tracks.push((a.track_id.clone(), None, Kind::Audio));
@@ -324,7 +340,7 @@ async fn step(
             let mut ts = Vec::new();
             for (t, rid, _) in tracks {
                 let id = app.mediapipes.next_bridge.fetch_add(1, Ordering::Relaxed);
-                rtc.room_cmd(RoomCmd::Bridge { room: mp.room.clone(), track_id: t.clone(), rid: rid.clone(), id, tx: tx.clone() });
+                rtc.room_cmd(RoomCmd::Bridge { room: mp.room.clone(), track_id: t.clone(), rids: rids_of.get(t).cloned().unwrap_or_default(), id, tx: tx.clone() });
                 ts.push((t.clone(), rid.clone(), id));
             }
             drop(tx);

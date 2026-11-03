@@ -39,7 +39,9 @@ pub enum RoomCmd {
     /// 制御状態が変わった: 自分に置かれた部屋を突き合わせる。
     Reconcile,
     /// 参加者のトラックを部屋の外（メディアパイプライン）へ書き出す（ADR-0016）。`rid` はサイマルキャストの層。
-    Bridge { room: String, track_id: String, rid: Option<String>, id: u64, tx: mpsc::Sender<BridgeItem> },
+    /// `rids` はサイマルキャストの層（低い順。空ならサイマルキャストでない）。届いている中でいちばん良い層を、
+    /// キーフレームで切り替えながら 1 本にして渡す（ブラウザーは負荷・帯域で上の層を止めることがある）。
+    Bridge { room: String, track_id: String, rids: Vec<String>, id: u64, tx: mpsc::Sender<BridgeItem> },
     Unbridge { room: String, track_id: String, id: u64 },
 }
 
@@ -53,6 +55,26 @@ pub struct BridgeItem {
 const BRIDGE_NODE: &str = "local-bridge";
 
 type BridgeKey = (String, String);
+
+/// 書き出す層: 届いている中でいちばん良い層（rids の後ろほど良い）を選ぶ。
+#[derive(Default)]
+struct BridgeLayers {
+    rids: Vec<String>,
+    current: Option<String>,
+    seen: HashMap<String, Instant>,
+}
+
+/// この時間届かない層は止まったとみなす。
+const LAYER_ALIVE: Duration = Duration::from_millis(1500);
+
+impl BridgeLayers {
+    fn alive(&self, rid: &str, now: Instant) -> bool {
+        self.seen.get(rid).is_some_and(|t| now.saturating_duration_since(*t) < LAYER_ALIVE)
+    }
+    fn best(&self, now: Instant) -> Option<&String> {
+        self.rids.iter().rev().find(|r| self.alive(r, now))
+    }
+}
 
 struct BridgeSink {
     id: u64,
@@ -153,8 +175,8 @@ pub struct RoomsHost {
     /// (部屋, トラック) → 書き出し先
     /// (部屋, トラック) → 書き出し先（取りこぼした先は次のキーフレームまで映像を送らない）
     bridges: HashMap<BridgeKey, Vec<BridgeSink>>,
-    /// 書き出す映像の層（HLS を区切れるよう、定期的にキーフレームを求める）。
-    bridge_rids: HashMap<BridgeKey, Option<String>>,
+    /// 書き出すトラックの層の選び方（HLS を区切れるよう、定期的にキーフレームも求める）。
+    bridge_layers: HashMap<BridgeKey, BridgeLayers>,
     next_bridge_key: Instant,
 }
 
@@ -175,7 +197,7 @@ impl RoomsHost {
             next_sweep: Instant::now(),
             warned_relay: false,
             bridges: HashMap::new(),
-            bridge_rids: HashMap::new(),
+            bridge_layers: HashMap::new(),
             next_bridge_key: Instant::now(),
         }
     }
@@ -215,7 +237,7 @@ impl RoomsHost {
 
     pub fn poll_timeout(&self) -> Option<Instant> {
         let (svc, host) = self.svc.as_ref()?;
-        let bridge = (!self.bridge_rids.is_empty()).then_some(self.next_bridge_key);
+        let bridge = (!self.bridge_layers.is_empty()).then_some(self.next_bridge_key);
         [svc.poll_timeout(), host.poll_timeout(), Some(self.next_sweep), bridge].into_iter().flatten().min()
     }
 
@@ -245,15 +267,15 @@ impl RoomsHost {
                 None => drop(f),
             },
             RoomCmd::Reconcile => self.reconcile(now),
-            RoomCmd::Bridge { room, track_id, rid, id, tx } => {
+            RoomCmd::Bridge { room, track_id, rids, id, tx } => {
                 let Some((svc, _)) = self.svc.as_mut() else { return };
                 let key = (room.clone(), track_id.clone());
                 let first = !self.bridges.contains_key(&key);
-                self.bridge_rids.insert(key.clone(), rid.clone());
+                self.bridge_layers.entry(key.clone()).or_insert_with(|| BridgeLayers { rids, ..Default::default() });
                 self.bridges.entry(key).or_default().push(BridgeSink { id, tx, waiting_key: true });
                 if first {
-                    // 最初の書き出しで購読する（キーフレームも求める）
-                    svc.on_relay_subscribe(now, BRIDGE_NODE, &room, &track_id, Some(rid.into_iter().collect()));
+                    // 最初の書き出しで購読する（全部の層。キーフレームも求める）
+                    svc.on_relay_subscribe(now, BRIDGE_NODE, &room, &track_id, Some(Vec::new()));
                 } else {
                     svc.on_relay_keyframe_request(now, &room, &track_id, None);
                 }
@@ -269,7 +291,7 @@ impl RoomsHost {
                 };
                 if empty {
                     self.bridges.remove(&key);
-                    self.bridge_rids.remove(&key);
+                    self.bridge_layers.remove(&key);
                     if let Some((svc, _)) = self.svc.as_mut() {
                         svc.on_relay_subscribe(now, BRIDGE_NODE, &room, &track_id, None);
                     }
@@ -375,6 +397,12 @@ impl RoomsHost {
                 self.empty_since.remove(&id);
                 let app = self.app.clone();
                 tokio::task::spawn_blocking(move || {
+                    // メディアパイプラインの子（合成・送り出し）も片付ける（書き出した stream・録画は残す）
+                    let mps: Vec<senca_control::model::MediaPipeline> =
+                        app.control.lock().unwrap().state.media_pipelines.values().filter(|m| m.room == id).cloned().collect();
+                    for m in &mps {
+                        crate::mediapipes::remove_children(&app, m);
+                    }
                     let _ = app.propose(senca_control::state::Command::DeleteRoom { tenant, id });
                 });
             }
@@ -390,8 +418,24 @@ impl RoomsHost {
         // 書き出す映像: ブラウザーはキーフレームを求められたときしか送らないので、定期的に求める
         if now >= self.next_bridge_key {
             self.next_bridge_key = now + BRIDGE_KEYFRAME_INTERVAL;
-            for ((room, track), rid) in &self.bridge_rids {
-                svc.on_relay_keyframe_request(now, room, track, rid.as_deref());
+            for ((room, track), l) in &self.bridge_layers {
+                if l.rids.is_empty() {
+                    svc.on_relay_keyframe_request(now, room, track, None);
+                    continue;
+                }
+                // 今の層と、より良い層が届いていればその層にも（キーフレームで上へ切り替える）
+                let mut want: Vec<&String> = l.current.iter().collect();
+                if let Some(b) = l.best(now)
+                    && l.current.as_ref() != Some(b)
+                {
+                    want.push(b);
+                }
+                if want.is_empty() {
+                    svc.on_relay_keyframe_request(now, room, track, None);
+                }
+                for r in want {
+                    svc.on_relay_keyframe_request(now, room, track, Some(r));
+                }
             }
         }
         host.handle_timeout(now);
@@ -425,8 +469,36 @@ impl RoomsHost {
                     // 認証 Webhook はこのノードでは使わない設定（トークンで認める）。来たら拒む
                     svc.on_auth_webhook_result(now, conn, &request_id, None, b"");
                 }
-                Action::Relay(senca_rooms::RelayAction::Forward { node, room_id, track_id, au, config, .. }) if node == BRIDGE_NODE => {
+                Action::Relay(senca_rooms::RelayAction::Forward { node, room_id, track_id, rid, au, config }) if node == BRIDGE_NODE => {
                     let key = (room_id, track_id);
+                    let mut config = config;
+                    // サイマルキャスト: 選んだ層だけを流す。より良い層（または今の層が止まったら届いている層）の
+                    // キーフレームで切り替える。切り替えたら寸法の変わった設定を渡す
+                    if let Some(l) = self.bridge_layers.get_mut(&key)
+                        && !l.rids.is_empty()
+                    {
+                        let Some(r) = rid else { continue };
+                        l.seen.insert(r.clone(), now);
+                        if l.current.as_ref() != Some(&r) {
+                            let cur_alive = l.current.as_ref().is_some_and(|c| l.alive(c, now));
+                            let better = l.best(now) == Some(&r);
+                            if !(au.keyframe && (better || !cur_alive)) {
+                                continue;
+                            }
+                            l.current = Some(r.clone());
+                            if config.is_none()
+                                && let Some((w, h)) = crate::media::vpx_keyframe_dims(au.codec, &au.payload)
+                            {
+                                config = Some(senca_core::CodecConfig {
+                                    codec: au.codec,
+                                    generation: 0,
+                                    record: bytes::Bytes::new(),
+                                    video: Some(senca_core::media::VideoParams { width: w, height: h, ..Default::default() }),
+                                    audio: None,
+                                });
+                            }
+                        }
+                    }
                     let mut lost = false;
                     if let Some(v) = self.bridges.get_mut(&key) {
                         v.retain(|b| !b.tx.is_closed());

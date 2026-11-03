@@ -1,7 +1,9 @@
 # senca-client（Rust の管理 API クライアント）
 
+[English](README.en.md) | 日本語
+
 SENCA の管理 API（`/api/v1`、[`docs/api/openapi.yaml`](../../docs/api/openapi.yaml)）を tokio から使う非同期のクライアント。
-HTTP/1.1 は `senca-http`、TLS は `senca-tls` を使い、外部の HTTP クライアントに依らない（依存は tokio・serde・`futures-core` だけ）。
+HTTP/1.1 は `senca-http`、TLS は `senca-tls` を使い、外部の HTTP クライアントに依らない（依存は tokio・serde・serde_json・bytes・getrandom・`futures-core`）。
 
 ```rust
 use senca_client::{EventsOptions, ListOptions, ProblemCode, RequestOptions, SencaClient, ServerEvent};

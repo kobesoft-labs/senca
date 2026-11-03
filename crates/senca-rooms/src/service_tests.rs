@@ -1087,3 +1087,33 @@ fn redirect_room_moves_members_and_new_joins() {
     assert!(h.take(k).iter().any(|m| matches!(m, ServerMessage::Redirect(_))));
     assert_eq!(h.svc.redirect_room(h.now, "nope", "x".into()), 0);
 }
+
+/// 書き出し（メディアパイプライン）: サイマルキャストの一つの層だけを、途中から購読しても設定付きで受ける。
+#[test]
+fn relay_subscribe_to_one_simulcast_layer() {
+    let mut h = H::new(|_| {});
+    let (a, _) = h.join("r", Role::Sendonly, "a", json!({"simulcast":{"rids":["r0","r1","r2"]}}));
+    h.offer(a, &[("video", "sendonly", &["r0", "r1", "r2"]), ("audio", "sendonly", &[])]);
+    start_media(&mut h, a, 1);
+    h.connected(a);
+    let tracks = h.svc.api_tracks("r").unwrap();
+    let v = tracks.iter().find(|t| t.kind == Kind::Video).unwrap().clone();
+    assert_eq!(v.rids, vec!["r0", "r1", "r2"], "{tracks:?}");
+    h.take_other();
+    h.svc.on_relay_subscribe(h.now, "bridge", "r", &v.track_id, Some(vec!["r2".into()]));
+    for n in 0..5 {
+        h.au(a, 1, MediaKind::Video, 100, n == 0);
+        h.au(a, 3, MediaKind::Video, 1200, n == 0);
+        h.now += Duration::from_millis(33);
+    }
+    let acts = h.take_other();
+    let fw: Vec<(Option<String>, usize)> = acts
+        .iter()
+        .filter_map(|x| match x {
+            Action::Relay(RelayAction::Forward { node, rid, au, .. }) if node == "bridge" => Some((rid.clone(), au.payload.len())),
+            _ => None,
+        })
+        .collect();
+    assert_eq!(fw.len(), 5, "{fw:?}");
+    assert!(fw.iter().all(|(r, n)| r.as_deref() == Some("r2") && *n == 1200), "{fw:?}");
+}

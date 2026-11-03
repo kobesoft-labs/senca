@@ -19,7 +19,7 @@ impl MediaPipelines {
     pub async fn create_with(&self, body: &MediaPipelineCreate, opts: RequestOptions) -> Result<Versioned<MediaPipeline>> {
         self.0.op_post("/media-pipelines".into(), Some(body), opts).await
     }
-    /// 一覧（`listMediaPipelines`。`ListOptions::room` で部屋を絞る。今のノードは `room` を 400 にする不備がある）。
+    /// 一覧（`listMediaPipelines`。`ListOptions::room` で部屋を絞る）。
     pub fn list(&self) -> Paginator<MediaPipeline> {
         self.list_with(ListOptions::default())
     }

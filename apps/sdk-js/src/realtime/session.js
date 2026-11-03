@@ -541,7 +541,7 @@ export class Session {
     for (let hops = 0; ; hops++) {
       const r = await this._attempt(url, signal, attempt);
       if (!r) return;
-      if (hops + 1 >= MAX_REDIRECTS) throw new SencaError('too_many_redirects', `redirect が ${MAX_REDIRECTS} 回続いた`, { fatal: true });
+      if (hops >= MAX_REDIRECTS) throw new SencaError('too_many_redirects', `redirect が ${MAX_REDIRECTS} 回続いた`, { fatal: true });
       this._emit({ type: 'redirected', location: r });
       url = normalizeUrl(r);
     }

@@ -272,7 +272,7 @@ export class MediaPipelines extends Collection<import("./openapi.gen.js").MediaP
     /** @internal @param {Http} http */
     constructor(http: Http);
     /**
-     * 一覧（`room` で部屋を絞る。今のノードは `room` を 400 にする不備があるので、絞るときは全件から `room` で選ぶ）。
+     * 一覧（`room` で部屋を絞れる）。
      * @param {ListOptions & {room?: string}} [o]
      * @returns {Paginator<MediaPipeline>}
      */

@@ -89,11 +89,13 @@ Q2="room=meet&name=bob&peers=1&secs=60&hold=28&token=$(enc "$(json "['token']" <
   done
   echo "$l" > "$W/composite_state"
   sleep 6
-  P1=$(python3 -c "import json,sys; print(json.load(open(sys.argv[1]))['artifacts']['participant_streams'][0]['stream'])" "$W/mp.json.live")
-  api GET /streams/$P1 > "$W/p1.json"
-  U1=$(api POST /streams/$P1/playback-url | json "['playback']['hls']")
-  curl -s "$U1" > "$W/p1.m3u8"
-  { "$FFMPEG" -v error -t 4 -i "$U1" -map 0:v -f framemd5 - 2>/dev/null || true; } | grep -vc "^#" > "$W/part_frames" || true
+  # 参加者ごとの stream（サイマルキャストの送り手も、そうでない送り手も）に映像が流れる
+  : > "$W/part_frames"
+  for P in $(python3 -c "import json,sys; print(' '.join(p['stream'] for p in json.load(open(sys.argv[1]))['artifacts']['participant_streams']))" "$W/mp.json.live"); do
+    U=$(api POST /streams/$P/playback-url | json "['playback']['hls']")
+    n=$({ "$FFMPEG" -v error -t 4 -i "$U" -map 0:v -f framemd5 - 2>/dev/null || true; } | grep -vc "^#" || true)
+    echo "$n" >> "$W/part_frames"
+  done
   UC=$(api POST /streams/$CSID/playback-url | json "['playback']['hls']")
   { "$FFMPEG" -v error -t 4 -i "$UC" -map 0:v -f framemd5 - 2>/dev/null || true; } | grep -vc "^#" > "$W/comp_frames" || true
   "$FFPROBE" -v error -select_streams v:0 -show_entries stream=codec_name,width,height -of csv=p=0 "$UC" > "$W/comp_probe" 2>/dev/null || true
@@ -107,7 +109,7 @@ jq_() { python3 -I -c "import json,sys;d=json.load(open(sys.argv[1]));print(eval
 [ -s "$R" ] && [ "$(jq_ "$R" "d['results']['alice'].get('ok')")" = True ] && [ "$(jq_ "$R" "d['results']['bob'].get('ok')")" = True ] \
   && pass "both participants exchanged media in the room" || fail "browsers: $(head -c 400 "$R" 2>/dev/null)"
 [ "$(cat "$W/n_parts")" = 2 ] && pass "stream pipeline: one stream per participant" || fail "participant streams $(cat "$W/n_parts")"
-n=$(cat "$W/part_frames" 2>/dev/null || echo 0); [ "${n:-0}" -ge 30 ] && pass "participant stream decodes over HLS ($n frames, no re-encoding)" || fail "participant HLS frames $n"
+ok=$(awk '$1>=30{c++} END{print c+0}' "$W/part_frames"); [ "$ok" = 2 ] && pass "both participant streams decode video over HLS ($(tr '\n' ' ' < "$W/part_frames")frames, no re-encoding)" || fail "participant HLS frames $(tr '\n' ' ' < "$W/part_frames")"
 [ "$(cat "$W/composite_state")" = live ] && pass "composite stream is live" || fail "composite state $(cat "$W/composite_state")"
 n=$(cat "$W/comp_frames" 2>/dev/null || echo 0); [ "${n:-0}" -ge 30 ] && pass "composite decodes over HLS ($n frames, $(cat "$W/comp_probe"))" || fail "composite frames $n"
 grep -q "^av1,640,360" "$W/comp_probe" && pass "composite is AV1 640x360" || fail "composite probe $(cat "$W/comp_probe")"

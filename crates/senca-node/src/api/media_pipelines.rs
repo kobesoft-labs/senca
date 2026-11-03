@@ -71,6 +71,13 @@ where
 
 fn check(ctx: &Ctx, m: &MediaPipeline) -> Result<(), Problem> {
     crate::api::streams::validate_name(&m.name)?;
+    // E2EE の部屋: SFU は中身を見られないので、合成・文字起こしはできない（書き出し・録画は暗号のまま）
+    let e2ee = ctx.control().state.rooms.get(&m.room).is_some_and(|r| r.settings.get("e2ee").and_then(|v| v.as_bool()).unwrap_or(false));
+    if e2ee && (m.composite.is_some() || m.captions.is_some()) {
+        return Err(Problem::new(ProblemCode::UnsupportedCodec, "E2EE の部屋では合成・文字起こしはできません（中身はサーバーから見えない）")
+            .with_status(422)
+            .with_details(json!({ "reason": "e2ee" })));
+    }
     if m.name.len() > 40 {
         return Err(bad("name は 40 文字まで（子の stream の名前に使う）"));
     }
@@ -182,19 +189,8 @@ fn render(ctx: &Ctx, m: &MediaPipeline) -> Value {
     })
 }
 
-/// 子の資源（合成のパイプライン・送り出し）を消す（stream・録画は成果物として残す）。
 fn remove_children(ctx: &Ctx, m: &MediaPipeline) {
-    let _ = ctx.app.propose(Command::DeletePipeline { tenant: m.tenant.clone(), id: composite_pipeline_id(&m.id) });
-    for i in 0..m.egress.len().max(8) {
-        let oid = egress_output_id(&m.id, i);
-        if ctx.control().state.outputs.contains_key(&oid) {
-            let o = ctx.control().state.outputs.get(&oid).cloned();
-            if let Some(o) = o {
-                ctx.app.paas_cleanup(&o);
-            }
-            let _ = ctx.app.propose(Command::DeleteOutput { tenant: m.tenant.clone(), id: oid });
-        }
-    }
+    crate::mediapipes::remove_children(ctx.app, m);
 }
 
 /// 部屋を消すときに、その部屋のメディアパイプラインの子を消す（rooms の API から）。

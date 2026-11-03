@@ -113,6 +113,8 @@ pub fn local_spec(app: &App) -> NodeSpec {
         .unwrap_or_default();
     let mut labels: BTreeMap<String, String> = app.cfg.labels.clone();
     labels.insert("senca.io/name".into(), app.cfg.node_name.clone());
+    // 部屋（WebRTC の参加者）を受けられるノード
+    labels.insert("senca.io/webrtc".into(), app.cfg.webrtc_udp.is_some().to_string());
     let mut roles: BTreeSet<Role> = [Role::Media].into_iter().collect();
     let voter = app.cfg.cluster.as_ref().is_none_or(|c| c.peers.iter().any(|p| p.id == c.node_id));
     if voter {
