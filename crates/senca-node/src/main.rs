@@ -77,6 +77,13 @@ fn main() {
 
 async fn run(cfg: Config) -> Result<(), String> {
     std::fs::create_dir_all(&cfg.data_dir).map_err(|e| format!("{}: {e}", cfg.data_dir.display()))?;
+    // 制御の置き場所（再生の署名鍵・秘密値の鍵・トークンのハッシュ・Raft のログ）は持ち主だけが読める
+    {
+        use std::os::unix::fs::PermissionsExt;
+        let control = cfg.data_dir.join("control");
+        std::fs::create_dir_all(&control).map_err(|e| format!("{}: {e}", control.display()))?;
+        std::fs::set_permissions(&control, std::fs::Permissions::from_mode(0o700)).map_err(|e| format!("{}: {e}", control.display()))?;
+    }
     let (store, mut state) = store::Store::open(&cfg.data_dir.join("control")).map_err(|e| format!("control store: {e}"))?;
     let jwt = match &cfg.jwks {
         Some(p) => {

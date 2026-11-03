@@ -26,7 +26,7 @@
 | SRTP-01 | RFC 3711、7714 | senca-srtp | dtls_srtp.sh、RFC の試験ベクター | 相互接続済み（FFmpeg の SRTP、AEAD-GCM はベクターのみ） |
 | RTC-SEC-01 | RFC 8827 | senca-dtls・senca-srtp・senca-webrtc | 未実施 | 独立監査の前（仕様 15.3） |
 | RAFT-01 | Raft（Ongaro）、joint consensus、ReadIndex | senca-raft | 決定的なシミュレーション（6000 通り以上） | 自前の試験のみ |
-| DIST-FENCE-01 | 本仕様 8.2 | senca-raft（FencingToken） | 未実施（ノードへの統合は M9） | 未実施 |
+| DIST-FENCE-01 | 本仕様 8.2 | senca-control（ClaimStream の token）・senca-node | `tools/interop/cluster.sh`（古い所有者が送り手を切る・写しが新しい所有者へ移る） | 実施（2026-11-03、分散の試験 47/47） |
 | CODEC-HW-01 | NVENC/NVDEC、oneVPL、AMF、VA-API | senca-codec | codec_sw.sh（装置なしの検出） | 未検証（装置なし） |
 | CODEC-RF-01 | dav1d、SVT-AV1、libvpx、libopus | senca-codec | codec_sw.sh、node.sh G | 相互接続済み（FFmpeg の復号器とビット一致） |
 | IMG-01 | JPEG（ISO/IEC 10918-1 基本方式）、PNG | senca-image | image.sh | 相互接続済み（FFmpeg） |

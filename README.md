@@ -18,8 +18,8 @@ It runs on a single node or as a grid of many nodes that places work by resource
 - **Processing**: pipelines (decode, compose, whiteboard correction, audio mixing, encode), production controls
   (scenes, transitions), snapshots and thumbnails, captions and translation (WebVTT)
 - **Egress**: RTMP/SRT push, integration with cloud streaming services (PaaS)
-- **Realtime rooms** (ADR-0015): SFU, simulcast, spotlight, forwarding filters, DataChannels, join tokens,
-  E2EE pass-through, and a browser SDK (`apps/sdk-js`)
+- **Realtime rooms** (ADR-0015): SFU, simulcast, spotlight, forwarding filters, DataChannels, join tokens
+  (Ed25519), events on SSE, E2EE pass-through, and a browser SDK (`apps/sdk-js`)
 - **Media pipelines** (ADR-0016): export room participants as streams, composite, record, push over RTMP, transcribe
 - **Grid** (ADR-0013): places work by node resources (CPU, memory, bandwidth, GPUs, capture devices); manual pinning
   to nodes and GPUs, priorities, moving work off failed nodes and devices with step-wise degradation, and restoring it

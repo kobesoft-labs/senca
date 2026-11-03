@@ -17,7 +17,6 @@ pub struct Config {
     pub srt_listen: Option<SocketAddr>,
     pub rtsp_listen: Option<SocketAddr>,
     pub webrtc_udp: Option<SocketAddr>,
-    pub moq_listen: Option<SocketAddr>,
     pub tls_cert: Option<PathBuf>,
     pub tls_key: Option<PathBuf>,
     pub public: PublicUrls,
@@ -114,7 +113,6 @@ impl Default for Config {
             srt_listen: None,
             rtsp_listen: None,
             webrtc_udp: None,
-            moq_listen: None,
             tls_cert: None,
             tls_key: None,
             public: PublicUrls::default(),
@@ -146,8 +144,8 @@ impl Default for Config {
 }
 
 pub const USAGE: &str = "senca-node [--config FILE] [--data-dir DIR] [--http ADDR] [--rtmp ADDR|off] [--rtmps ADDR] [--https ADDR]
-  [--srt ADDR] [--rtsp ADDR] [--webrtc-udp ADDR] [--moq ADDR] [--tls-cert FILE --tls-key FILE]
-  [--public-rtmp-url URL] [--public-http-url URL] [--public-srt-url URL]
+  [--srt ADDR] [--rtsp ADDR] [--webrtc-udp ADDR] [--tls-cert FILE --tls-key FILE]
+  [--public-rtmp-url URL] [--public-http-url URL] [--public-srt-url URL] [--public-rtsp-url URL] [--capture-synthetic]
   [--max-playback-ttl SECS] [--reconnect-grace MS] [--record-queue N] [--retention-sweep SECS]
   [--jwks FILE --jwt-issuer ISS --jwt-audience AUD [--jwt-tenant-claim NAME]]
   [--codec-workers N] [--codec-worker-bin FILE] [--codec-lib-dir DIR] [--zoneinfo DIR]
@@ -194,7 +192,6 @@ impl Config {
                 _ if flag("--srt") => cfg.srt_listen = opt_addr(val()?)?,
                 _ if flag("--rtsp") => cfg.rtsp_listen = opt_addr(val()?)?,
                 _ if flag("--webrtc-udp") => cfg.webrtc_udp = opt_addr(val()?)?,
-                _ if flag("--moq") => cfg.moq_listen = opt_addr(val()?)?,
                 _ if flag("--tls-cert") => cfg.tls_cert = Some(PathBuf::from(val()?)),
                 _ if flag("--tls-key") => cfg.tls_key = Some(PathBuf::from(val()?)),
                 _ if flag("--public-rtmp-url") => cfg.public.rtmp = val()?,

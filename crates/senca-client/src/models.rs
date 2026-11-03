@@ -424,8 +424,9 @@ pub struct LivePlaybackPlayback {
     /// `{public-rtsp-url}/live/{id}?exp=&sig=`（`--public-rtsp-url` を設定したときだけ）
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub rtsp: Option<String>,
-    /// `{http}/whep/{id}?exp=&sig=`（`--webrtc-udp` を設定しないノードでは 404）
-    pub whep: String,
+    /// `{http}/whep/{id}?exp=&sig=`（`--webrtc-udp` を設定しないノードでは null）
+    #[serde(default)]
+    pub whep: Option<String>,
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize, Default)]
@@ -1798,7 +1799,7 @@ pub struct OutputCreate {
     /// `paas` で必須（`credential_ref` も必須）
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub provider: Option<OutputCreateProvider>,
-    /// `paas` 以外で必須。rtmp_push: `rtmp`・`rtmps`、srt_push: `srt`、whip_push: `http`・`https`。資格情報は入れられない。
+    /// `paas` 以外で必須。rtmp_push: `rtmp`・`rtmps`、srt_push: `srt`。資格情報は入れられない。
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub url: Option<String>,
 }
@@ -1809,8 +1810,6 @@ pub enum OutputCreateProtocol {
     RtmpPush,
     #[serde(rename = "srt_push")]
     SrtPush,
-    #[serde(rename = "whip_push")]
-    WhipPush,
     #[serde(rename = "paas")]
     Paas,
     /// この版の SDK が知らない値（サーバーが値を足したとき）。
@@ -1824,7 +1823,6 @@ impl OutputCreateProtocol {
         match self {
             OutputCreateProtocol::RtmpPush => Some("rtmp_push"),
             OutputCreateProtocol::SrtPush => Some("srt_push"),
-            OutputCreateProtocol::WhipPush => Some("whip_push"),
             OutputCreateProtocol::Paas => Some("paas"),
             OutputCreateProtocol::Unknown => None,
         }
@@ -3118,45 +3116,20 @@ pub struct MediaPipelineRecording {
 }
 
 /// 送り出し（AWS の media live connector pipeline 相当）。合成の stream の出力（`Output`）として作る。形と検査は `OutputCreate` と同じ
-/// （ただし `whip_push` は使えず、`paas` でも `credential_ref` を検査しない）。応答では null・空のフィールドは欄が無い。
+/// （`paas` には `credential_ref` が要る）。応答では null・空のフィールドは欄が無い。
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct MediaPipelineEgress {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub credential_ref: Option<CredentialRef>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub options: Option<IoOptions>,
-    pub protocol: MediaPipelineEgressProtocol,
+    pub protocol: OutputCreateProtocol,
     /// `paas` で必須
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub provider: Option<OutputCreateProvider>,
     /// `paas` 以外で必須。rtmp_push: `rtmp`・`rtmps`、srt_push: `srt`。資格情報は入れられない。
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub url: Option<String>,
-}
-
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
-pub enum MediaPipelineEgressProtocol {
-    #[serde(rename = "rtmp_push")]
-    RtmpPush,
-    #[serde(rename = "srt_push")]
-    SrtPush,
-    #[serde(rename = "paas")]
-    Paas,
-    /// この版の SDK が知らない値（サーバーが値を足したとき）。
-    #[serde(other)]
-    Unknown,
-}
-
-impl MediaPipelineEgressProtocol {
-    /// JSON での値（`Unknown` は `None`）。
-    pub fn as_str(self) -> Option<&'static str> {
-        match self {
-            MediaPipelineEgressProtocol::RtmpPush => Some("rtmp_push"),
-            MediaPipelineEgressProtocol::SrtPush => Some("srt_push"),
-            MediaPipelineEgressProtocol::Paas => Some("paas"),
-            MediaPipelineEgressProtocol::Unknown => None,
-        }
-    }
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize, Default)]
@@ -3518,7 +3491,7 @@ pub struct Problem {
     /// code ごとの補足（例: 本文の解析エラーは `{reason}`、予約の衝突は `{limit, overlaps}`）
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub details: Option<Value>,
-    /// `X-Request-Id` と同じ。Idempotency-Key の再送で返した覚えたエラーには無い（実装の不備）。
+    /// `X-Request-Id` と同じ（Idempotency-Key の再送では、再送の要求の ID）。
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub request_id: Option<String>,
     pub retryable: bool,

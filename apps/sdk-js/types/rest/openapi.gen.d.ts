@@ -353,8 +353,8 @@ export type LivePlayback = {
     rtmp: string;
     /** `{public-rtsp-url}/live/{id}?exp=&sig=`（`--public-rtsp-url` を設定したときだけ） */
     rtsp?: string;
-    /** `{http}/whep/{id}?exp=&sig=`（`--webrtc-udp` を設定しないノードでは 404） */
-    whep: string;
+    /** `{http}/whep/{id}?exp=&sig=`（`--webrtc-udp` を設定しないノードでは null） */
+    whep: string | null;
   };
 };
 
@@ -434,7 +434,7 @@ export type MediaPipelineCreate = {
 
 /**
  * 送り出し（AWS の media live connector pipeline 相当）。合成の stream の出力（`Output`）として作る。形と検査は `OutputCreate` と同じ
- * （ただし `whip_push` は使えず、`paas` でも `credential_ref` を検査しない）。応答では null・空のフィールドは欄が無い。
+ * （`paas` には `credential_ref` が要る）。応答では null・空のフィールドは欄が無い。
  */
 export type MediaPipelineEgress = {
   credential_ref?: CredentialRef;
@@ -537,7 +537,7 @@ export type Output = {
   /** 配置の指定。指定が無ければ null */
   placement: PlacementSpecView | null;
   placement_status: PlacementStatus;
-  protocol: "rtmp_push" | "srt_push" | "whip_push" | "paas";
+  protocol: "rtmp_push" | "srt_push" | "paas";
   provider: "cloudflare_stream" | "aws_ivs" | "aws_medialive" | null;
   /** SENCA が PaaS に作った資源（後片付けに使う） */
   provider_resource: string | null;
@@ -553,10 +553,10 @@ export type OutputCreate = {
   options?: IoOptions;
   /** 配置の指定（`degrade` は使えない）。指定が無ければ、配信を受けたノードを好む */
   placement?: PlacementSpec | null;
-  protocol: "rtmp_push" | "srt_push" | "whip_push" | "paas";
+  protocol: "rtmp_push" | "srt_push" | "paas";
   /** `paas` で必須（`credential_ref` も必須） */
   provider?: "cloudflare_stream" | "aws_ivs" | "aws_medialive" | null;
-  /** `paas` 以外で必須。rtmp_push: `rtmp`・`rtmps`、srt_push: `srt`、whip_push: `http`・`https`。資格情報は入れられない。 */
+  /** `paas` 以外で必須。rtmp_push: `rtmp`・`rtmps`、srt_push: `srt`。資格情報は入れられない。 */
   url?: string | null;
 };
 
@@ -990,7 +990,7 @@ export type Problem = {
   code: ProblemCode;
   /** code ごとの補足（例: 本文の解析エラーは `{reason}`、予約の衝突は `{limit, overlaps}`） */
   details?: unknown;
-  /** `X-Request-Id` と同じ。Idempotency-Key の再送で返した覚えたエラーには無い（実装の不備）。 */
+  /** `X-Request-Id` と同じ（Idempotency-Key の再送では、再送の要求の ID）。 */
   request_id?: string;
   retryable: boolean;
   status: number;

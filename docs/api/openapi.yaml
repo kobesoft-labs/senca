@@ -1196,12 +1196,12 @@ paths:
       operationId: createOutput
       summary: 出力（push・PaaS 連携）の追加
       description: |
-        stream を外部へ送る出力を足す（`rtmp_push`・`srt_push`・`whip_push`・`paas`、REQ-001）。配信が始まるまでは `status.state: waiting_input`。
-        - `rtmp_push`・`srt_push`・`whip_push`: `url` が要る（スキームの検査と、資格情報 `user:pass@` の拒否は入力と同じ）。RTMP の stream key は `url` の最後か `credential_ref`。
+        stream を外部へ送る出力を足す（`rtmp_push`・`srt_push`・`paas`、REQ-001）。配信が始まるまでは `status.state: waiting_input`。
+        - `rtmp_push`・`srt_push`: `url` が要る（スキームの検査と、資格情報 `user:pass@` の拒否は入力と同じ）。RTMP の stream key は `url` の最後か `credential_ref`。
         - `paas`: `provider`（`cloudflare_stream`・`aws_ivs`・`aws_medialive`）と `credential_ref`（その API の資格情報）が要る。`url` は使わない。SENCA が外部に作った資源は `provider_resource` に入り、出力の削除で後片付けする。
         1 つの stream の出力は 16 個まで（超えると 403 `QUOTA_EXCEEDED`）。
         配置: `enabled: true` の出力はグリッドの仕事（`output:{id}`）になり、配置係が割り当てたノードが送り出す（`placement_status`。指定が無ければ配信を受けたノードを好む）。`placement` の検査は入力と同じ（`degrade` は 400）。
-        注意: `whip_push` は受け付けるが、今のノードは実行できない（`status.state: error`、`last_error` に理由）。
+        `whip_push`（外部の WHIP サーバーへ送る）はまだ無い（400）。
       x-senca-scope: stream:write
       parameters:
         - $ref: '#/components/parameters/IdempotencyKey'
@@ -2650,7 +2650,7 @@ components:
           properties:
             hls: { type: string, description: '`{http}/s/{exp}/{sig}/live/{id}/index.m3u8`' }
             rtmp: { type: string, description: '`{rtmp}/play/{id}?exp=&sig=`' }
-            whep: { type: string, description: '`{http}/whep/{id}?exp=&sig=`（`--webrtc-udp` を設定しないノードでは 404）' }
+            whep: { type: [string, 'null'], description: '`{http}/whep/{id}?exp=&sig=`（`--webrtc-udp` を設定しないノードでは null）' }
             rtsp: { type: string, description: '`{public-rtsp-url}/live/{id}?exp=&sig=`（`--public-rtsp-url` を設定したときだけ）' }
     VodPlayback:
       type: object
@@ -3370,11 +3370,11 @@ components:
       additionalProperties: false
       required: [protocol]
       properties:
-        protocol: { type: string, enum: [rtmp_push, srt_push, whip_push, paas] }
+        protocol: { type: string, enum: [rtmp_push, srt_push, paas] }
         url:
           type: [string, 'null']
           maxLength: 2048
-          description: '`paas` 以外で必須。rtmp_push: `rtmp`・`rtmps`、srt_push: `srt`、whip_push: `http`・`https`。資格情報は入れられない。'
+          description: '`paas` 以外で必須。rtmp_push: `rtmp`・`rtmps`、srt_push: `srt`。資格情報は入れられない。'
         credential_ref: { $ref: '#/components/schemas/CredentialRef' }
         enabled: { type: [boolean, 'null'], default: true }
         provider:
@@ -3444,7 +3444,7 @@ components:
         id: { type: string }
         stream: { type: string }
         generation: { type: integer, minimum: 1 }
-        protocol: { type: string, enum: [rtmp_push, srt_push, whip_push, paas] }
+        protocol: { type: string, enum: [rtmp_push, srt_push, paas] }
         url: { type: [string, 'null'] }
         credential_ref: { $ref: '#/components/schemas/CredentialRef' }
         enabled: { type: boolean }
@@ -4145,7 +4145,7 @@ components:
       required: [protocol]
       description: |
         送り出し（AWS の media live connector pipeline 相当）。合成の stream の出力（`Output`）として作る。形と検査は `OutputCreate` と同じ
-        （ただし `whip_push` は使えず、`paas` でも `credential_ref` を検査しない）。応答では null・空のフィールドは欄が無い。
+        （`paas` には `credential_ref` が要る）。応答では null・空のフィールドは欄が無い。
       properties:
         protocol: { type: string, enum: [rtmp_push, srt_push, paas] }
         url:

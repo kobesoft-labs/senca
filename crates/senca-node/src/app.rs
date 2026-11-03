@@ -293,7 +293,7 @@ impl App {
             .any(|r| r.stream == stream && r.state == RecordingState::Recording && r.schedule.is_none())
     }
 
-    /// RTMP play: キーは stream の名前ではなく、署名付きの `{stream_id}?exp=..&sig=..` か publish 鍵。
+    /// RTMP play（SRT・RTSP の play、WHEP も）: キーは署名付きの `{stream_id}?exp=..&sig=..`（publish 鍵では見られない）。
     pub fn subscribe_rtmp_play(&self, key: &str) -> Option<Subscription> {
         let (id, q) = key.split_once('?').unwrap_or((key, ""));
         let mut exp = None;
@@ -522,7 +522,8 @@ impl App {
         let mut v = json!({ "hls": format!("{http}/s/{exp}/{sig}/{kind}/{id}/index.m3u8") });
         if kind == "live" {
             v["rtmp"] = json!(format!("{}/play/{id}?exp={exp}&sig={sig}", self.cfg.public.rtmp));
-            v["whep"] = json!(format!("{http}/whep/{id}?exp={exp}&sig={sig}"));
+            // WHEP は WebRTC（--webrtc-udp）を開いたノードだけ
+            v["whep"] = if self.cfg.webrtc_udp.is_some() { json!(format!("{http}/whep/{id}?exp={exp}&sig={sig}")) } else { Value::Null };
             if let Some(r) = &self.cfg.public.rtsp {
                 v["rtsp"] = json!(format!("{r}/live/{id}?exp={exp}&sig={sig}"));
             }

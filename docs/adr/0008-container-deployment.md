@@ -5,7 +5,7 @@
 
 ## 決定
 
-- `Dockerfile`（2 段: Rust でビルド → debian slim）と `compose.yaml`。`docker compose up -d` で単一ノードが立ち上がる。
+- `Dockerfile`（2 段: Rust でビルド → Ubuntu 26.04。ロイヤリティフリーのコーデックの実行時のライブラリ libvpx 1.16 などに合わせる）と `compose.yaml`。`docker compose up -d` で単一ノードが立ち上がる。
 - 実行は非 root（uid 10001）、読み取り専用のルート、`no-new-privileges`。データは named volume（`/var/lib/senca`）。
 - 初回起動で管理者トークンを作り、`/var/lib/senca/control/bootstrap-admin-token`（0600）に置く。既定のパスワードは持たない。
 - ソフトウェアの H.264/H.265 コーデックは入れない。ロイヤリティフリーのコーデック（dav1d・libvpx・SVT-AV1・libopus）はディストリビューションのパッケージを入れ、codec worker が実行時に読み込む。
