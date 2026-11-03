@@ -122,7 +122,8 @@ BASE=${HLS_PATH%index.m3u8}
 h3 "$H3$BASE$SEG" --out "$W/seg.h3" > "$W/seg.h3.json" || true
 curl -s -o "$W/seg.tcp" "${HLS%index.m3u8}$SEG"
 if [ -s "$W/seg.h3" ] && cmp -s "$W/seg.h3" "$W/seg.tcp"; then pass "A segment $SEG over HTTP/3 is byte-identical to TCP ($(wc -c < "$W/seg.h3") bytes)"; else fail "A segment $SEG h3 vs tcp: $(cat "$W/seg.h3.json")"; fi
-vframes() { "$FFPROBE" -v error -count_frames -select_streams v:0 -show_entries stream=nb_read_frames -of csv=p=0 "$1" 2>/dev/null | grep -m1 -E '^[0-9]+$' || echo 0; }
+# ffprobe が終了コードで失敗を返しても、数えたフレームの数を使う（pipefail で 0 が足されて「60 と 0」の 2 行にならないように）
+vframes() { local n; n=$({ "$FFPROBE" -v error -count_frames -select_streams v:0 -show_entries stream=nb_read_frames -of csv=p=0 "$1" 2>/dev/null || true; } | grep -m1 -E '^[0-9]+$' || true); echo "${n:-0}"; }
 n=$(vframes "$W/seg.h3")
 [ "${n:-0}" -gt 0 ] && pass "A segment fetched over HTTP/3 decodes ($n video frames)" || fail "A segment decode: $n"
 # LL-HLS のブロッキング・リロード: 今の再生リストの次のセグメントの、さらに次のセグメントの part 0 を待つ
@@ -159,7 +160,8 @@ o=$(h3 "$H3/api/v1/events" -H "authorization: Bearer $TOKEN" || true)
 [ "$(echo "$o" | jget "['status']")" = 501 ] && pass "B SSE over HTTP/3 is 501 (served over HTTP/1.1)" || fail "B SSE: $o"
 
 echo "== C. MoQ subscribe (moq-dev $("$M" --version 2>/dev/null | head -1))"
-MCON=(--connect-version moq-transport-22 --connect-tls-root "$CA")
+# ノードは MoQ を WebSocket では受けない。moq-dev の WebSocket の予備の接続は切っておく（並んで失敗して結果が揺れるため）
+MCON=(--connect-version moq-transport-22 --connect-tls-root "$CA" --connect-websocket-enabled=false)
 export_fmp4() { # $1 = 名前, 残りは moq の引数
   local name=$1; shift
   timeout 8 "$M" "$@" "${MCON[@]}" --broadcast "senca/live/$SID" export fmp4 > "$W/$name.mp4" 2> "$W/$name.log" || true
