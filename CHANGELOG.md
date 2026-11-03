@@ -1,6 +1,6 @@
 # Changelog / 変更履歴
 
-## Unreleased / 未公開
+## v0.0.1 — 2026-11-03
 
 ### Added / 追加
 

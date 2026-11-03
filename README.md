@@ -5,7 +5,7 @@ English | [日本語](README.ja.md)
 A media server for live streaming, recording and real-time communication, written in Rust.
 It runs on a single node or as a grid of many nodes that places work by resources and keeps running when nodes fail.
 
-> **Version: v0.0.0.** The release process and the checks done before a release are described in
+> **Version: v0.0.1.** The release process and the checks done before a release are described in
 > [docs/dev/RELEASE.en.md](docs/dev/RELEASE.en.md).
 
 ## Features

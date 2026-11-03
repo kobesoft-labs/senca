@@ -1,6 +1,6 @@
 {
   "name": "@senca/sdk",
-  "version": "0.0.0",
+  "version": "0.0.1",
   "description": "SENCA client SDK: realtime rooms (WebRTC SFU, signaling v1) for browsers and the management REST API for browsers and Node.js",
   "license": "Apache-2.0",
   "type": "module",
