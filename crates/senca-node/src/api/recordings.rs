@@ -27,6 +27,7 @@ pub fn render(ctx: &Ctx, r: &Recording) -> Value {
         "segments": info.as_ref().map(|i| i.segments),
         "bytes": info.as_ref().map(|i| i.bytes),
         "thumbnail": info.as_ref().is_some_and(|i| i.has_thumbnail),
+        "storage": r.storage.as_ref().map(|s| json!({ "uri": s.uri, "archived_at": rfc3339(s.archived_at_ms) })),
     })
 }
 

@@ -21,8 +21,8 @@ pub fn generate(app: &App, recording: &str) {
     let mut fmp4: Option<Fmp4Source> = None;
     if idx.container == "fmp4" {
         let Some((p, _)) = &idx.init else { return };
-        let Ok(b) = std::fs::read(app.cfg.data_dir.join(p)) else { return };
-        let Ok((init, _)) = senca_fmp4::read_file(&bytes::Bytes::from(b)) else { return };
+        let Some(b) = app.rec_object_blocking(recording, p, idx.init_key.as_deref(), crate::storage::MAX_OBJECT) else { return };
+        let Ok((init, _)) = senca_fmp4::read_file(&b) else { return };
         let tracks = init.tracks.iter().filter_map(|t| Some((t.track_id, (t.timescale, t.config.clone()?)))).collect();
         fmp4 = Some((senca_fmp4::Mp4Reader::new(init), tracks));
     }
@@ -35,11 +35,12 @@ pub fn generate(app: &App, recording: &str) {
     let mut sel = senca_image::thumb::ThumbnailSelector::new(Default::default(), senca_image::ColorRange::Limited);
     let mut frames = Vec::new();
     for (k, i) in picks.into_iter().enumerate() {
-        let Ok(b) = std::fs::read(app.cfg.data_dir.join(&idx.segments[i].path)) else { continue };
+        let seg = &idx.segments[i];
+        let Some(b) = app.rec_object_blocking(recording, &seg.path, seg.key.as_deref(), crate::storage::MAX_OBJECT) else { continue };
         let mut configs: BTreeMap<TrackId, CodecConfig> = BTreeMap::new();
         let mut key: Option<AccessUnit> = None;
         if let Some((reader, tracks)) = fmp4.as_mut() {
-            let Ok(samples) = reader.read_fragments(&bytes::Bytes::from(b)) else { continue };
+            let Ok(samples) = reader.read_fragments(&b) else { continue };
             for smp in samples {
                 let Some((ts, c)) = tracks.get(&smp.track_id) else { continue };
                 if c.codec.kind() != MediaKind::Video || !smp.keyframe {

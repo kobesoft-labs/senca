@@ -2,6 +2,7 @@
 
 mod api;
 mod app;
+mod archive;
 mod capture;
 mod captions;
 mod cluster;
@@ -31,10 +32,12 @@ mod mediapipes;
 mod rtmp;
 mod rtsp_pull;
 mod rtsp_serve;
+mod s3;
 mod srt;
 mod scheduler;
 mod secrets;
 mod snapshot;
+mod storage;
 mod store;
 mod thumbnail;
 mod tls_io;
@@ -126,6 +129,11 @@ async fn run(cfg: Config) -> Result<(), String> {
     };
     let secret_box = secrets::SecretBox::open(&cfg.data_dir.join("control").join("secret-key"))?;
     let app = App::new(cfg.clone(), core, node_id, codec, secret_box);
+    // 録画の保存先（S3 互換）。資格情報が読めなければ起動しない
+    if let Some(st) = storage::Storage::from_config(&cfg.recording_storage)? {
+        app.log(&format!("recording storage: {} ({}://{})", st.uri(), st.client.endpoint.scheme(), st.client.endpoint.host));
+        let _ = app.storage.set(st);
+    }
     if let Some(cc) = &cfg.cluster {
         let secret = std::fs::read_to_string(&cc.secret_file).map_err(|e| format!("{}: {e}", cc.secret_file.display()))?;
         let secret = secret.trim().to_string();
@@ -147,6 +155,8 @@ async fn run(cfg: Config) -> Result<(), String> {
     grid::start(&app);
     mediapipes::start(&app);
     recovery::recover(&app);
+    archive::start(&app);
+    archive::resume(&app);
     app.log(&format!("senca-node {} started (node {})", env!("CARGO_PKG_VERSION"), app.node_id));
 
     let http = TcpListener::bind(cfg.http_listen).await.map_err(|e| format!("http {}: {e}", cfg.http_listen))?;

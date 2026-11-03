@@ -1,7 +1,7 @@
 //! 起動時の回収と、録画の削除（ADR-0005）。
 
 use crate::app::App;
-use senca_control::model::RecordingState;
+use senca_control::model::{Recording, RecordingState};
 use senca_control::state::Command;
 use std::collections::HashSet;
 use std::fs;
@@ -136,21 +136,19 @@ fn quarantine_orphans(app: &App, referenced: &HashSet<String>) {
     }
 }
 
-/// 録画を消す: 索引をゴミ箱へ → どこからも参照されないセグメントを消す → 制御状態から消す。
-pub fn delete_recording(app: &App, id: &str) {
+/// 手元の写しを消す: 索引をゴミ箱へ → 手元のどの索引からも参照されないセグメントを消す。消した索引を返す。
+/// 名前を変えられなければ Err（何も消さない）。
+fn remove_local(app: &App, id: &str) -> Result<Option<senca_record::Index>, ()> {
     let data = &app.cfg.data_dir;
     let dir = data.join("recordings").join(id);
     let trash = data.join("recordings").join(format!(".trash-{id}"));
     let idx = fs::read(dir.join("index.jsonl")).ok().and_then(|b| senca_record::parse(&b).ok());
     if dir.exists() && fs::rename(&dir, &trash).is_err() {
-        app.log(&format!("delete recording {id}: rename failed"));
-        return;
+        app.log(&format!("recording {id}: rename failed"));
+        return Err(());
     }
-    if let Some(idx) = idx {
-        let mut mine: HashSet<String> = idx.segments.iter().map(|s| s.path.clone()).collect();
-        if let Some((p, _)) = idx.init {
-            mine.insert(p);
-        }
+    if let Some(idx) = &idx {
+        let mut mine: HashSet<String> = idx.objects().into_iter().map(|(p, _)| p.to_string()).collect();
         // 他の索引の参照を集める
         if let Ok(rd) = fs::read_dir(data.join("recordings")) {
             for e in rd.flatten() {
@@ -160,11 +158,8 @@ pub fn delete_recording(app: &App, id: &str) {
                 if let Ok(b) = fs::read(e.path().join("index.jsonl")) {
                     match senca_record::parse(&b) {
                         Ok(o) => {
-                            for s in o.segments {
-                                mine.remove(&s.path);
-                            }
-                            if let Some((p, _)) = o.init {
-                                mine.remove(&p);
+                            for (p, _) in o.objects() {
+                                mine.remove(p);
                             }
                         }
                         Err(_) => {
@@ -183,32 +178,155 @@ pub fn delete_recording(app: &App, id: &str) {
         }
     }
     let _ = fs::remove_dir_all(&trash);
-    let tenant = app.control.lock().unwrap().state.recordings.get(id).map(|r| r.tenant.clone());
-    if let Some(t) = tenant {
-        let _ = app.propose(Command::DeleteRecording { tenant: t, id: id.into() });
+    Ok(idx)
+}
+
+/// 録画を消す: 保存先 → 手元 → 制御状態の順。保存先で失敗したら何も消さずに残し、後でやり直す
+/// （制御状態は削除中のまま。`retention_sweep` が拾う）。
+pub fn delete_recording(app: &App, id: &str) {
+    if !app.deleting.lock().unwrap().insert(id.to_string()) {
+        return; // 消している途中
+    }
+    delete_inner(app, id);
+    app.deleting.lock().unwrap().remove(id);
+}
+
+fn delete_inner(app: &App, id: &str) {
+    let rec = app.control.lock().unwrap().state.recordings.get(id).cloned();
+    if let Some(r) = &rec
+        && r.storage.is_some()
+        && let Err(e) = delete_remote(app, r)
+    {
+        app.log(&format!("delete recording {id}: storage: {e} (will retry)"));
+        return;
+    }
+    if remove_local(app, id).is_err() {
+        return;
+    }
+    if let Some(r) = rec {
+        let _ = app.propose(Command::DeleteRecording { tenant: r.tenant, id: id.into() });
     }
     app.rec_info.lock().unwrap().remove(id);
+    if let Some(st) = app.storage.get() {
+        st.forget_index(id);
+    }
+}
+
+/// 保存先の録画を消す: どの録画からも参照されなくなったセグメント → 録画の置き場所の下（サムネイル・書き出し）→ 索引。
+fn delete_remote(app: &App, rec: &Recording) -> Result<(), String> {
+    let st = app.storage.get().ok_or("このノードには保存先の設定がありません")?;
+    let uri = &rec.storage.as_ref().ok_or("no storage")?.uri;
+    let loc = senca_s3::Location::parse(uri)?;
+    let rt = app.rt.get().ok_or("no runtime")?;
+    crate::util::block_on(rt, async {
+        let keys = |idx: &senca_record::Index| -> Vec<String> {
+            idx.objects().into_iter().map(|(p, k)| k.map(str::to_string).unwrap_or_else(|| loc.key(p))).collect::<Vec<_>>()
+        };
+        let mut mine: HashSet<String> = match app.index_async(&rec.id).await {
+            Some(idx) => keys(&idx).into_iter().collect(),
+            None => HashSet::new(), // 前の試みで索引まで消えた
+        };
+        // 同じ stream で時間の重なる録画は同じセグメントを参照していることがある
+        let end = rec.ended_at_ms.unwrap_or(i64::MAX);
+        let others: Vec<Recording> = {
+            let core = app.control.lock().unwrap();
+            core.state
+                .recordings
+                .values()
+                .filter(|o| {
+                    o.id != rec.id
+                        && o.stream == rec.stream
+                        && o.state != RecordingState::Deleting
+                        && o.started_at_ms <= end
+                        && o.ended_at_ms.unwrap_or(i64::MAX) >= rec.started_at_ms
+                })
+                .cloned()
+                .collect()
+        };
+        for o in others {
+            let local = app.cfg.data_dir.join("recordings").join(&o.id).join("index.jsonl").exists();
+            if !local && o.storage.is_none() {
+                continue; // 別のノードの録画（セグメントの置き場所が違うので共有しない）
+            }
+            let idx = app.index_async(&o.id).await.ok_or_else(|| format!("recording {} の索引が読めません", o.id))?;
+            for k in keys(&idx) {
+                mine.remove(&k);
+            }
+        }
+        for k in &mine {
+            st.client.delete_object(&loc.bucket, k).await.map_err(|e| e.to_string())?;
+        }
+        let mut objs = st.client.list_all(&loc.bucket, &loc.key(&format!("recordings/{}/", rec.id)), 10_000).await.map_err(|e| e.to_string())?;
+        objs.sort_by_key(|o| o.key.ends_with("/index.jsonl"));
+        for o in &objs {
+            st.client.delete_object(&loc.bucket, &o.key).await.map_err(|e| e.to_string())?;
+        }
+        app.log(&format!("recording {}: deleted {} objects from {uri}", rec.id, mine.len() + objs.len()));
+        Ok(())
+    })
+}
+
+/// 保存先に上げ終わった録画の手元の写しを消す（保存先に無いものは消さない）。
+pub fn evict_local(app: &App, id: &str) {
+    let ok = app.control.lock().unwrap().state.recordings.get(id).is_some_and(|r| r.storage.is_some() && r.state != RecordingState::Deleting);
+    if !ok || app.deleting.lock().unwrap().contains(id) {
+        return;
+    }
+    if remove_local(app, id).is_ok() {
+        app.log(&format!("recording {id}: local copy removed (kept in storage)"));
+    }
+}
+
+/// 手元の写しを残す期間を過ぎたものを消す。
+pub fn evict_sweep(app: &App) {
+    let Some(st) = app.storage.get() else { return };
+    let now = crate::util::now_ms();
+    let keep = st.keep_local_secs.saturating_mul(1000) as i64;
+    let due: Vec<String> = {
+        let core = app.control.lock().unwrap();
+        core.state
+            .recordings
+            .values()
+            .filter(|r| owned(app, r) && r.storage.as_ref().is_some_and(|s| s.archived_at_ms.saturating_add(keep) <= now))
+            .map(|r| r.id.clone())
+            .collect()
+    };
+    for id in due {
+        if app.cfg.data_dir.join("recordings").join(&id).exists() {
+            evict_local(app, &id);
+        }
+    }
+}
+
+/// 手元のファイルを持つのがこのノードか（単一ノードなら常に）。
+fn owned(app: &App, r: &Recording) -> bool {
+    app.cluster.get().is_none() || r.node.as_deref().is_none_or(|n| n == app.node_id)
 }
 
 fn is_safe_rel(p: &str) -> bool {
     p.starts_with("segments/") && !Path::new(p).components().any(|c| !matches!(c, std::path::Component::Normal(_)))
 }
 
-/// 保持期限を過ぎた録画を消す（法的保全中は消さない）。
+/// 保持期限を過ぎた録画を消す（法的保全中は消さない）。分散では手元のファイルを持つノードが消す。
+/// 削除の途中で止まったもの（保存先の失敗など）もやり直す。
 pub fn retention_sweep(app: &App) {
     let now = crate::util::now_ms();
-    let expired: Vec<String> = {
+    let (expired, stuck): (Vec<String>, Vec<String>) = {
         let core = app.control.lock().unwrap();
-        core.state
+        let expired = core
+            .state
             .recordings
             .values()
             .filter(|r| {
-                !r.legal_hold
+                owned(app, r)
+                    && !r.legal_hold
                     && matches!(r.state, RecordingState::Finalized | RecordingState::Interrupted)
                     && r.retention_until_ms.is_some_and(|t| t <= now)
             })
             .map(|r| r.id.clone())
-            .collect()
+            .collect();
+        let stuck = core.state.recordings.values().filter(|r| owned(app, r) && r.state == RecordingState::Deleting).map(|r| r.id.clone()).collect();
+        (expired, stuck)
     };
     for id in expired {
         let r = app.control.lock().unwrap().state.recordings.get(&id).cloned();
@@ -217,4 +335,11 @@ pub fn retention_sweep(app: &App) {
             let _ = app.delete_recording(&r);
         }
     }
+    for id in stuck {
+        if !app.deleting.lock().unwrap().contains(&id) {
+            delete_recording(app, &id);
+        }
+    }
+    crate::archive::resume(app);
+    evict_sweep(app);
 }

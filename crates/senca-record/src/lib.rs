@@ -26,7 +26,13 @@ pub enum Entry {
         not_before_ms: Option<i64>,
     },
     /// fMP4 の初期化セグメント（設定が変わるたびに新しいものを指す）。
-    Init { path: String, sha256: String },
+    Init {
+        path: String,
+        sha256: String,
+        /// 保存先（S3 など）のオブジェクトのキー。上げ終わった索引にだけ付く。
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        key: Option<String>,
+    },
     Segment(SegmentRef),
     /// 欠落（入力の切断、キューのあふれ、ノードの障害など）。
     Gap { at_ms: i64, reason: String, #[serde(default)] dropped: u64 },
@@ -55,6 +61,9 @@ pub struct SegmentRef {
     /// 直前のセグメントとの間に不連続がある。
     #[serde(default)]
     pub discontinuity: bool,
+    /// 保存先（S3 など）のオブジェクトのキー。上げ終わった索引にだけ付く。
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub key: Option<String>,
 }
 
 /// 索引を読んだ結果。
@@ -66,6 +75,8 @@ pub struct Index {
     pub started_at_ms: i64,
     pub not_before_ms: Option<i64>,
     pub init: Option<(String, String)>,
+    /// 初期化セグメントの保存先のキー。
+    pub init_key: Option<String>,
     pub segments: Vec<SegmentRef>,
     pub gaps: Vec<(i64, String, u64)>,
     pub end: Option<(i64, String, Option<i64>)>,
@@ -83,6 +94,8 @@ pub enum IndexError {
     UnsupportedSchema(u32),
     /// End の後に行がある。
     AfterEnd(usize),
+    /// 確定していない（End が無い）。
+    NotFinal,
 }
 
 impl std::fmt::Display for IndexError {
@@ -92,6 +105,7 @@ impl std::fmt::Display for IndexError {
             IndexError::MissingBegin => f.write_str("index has no begin line"),
             IndexError::UnsupportedSchema(s) => write!(f, "unsupported index schema {s}"),
             IndexError::AfterEnd(n) => write!(f, "index line {n} after end"),
+            IndexError::NotFinal => f.write_str("index is not finalized"),
         }
     }
 }
@@ -146,7 +160,10 @@ pub fn parse(data: &[u8]) -> Result<Index, IndexError> {
                 idx.not_before_ms = not_before_ms;
             }
             _ if !began => return Err(IndexError::MissingBegin),
-            Entry::Init { path, sha256 } => idx.init = Some((path, sha256)),
+            Entry::Init { path, sha256, key } => {
+                idx.init = Some((path, sha256));
+                idx.init_key = key;
+            }
             Entry::Segment(s) => idx.segments.push(s),
             Entry::Gap { at_ms, reason, dropped } => idx.gaps.push((at_ms, reason, dropped)),
             Entry::End { ended_at_ms, state, not_after_ms } => idx.end = Some((ended_at_ms, state, not_after_ms)),
@@ -160,7 +177,37 @@ pub fn parse(data: &[u8]) -> Result<Index, IndexError> {
     Ok(idx)
 }
 
+/// 確定した索引の各行に、保存先のキーを付けて書き直す（`key` はデータ置き場からの相対パス → キー）。
+/// 行の順番と中身は変えない。書きかけの末尾は捨てる。確定していない索引は書き直さない。
+pub fn with_keys(data: &[u8], key: impl Fn(&str) -> String) -> Result<Vec<u8>, IndexError> {
+    let idx = parse(data)?;
+    if idx.end.is_none() {
+        return Err(IndexError::NotFinal);
+    }
+    let mut out = Vec::with_capacity(data.len() + 64 * (idx.segments.len() + 1));
+    for line in data[..idx.valid_len].split(|&c| c == b'\n').filter(|l| !l.is_empty()) {
+        let mut e: Entry = serde_json::from_slice(line).map_err(|_| IndexError::Corrupt(0))?;
+        match &mut e {
+            Entry::Segment(s) => s.key = Some(key(&s.path)),
+            Entry::Init { path, key: k, .. } => *k = Some(key(path)),
+            _ => {}
+        }
+        out.extend(encode(&e));
+    }
+    Ok(out)
+}
+
 impl Index {
+    /// 索引が参照するオブジェクト（初期化セグメントとセグメント）の（相対パス, 保存先のキー）。
+    pub fn objects(&self) -> Vec<(&str, Option<&str>)> {
+        let mut v: Vec<(&str, Option<&str>)> = Vec::with_capacity(self.segments.len() + 1);
+        if let Some((p, _)) = &self.init {
+            v.push((p, self.init_key.as_deref()));
+        }
+        v.extend(self.segments.iter().map(|s| (s.path.as_str(), s.key.as_deref())));
+        v
+    }
+
     pub fn duration_ms(&self) -> u64 {
         self.segments.iter().map(|s| s.duration_ms as u64).sum()
     }
@@ -205,6 +252,7 @@ mod tests {
             sha256: "00".into(),
             wall_ms: 0,
             discontinuity: n == 2,
+            key: None,
         })
     }
 
@@ -254,5 +302,27 @@ mod tests {
         d.extend(encode(&seg(0)));
         assert_eq!(parse(&d).unwrap_err(), IndexError::AfterEnd(3));
         assert_eq!(parse(b"").unwrap_err(), IndexError::MissingBegin);
+    }
+
+    #[test]
+    fn keys_rewrite() {
+        let mut d = Vec::new();
+        let init = Entry::Init { path: "segments/s/r/init-0.mp4".into(), sha256: "11".into(), key: None };
+        for e in [begin(), init, seg(0), seg(1)] {
+            d.extend(encode(&e));
+        }
+        // 確定していなければ書き直さない
+        assert_eq!(with_keys(&d, |p| p.into()).unwrap_err(), IndexError::NotFinal);
+        d.extend(encode(&Entry::End { ended_at_ms: 9, state: "finalized".into(), not_after_ms: Some(8) }));
+        // 古い索引（key なし）は key を出さない
+        assert!(!String::from_utf8_lossy(&d).contains("\"key\""));
+        let k = with_keys(&d, |p| format!("pre/{p}")).unwrap();
+        let idx = parse(&k).unwrap();
+        assert_eq!(idx.init_key.as_deref(), Some("pre/segments/s/r/init-0.mp4"));
+        assert_eq!(idx.segments[1].key.as_deref(), Some("pre/segments/s/r/e0-1.ts"));
+        assert_eq!(idx.end, Some((9, "finalized".into(), Some(8))));
+        assert_eq!(idx.objects().len(), 3);
+        // 2 度目も同じ
+        assert_eq!(with_keys(&k, |p| format!("pre/{p}")).unwrap(), k);
     }
 }

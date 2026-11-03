@@ -75,6 +75,8 @@ pub enum Command {
     DeleteToken { tenant: String, id: String },
     PutRecording { recording: Recording },
     DeleteRecording { tenant: String, id: String },
+    /// 録画の保存先を記録する（上げ終わったノードが出す）。ほかの項目には触らない。世代は +1。
+    SetRecordingStorage { id: String, storage: Option<RecordingStorage> },
     CreateSchedule { schedule: Schedule },
     UpdateSchedule { schedule: Schedule, expect_generation: u64 },
     DeleteSchedule { tenant: String, id: String, expect_generation: Option<u64> },
@@ -237,6 +239,14 @@ impl ControlState {
                     return Err(conflict("録画のテナントが違います"));
                 }
                 self.recordings.insert(recording.id.clone(), recording);
+            }
+            Command::SetRecordingStorage { id, storage } => {
+                let r = self.recordings.get_mut(&id).ok_or_else(Problem::not_found)?;
+                if r.state == RecordingState::Deleting {
+                    return Err(conflict("削除中の録画です"));
+                }
+                r.storage = storage;
+                r.generation += 1;
             }
             Command::DeleteRecording { tenant, id } => {
                 let r = self.recordings.get(&id).filter(|r| r.tenant == tenant).ok_or_else(Problem::not_found)?;

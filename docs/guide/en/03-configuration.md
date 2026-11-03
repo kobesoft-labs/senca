@@ -62,6 +62,22 @@ from outside a container.
 | `--verify-recordings` | — | off | During startup recovery, check the SHA-256 of every indexed segment and log mismatches (startup time grows with the amount of data) |
 | `--zoneinfo` | DIR | `/usr/share/zoneinfo` | Where TZif files are read for schedule time zones (IANA names) |
 
+### Recording storage
+
+Settings for also keeping recordings in S3-compatible object storage (AWS S3, MinIO, Cloudflare R2 and others).
+See [5.13 Recording storage](05-recording.md#513-recording-storage-s3-compatible-object-storage) for how it works.
+In a cluster, use the same values on every node.
+
+| Option | Value | Default | Meaning |
+|---|---|---|---|
+| `--recording-storage` | `local`\|`s3://BUCKET[/PREFIX]` | `local` | Where recordings are stored. `local` keeps them in the data directory only |
+| `--s3-endpoint` | URL | the AWS regional endpoint | Endpoint of an S3-compatible service (`http(s)://host[:port]`, no path). Set it for MinIO, R2 and the like |
+| `--s3-region` | region | `us-east-1` | Region used for signing. R2 uses `auto` |
+| `--s3-addressing` | `path`\|`virtual` | `path` with `--s3-endpoint`, otherwise `virtual` | How the bucket is addressed (`host/bucket/key` or `bucket.host/key`) |
+| `--s3-credentials` | FILE | environment variables | Credentials JSON (`access_key_id`, `secret_access_key`, `session_token`). Without it, `AWS_ACCESS_KEY_ID` and friends are read |
+| `--s3-part-size` | bytes | `16777216` (16 MiB) | Objects larger than this are uploaded in parts. 5 MiB to 5 GiB |
+| `--recording-keep-local` | seconds | `86400` | How long the local copy is kept after the upload. With 0 it is removed as soon as the upload finishes |
+
 ### Authentication (JWT)
 
 | Option | Value | Default | Meaning |
@@ -119,10 +135,12 @@ The node refuses to start (exit code 2) when:
 - `--https` or `--rtmps` is given without `--tls-cert` or `--tls-key`;
 - `--record-queue` is outside 16–1048576, or `--max-playback-ttl` is 0;
 - an `--egress-allow` value is not a valid CIDR;
+- `--recording-storage` is neither `local` nor `s3://BUCKET[/PREFIX]`, `--s3-endpoint`, `--s3-region` or `--s3-addressing` is malformed,
+  or `--s3-part-size` is outside 5 MiB–5 GiB;
 - the cluster configuration has `node_id` 0, does not list itself in `peers`, or has fewer than 1 or more than 7 peers.
 
 Problems found later during startup (unreadable files, a listener that cannot be bound, a cluster secret shorter
-than 16 characters, and so on) end the process with `fatal: ...` and exit code 1.
+than 16 characters, missing S3 credentials, and so on) end the process with `fatal: ...` and exit code 1.
 
 ## 3.3 Configuration file (JSON)
 
@@ -152,6 +170,7 @@ The `--config FILE` JSON is an object with the keys below. Every key is optional
 | `net_mbps` | `--net-mbps` | number |
 | `labels` | `--label` | object mapping string to string |
 | `capacity_cpu_millis`, `capacity_memory_mb` | same names | number or `null` |
+| `recording_storage` | `--recording-storage`, `--s3-*`, `--recording-keep-local` | `{"uri", "endpoint", "region", "addressing", "credentials_file", "part_size", "keep_local_secs"}` (all optional) |
 
 Notes:
 
@@ -232,8 +251,14 @@ Because the relay ports default to "Raft port + 1", make sure that port is free.
 
 ## 3.5 Environment variables
 
-`senca-node` itself reads no environment variables; everything is configured through options and JSON.
-The workers it starts read the following.
+The only environment variables `senca-node` itself reads are the recording storage credentials (when `--s3-credentials` is not given).
+
+| Variable | Meaning |
+|---|---|
+| `AWS_ACCESS_KEY_ID`, `AWS_SECRET_ACCESS_KEY` | S3 credentials ([Recording storage](#recording-storage)) |
+| `AWS_SESSION_TOKEN` | Token for temporary credentials (optional) |
+
+Everything else is configured through options and JSON. The workers the node starts read the following.
 
 | Variable | Read by | Meaning |
 |---|---|---|

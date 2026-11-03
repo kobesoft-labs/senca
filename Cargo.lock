@@ -1103,6 +1103,7 @@ dependencies = [
  "senca-rtmp",
  "senca-rtp",
  "senca-rtsp",
+ "senca-s3",
  "senca-sdp",
  "senca-srt",
  "senca-tls",
@@ -1253,6 +1254,15 @@ dependencies = [
  "senca-sdp",
  "sha2",
  "subtle",
+]
+
+[[package]]
+name = "senca-s3"
+version = "0.0.0"
+dependencies = [
+ "hmac",
+ "senca-core",
+ "sha2",
 ]
 
 [[package]]

@@ -1,5 +1,36 @@
 # Changelog / 変更履歴
 
+## Unreleased / 未リリース
+
+### Added / 追加
+
+- Recording storage on S3-compatible object storage (AWS S3, MinIO, Cloudflare R2): recordings are written locally first and
+  uploaded once immutable; the index carries object keys; local copies are removed after `--recording-keep-local`
+  (`--recording-storage`, `--s3-endpoint`, `--s3-region`, `--s3-addressing`, `--s3-credentials`, `--s3-part-size`)
+  ／ 録画の保存先に S3 互換のオブジェクトストレージ（AWS S3・MinIO・Cloudflare R2）: まず手元に書き、変わらなくなったものから上げる。
+  索引にオブジェクトのキーを記録し、`--recording-keep-local` の後に手元の写しを消す
+- VOD (including `Range`), MP4 export and thumbnails are read from storage when the local copy is gone; the first export is
+  stored and reused (multipart upload for large objects)
+  ／ 手元に無い録画の VOD（`Range` を含む）・MP4 の書き出し・サムネイルを保存先から読む。最初の書き出しを保存先に置いて使い回す
+  （大きなものはマルチパートアップロード）
+- Recordings carry `storage` (`{uri, archived_at}`) in the API and the control state
+  ／ 録画の API と制御状態に `storage`（`{uri, archived_at}`）
+- `senca-s3` crate: SigV4 signing, request layout and bounded XML parsing (sans-io), tested with the AWS SigV4 test vectors
+  ／ `senca-s3`: SigV4 の署名・要求の組み立て・上限付きの XML の読み手（sans-io）。AWS の SigV4 の試験の値で確認
+- `tools/interop/s3.sh`: end-to-end test against an S3-compatible server in Docker
+  ／ `tools/interop/s3.sh`: Docker の S3 互換のサーバーを相手にした通しの試験
+
+### Changed / 変更
+
+- In a cluster, any node configured with the same storage serves stored recordings (VOD, export, thumbnail) itself; before,
+  export and thumbnails only worked on the node that made the recording
+  ／ クラスタでは、同じ保存先を設定したどのノードでも保存先の録画（VOD・書き出し・サムネイル）を出す。前は書き出し・サムネイルは
+  録画を作ったノードでしか動かなかった
+- Deleting a recording (API or retention) removes its stored objects; in a cluster the node that made the recording performs the
+  deletion, whichever node received the request, and retries when storage is unreachable
+  ／ 録画の削除（API・保持期限）で保存先のオブジェクトも消す。クラスタでは、要求を受けたノードに関わらず録画を作ったノードが消し、
+  保存先に届かなければやり直す
+
 ## v0.0.0 — 2026-11-03
 
 First public snapshot. **Experimental**: the release gate in docs/RELEASE.md (long fuzzing, soak test,

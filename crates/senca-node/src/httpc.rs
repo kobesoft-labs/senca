@@ -90,6 +90,40 @@ pub async fn request(
 ) -> Result<HttpResponse, String> {
     let u = parse_url(url).ok_or("url の形が違います")?;
     let addr = crate::egress::resolve(&u.host, u.port, allow).await?;
+    exchange(u, addr, method, url, headers, body, max_body, timeout).await
+}
+
+/// 管理者が設定した宛先（録画の保存先など）への要求。宛先の制限（egress）を通さない。
+/// 利用者が渡した URL には使わない。
+pub async fn request_trusted(
+    method: Method,
+    url: &str,
+    headers: &[(&str, String)],
+    body: Option<Bytes>,
+    max_body: usize,
+    timeout: Duration,
+) -> Result<HttpResponse, String> {
+    let u = parse_url(url).ok_or("url の形が違います")?;
+    let addr = tokio::time::timeout(timeout, tokio::net::lookup_host((u.host.as_str(), u.port)))
+        .await
+        .map_err(|_| format!("resolve {}: timeout", u.host))?
+        .map_err(|e| format!("resolve {}: {e}", u.host))?
+        .next()
+        .ok_or_else(|| format!("resolve {}: no address", u.host))?;
+    exchange(u, addr, method, url, headers, body, max_body, timeout).await
+}
+
+#[allow(clippy::too_many_arguments)]
+async fn exchange(
+    u: Url,
+    addr: std::net::SocketAddr,
+    method: Method,
+    url: &str,
+    headers: &[(&str, String)],
+    body: Option<Bytes>,
+    max_body: usize,
+    timeout: Duration,
+) -> Result<HttpResponse, String> {
     let fut = async {
         let tcp = tokio::net::TcpStream::connect(addr).await.map_err(|e| e.to_string())?;
         let mut sock: Box<dyn Stream> = if u.tls { Box::new(crate::tls_io::connect(tcp, client_tls()?, &u.host).await?) } else { Box::new(tcp) };

@@ -670,6 +670,9 @@ pub struct Recording {
     pub started_at: Timestamp,
     /// 削除中（deleting）の録画は API から見えない（404）。
     pub state: RecordingState,
+    /// 保存先（S3 互換のオブジェクトストレージ）に上げ終わっていれば、その場所と時刻。null なら録画したノードの手元だけ。 保存先にある録画は、同じ保存先を設定したどのノードからでも再生・書き出し・サムネイルを取れる。
+    #[serde(default)]
+    pub storage: Option<RecordingStorage>,
     /// 元の stream の ID（stream を消しても残る）
     pub stream: String,
     /// `GET /recordings/{id}/thumbnail` があるか
@@ -700,6 +703,14 @@ impl RecordingState {
             RecordingState::Unknown => None,
         }
     }
+}
+
+/// 保存先（S3 互換のオブジェクトストレージ）に上げ終わっていれば、その場所と時刻。null なら録画したノードの手元だけ。 保存先にある録画は、同じ保存先を設定したどのノードからでも再生・書き出し・サムネイルを取れる。
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, Default)]
+pub struct RecordingStorage {
+    pub archived_at: Timestamp,
+    /// `s3://bucket/prefix`
+    pub uri: String,
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize, Default)]

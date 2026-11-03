@@ -195,9 +195,26 @@ pub struct Recording {
     pub schedule: Option<String>,
     #[serde(default)]
     pub name: Option<String>,
-    /// 録画を作ったノード（分散で使う）。
+    /// 録画を作ったノード（分散で使う）。手元のファイルはこのノードにある。
     #[serde(default)]
     pub node: Option<String>,
+    /// 保存先（S3 互換のオブジェクトストレージ）に上げ終わっていれば、その場所。
+    /// 同じ保存先を設定したノードなら、どのノードからでも再生・書き出し・サムネイルを出せる。
+    #[serde(default)]
+    pub storage: Option<RecordingStorage>,
+}
+
+/// 録画の保存先（資格情報は持たない。各ノードの設定のものを使う）。
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct RecordingStorage {
+    /// `s3://bucket/prefix`。
+    pub uri: String,
+    /// 上げ終わった時刻（UNIX ms）。
+    pub archived_at_ms: i64,
+    /// サムネイルも上げた。
+    #[serde(default)]
+    pub thumbnail: bool,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]

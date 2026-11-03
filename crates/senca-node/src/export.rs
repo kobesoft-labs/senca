@@ -23,11 +23,12 @@ pub fn mp4(app: &App, id: &str) -> Result<Bytes, Problem> {
     let mut cur_epoch = None;
     let mut first_us: Option<i64> = None;
     let mut epoch_base: Option<i64> = None;
-    let read = |p: &str| std::fs::read(app.cfg.data_dir.join(p)).map(Bytes::from);
+    // 手元に無ければ保存先から読む
+    let read = |p: &str, k: Option<&str>| app.rec_object_blocking(id, p, k, crate::storage::MAX_OBJECT).ok_or(());
     let mut fmp4_reader = None;
     let mut tracks: BTreeMap<u32, (u32, CodecConfig)> = BTreeMap::new();
     if let Some((p, _)) = &idx.init {
-        let b = read(p).map_err(|_| Problem::internal())?;
+        let b = read(p, idx.init_key.as_deref()).map_err(|_| Problem::internal())?;
         let (init, _) = senca_fmp4::read_file(&b).map_err(|_| Problem::internal())?;
         for t in &init.tracks {
             if let Some(c) = &t.config {
@@ -38,7 +39,7 @@ pub fn mp4(app: &App, id: &str) -> Result<Bytes, Problem> {
         fmp4_reader = Some(senca_fmp4::Mp4Reader::new(init));
     }
     for seg in &idx.segments {
-        let b = read(&seg.path).map_err(|_| Problem::new(ProblemCode::InternalError, "セグメントが読めません"))?;
+        let b = read(&seg.path, seg.key.as_deref()).map_err(|_| Problem::new(ProblemCode::InternalError, "セグメントが読めません"))?;
         let mut seg_aus = Vec::new();
         if let Some(r) = fmp4_reader.as_mut() {
             for (n, s) in r.read_fragments(&b).map_err(|_| Problem::internal())?.into_iter().enumerate() {

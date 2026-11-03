@@ -24,3 +24,56 @@
 ## 仕様との違い
 
 - 仕様 8.4 の `recording_id/epoch/track/segment` の階層ではなく、映像・音声を 1 本のセグメントに多重化する。プレイヤーとの互換と、ライブとの共有を優先した（台帳に記録）。
+
+## 保存先（S3 互換のオブジェクトストレージ）（2026-11-03 追加）
+
+### 決定
+
+1. **2 段にする。** 録画は今までどおり手元（データ置き場）に書き、確定したものを保存先へ上げる。障害に強い書き込みの順番
+   （セグメント → 索引、一時名 → fsync → rename）は手元の段だけで守る。保存先は「上げ終わった録画の置き場所」で、書きかけを置かない。
+2. **設定はノードごと**（`--recording-storage s3://bucket/prefix`・`--s3-endpoint`・`--s3-region`・`--s3-addressing`・`--s3-credentials`・
+   `--s3-part-size`・`--recording-keep-local`）。テナント・stream ごとの保存先（`credential_ref` で秘密値を指す形）は採らなかった。
+   理由: 録画のセグメントは同じ stream の重なる録画で共有するので、録画ごとに置き場所が変わると共有と削除の参照の数え方が崩れる。
+   また、クラスタのどのノードでも同じ資格情報で読めることが「どこからでも出せる」の前提になる。テナントごとに分けたいときは
+   接頭辞を分けたノードの組を使う。
+3. **キー = 接頭辞 + データ置き場からの相対パス。** `segments/{stream}/{run}/{name}`・`recordings/{id}/index.jsonl`・
+   `recordings/{id}/thumbnail.jpg`・`thumbnail.json`・`recordings/{id}/export.mp4`。保存先の索引は、`init`・`segment` の行に
+   `key`（オブジェクトのキー）を付けて書き直したもの（`senca_record::with_keys`。行の順番と中身は変えない）。
+   手元の索引も、上げ終わったらキー付きに置き換える（確定した索引は変わらないので一時名 → rename で置き換えてよい）。
+   古い索引（`key` なし）も読める（`key` が無ければ接頭辞と相対パスから作る）。
+4. **上げる順番。** 書き手が不変のファイルを書き終えた時点で上げ始める（`RecorderEvent::Written`）。確定（`Stopped`）の後、
+   サムネイルを作ってから、残り（HEAD で大きさを確かめ、無いか違えば PUT）→ サムネイル → **索引を最後に** 上げる。
+   索引が見えれば参照するオブジェクトは揃っている。最後に制御状態へ `SetRecordingStorage`（`Recording.storage` = `{uri, archived_at_ms, thumbnail}`）。
+   失敗は 5 秒から倍々で最大 5 分の間隔でやり直す。起動時には、自分の確定済みで `storage` の無い録画を拾う。
+5. **どこにあるかは制御状態に持つ。** `Recording.node`（手元のファイルを持つノード）と `Recording.storage`（保存先）。
+   読むときは「手元 → 保存先（`storage.uri` のバケット・接頭辞を、そのノードの宛先と資格情報で）→ 持ち主のノードへ 307」の順。
+   これでクラスタのどのノードでも VOD・MP4 の書き出し・サムネイルを出せる（前は書き出し・サムネイルは持ち主のノードの API でしか動かなかった）。
+   保存先から読んだ確定済みの索引はメモリに覚える（変わらないので、上限 512 件で溢れたら捨てる）。
+6. **手元の写しを消す。** `storage` が付いてから `keep_local_secs` 経ったものを見回り（`--retention-sweep`）で消す。消し方は削除と同じ
+   （索引をゴミ箱へ → 手元のどの索引からも参照されないセグメントだけ消す）。`storage` の無い録画は決して消さない。
+7. **削除は持ち主のノードが行う。** API で削除中になったら、持ち主が適用されたコマンドを見て消す（どのノードの API からでもよい）。
+   順番は保存先 → 手元 → 制御状態。保存先では、同じ stream で時間の重なる録画（手元の索引か保存先の索引）が参照するセグメントを除いて消し、
+   `recordings/{id}/` の下を ListObjectsV2 で列挙して消す（索引は最後）。どれかの索引が読めない、保存先に届かないときは何も消さずに
+   削除中のまま残し、見回りでやり直す。保持期限の見回りも、クラスタでは持ち主のノードだけが行う。
+8. **書き出しの写し。** 保存先にある録画の MP4 の書き出しは、最初に作ったものを `recordings/{id}/export.mp4` に置いて次から返す。
+   `--s3-part-size`（既定 16 MiB）を超えるものはマルチパートアップロード（失敗したら AbortMultipartUpload）。
+9. **宛先の制限（egress）を通さない。** 保存先は管理者の設定なので、利用者が渡す URL 向けの SSRF 対策（`--egress-allow`）の外に置く。
+   資格情報はファイル（JSON）か `AWS_ACCESS_KEY_ID`・`AWS_SECRET_ACCESS_KEY`・`AWS_SESSION_TOKEN` から読み、ログ・エラー・Debug に出さない。
+
+### 実装
+
+- `crates/senca-s3`（sans-io）: SigV4 の署名（正規の要求・署名する文字列・署名鍵。HMAC-SHA256 と SHA-256 は既存の依存の `hmac`・`sha2`）、
+  宛先（パス形式・仮想ホスト形式）、`s3://bucket/prefix` の検査、ListObjectsV2・誤り・分割アップロードの応答の XML
+  （上限付きの読み手: 入力 8 MiB・深さ 16・要素 20 万。DOCTYPE は拒否）、`Content-Range`、部分の分け方（5 MiB〜5 GiB、1 万個まで）。
+  単体試験は AWS の SigV4 の試験一式（get-vanilla・get-vanilla-query-order-key-case・post-vanilla）と、S3 の文書の例
+  （GetObject の Range・PutObject・GET ?lifecycle・ListObjects・署名鍵の導出）。新しい外部の依存は無い。
+- `crates/senca-node`: `s3.rs`（送受信は `httpc`、https は senca-tls）、`storage.rs`（手元 → 保存先の読み）、`archive.rs`（上げる係）、
+  `recovery.rs`（削除・手元の写しの掃除）。制御状態のコマンド `SetRecordingStorage`。
+- 相互接続: `tools/interop/s3.sh`（S3 互換のサーバーを Docker で。curl の `--aws-sigv4` で保存先の中身を独立に確かめる）。
+
+### 残っていること
+
+- 本文を丸ごとメモリに持って送受信する（書き出しは今までどおり 4 GiB まで）。ストリームでの送受信と、接続の使い回しはまだ。
+- 持ち主のノードが戻らないと、そのノードの録画の削除・保持期限の掃除は進まない（保存先にあっても）。
+- 保存先のオブジェクトの中身の照合（`--verify-recordings` に相当）は無い。上げるときは大きさだけを確かめる。
+- 共有のセグメントを参照する重なる録画が別の保存先（接頭辞）にあると、共有として数えない。

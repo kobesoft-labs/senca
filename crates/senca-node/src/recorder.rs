@@ -97,6 +97,8 @@ pub enum RecorderEvent {
     Appended { recording: String, segment: SegmentRef },
     Stopped { recording: String, ended_at_ms: i64, state: &'static str },
     Failed { recording: String, error: String },
+    /// 不変のファイル（セグメント・初期化セグメント）を書き終えた（データ置き場からの相対パス）。
+    Written { rel: String },
 }
 
 pub fn spawn(
@@ -183,7 +185,10 @@ impl Recorder {
                     sha256: sha256_hex(&s.bytes),
                     wall_ms: s.wall_ms,
                     discontinuity: s.discontinuity,
+                    key: None,
                 };
+                // 書き終えたセグメントは変わらないので、保存先へ上げてよい
+                (self.on_event)(RecorderEvent::Written { rel: seg.path.clone() });
                 let e = Entry::Segment(seg.clone());
                 let ids: Vec<String> = self.active.keys().cloned().collect();
                 for id in ids {
@@ -247,7 +252,8 @@ impl Recorder {
             write_file_atomic(&self.run_dir().join(&name), &bytes)?;
             let init = (self.rel(&name), sha256_hex(&bytes));
             self.init = Some(init.clone());
-            self.append_all(&Entry::Init { path: init.0, sha256: init.1 });
+            (self.on_event)(RecorderEvent::Written { rel: init.0.clone() });
+            self.append_all(&Entry::Init { path: init.0, sha256: init.1, key: None });
         }
         Ok(())
     }
@@ -273,7 +279,7 @@ impl Recorder {
         )
         .map_err(|e| e.to_string())?;
         if let Some((p, h)) = &self.init {
-            append(&mut f, &Entry::Init { path: p.clone(), sha256: h.clone() }).map_err(|e| e.to_string())?;
+            append(&mut f, &Entry::Init { path: p.clone(), sha256: h.clone(), key: None }).map_err(|e| e.to_string())?;
         }
         crate::store::fsync_dir(&dir).map_err(|e| e.to_string())?;
         self.active.insert(id.to_string(), Active { file: f, segments: 0 });

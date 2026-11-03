@@ -48,6 +48,73 @@ pub struct Config {
     /// 仕事に貸す CPU（ミリコア）・メモリ（MB）の上書き。無ければ実機の 90%・85%。
     pub capacity_cpu_millis: Option<u64>,
     pub capacity_memory_mb: Option<u64>,
+    /// 録画の保存先（既定は手元のデータ置き場だけ）。
+    pub recording_storage: RecordingStorageConfig,
+}
+
+/// 録画の保存先（ADR-0005）。録画はまず手元に書き、確定したら S3 互換の保存先へ上げる。
+#[derive(Debug, Clone, Deserialize)]
+#[serde(deny_unknown_fields, default)]
+pub struct RecordingStorageConfig {
+    /// `local` または `s3://bucket/prefix`。
+    pub uri: String,
+    /// S3 互換のサービスの宛先（`https://host[:port]`）。無ければ AWS の地域の宛先。
+    pub endpoint: Option<String>,
+    pub region: String,
+    /// `path`（`host/bucket/key`）または `virtual`（`bucket.host/key`）。既定は宛先を指定したら path、AWS なら virtual。
+    pub addressing: Option<String>,
+    /// 資格情報のファイル（JSON: access_key_id・secret_access_key・session_token）。無ければ環境変数 AWS_ACCESS_KEY_ID など。
+    pub credentials_file: Option<PathBuf>,
+    /// 上げ終わってから手元の写しを残す秒数（0 ならすぐ消す）。
+    pub keep_local_secs: u64,
+    /// これより大きいものは分割して上げる（部分の大きさ。5 MiB 以上）。
+    pub part_size: u64,
+}
+
+impl Default for RecordingStorageConfig {
+    fn default() -> Self {
+        RecordingStorageConfig {
+            uri: "local".into(),
+            endpoint: None,
+            region: "us-east-1".into(),
+            addressing: None,
+            credentials_file: None,
+            keep_local_secs: 86_400,
+            part_size: 16 << 20,
+        }
+    }
+}
+
+impl RecordingStorageConfig {
+    pub fn is_remote(&self) -> bool {
+        self.uri != "local"
+    }
+
+    /// 宛先（S3 の場所と、つなぐ先）。`local` なら None。
+    pub fn remote(&self) -> Result<Option<(senca_s3::Location, senca_s3::Endpoint)>, String> {
+        if !self.is_remote() {
+            return Ok(None);
+        }
+        let loc = senca_s3::Location::parse(&self.uri).map_err(|e| format!("--recording-storage: {e}"))?;
+        let path_style = match self.addressing.as_deref() {
+            None => self.endpoint.is_some(),
+            Some("path") => true,
+            Some("virtual") => false,
+            Some(o) => return Err(format!("--s3-addressing は path か virtual: {o}")),
+        };
+        let ep = match &self.endpoint {
+            Some(u) => senca_s3::Endpoint::parse(u, &self.region, path_style).map_err(|e| format!("--s3-endpoint: {e}"))?,
+            None => {
+                let e = senca_s3::Endpoint::parse(&format!("https://s3.{}.amazonaws.com", self.region), &self.region, path_style)
+                    .map_err(|e| format!("--s3-region: {e}"))?;
+                senca_s3::Endpoint { path_style, ..e }
+            }
+        };
+        if !path_style && loc.bucket.contains('.') && ep.tls {
+            return Err("バケット名に . があると仮想ホスト形式の証明書が合いません（--s3-addressing path）".into());
+        }
+        Ok(Some((loc, ep)))
+    }
 }
 
 #[derive(Debug, Clone, Deserialize)]
@@ -139,6 +206,7 @@ impl Default for Config {
             labels: Default::default(),
             capacity_cpu_millis: None,
             capacity_memory_mb: None,
+            recording_storage: RecordingStorageConfig::default(),
         }
     }
 }
@@ -151,7 +219,9 @@ pub const USAGE: &str = "senca-node [--config FILE] [--data-dir DIR] [--http ADD
   [--codec-workers N] [--codec-worker-bin FILE] [--codec-lib-dir DIR] [--zoneinfo DIR]
   [--console-dir DIR] [--sender-dir DIR] [--verify-recordings] [--log-json] [--node-name NAME] [--egress-allow CIDR]...
   [--cluster-config FILE] [--net-mbps N] [--label KEY=VALUE]...
-  [--capacity-cpu-millis N] [--capacity-memory-mb N]";
+  [--capacity-cpu-millis N] [--capacity-memory-mb N]
+  [--recording-storage local|s3://BUCKET[/PREFIX] [--s3-endpoint URL] [--s3-region REGION] [--s3-addressing path|virtual]
+   [--s3-credentials FILE] [--s3-part-size BYTES] [--recording-keep-local SECS]]";
 
 impl Config {
     pub fn from_args(args: &[String]) -> Result<Config, String> {
@@ -219,6 +289,13 @@ impl Config {
                 _ if flag("--net-mbps") => cfg.net_mbps = num(val()?)?,
                 _ if flag("--capacity-cpu-millis") => cfg.capacity_cpu_millis = Some(num(val()?)?),
                 _ if flag("--capacity-memory-mb") => cfg.capacity_memory_mb = Some(num(val()?)?),
+                _ if flag("--recording-storage") => cfg.recording_storage.uri = val()?,
+                _ if flag("--s3-endpoint") => cfg.recording_storage.endpoint = Some(val()?),
+                _ if flag("--s3-region") => cfg.recording_storage.region = val()?,
+                _ if flag("--s3-addressing") => cfg.recording_storage.addressing = Some(val()?),
+                _ if flag("--s3-credentials") => cfg.recording_storage.credentials_file = Some(PathBuf::from(val()?)),
+                _ if flag("--s3-part-size") => cfg.recording_storage.part_size = num(val()?)?,
+                _ if flag("--recording-keep-local") => cfg.recording_storage.keep_local_secs = num(val()?)?,
                 _ if flag("--label") => {
                     let v = val()?;
                     let (k, x) = v.split_once('=').ok_or_else(|| format!("--label は key=value: {v}"))?;
@@ -260,6 +337,10 @@ impl Config {
         }
         for c in &self.egress_allow {
             crate::egress::Cidr::parse(c).ok_or_else(|| format!("--egress-allow: bad CIDR {c}"))?;
+        }
+        self.recording_storage.remote()?;
+        if !(senca_s3::responses::MIN_PART..=senca_s3::responses::MAX_PART).contains(&self.recording_storage.part_size) {
+            return Err("--s3-part-size は 5 MiB〜5 GiB".into());
         }
         if self.max_playback_ttl_secs == 0 {
             return Err("--max-playback-ttl must be > 0".into());

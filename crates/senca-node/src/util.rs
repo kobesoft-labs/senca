@@ -10,6 +10,15 @@ pub fn rfc3339(ms: i64) -> String {
     senca_core::rfc3339::format_millis(ms)
 }
 
+/// 同期の文脈（API のスレッド・専用のスレッド・tokio のワーカー）から非同期の仕事を待つ。
+/// ワーカーの上では `block_in_place` で他の仕事を逃がしてから待つ。
+pub fn block_on<F: std::future::Future>(rt: &tokio::runtime::Handle, f: F) -> F::Output {
+    match tokio::runtime::Handle::try_current() {
+        Ok(_) => tokio::task::block_in_place(|| rt.block_on(f)),
+        Err(_) => rt.block_on(f),
+    }
+}
+
 /// 単調時計（ミリ秒、プロセス起動から）。
 pub fn mono_ms() -> u64 {
     use std::sync::OnceLock;

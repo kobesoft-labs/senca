@@ -1017,6 +1017,12 @@ export type Recording = {
   started_at: Timestamp;
   /** 削除中（deleting）の録画は API から見えない（404）。 */
   state: "recording" | "finalized" | "interrupted";
+  /** 保存先（S3 互換のオブジェクトストレージ）に上げ終わっていれば、その場所と時刻。null なら録画したノードの手元だけ。 保存先にある録画は、同じ保存先を設定したどのノードからでも再生・書き出し・サムネイルを取れる。 */
+  storage: null | {
+    archived_at: Timestamp;
+    /** `s3://bucket/prefix` */
+    uri: string;
+  };
   /** 元の stream の ID（stream を消しても残る） */
   stream: string;
   /** `GET /recordings/{id}/thumbnail` があるか */

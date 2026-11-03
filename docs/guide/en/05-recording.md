@@ -22,6 +22,8 @@ Record streams, play recordings back as VOD, export them as MP4 or HLS, and use 
 - Writing yields to live delivery. If the writer's queue overflows, segments are dropped and recorded as a `gap` (`queue_overflow`);
   live output never stops. The queue size is `--record-queue` (default 4096; each stream gets 1/64 of it, clamped to 16–4096).
 - In a cluster, a recording's files exist only on the disk of the node that made it (they are not replicated; see [9. Cluster and grid](09-cluster-grid.md)).
+- With recording storage (S3-compatible object storage) configured, finalized recordings are uploaded there. Uploaded recordings can be
+  played back and exported from any node configured with the same storage (§5.13).
 
 ## 5.2 Recording states and fields
 
@@ -44,6 +46,7 @@ Recordings being deleted (internal state `deleting`) are not shown in lists or l
 | `duration_ms`, `segments`, `bytes` | Totals from the index |
 | `gaps` | Gaps as `[{at, reason, dropped}]`; `reason` is `publisher_reconnect` or `queue_overflow` |
 | `thumbnail` | Whether a thumbnail exists |
+| `storage` | `{"uri": "s3://…", "archived_at": "…"}` once uploaded to recording storage, otherwise `null` (§5.13) |
 
 Note: in the current implementation, `gaps` is shown as empty for recordings written since the node started, until the node is
 restarted (the gaps are recorded in the index).
@@ -140,7 +143,8 @@ Example (a recording with one reconnect within the grace):
 
 **Exporting as HLS**: the VOD playlist and its segments are the HLS export. To collect them into a file without re-encoding, use for
 example `ffmpeg -i "$VOD_URL" -c copy out.ts`. In a cluster, VOD requests reaching a node that does not hold the recording are redirected
-with 307 to the node that made it.
+with 307 to the node that made it. Recordings already uploaded to recording storage are not redirected: the node that receives the
+request reads them from storage.
 
 ## 5.7 MP4 export
 
@@ -154,7 +158,9 @@ curl -s -o rec.mp4 "$API/recordings/$RID/export.mp4" -H "Authorization: Bearer $
 - Scheduled recordings are trimmed to the schedule's start and end (`not_before_ms` and `not_after_ms` in the index); the start is
   widened back to the preceding keyframe. Pre-roll and post-roll stay in the VOD but are not included in the MP4.
 - Sections separated by reconnects are joined back-to-back (the time gap is removed).
-- In a cluster, send the request to the API of the node that made the recording (export and thumbnails read local files).
+- In a cluster, recordings already uploaded to recording storage can be exported through any node's API. For recordings not uploaded
+  yet, send the request to the API of the node that made the recording.
+- With recording storage, the first export is also stored there and returned for later requests.
 
 ## 5.8 Thumbnails
 
@@ -166,6 +172,7 @@ curl -s -o thumb.jpg "$API/recordings/$RID/thumbnail" -H "Authorization: Bearer 
 
 - 404 if there is none (the recording's `thumbnail` is `false`).
 - A decoder is required: H.264/H.265 recordings get no thumbnail without a GPU decoder ([14. Codecs and patents](14-codecs-and-patents.md)).
+- Thumbnails of recordings uploaded to recording storage are available from any node.
 
 ## 5.9 Reconnects and discontinuities
 
@@ -201,6 +208,9 @@ recovery: recording b0316a943b097502b1c041ea3810a5a5 closed as interrupted (3 se
 Every `--retention-sweep` seconds (default 60), `finalized` and `interrupted` recordings past `retention_until` are deleted.
 Recordings with `legal_hold: true` are never deleted. The deadline comes from `recording.retention_days` (automatic), the start
 request's `retention_days` (manual), or the schedule's `retention_days` (scheduled), and can be changed later with `PATCH`.
+
+For recordings uploaded to recording storage, the stored objects (segments, index, thumbnail, export) are deleted too.
+If the storage cannot be reached, the recording stays in the deleting state and the next sweep tries again.
 
 ## 5.12 Schedules
 
@@ -295,3 +305,81 @@ A recurring schedule returns to `pending` after each occurrence ends (`completed
   `canceled`", and finished (`completed`, `missed`, `failed`) schedules count. To allow free publishing after a one-off `live`
   schedule has ended, delete or cancel it.
 - Cancelling a running schedule does not stop a recording or still-image saving that has already started. Stop the recording with `POST /recordings/{id}/stop`.
+
+## 5.13 Recording storage (S3-compatible object storage)
+
+Recordings can also be kept outside the data directory. Besides AWS S3, any service with an S3-compatible API works, such as MinIO
+and Cloudflare R2. Storage is configured per node with options ([3. Configuration](03-configuration.md#recording-storage)).
+
+```sh
+senca-node --data-dir /var/lib/senca \
+  --recording-storage s3://my-recordings/senca \
+  --s3-region ap-northeast-1 \
+  --s3-credentials /etc/senca/s3.json
+```
+
+### How it works
+
+1. Recordings are written locally (to the data directory) first, as before. The crash-safe write order (§5.10) does not change.
+2. Finished segments never change, so they start uploading while the recording is still running.
+3. When the recording is finalized (after its thumbnail is made), the remaining segments, the thumbnail and the index are uploaded.
+   Every line of the stored index carries the object key. Once the upload is complete, the recording's `storage` shows the location and time.
+4. `--recording-keep-local` seconds after the upload (default 86400, one day), the local copy is removed. With 0, it is removed as soon as
+   the upload finishes.
+5. Failed uploads are retried with a growing interval (at most 5 minutes). After a restart, recordings that were not uploaded yet are picked up again.
+
+### Reading
+
+- VOD, MP4 export and thumbnails use the local copy when it exists and storage otherwise. VOD `Range` requests are passed on to storage.
+- Uploaded recordings can be served by any node of the cluster configured with the same storage (no redirect to the node that made the
+  recording). Recordings not uploaded yet are still redirected to the node that made them.
+- The first MP4 export is stored as `recordings/{recording ID}/export.mp4` and returned for later requests.
+
+### What is stored
+
+Object keys are the prefix followed by the path inside the data directory.
+
+| Key | Content |
+|---|---|
+| `{prefix}/segments/{stream ID}/{run}/…` | Segments and fMP4 initialization segments |
+| `{prefix}/recordings/{recording ID}/index.jsonl` | Index (every line carries its object key) |
+| `{prefix}/recordings/{recording ID}/thumbnail.jpg`, `thumbnail.json` | Thumbnail |
+| `{prefix}/recordings/{recording ID}/export.mp4` | MP4 export |
+
+Objects larger than `--s3-part-size` (default 16 MiB; mostly MP4 exports) are uploaded in parts (multipart upload).
+
+### Deleting
+
+- Deleting a recording (through the API or by retention) also deletes its stored objects. Segments shared with other recordings are kept.
+- In a cluster, the node that made the recording does the deletion. The delete request can be sent to any node's API.
+- If the storage cannot be reached, the recording stays in the deleting state and the `--retention-sweep` sweep tries again.
+- If a bucket lifecycle rule deletes objects, those recordings will have missing parts in playback and export. Leave deletion to retention (§5.11).
+
+### Credentials and permissions
+
+Pass credentials in a JSON file (`--s3-credentials`) or in the environment variables `AWS_ACCESS_KEY_ID` and `AWS_SECRET_ACCESS_KEY`
+(plus `AWS_SESSION_TOKEN` for temporary credentials). Make the file readable by its owner only (`chmod 600`).
+
+```json
+{"access_key_id": "AKIA...", "secret_access_key": "...", "session_token": null}
+```
+
+- Operations used: `PutObject`, `GetObject`, `HeadObject`, `DeleteObject`, `ListObjectsV2` (under the prefix) and multipart upload
+  (`CreateMultipartUpload`, `UploadPart`, `CompleteMultipartUpload`, `AbortMultipartUpload`). With AWS IAM, allow `s3:PutObject`,
+  `s3:GetObject`, `s3:DeleteObject`, `s3:AbortMultipartUpload`, and `s3:ListBucket` restricted to the prefix.
+- The storage endpoint is chosen by the administrator, so `--egress-allow` does not apply to it. A MinIO server on the same network
+  (for example `http://10.0.0.5:9000`) can be used directly.
+
+### Examples by service
+
+| Service | Options |
+|---|---|
+| AWS S3 | `--recording-storage s3://bucket/prefix --s3-region ap-northeast-1` (endpoint `https://s3.{region}.amazonaws.com`, virtual-hosted style) |
+| MinIO | `--recording-storage s3://bucket/prefix --s3-endpoint http://minio:9000` (path style) |
+| Cloudflare R2 | `--recording-storage s3://bucket/prefix --s3-endpoint https://{account ID}.r2.cloudflarestorage.com --s3-region auto` |
+
+### In a cluster
+
+- Configure the same storage and credentials on every node. A node without storage settings redirects even uploaded recordings to the
+  node that made them.
+- If the storage settings change later, earlier recordings are still read from their own `storage.uri` (with the node's credentials).

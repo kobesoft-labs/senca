@@ -56,6 +56,22 @@ API の応答（`ingest`）と再生 URL に入れる、外から見た URL。�
 | `--verify-recordings` | — | 無効 | 起動時の回収で、索引にあるすべてのセグメントの SHA-256 を照合し、合わないものをログに出す（データ量に比例して起動が遅くなる） |
 | `--zoneinfo` | DIR | `/usr/share/zoneinfo` | 予約の時間帯（IANA の名前）を読む TZif の置き場所 |
 
+### 録画の保存先
+
+録画を S3 互換のオブジェクトストレージ（AWS S3・MinIO・Cloudflare R2 など）にも置くときの設定です。
+しくみは [5.13 録画の保存先](05-recording.md#513-録画の保存先s3-互換のオブジェクトストレージ) を見てください。
+クラスタでは、すべてのノードに同じ値を設定します。
+
+| オプション | 値 | 既定 | 意味 |
+|---|---|---|---|
+| `--recording-storage` | `local`\|`s3://BUCKET[/PREFIX]` | `local` | 録画の保存先。`local` なら手元のデータ置き場だけです |
+| `--s3-endpoint` | URL | AWS の地域の宛先 | S3 互換のサービスの宛先（`http(s)://ホスト[:ポート]`、パスは書けません）。MinIO・R2 などで指定します |
+| `--s3-region` | 地域 | `us-east-1` | 署名に使う地域。R2 は `auto` です |
+| `--s3-addressing` | `path`\|`virtual` | `--s3-endpoint` があれば `path`、無ければ `virtual` | バケットの指し方（`ホスト/バケット/キー` か `バケット.ホスト/キー`） |
+| `--s3-credentials` | FILE | 環境変数 | 資格情報の JSON（`access_key_id`・`secret_access_key`・`session_token`）。無ければ `AWS_ACCESS_KEY_ID` などを読みます |
+| `--s3-part-size` | バイト | `16777216`（16 MiB） | これより大きいものは分割して上げます。5 MiB〜5 GiB |
+| `--recording-keep-local` | 秒 | `86400` | 上げ終わってから手元の写しを残す時間。0 なら上げ終わったらすぐに消します |
+
 ### 認証（JWT）
 
 | オプション | 値 | 既定 | 意味 |
@@ -113,9 +129,11 @@ API の応答（`ingest`）と再生 URL に入れる、外から見た URL。�
 - `--https`・`--rtmps` があるのに `--tls-cert` か `--tls-key` が無い。
 - `--record-queue` が 16〜1048576 の外。`--max-playback-ttl` が 0。
 - `--egress-allow` が CIDR として読めない。
+- `--recording-storage` が `local` でも `s3://BUCKET[/PREFIX]` でもない、`--s3-endpoint`・`--s3-region`・`--s3-addressing` の形が違う、
+  `--s3-part-size` が 5 MiB〜5 GiB の外。
 - クラスタの設定の `node_id` が 0、`peers` に自分が無い、`peers` が 1〜7 台の外。
 
-ファイルが読めない・待ち受けを開けない・クラスタの合言葉が 16 文字未満などは、起動の途中で `fatal: ...` として
+ファイルが読めない・待ち受けを開けない・クラスタの合言葉が 16 文字未満・S3 の資格情報が無いなどは、起動の途中で `fatal: ...` として
 終了コード 1 で終わる。
 
 ## 3.3 設定ファイル（JSON）
@@ -146,6 +164,7 @@ API の応答（`ingest`）と再生 URL に入れる、外から見た URL。�
 | `net_mbps` | `--net-mbps` | 数 |
 | `labels` | `--label` | 文字列 → 文字列のオブジェクト |
 | `capacity_cpu_millis`・`capacity_memory_mb` | 同名 | 数か `null` |
+| `recording_storage` | `--recording-storage`・`--s3-*`・`--recording-keep-local` | `{"uri", "endpoint", "region", "addressing", "credentials_file", "part_size", "keep_local_secs"}`（どれも省略できます） |
 
 注意:
 
@@ -225,8 +244,14 @@ API の応答（`ingest`）と再生 URL に入れる、外から見た URL。�
 
 ## 3.5 環境変数
 
-`senca-node` 自身が読む環境変数は無い。設定はすべてオプションと JSON で渡す。
-次の環境変数は、ノードが起動する worker が読む。
+`senca-node` 自身が読む環境変数は、録画の保存先の資格情報だけです（`--s3-credentials` が無いとき）。
+
+| 変数 | 意味 |
+|---|---|
+| `AWS_ACCESS_KEY_ID`・`AWS_SECRET_ACCESS_KEY` | S3 の資格情報（[録画の保存先](#録画の保存先)） |
+| `AWS_SESSION_TOKEN` | 一時的な資格情報のトークン（あれば） |
+
+それ以外の設定はすべてオプションと JSON で渡す。次の環境変数は、ノードが起動する worker が読む。
 
 | 変数 | 読むもの | 意味 |
 |---|---|---|

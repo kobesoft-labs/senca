@@ -21,6 +21,8 @@ stream を録画し、VOD として再生し、MP4・HLS として持ち出す�
 - 書き込みはライブより後回し。書き手へのキューがあふれたらセグメントを落とし、`gap`（`queue_overflow`）として記録する。ライブは止めない。
   キューの長さは `--record-queue`（既定 4096。stream ごとにはその 1/64、16〜4096）。
 - クラスタでは、録画のファイルは録画を作ったノードのディスクにだけある（複製しない。[9. クラスタとグリッド](09-cluster-grid.md)）。
+- 保存先（S3 互換のオブジェクトストレージ）を設定すると、確定した録画をそこへ上げます。上げた録画は、同じ保存先を設定した
+  どのノードからでも再生・書き出しできます（§5.13）。
 
 ## 5.2 録画の状態とフィールド
 
@@ -43,6 +45,7 @@ stream を録画し、VOD として再生し、MP4・HLS として持ち出す�
 | `duration_ms`・`segments`・`bytes` | 索引から集計 |
 | `gaps` | 欠落の一覧 `[{at, reason, dropped}]`。`reason` は `publisher_reconnect`・`queue_overflow` |
 | `thumbnail` | サムネイルがあるか |
+| `storage` | 保存先に上げ終わっていれば `{"uri": "s3://…", "archived_at": "…"}`、まだなら `null`（§5.13） |
 
 注: 今の実装では、ノードの起動後に書いた録画の `gaps` はノードを再起動するまで空で表示される（索引には記録されている）。
 
@@ -138,7 +141,7 @@ curl -s -X POST "$API/recordings/$RID/playback-url" "${H[@]}" -d '{"ttl_secs":36
 
 **HLS として持ち出す**: VOD の再生リストとセグメントがそのまま HLS の書き出しになる。ファイルにまとめるなら、例えば
 `ffmpeg -i "$VOD_URL" -c copy out.ts` のように再符号化せずに取り出す。クラスタでは、録画を持たないノードに来た VOD の要求は
-録画を作ったノードへ 307 で案内される。
+録画を作ったノードへ 307 で案内される。保存先に上げ終わった録画は、案内せずに、要求を受けたノードが保存先から読んで返します。
 
 ## 5.7 MP4 の書き出し
 
@@ -152,7 +155,9 @@ curl -s -o rec.mp4 "$API/recordings/$RID/export.mp4" -H "Authorization: Bearer $
 - 予約の録画は、予約の開始・終了の時刻（索引の `not_before_ms`・`not_after_ms`）で切り出す。開始は直前のキーフレームまで広げる。
   pre-roll・post-roll の分は VOD には残るが MP4 には入らない。
 - 再接続で時刻が飛んだ区間は、前の区間の終わりに続けてつなぐ（空白の時間は入らない）。
-- クラスタでは、録画を作ったノードの API に要求する（書き出し・サムネイルは手元のファイルを読む）。
+- クラスタでは、保存先に上げ終わった録画はどのノードの API からでも書き出せます。まだ上がっていない録画は、
+  録画を作ったノードの API に要求してください。
+- 保存先がある録画では、最初の書き出しを保存先にも置き、次からはそれを返します。
 
 ## 5.8 サムネイル
 
@@ -164,6 +169,7 @@ curl -s -o thumb.jpg "$API/recordings/$RID/thumbnail" -H "Authorization: Bearer 
 
 - 無ければ 404（録画の `thumbnail` が `false`）。
 - 復号できる装置が要る。H.264/H.265 の録画は GPU のデコーダーが無いとサムネイルを作らない（[14. コーデックと特許](14-codecs-and-patents.md)）。
+- 保存先に上げ終わった録画のサムネイルは、どのノードからでも取れます。
 
 ## 5.9 再接続と不連続
 
@@ -199,6 +205,9 @@ recovery: recording b0316a943b097502b1c041ea3810a5a5 closed as interrupted (3 se
 `--retention-sweep`（既定 60 秒）ごとに、`retention_until` を過ぎた `finalized`・`interrupted` の録画を消す。
 `legal_hold: true` の録画は消さない。期限は自動録画では `recording.retention_days`、手動では開始の `retention_days`、
 予約では予約の `retention_days` から決まり、あとから `PATCH` で変えられる。
+
+保存先に上げた録画は、保存先のオブジェクト（セグメント・索引・サムネイル・書き出し）も消します。
+保存先に届かないときは録画を削除中のまま残し、次の見回りでやり直します。
 
 ## 5.12 予約（スケジュール）
 
@@ -292,3 +301,79 @@ curl -s -X POST "$API/schedules" "${H[@]}" -d '{
   終わった（`completed`・`missed`・`failed`）予約も数える。1 回だけの `live` 予約が終わった後に自由に publish させたいときは、
   その予約を削除するか取り消す。
 - 実行中の予約を `canceled` にしても、すでに始まった録画・静止画の保存は止まらない。録画は `POST /recordings/{id}/stop` で止める。
+
+## 5.13 録画の保存先（S3 互換のオブジェクトストレージ）
+
+録画をデータ置き場の外にも置けます。AWS S3 のほか、MinIO・Cloudflare R2 など S3 互換の API を持つサービスが使えます。
+設定はノードごとのオプションです（[3. 設定](03-configuration.md#録画の保存先)）。
+
+```sh
+senca-node --data-dir /var/lib/senca \
+  --recording-storage s3://my-recordings/senca \
+  --s3-region ap-northeast-1 \
+  --s3-credentials /etc/senca/s3.json
+```
+
+### 流れ
+
+1. 録画は今までどおり、まず手元（データ置き場）に書きます。ノードが止まっても回収できる順番（§5.10）はそのままです。
+2. 書き終えたセグメントは変わらないので、録画中から保存先へ上げ始めます。
+3. 録画が確定すると（サムネイルを作った後）、残りのセグメント・サムネイル・索引を上げます。保存先の索引の各行には
+   オブジェクトのキーが入ります。上げ終わると、録画の `storage` に場所と時刻が入ります。
+4. 上げ終わってから `--recording-keep-local` 秒（既定 86400 秒 = 1 日）経つと、手元の写しを消します。
+   0 にすると、上げ終わったらすぐに消します。
+5. 上げるのに失敗したら、間を空けてやり直します（間隔は最大 5 分）。ノードを再起動したときも、まだ上がっていない録画を上げ直します。
+
+### 読むとき
+
+- VOD・MP4 の書き出し・サムネイルは、手元にあれば手元から、無ければ保存先から読みます。VOD の `Range` の要求は保存先にもそのまま渡します。
+- 保存先に上げた録画は、同じ保存先を設定したクラスタのどのノードからでも出せます（録画を作ったノードへ案内しません）。
+  まだ上がっていない録画は、今までどおり録画を作ったノードへ案内します。
+- MP4 の書き出しは、最初に作ったものを保存先の `recordings/{録画 ID}/export.mp4` に置き、次からはそれを返します。
+
+### 保存先の中身
+
+キーは「接頭辞 + データ置き場の中の相対パス」です。
+
+| キー | 中身 |
+|---|---|
+| `{接頭辞}/segments/{stream ID}/{run}/…` | セグメントと fMP4 の初期化セグメント |
+| `{接頭辞}/recordings/{録画 ID}/index.jsonl` | 索引（各行にオブジェクトのキー） |
+| `{接頭辞}/recordings/{録画 ID}/thumbnail.jpg`・`thumbnail.json` | サムネイル |
+| `{接頭辞}/recordings/{録画 ID}/export.mp4` | MP4 の書き出し |
+
+`--s3-part-size`（既定 16 MiB）より大きいもの（主に MP4 の書き出し）は、分割して上げます（マルチパートアップロード）。
+
+### 削除
+
+- 録画を消すと（API・保持期限）、保存先のオブジェクトも消します。ほかの録画と共有しているセグメントは残します。
+- クラスタでは、削除は録画を作ったノードが行います。消す操作はどのノードの API からでもかまいません。
+- 保存先に届かないときは、録画を削除中のまま残し、`--retention-sweep` の見回りでやり直します。
+- バケットのライフサイクルの規則でオブジェクトを消すと、その録画は再生・書き出しで欠けます。消すのは保持期限（§5.11）に任せてください。
+
+### 資格情報と権限
+
+資格情報は JSON のファイル（`--s3-credentials`）か、環境変数 `AWS_ACCESS_KEY_ID`・`AWS_SECRET_ACCESS_KEY`
+（一時的な資格情報なら `AWS_SESSION_TOKEN` も）で渡します。ファイルは持ち主だけが読めるようにしてください（`chmod 600`）。
+
+```json
+{"access_key_id": "AKIA...", "secret_access_key": "...", "session_token": null}
+```
+
+- 使う操作: `PutObject`・`GetObject`・`HeadObject`・`DeleteObject`・`ListObjectsV2`（接頭辞の下）と、マルチパートアップロード
+  （`CreateMultipartUpload`・`UploadPart`・`CompleteMultipartUpload`・`AbortMultipartUpload`）。AWS の IAM なら
+  `s3:PutObject`・`s3:GetObject`・`s3:DeleteObject`・`s3:AbortMultipartUpload` と、接頭辞に絞った `s3:ListBucket` を許可します。
+- 保存先は管理者が決める宛先なので、`--egress-allow` の制限は受けません。同じネットワークの MinIO（`http://10.0.0.5:9000` など）にもそのままつなげます。
+
+### サービスごとの例
+
+| サービス | オプション |
+|---|---|
+| AWS S3 | `--recording-storage s3://bucket/prefix --s3-region ap-northeast-1`（宛先は `https://s3.{地域}.amazonaws.com`、仮想ホスト形式） |
+| MinIO | `--recording-storage s3://bucket/prefix --s3-endpoint http://minio:9000`（パス形式） |
+| Cloudflare R2 | `--recording-storage s3://bucket/prefix --s3-endpoint https://{アカウント ID}.r2.cloudflarestorage.com --s3-region auto` |
+
+### クラスタで使うとき
+
+- すべてのノードに同じ保存先と資格情報を設定してください。保存先の設定が無いノードは、上げた録画も録画を作ったノードへ案内します。
+- 保存先の設定をあとで変えても、前に上げた録画はその録画の `storage.uri` の場所から読みます（資格情報はノードの設定のものを使います）。

@@ -223,7 +223,7 @@ async fn signed(app: &Arc<App>, rest: &str, h: &RequestHead) -> Reply {
     }
     let elsewhere = match *kind {
         "live" if app.live_cache(id).is_none_or(|c| c.playlist(false).is_none()) => app.owner_base(id),
-        "vod" if app.read_index(id).is_none() => app.recording_base(id),
+        "vod" if app.index_async(id).await.is_none() => app.recording_base(id),
         _ => None,
     };
     if let Some(base) = elsewhere {
@@ -232,7 +232,7 @@ async fn signed(app: &Arc<App>, rest: &str, h: &RequestHead) -> Reply {
     }
     match *kind {
         "live" => cors(live(app, id, file, h).await),
-        "vod" => cors(vod(app, id, file, h)),
+        "vod" => cors(vod(app, id, file, h).await),
         _ => Reply::status(404),
     }
 }
@@ -290,16 +290,32 @@ async fn live(app: &Arc<App>, stream: &str, file: &str, h: &RequestHead) -> Repl
     }
 }
 
-fn vod(app: &Arc<App>, rec: &str, file: &str, h: &RequestHead) -> Reply {
+async fn vod(app: &Arc<App>, rec: &str, file: &str, h: &RequestHead) -> Reply {
     if file == "index.m3u8" {
-        return match app.vod_playlist(rec) {
+        return match app.vod_playlist(rec).await {
             Some(p) => Reply::new(200, "application/vnd.apple.mpegurl", Bytes::from(p)),
             None => Reply::status(404),
         };
     }
-    let Some((ct, data)) = app.vod_object(rec, file) else { return Reply::status(404) };
+    let Some((ct, rel, key)) = app.vod_object_ref(rec, file).await else { return Reply::status(404) };
+    let range = h.headers.get_str("range").filter(|r| matches!(senca_http::range::parse_range(r), senca_http::range::RangeParse::Single(_)));
+    // 保存先から読むときは範囲をそのまま渡す（手元にあれば全体を読んで切る）
+    let data = match range {
+        Some(r) => match app.rec_object_range(rec, &rel, key.as_deref(), r).await {
+            Some(crate::storage::Ranged::Whole(b)) => b,
+            Some(crate::storage::Ranged::Part(b, a, z, total)) => {
+                return Reply::new(206, ct, b).header("Content-Range", format!("bytes {a}-{z}/{total}")).header("Accept-Ranges", "bytes");
+            }
+            Some(crate::storage::Ranged::Unsatisfiable) => return Reply::status(416),
+            None => return Reply::status(404),
+        },
+        None => match app.rec_object(rec, &rel, key.as_deref(), crate::storage::MAX_OBJECT).await {
+            Some(b) => b,
+            None => return Reply::status(404),
+        },
+    };
     // Range（1 区間だけ）
-    if let Some(r) = h.headers.get_str("range")
+    if let Some(r) = range
         && let senca_http::range::RangeParse::Single(spec) = senca_http::range::parse_range(r)
     {
         return match spec.resolve(data.len() as u64) {

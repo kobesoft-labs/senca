@@ -61,6 +61,12 @@ pub struct App {
     pub mediapipes: crate::mediapipes::MediaPipelines,
     /// 部屋の出来事（SSE へ。合意ログに載せない）。
     pub room_events: tokio::sync::broadcast::Sender<crate::rooms::RoomEventOut>,
+    /// 録画の保存先（S3 互換。設定したときだけ）。
+    pub storage: std::sync::OnceLock<crate::storage::Storage>,
+    /// 保存先へ上げる係。
+    pub archiver: std::sync::OnceLock<Arc<crate::archive::Archiver>>,
+    /// 削除の途中の録画（同じ録画を 2 度消しに行かない）。
+    pub deleting: Mutex<std::collections::HashSet<String>>,
 }
 
 impl App {
@@ -96,6 +102,9 @@ impl App {
             pipelines: crate::pipelines::PipelineManager::default(),
             captions_running: Mutex::new(HashMap::new()),
             rtc: std::sync::OnceLock::new(),
+            storage: std::sync::OnceLock::new(),
+            archiver: std::sync::OnceLock::new(),
+            deleting: Mutex::new(Default::default()),
         });
         *app.me.lock().unwrap() = Arc::downgrade(&app);
         if let Ok(h) = tokio::runtime::Handle::try_current() {
@@ -386,6 +395,7 @@ impl App {
             schedule,
             name,
             node: Some(self.node_id.clone()),
+            storage: None,
         };
         // 保存してから書き手に頼む
         self.propose(Command::PutRecording { recording: rec.clone() })?;
@@ -429,6 +439,11 @@ impl App {
 
     fn on_recorder_event(&self, e: RecorderEvent) {
         match e {
+            RecorderEvent::Written { rel } => {
+                if let Some(a) = self.archiver.get() {
+                    a.object(rel);
+                }
+            }
             RecorderEvent::Appended { recording, segment } => {
                 let mut m = self.rec_info.lock().unwrap();
                 let i = m.entry(recording).or_default();
@@ -440,7 +455,13 @@ impl App {
                 let st = if state == "finalized" { RecordingState::Finalized } else { RecordingState::Interrupted };
                 self.finish_recording(&recording, ended_at_ms, st);
                 let me = self.arc();
-                std::thread::spawn(move || crate::thumbnail::generate(&me, &recording));
+                // サムネイルを作ってから保存先へ上げる（サムネイルも一緒に上げる）
+                std::thread::spawn(move || {
+                    crate::thumbnail::generate(&me, &recording);
+                    if let Some(a) = me.archiver.get() {
+                        a.finalize(&recording);
+                    }
+                });
             }
             RecorderEvent::Failed { recording, error } => {
                 self.log(&format!("recording {recording} failed: {error}"));
@@ -459,18 +480,11 @@ impl App {
             segments: idx.segments.len() as u64,
             bytes: idx.bytes(),
             gaps: idx.gaps.iter().map(|(at, r, d)| json!({ "at": crate::util::rfc3339(*at), "reason": r, "dropped": d })).collect(),
-            has_thumbnail: self.cfg.data_dir.join("recordings").join(id).join("thumbnail.jpg").exists(),
+            has_thumbnail: self.cfg.data_dir.join("recordings").join(id).join("thumbnail.jpg").exists()
+                || self.control.lock().unwrap().state.recordings.get(id).and_then(|r| r.storage.as_ref()).is_some_and(|s| s.thumbnail),
         };
         self.rec_info.lock().unwrap().insert(id.to_string(), info.clone());
         Some(info)
-    }
-
-    pub fn read_index(&self, id: &str) -> Option<senca_record::Index> {
-        if id.parse::<senca_core::Id128>().is_err() {
-            return None;
-        }
-        let b = std::fs::read(self.cfg.data_dir.join("recordings").join(id).join("index.jsonl")).ok()?;
-        senca_record::parse(&b).ok()
     }
 
     pub fn delete_recording(&self, r: &Recording) -> Result<(), Problem> {
@@ -481,17 +495,37 @@ impl App {
         d.state = RecordingState::Deleting;
         d.generation += 1;
         self.propose(Command::PutRecording { recording: d })?;
-        let me = self.arc();
-        let id = r.id.clone();
-        std::thread::spawn(move || crate::recovery::delete_recording(&me, &id));
+        // 消すのは手元のファイルを持つノード（分散では、持ち主が適用されたコマンドを見て消す）
+        if self.cluster.get().is_none() || r.node.as_deref().is_none_or(|n| n == self.node_id) {
+            let me = self.arc();
+            let id = r.id.clone();
+            std::thread::spawn(move || crate::recovery::delete_recording(&me, &id));
+        }
         Ok(())
     }
 
     pub fn recording_thumbnail(&self, id: &str) -> Option<Bytes> {
-        std::fs::read(self.cfg.data_dir.join("recordings").join(id).join("thumbnail.jpg")).ok().map(Bytes::from)
+        if id.parse::<senca_core::Id128>().is_err() {
+            return None;
+        }
+        self.rec_object_blocking(id, &format!("recordings/{id}/thumbnail.jpg"), None, 16 << 20)
     }
 
     pub fn export_mp4(&self, id: &str) -> Result<Bytes, Problem> {
+        // 保存先にあれば、前に作った書き出しを使う
+        if let Some((st, loc)) = self.remote_of(id)
+            && let Some(rt) = self.rt.get()
+        {
+            let key = loc.key(&format!("recordings/{id}/export.mp4"));
+            match crate::util::block_on(rt, st.client.get_object(&loc.bucket, &key, None, crate::storage::MAX_EXPORT)) {
+                Ok(Some(g)) => return Ok(g.body),
+                Ok(None) => {}
+                Err(e) => self.log(&format!("storage: export of {id}: {e}")),
+            }
+            let b = crate::export::mp4(self, id)?;
+            crate::archive::store_export(&self.arc(), id, b.clone());
+            return Ok(b);
+        }
         crate::export::mp4(self, id)
     }
 
@@ -533,8 +567,8 @@ impl App {
         Ok(v)
     }
 
-    pub fn vod_playlist(&self, id: &str) -> Option<String> {
-        let idx = self.read_index(id)?;
+    pub async fn vod_playlist(&self, id: &str) -> Option<String> {
+        let idx = self.index_async(id).await?;
         {
             let core = self.control.lock().unwrap();
             let r = core.state.recordings.get(id)?;
@@ -551,11 +585,12 @@ impl App {
         Some(p)
     }
 
-    pub fn vod_object(&self, id: &str, file: &str) -> Option<(&'static str, Bytes)> {
-        let idx = self.read_index(id)?;
+    /// VOD のファイル名 →（Content-Type, 相対パス, 保存先のキー）。
+    pub async fn vod_object_ref(&self, id: &str, file: &str) -> Option<(&'static str, String, Option<String>)> {
+        let idx = self.index_async(id).await?;
         if file == "init.mp4" {
             let (p, _) = idx.init.as_ref()?;
-            return std::fs::read(self.cfg.data_dir.join(p)).ok().map(|b| ("video/mp4", Bytes::from(b)));
+            return Some(("video/mp4", p.clone(), idx.init_key.clone()));
         }
         let (stem, ext) = file.rsplit_once('.')?;
         let (e, s) = stem.split_once('-')?;
@@ -566,7 +601,7 @@ impl App {
             "m4s" => "video/iso.segment",
             _ => return None,
         };
-        std::fs::read(self.cfg.data_dir.join(&seg.path)).ok().map(|b| (ct, Bytes::from(b)))
+        Some((ct, seg.path.clone(), seg.key.clone()))
     }
 
     // ---- 静止画 ----
@@ -675,6 +710,14 @@ impl App {
                 match rx.recv().await {
                     Ok(a) => {
                         // 写し（中継で受けている hub）は切らない: 写しは所有者の移動に中継の側で付いていく
+                        // 削除中になった録画で、手元のファイルを持つのが自分なら消す
+                        if let Command::PutRecording { recording: r } = a.cmd.as_ref()
+                            && r.state == RecordingState::Deleting
+                            && r.node.as_deref() == Some(me.node_id.as_str())
+                        {
+                            let (m2, id) = (me.clone(), r.id.clone());
+                            std::thread::spawn(move || crate::recovery::delete_recording(&m2, &id));
+                        }
                         if let Command::ClaimStream { stream, node, .. } = a.cmd.as_ref()
                             && *node != me.node_id
                             && !me.relay.get().is_some_and(|r| r.is_mirror(stream))
