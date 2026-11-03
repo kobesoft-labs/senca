@@ -19,8 +19,8 @@ if [ -n "${CLUSTER_TLS:-}" ]; then
   for i in 1 2 3; do mkcert n$i ca; done
   mkcert intruder evilca
 fi
-declare -A HTTP RAFT RTMPP RELAY
-for i in 1 2 3; do HTTP[$i]=$(port); RAFT[$i]=$(port); RTMPP[$i]=$(port); RELAY[$i]=$(port); done
+declare -A HTTP RAFT RTMPP RELAY UDPP
+for i in 1 2 3; do HTTP[$i]=$(port); RAFT[$i]=$(port); RTMPP[$i]=$(port); RELAY[$i]=$(port); UDPP[$i]=$(port); done
 for i in 1 2 3; do
   T=""; [ -n "${CLUSTER_TLS:-}" ] && T="\"tls_ca\": \"$W/ca.pem\", \"tls_cert\": \"$W/n$i.pem\", \"tls_key\": \"$W/n$i.key\","
   cat > "$W/c$i.json" <<J
@@ -33,7 +33,7 @@ done
 start() {
   local i=$1
   "$NODE_BIN" --data-dir "$W/d$i" --http 127.0.0.1:${HTTP[$i]} --rtmp 127.0.0.1:${RTMPP[$i]} --public-http-url http://127.0.0.1:${HTTP[$i]} \
-    --reconnect-grace 2000 --cluster-config "$W/c$i.json" --node-name n$i >>"$W/n$i.log" 2>&1 &
+    --reconnect-grace 2000 --cluster-config "$W/c$i.json" --node-name n$i --egress-allow 127.0.0.0/8 --label zone=z$i --webrtc-udp 127.0.0.1:${UDPP[$i]} >>"$W/n$i.log" 2>&1 &
   PIDS[$i]=$!
 }
 ready() { for _ in $(seq 100); do curl -sf http://127.0.0.1:${HTTP[$1]}/readyz >/dev/null && return 0; sleep 0.2; done; return 1; }
@@ -96,19 +96,110 @@ contiguous "$W/src.v" "$W/r3.v" 100 && pass "HLS via relay on node 3 = contiguou
 st=$(api 2 GET /nodes | python3 -c "import json,sys; d=json.load(sys.stdin); r=[n['relay'] for n in d['items'] if n['self']][0]; print(max(p['tx_aus'] for p in r['peers']) if r['peers'] else 0)")
 [ "${st:-0}" -gt 100 ] && pass "owner node 2 relayed AUs ($st)" || fail "relay stats on node 2: $st"
 # 同じ stream を node 2 で配信し直し、node 3 の写しから見ている間に node 3 で受け直す → node 2 の送り手は切られ、node 3 の写しは本物に譲る
-"$FFMPEG" -v error -re -i "$W/src.flv" -c copy -f flv rtmp://127.0.0.1:${RTMPP[2]}/live/$KEY & PUB=$!
+"$FFMPEG" -v error -re -stream_loop 2 -i "$W/src.flv" -c copy -f flv rtmp://127.0.0.1:${RTMPP[2]}/live/$KEY & PUB=$!
 sleep 3
 curl -s -o /dev/null "$URL3"
+sleep 1
+# 所有者の送り手のつなぎ直し（ClaimStream がもう一度来る）で、node 3 の写しが壊れない
+before=$(grep -c "mirror of $SID stopped" "$W/n3.log" || true)
+kill $PUB 2>/dev/null; wait $PUB 2>/dev/null || true
+"$FFMPEG" -v error -re -stream_loop 2 -i "$W/src.flv" -c copy -f flv rtmp://127.0.0.1:${RTMPP[2]}/live/$KEY & PUB=$!
+sleep 4
+after=$(grep -c "mirror of $SID stopped" "$W/n3.log" || true)
+pl=$(curl -s "$URL3"); echo "$pl" > "$W/pl_after_reconnect.m3u8"
+[ "$before" = "$after" ] && echo "$pl" | grep -q EXTINF && ! echo "$pl" | grep -q ENDLIST \
+  && pass "owner publisher reconnect keeps the node 3 mirror live" || fail "mirror broken by owner reconnect (before=$before after=$after)"
 "$FFMPEG" -v error -re -i "$W/src.flv" -c copy -f flv rtmp://127.0.0.1:${RTMPP[3]}/live/$KEY & PUB3=$!
 sleep 2
 rc=0; wait $PUB 2>/dev/null || rc=$?
 grep -q "publisher evicted" "$W/n2.log" && pass "old owner (node 2) evicted its publisher" || fail "node 2 did not evict (rc=$rc)"
-grep -q "mirror of $SID stopped" "$W/n3.log" && pass "node 3 mirror yielded to the real publisher" || fail "node 3 mirror not stopped"
+grep -q "mirror of $SID stopped (stopped)" "$W/n3.log" && pass "node 3 mirror yielded to the real publisher" || fail "node 3 mirror not stopped"
 sleep 1
 URL1=$(api 1 POST /streams/$SID/playback-url | json "['playback']['hls']")
-frames "$URL1" v > "$W/m.v"
+frames "$URL1" v | tail -n 100 > "$W/m.v"
 wait $PUB3 || true
+# node 1 の写しには前の所有者の分・不連続・新しい所有者の分が順に並ぶ（ライブの再生リストとして正しい）。終わりを比べる
 contiguous "$W/src.v" "$W/m.v" 100 && pass "playback on node 1 relays from the new owner (node 3)" || fail "playback via new owner ($(wc -l < "$W/m.v"))"
+# ---- グリッド（ADR-0013）: 手動の割り当て・ノードの停止での移動・戻り・strict の割り当て ----
+g=$(api 1 GET /grid)
+nup=$(echo "$g" | python3 -c "import json,sys; d=json.load(sys.stdin); print(sum(1 for n in d['nodes'] if n['up']))")
+[ "$nup" = 3 ] && pass "grid: 3 nodes registered and up" || fail "grid nodes up: $nup"
+# 元の配信（node 1 で受け続ける）
+G=$(api 1 POST /streams -d '{"name":"grid-src"}'); GSID=$(echo "$G" | json "['id']"); GKEY=$(echo "$G" | json "['ingest']['stream_key']")
+"$FFMPEG" -v error -re -stream_loop -1 -i "$W/src.flv" -c copy -f flv rtmp://127.0.0.1:${RTMPP[1]}/live/$GKEY & GPUB=$!
+sleep 2
+GURL=$(api 1 POST /streams/$GSID/playback-url -d '{"ttl_secs":3600}' | json "['playback']['rtmp']" | sed "s#rtmp://[^/]*/#rtmp://127.0.0.1:${RTMPP[1]}/#")
+D=$(api 1 POST /streams -d '{"name":"grid-dst"}'); DSID=$(echo "$D" | json "['id']")
+IN=$(api 2 POST /streams/$DSID/inputs -d "{\"protocol\":\"rtmp_pull\",\"url\":\"$GURL\",\"placement\":{\"node\":\"n3\",\"pin_policy\":\"prefer\",\"priority\":\"high\"}}")
+IID=$(echo "$IN" | json "['id']")
+placed() { api $1 GET /inputs/$IID | python3 -c "import json,sys; d=json.load(sys.stdin)['placement_status']; print(d.get('node_name') or d.get('state'))"; }
+wait_placed() { local n=$1 want=$2; for _ in $(seq 60); do [ "$(placed $n)" = "$want" ] && return 0; sleep 0.5; done; return 1; }
+wait_placed 1 n3 && pass "grid: input pinned to n3 (prefer) is placed on n3" || fail "grid: placed on $(placed 1)"
+sleep 3
+act=0; for i in 1 2 3; do s=$(api $i GET /inputs/$IID | json "['status']['state']" 2>/dev/null || echo none); [ "$s" = active ] && act=$((act+1)) && who=$i; done
+[ "$act" = 1 ] && [ "$who" = 3 ] && pass "grid: exactly one node (n3) runs the input" || fail "grid: running on $act nodes (last $who)"
+# n3 を落とす → 5 秒ほどで停止と見なし、prefer なので別のノードへ移る（Swarm のように縮退して動き続ける）
+kill -9 ${PIDS[3]}; PIDS[3]=
+t0=$(date +%s)
+moved=""; for _ in $(seq 60); do p=$(placed 1); case "$p" in n1|n2) moved=$p; break;; esac; sleep 0.5; done
+[ -n "$moved" ] && pass "grid: n3 down → input moved to $moved in $(( $(date +%s) - t0 )) s" || fail "grid: not moved ($(placed 1))"
+mi=${moved#n}
+ok=0; for _ in $(seq 30); do [ "$(api $mi GET /inputs/$IID | json "['status']['state']" 2>/dev/null)" = active ] && { ok=1; break; }; sleep 0.5; done
+[ $ok = 1 ] && pass "grid: the input is active again on $moved" || fail "grid: not active on $moved"
+# strict の割り当て: n2 に固定。n2 が落ちたら移さない
+IN2=$(api 1 POST /streams/$DSID/inputs -d "{\"protocol\":\"rtmp_pull\",\"url\":\"$GURL\",\"enabled\":false,\"placement\":{\"node\":\"n2\",\"pin_policy\":\"strict\"}}")
+IID2=$(echo "$IN2" | json "['id']")
+c=$(code 1 POST /streams/$DSID/inputs -d '{"protocol":"rtmp_pull","url":"rtmp://127.0.0.1:1/a/b","placement":{"node":"no-such-node"}}')
+[ "$c" = 400 ] && pass "grid: unknown node in placement is 400" || fail "grid: unknown node $c"
+c=$(code 1 POST /streams/$DSID/inputs -d '{"protocol":"rtmp_pull","url":"rtmp://127.0.0.1:1/a/b","placement":{"degrade":[{"label":"x","disable":["a"]}]}}')
+[ "$c" = 400 ] && pass "grid: degrade levels only for pipelines (400)" || fail "grid: degrade on input $c"
+# n3 を戻す → 冷却（30 秒）の後、prefer の割り当ては n3 に戻る
+start 3; ready 3 || fail "node 3 restart"
+back=0; for _ in $(seq 90); do [ "$(placed 1)" = n3 ] && { back=1; break; }; sleep 1; done
+[ $back = 1 ] && pass "grid: after n3 recovered, the prefer-pinned input returned to n3" || fail "grid: did not return ($(placed 1))"
+st=$(api 1 GET /inputs/$IID2 | python3 -c "import json,sys; print(json.load(sys.stdin)['placement_status']['state'])")
+[ "$st" = not_scheduled ] && pass "grid: disabled input has no workload" || fail "grid: disabled input state $st"
+# strict の割り当て: n2 に固定して有効にする → n2 を落としても他へ移さない → n2 が戻れば n2 で動く
+E2=$(api 1 GET /inputs/$IID2 -D - -o /dev/null | tr -d '\r' | awk -F': ' 'tolower($1)=="etag"{print $2}')
+api 1 PATCH /inputs/$IID2 -H "If-Match: $E2" -d '{"enabled":true}' >/dev/null
+placed2() { api 1 GET /inputs/$IID2 | python3 -c "import json,sys; d=json.load(sys.stdin)['placement_status']; print(d.get('node_name') or d.get('state'))"; }
+ok=0; for _ in $(seq 40); do [ "$(placed2)" = n2 ] && { ok=1; break; }; sleep 0.5; done
+[ $ok = 1 ] && pass "grid: strict pin placed on n2" || fail "grid: strict pin at $(placed2)"
+kill -9 ${PIDS[2]}; PIDS[2]=
+sleep 12
+st=$(placed2)
+case "$st" in unschedulable|pending) pass "grid: strict pin stays unscheduled while n2 is down ($st)";; *) fail "grid: strict pin moved to $st";; esac
+start 2; ready 2 || fail "node 2 restart"
+ok=0; for _ in $(seq 60); do [ "$(placed2)" = n2 ] && { ok=1; break; }; sleep 0.5; done
+[ $ok = 1 ] && pass "grid: strict pin runs on n2 again after it recovered" || fail "grid: strict pin after recovery $(placed2)"
+kill $GPUB 2>/dev/null || true
+# ---- 部屋（ADR-0015）: グリッドで置く・別のノードからの案内・REST の中継・ノードの停止で移る ----
+c=$(code 1 POST /rooms -d '{"id":"r-grid","settings":{"max_participants":4},"placement":{"node":"n2","pin_policy":"prefer"}}')
+[ "$c" = 201 ] && pass "rooms: room created with a prefer pin to n2" || fail "rooms: create $c"
+rplaced() { api $1 GET /rooms/r-grid | python3 -c "import json,sys; d=json.load(sys.stdin)['placement_status']; print(d.get('node_name') or d.get('state'))"; }
+ok=0; for _ in $(seq 40); do [ "$(rplaced 1)" = n2 ] && { ok=1; break; }; sleep 0.25; done
+[ $ok = 1 ] && pass "rooms: room placed on n2" || fail "rooms: placed $(rplaced 1)"
+RT=$(api 3 POST /rooms/r-grid/tokens -d '{"role":"recvonly","client_id":"probe"}' | json "['token']")
+r=$(python3 "$ROOT/tools/interop/ws_probe.py" "ws://127.0.0.1:${HTTP[1]}/signaling" r-grid "$RT")
+echo "$r" | grep -q "\"type\": *\"redirect\"" && echo "$r" | grep -q "127.0.0.1:${HTTP[2]}/signaling" \
+  && pass "rooms: signaling on n1 redirects to the hosting node n2" || fail "rooms: redirect $r"
+r=$(python3 "$ROOT/tools/interop/ws_probe.py" "ws://127.0.0.1:${HTTP[2]}/signaling" r-grid "$RT")
+echo "$r" | grep -q "\"type\": *\"connected\"" && pass "rooms: signaling on n2 joins the room" || fail "rooms: join on n2 $r"
+c=$(code 3 GET /rooms/r-grid/participants); [ "$c" = 200 ] && pass "rooms: REST on n3 is forwarded to n2 (participants 200)" || fail "rooms: forward $c"
+c=$(code 3 POST /rooms/r-grid/messages -d '{"data":{"x":1}}'); [ "$c" = 200 ] && pass "rooms: push via n3 forwarded" || fail "rooms: push forward $c"
+# n2 を落とす → 部屋は別のノードへ移り、そこで入れる
+kill -9 ${PIDS[2]}; PIDS[2]=
+moved=""; for _ in $(seq 60); do p=$(rplaced 1); case "$p" in n1|n3) moved=$p; break;; esac; sleep 0.5; done
+[ -n "$moved" ] && pass "rooms: n2 down → room moved to $moved" || fail "rooms: room not moved ($(rplaced 1))"
+mi=${moved#n}
+r=$(python3 "$ROOT/tools/interop/ws_probe.py" "ws://127.0.0.1:${HTTP[1]}/signaling" r-grid "$RT")
+if [ "$mi" = 1 ]; then
+  echo "$r" | grep -q "\"type\": *\"connected\"" && pass "rooms: participants can rejoin on the new node" || fail "rooms: rejoin $r"
+else
+  echo "$r" | grep -q "127.0.0.1:${HTTP[$mi]}/signaling" && pass "rooms: n1 now redirects to the new node $moved" || fail "rooms: redirect after move $r"
+fi
+grep -q "rooms: room r-grid hosted here" "$W/n$mi.log" && pass "rooms: $moved hosts the room" || fail "rooms: $moved did not host"
+start 2; ready 2 || fail "node 2 restart"
 if [ -n "${CLUSTER_TLS:-}" ]; then
   # 別の認証局の証明書を持つノードは、合言葉を知っていても入れない
   python3 - "$W" <<'PY'

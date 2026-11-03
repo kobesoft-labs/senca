@@ -42,6 +42,13 @@ pub struct Config {
     pub cluster: Option<ClusterConfig>,
     /// pull 入力・push 出力で接続してよい私設アドレスの範囲（CIDR）。既定では私設・ループバック・リンクローカルを拒否（仕様 9.4）。
     pub egress_allow: Vec<String>,
+    /// このノードの帯域（Mbit/s、上り・下りそれぞれ）。グリッドの配置で数える（ADR-0013）。
+    pub net_mbps: u64,
+    /// このノードのラベル（`--label key=value`）。配置の条件（placement.labels）に使う。
+    pub labels: std::collections::BTreeMap<String, String>,
+    /// 仕事に貸す CPU（ミリコア）・メモリ（MB）の上書き。無ければ実機の 90%・85%。
+    pub capacity_cpu_millis: Option<u64>,
+    pub capacity_memory_mb: Option<u64>,
 }
 
 #[derive(Debug, Clone, Deserialize)]
@@ -130,6 +137,10 @@ impl Default for Config {
             log_json: false,
             cluster: None,
             egress_allow: Vec::new(),
+            net_mbps: crate::grid::DEFAULT_NET_MBPS,
+            labels: Default::default(),
+            capacity_cpu_millis: None,
+            capacity_memory_mb: None,
         }
     }
 }
@@ -141,7 +152,8 @@ pub const USAGE: &str = "senca-node [--config FILE] [--data-dir DIR] [--http ADD
   [--jwks FILE --jwt-issuer ISS --jwt-audience AUD [--jwt-tenant-claim NAME]]
   [--codec-workers N] [--codec-worker-bin FILE] [--codec-lib-dir DIR] [--zoneinfo DIR]
   [--console-dir DIR] [--sender-dir DIR] [--verify-recordings] [--log-json] [--node-name NAME] [--egress-allow CIDR]...
-  [--cluster-config FILE]";
+  [--cluster-config FILE] [--net-mbps N] [--label KEY=VALUE]...
+  [--capacity-cpu-millis N] [--capacity-memory-mb N]";
 
 impl Config {
     pub fn from_args(args: &[String]) -> Result<Config, String> {
@@ -207,6 +219,17 @@ impl Config {
                 _ if flag("--verify-recordings") => cfg.verify_recordings = true,
                 _ if flag("--log-json") => cfg.log_json = true,
                 _ if flag("--egress-allow") => cfg.egress_allow.push(val()?),
+                _ if flag("--net-mbps") => cfg.net_mbps = num(val()?)?,
+                _ if flag("--capacity-cpu-millis") => cfg.capacity_cpu_millis = Some(num(val()?)?),
+                _ if flag("--capacity-memory-mb") => cfg.capacity_memory_mb = Some(num(val()?)?),
+                _ if flag("--label") => {
+                    let v = val()?;
+                    let (k, x) = v.split_once('=').ok_or_else(|| format!("--label は key=value: {v}"))?;
+                    if k.is_empty() || k.len() > 128 || x.len() > 128 || k.starts_with("senca.io/") {
+                        return Err(format!("--label の形が違います（senca.io/ で始まるキーは予約）: {v}"));
+                    }
+                    cfg.labels.insert(k.to_string(), x.to_string());
+                }
                 _ if flag("--cluster-config") => {
                     let p = val()?;
                     let b = std::fs::read(&p).map_err(|e| format!("{p}: {e}"))?;

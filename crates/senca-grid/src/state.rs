@@ -44,6 +44,9 @@ pub enum GridCommand {
     /// 装置（GPU・キャプチャ機器）の故障の報告。
     DeviceDown { node: NodeId, device: String },
     DeviceUp { node: NodeId, device: String },
+    /// 運用者が装置を手で止める・戻す（測った健康とは別。心拍で戻らない）。
+    DisableDevice { node: NodeId, device: String },
+    EnableDevice { node: NodeId, device: String },
     PutWorkload { workload: Workload },
     DeleteWorkload { id: WorkloadId },
     /// 配置係の決定。`token_base` は計画した時点の通し番号（違えば古い計画として拒む）。
@@ -127,6 +130,16 @@ impl GridState {
                 if !spec.gpus.iter().map(|g| &g.id).chain(spec.capture.iter().map(|c| &c.id)).all(|d| ids.insert(d)) {
                     return Err(invalid("装置の ID が重複しています"));
                 }
+                // 手で止めた装置は、申告し直しても止めたまま
+                let mut spec = spec;
+                if let Some(old) = self.nodes.get(&spec.id) {
+                    for g in &mut spec.gpus {
+                        g.disabled |= old.spec.gpus.iter().any(|o| o.id == g.id && o.disabled);
+                    }
+                    for c in &mut spec.capture {
+                        c.disabled |= old.spec.capture.iter().any(|o| o.id == c.id && o.disabled);
+                    }
+                }
                 let status = NodeStatus { up: true, changed_ms: now_ms, last_heartbeat_ms: now_ms };
                 self.nodes.insert(spec.id.clone(), Node { spec, status });
             }
@@ -150,6 +163,8 @@ impl GridState {
             }
             GridCommand::DeviceDown { node, device } => self.set_device(&node, &device, false)?,
             GridCommand::DeviceUp { node, device } => self.set_device(&node, &device, true)?,
+            GridCommand::DisableDevice { node, device } => self.set_disabled(&node, &device, true)?,
+            GridCommand::EnableDevice { node, device } => self.set_disabled(&node, &device, false)?,
             GridCommand::PutWorkload { workload } => {
                 validate_workload(&workload)?;
                 self.workloads.insert(workload.id.clone(), workload);
@@ -168,6 +183,18 @@ impl GridState {
 
     fn node_mut(&mut self, id: &str) -> Result<&mut Node, GridError> {
         self.nodes.get_mut(id).ok_or_else(|| GridError::UnknownNode { node: id.to_string() })
+    }
+
+    fn set_disabled(&mut self, node: &str, device: &str, disabled: bool) -> Result<(), GridError> {
+        let n = self.node_mut(node)?;
+        if let Some(g) = n.spec.gpus.iter_mut().find(|g| g.id == device) {
+            g.disabled = disabled;
+        } else if let Some(c) = n.spec.capture.iter_mut().find(|c| c.id == device) {
+            c.disabled = disabled;
+        } else {
+            return Err(GridError::UnknownDevice { node: node.to_string(), device: device.to_string() });
+        }
+        Ok(())
     }
 
     fn set_device(&mut self, node: &str, device: &str, healthy: bool) -> Result<(), GridError> {
@@ -362,7 +389,7 @@ impl GridState {
             _ => {}
         }
         if let Some(c) = &req.capture
-            && !n.spec.capture.iter().any(|x| &x.id == c && x.healthy)
+            && !n.spec.capture.iter().any(|x| &x.id == c && x.usable())
         {
             return Err("キャプチャ機器が使えません".into());
         }

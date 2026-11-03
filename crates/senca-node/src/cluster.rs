@@ -32,6 +32,8 @@ const K_HELLO: u8 = 0;
 const K_RAFT: u8 = 1;
 const K_FORWARD: u8 = 2;
 const K_RESULT: u8 = 3;
+/// グリッドの心拍（ADR-0013。合意ログに載せない。リーダーへ送る）。
+const K_HEARTBEAT: u8 = 4;
 
 type Reply = smpsc::Sender<Result<(), Problem>>;
 
@@ -49,6 +51,8 @@ pub struct Cluster {
     leader: Arc<AtomicU64>,
     #[allow(dead_code)]
     pub peers: HashMap<u64, SocketAddr>,
+    /// 相手ごとの送信のキュー（心拍のように Raft の外で送るもの）。
+    out: HashMap<u64, mpsc::Sender<Vec<u8>>>,
 }
 
 fn unavailable(t: &str) -> Problem {
@@ -60,6 +64,13 @@ impl Cluster {
         match self.leader.load(Ordering::Relaxed) {
             0 => None,
             n => Some(n),
+        }
+    }
+
+    /// グリッドの心拍を送る（キューがあふれていれば捨てる。次の心拍が来る）。
+    pub fn send_heartbeat(&self, to: u64, body: &[u8]) {
+        if let Some(q) = self.out.get(&to) {
+            let _ = q.try_send(frame(K_HEARTBEAT, body));
         }
     }
 
@@ -146,7 +157,7 @@ pub fn start(app: Arc<App>, me: u64, listen: SocketAddr, peers: HashMap<u64, Soc
         rt.spawn(dial(app.clone(), me, id, addr, secret.clone(), orx, tls.clone()));
     }
     rt.spawn(accept(app.clone(), listen, secret.clone(), tx.clone(), tls.clone()));
-    let c = Arc::new(Cluster { me, tx: tx.clone(), leader: leader.clone(), peers });
+    let c = Arc::new(Cluster { me, tx: tx.clone(), leader: leader.clone(), peers, out: outq.clone() });
     let app2 = app.clone();
     std::thread::Builder::new()
         .name("senca-raft".into())
@@ -261,6 +272,15 @@ async fn accept(app: Arc<App>, listen: SocketAddr, secret: String, tx: smpsc::Se
                         let req = (&body[..8]).get_u64();
                         if let Ok(cmd) = serde_json::from_slice::<Command>(&body[8..]) {
                             let _ = tx.send(DriverMsg::Forwarded { from, req, cmd });
+                        }
+                    }
+                    K_HEARTBEAT => {
+                        // 名乗った Raft の番号と、心拍のノードの raft_id が合うものだけ
+                        if let Ok(hb) = serde_json::from_slice::<senca_grid::Heartbeat>(&body) {
+                            let ok = app.control.lock().unwrap().state.nodes.get(&hb.node).and_then(|n| n.labels.get("raft_id")).is_some_and(|r| r == &from.to_string());
+                            if ok {
+                                crate::grid::on_heartbeat(&app, hb);
+                            }
                         }
                     }
                     K_RESULT => {

@@ -15,6 +15,7 @@ use std::collections::BTreeMap;
 pub const MAX_STREAMS_PER_TENANT: usize = 1000;
 pub const MAX_TOKENS_PER_TENANT: usize = 100;
 pub const MAX_SCHEDULES_PER_TENANT: usize = 1000;
+pub const MAX_ROOMS_PER_TENANT: usize = 10_000;
 pub const IDEMPOTENCY_TTL_MS: i64 = 24 * 3600 * 1000;
 
 #[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
@@ -52,6 +53,15 @@ pub struct ControlState {
     /// 所有権の世代（fencing token）を払い出す通し番号（仕様 8.2）。
     #[serde(default)]
     pub fencing_counter: u64,
+    /// グリッド（ノードの資源・仕事・割り当て。ADR-0013）。仕事は入力・出力・パイプライン・部屋から導く。
+    #[serde(default)]
+    pub grid: senca_grid::GridState,
+    /// リアルタイムの部屋（ADR-0015）。
+    #[serde(default)]
+    pub rooms: BTreeMap<String, Room>,
+    /// 部屋のメディアパイプライン（ADR-0016）。
+    #[serde(default)]
+    pub media_pipelines: BTreeMap<String, MediaPipeline>,
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
@@ -88,6 +98,14 @@ pub enum Command {
     DeleteSecret { tenant: String, id: String },
     /// 新しい fencing token を払い出す（結果は `fencing_counter`）。
     NextFencingToken,
+    /// グリッドのコマンド（ノードの登録・停止・装置の故障・配置係の決定）。資源から導く仕事は
+    /// ここでは受け付けない（入力・出力・パイプラインのコマンドで変わる）。
+    Grid { cmd: senca_grid::GridCommand },
+    /// 部屋を作る・置き換える（`expect_generation` があれば If-Match）。
+    PutRoom { room: Room, expect_generation: Option<u64> },
+    DeleteRoom { tenant: String, id: String },
+    PutMediaPipeline { pipeline: MediaPipeline, expect_generation: Option<u64> },
+    DeleteMediaPipeline { tenant: String, id: String },
 }
 
 fn conflict(t: &str) -> Problem {
@@ -110,6 +128,44 @@ impl ControlState {
     }
 
     fn apply_inner(&mut self, cmd: Command) -> Result<(), Problem> {
+        let derives = matches!(
+            cmd,
+            Command::DeleteStream { .. }
+                | Command::PutInput { .. }
+                | Command::DeleteInput { .. }
+                | Command::PutOutput { .. }
+                | Command::DeleteOutput { .. }
+                | Command::PutPipeline { .. }
+                | Command::DeletePipeline { .. }
+                | Command::PutRoom { .. }
+                | Command::DeleteRoom { .. }
+                | Command::PutMediaPipeline { .. }
+                | Command::DeleteMediaPipeline { .. }
+        );
+        self.apply_resource(cmd)?;
+        if derives {
+            self.sync_workloads();
+        }
+        Ok(())
+    }
+
+    /// 資源から導いた仕事を `grid.workloads` に反映する（差だけ。決定的）。
+    fn sync_workloads(&mut self) {
+        let want = crate::workloads::derive(self);
+        let stale: Vec<String> =
+            self.grid.workloads.keys().filter(|id| crate::workloads::is_derived(id) && !want.contains_key(*id)).cloned().collect();
+        for id in stale {
+            let _ = self.grid.apply(senca_grid::GridCommand::DeleteWorkload { id });
+        }
+        for (id, w) in want {
+            if self.grid.workloads.get(&id) != Some(&w) {
+                // 導いた仕事は検査を通る形で作る（テナント・ID は空でない、段の名前は API で検査済み）
+                let _ = self.grid.apply(senca_grid::GridCommand::PutWorkload { workload: w });
+            }
+        }
+    }
+
+    fn apply_resource(&mut self, cmd: Command) -> Result<(), Problem> {
         match cmd {
             Command::CreateStream { stream } => {
                 if self.streams.contains_key(&stream.id) {
@@ -361,6 +417,87 @@ impl ControlState {
             }
             Command::NextFencingToken => {
                 self.fencing_counter += 1;
+            }
+            Command::PutRoom { mut room, expect_generation } => {
+                match self.rooms.get(&room.id) {
+                    Some(cur) => {
+                        // 別のテナントの部屋は「ある」とだけ分かる（ID はテナントをまたいで一意）
+                        if cur.tenant != room.tenant {
+                            return Err(conflict("その ID の部屋は使われています"));
+                        }
+                        if expect_generation.is_some_and(|g| g != cur.generation) {
+                            return Err(stale());
+                        }
+                        room.generation = cur.generation + 1;
+                        room.created_at_ms = cur.created_at_ms;
+                    }
+                    None => {
+                        if expect_generation.is_some() {
+                            return Err(Problem::not_found());
+                        }
+                        if self.rooms.values().filter(|r| r.tenant == room.tenant).count() >= MAX_ROOMS_PER_TENANT {
+                            return Err(Problem::new(ProblemCode::QuotaExceeded, "部屋の数が上限です"));
+                        }
+                        room.generation = 1;
+                    }
+                }
+                self.rooms.insert(room.id.clone(), room);
+            }
+            Command::DeleteRoom { tenant, id } => {
+                self.rooms.get(&id).filter(|r| r.tenant == tenant).ok_or_else(Problem::not_found)?;
+                self.rooms.remove(&id);
+                // 部屋のメディアパイプラインも消す（書き出した stream・録画は残る）
+                self.media_pipelines.retain(|_, m| m.room != id);
+            }
+            Command::PutMediaPipeline { mut pipeline, expect_generation } => {
+                self.rooms.get(&pipeline.room).filter(|r| r.tenant == pipeline.tenant).ok_or_else(Problem::not_found)?;
+                match self.media_pipelines.get(&pipeline.id) {
+                    Some(cur) => {
+                        if cur.tenant != pipeline.tenant {
+                            return Err(Problem::not_found());
+                        }
+                        if expect_generation.is_some_and(|g| g != cur.generation) {
+                            return Err(stale());
+                        }
+                        pipeline.generation = cur.generation + 1;
+                        pipeline.created_at_ms = cur.created_at_ms;
+                    }
+                    None => {
+                        if self.media_pipelines.values().any(|m| m.tenant == pipeline.tenant && m.name == pipeline.name) {
+                            return Err(conflict("同じ名前のメディアパイプラインがあります"));
+                        }
+                        if self.media_pipelines.values().filter(|m| m.room == pipeline.room).count() >= 8 {
+                            return Err(Problem::new(ProblemCode::QuotaExceeded, "部屋のメディアパイプラインは 8 つまで"));
+                        }
+                        pipeline.generation = 1;
+                    }
+                }
+                self.media_pipelines.insert(pipeline.id.clone(), pipeline);
+            }
+            Command::DeleteMediaPipeline { tenant, id } => {
+                self.media_pipelines.get(&id).filter(|m| m.tenant == tenant).ok_or_else(Problem::not_found)?;
+                self.media_pipelines.remove(&id);
+            }
+            Command::Grid { cmd } => {
+                if let senca_grid::GridCommand::PutWorkload { workload } = &cmd
+                    && crate::workloads::is_derived(&workload.id)
+                {
+                    return Err(Problem::invalid("資源から導く仕事は直接変えられません"));
+                }
+                if let senca_grid::GridCommand::DeleteWorkload { id } = &cmd
+                    && crate::workloads::is_derived(id)
+                {
+                    return Err(Problem::invalid("資源から導く仕事は直接変えられません"));
+                }
+                self.grid.apply(cmd).map_err(|e| match e {
+                    senca_grid::GridError::StalePlan { .. } | senca_grid::GridError::InvalidDecision { .. } => {
+                        Problem::new(ProblemCode::Conflict, e.to_string())
+                    }
+                    senca_grid::GridError::UnknownNode { .. }
+                    | senca_grid::GridError::UnknownDevice { .. }
+                    | senca_grid::GridError::UnknownWorkload { .. } => Problem::not_found(),
+                    senca_grid::GridError::Invalid { .. } => Problem::invalid(e.to_string()),
+                })?;
             }
         }
         Ok(())

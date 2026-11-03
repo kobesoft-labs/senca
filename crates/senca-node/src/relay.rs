@@ -16,12 +16,12 @@ use senca_relay::net::{DownEvent, IncomingSubscribe, RelayEndpoint, RelayHub, Re
 use senca_relay::{ErrorCode, StreamEvent, TrackSel};
 use std::collections::HashMap;
 use std::net::SocketAddr;
-use std::sync::atomic::{AtomicI64, Ordering};
+use std::sync::atomic::{AtomicI64, AtomicU64, Ordering};
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
 use tokio::net::{TcpListener, TcpSocket, TcpStream};
-use tokio::sync::oneshot;
+use tokio::sync::watch;
 
 /// 写しを使われないまま置いておく時間。
 const MIRROR_IDLE: Duration = Duration::from_secs(30);
@@ -31,14 +31,26 @@ const SEND_BUFFER: u32 = 512 << 10;
 pub const MIRROR_WARMUP: Duration = Duration::from_secs(6);
 
 struct Mirror {
+    /// 作った順の番号（後片付けで新しい写しの印を消さない）。
+    generation: u64,
+    created_ms: i64,
     last_access: Arc<AtomicI64>,
-    stop: Option<oneshot::Sender<oneshot::Sender<()>>>,
+    stop: watch::Sender<bool>,
+    /// 後片付けが済んだ。
+    done: watch::Receiver<bool>,
+    /// 上流が終わった時刻（0 = 流れている）。終わった写しの hub は、見ている人が ENDLIST を受け取れるよう
+    /// しばらく残し、使われなくなるか所有者がまた配信を始めたら片付ける。
+    ended_ms: Arc<AtomicI64>,
+    hub: Arc<crate::hub::HubShared>,
+    /// 写しを作ったときの所有権の token（新しい publish で変わる。変わったら終わった写しを作り直す）。
+    owner_token: u64,
 }
 
 pub struct Relay {
     pub hub: RelayHub,
     pub endpoint: RelayEndpoint,
     mirrors: Mutex<HashMap<String, Mirror>>,
+    next_gen: AtomicU64,
 }
 
 /// 中継の待ち受け（既定は Raft の待ち受けの次の番号）。
@@ -89,6 +101,11 @@ fn owner_raft_id(app: &App, stream: &str) -> Option<u64> {
     core.state.nodes.get(&o.node)?.labels.get("raft_id")?.parse().ok()
 }
 
+/// 今の所有権の token。
+fn owner_token(app: &App, stream: &str) -> Option<u64> {
+    app.control.lock().unwrap().state.owners.get(stream).map(|o| o.token)
+}
+
 pub fn start(app: &Arc<App>, cc: &ClusterConfig, secret: String) -> Result<Arc<Relay>, String> {
     let tls = match (&cc.tls_ca, &cc.tls_cert, &cc.tls_key) {
         (Some(ca), Some(cert), Some(key)) => Some(ClusterTls::load(ca, cert, key)?),
@@ -115,7 +132,7 @@ pub fn start(app: &Arc<App>, cc: &ClusterConfig, secret: String) -> Result<Arc<R
     let weak = Arc::downgrade(app);
     let resolver = Arc::new(move |stream: &str| weak.upgrade().and_then(|a| owner_raft_id(&a, stream)));
     let hub = RelayHub::new(endpoint.clone(), resolver, RelayHubConfig::default());
-    let relay = Arc::new(Relay { hub, endpoint: endpoint.clone(), mirrors: Mutex::new(HashMap::new()) });
+    let relay = Arc::new(Relay { hub, endpoint: endpoint.clone(), mirrors: Mutex::new(HashMap::new()), next_gen: AtomicU64::new(1) });
 
     // 待ち受け
     let listen = listen_addr(cc);
@@ -127,7 +144,14 @@ pub fn start(app: &Arc<App>, cc: &ClusterConfig, secret: String) -> Result<Arc<R
         let app = app.clone();
         tokio::spawn(async move {
             loop {
-                let Ok((tcp, peer)) = listener.accept().await else { continue };
+                let (tcp, peer) = match listener.accept().await {
+                    Ok(x) => x,
+                    Err(_) => {
+                        // EMFILE などで回り続けない
+                        tokio::time::sleep(Duration::from_millis(50)).await;
+                        continue;
+                    }
+                };
                 tune(&tcp);
                 let ep = ep.clone();
                 let tls = tls.clone();
@@ -201,12 +225,17 @@ pub fn map_event(ev: &HubEvent) -> StreamEvent {
 
 /// 相手のノードからの購読に答える（このノードが送り手を持つ stream だけ）。
 fn serve(app: &Arc<App>, relay: &Arc<Relay>, inc: IncomingSubscribe) {
-    let is_mirror = relay.mirrors.lock().unwrap().contains_key(&inc.stream_id);
+    let is_mirror = relay.is_mirror(&inc.stream_id);
     let hub = app.hubs.lock().unwrap().get(&inc.stream_id).cloned();
-    let owned_here = app.control.lock().unwrap().state.owners.get(&inc.stream_id).is_some_and(|o| o.node == app.node_id);
+    let (owned_here, owned_elsewhere) = {
+        let core = app.control.lock().unwrap();
+        let o = core.state.owners.get(&inc.stream_id);
+        (o.is_some_and(|o| o.node == app.node_id), o.is_some_and(|o| o.node != app.node_id))
+    };
     let hub = match hub {
+        // 写しは配らない（中継の中継を作らない。相手は所有者から直接受ける）
         Some(h) if !is_mirror && (owned_here || h.is_live()) => h,
-        _ if !owned_here && app.control.lock().unwrap().state.owners.contains_key(&inc.stream_id) => {
+        _ if owned_elsewhere => {
             inc.reject(ErrorCode::MOVED, "owned by another node");
             return;
         }
@@ -222,13 +251,18 @@ fn serve(app: &Arc<App>, relay: &Arc<Relay>, inc: IncomingSubscribe) {
         let mut down = inc.accept(None);
         let mut sub = hub.subscribe();
         let init: Vec<StreamEvent> = sub.initial().iter().map(map_event).collect();
+        // send の false は「捨てた」（キーフレーム待ちなど）も含む。閉じたかは is_closed で見る
         down.send_all(&init);
         loop {
+            if down.is_closed() {
+                break;
+            }
             tokio::select! {
                 ev = sub.recv() => match ev {
                     Ok(ev) => {
                         let end = matches!(ev, HubEvent::End);
-                        if !down.send(&map_event(&ev)) || end {
+                        down.send(&map_event(&ev));
+                        if end {
                             break;
                         }
                     }
@@ -245,6 +279,7 @@ fn serve(app: &Arc<App>, relay: &Arc<Relay>, inc: IncomingSubscribe) {
                 },
             }
         }
+        // down を手放すと、積んである物（End など）を送り終えてから閉じる（senca-relay）
         app.log(&format!("relay: stream {stream} to node {peer} closed"));
     });
 }
@@ -264,15 +299,39 @@ impl Relay {
         self.mirrors.lock().unwrap().contains_key(stream)
     }
 
+    /// 写しを作ってからの待ちの残り（最初の再生リストを待つ。作ってしばらく経てば待たない）。
+    pub fn warmup_left(&self, stream: &str) -> Duration {
+        let now = crate::util::mono_ms() as i64;
+        self.mirrors
+            .lock()
+            .unwrap()
+            .get(stream)
+            .map(|m| Duration::from_millis((m.created_ms + MIRROR_WARMUP.as_millis() as i64 - now).max(0) as u64))
+            .unwrap_or_default()
+    }
+
     /// 別のノードが持つ stream の写しをこのノードに用意する（既にあれば使った印を付けるだけ）。
     /// 写しの hub を返す（所有者が分からない・このノードが所有者なら None）。
     pub fn ensure_mirror(self: &Arc<Self>, app: &Arc<App>, stream_id: &str) -> Option<HubHandle> {
+        // 上流が終わった写しは、所有権が新しくなったら（また配信が始まったら）片付けて作り直す。
+        // それまでは終わった hub（ENDLIST）を見せる
+        let token = owner_token(app, stream_id);
+        let stale = self
+            .mirrors
+            .lock()
+            .unwrap()
+            .get(stream_id)
+            .is_some_and(|m| m.ended_ms.load(Ordering::Relaxed) > 0 && token.is_some_and(|t| t != m.owner_token));
+        if stale && let Some(h) = self.take_ended(app, stream_id) {
+            tokio::spawn(async move { h.shutdown().await });
+        }
         if self.touch(stream_id) {
             return app.hubs.lock().unwrap().get(stream_id).cloned();
         }
         let owner = owner_raft_id(app, stream_id)?;
         let stream = app.control.lock().unwrap().state.streams.get(stream_id).cloned()?;
         let rt = app.rt.get()?.clone();
+        // 順序: mirrors → hubs（逆に取らない）
         let mut mirrors = self.mirrors.lock().unwrap();
         if mirrors.contains_key(stream_id) {
             drop(mirrors);
@@ -284,9 +343,24 @@ impl Relay {
             // 手元に本物の送り手がいる（所有権の更新がまだ届いていない）
             return Some(hub);
         }
-        let last = Arc::new(AtomicI64::new(crate::util::mono_ms() as i64));
-        let (stop_tx, stop_rx) = oneshot::channel();
-        mirrors.insert(stream_id.to_string(), Mirror { last_access: last, stop: Some(stop_tx) });
+        let now = crate::util::mono_ms() as i64;
+        let generation = self.next_gen.fetch_add(1, Ordering::Relaxed);
+        let (stop_tx, stop_rx) = watch::channel(false);
+        let (done_tx, done_rx) = watch::channel(false);
+        let ended_ms = Arc::new(AtomicI64::new(0));
+        mirrors.insert(
+            stream_id.to_string(),
+            Mirror {
+                generation,
+                created_ms: now,
+                last_access: Arc::new(AtomicI64::new(now)),
+                stop: stop_tx,
+                done: done_rx,
+                ended_ms: ended_ms.clone(),
+                hub: hub.shared.clone(),
+                owner_token: owner_token(app, stream_id).unwrap_or(0),
+            },
+        );
         drop(mirrors);
         app.log(&format!("relay: mirroring stream {stream_id} from node {owner}"));
         let me = self.clone();
@@ -294,37 +368,64 @@ impl Relay {
         let h2 = hub.clone();
         let sid = stream_id.to_string();
         rt.spawn(async move {
-            me.run_mirror(&app2, h2, &sid, owner, stop_rx).await;
-            me.mirrors.lock().unwrap().remove(&sid);
+            let upstream_ended = me.run_mirror(&app2, h2.clone(), &sid, owner, stop_rx).await;
+            if upstream_ended {
+                // hub は残す（見ている人に ENDLIST を渡す）。片付けは sweep・作り直し・本物の送り手の到着で
+                ended_ms.store((crate::util::mono_ms() as i64).max(1), Ordering::Relaxed);
+                let _ = done_tx.send(true);
+                return;
+            }
+            // 後片付け: hub を外してから写しの印を消す（その間に来た送り手は stop_mirror で待つ）
+            let removed = {
+                let mut hubs = app2.hubs.lock().unwrap();
+                match hubs.get(&sid) {
+                    Some(h) if Arc::ptr_eq(&h.shared, &h2.shared) => hubs.remove(&sid),
+                    _ => None,
+                }
+            };
+            if let Some(h) = removed {
+                h.shutdown().await;
+            }
+            {
+                let mut mirrors = me.mirrors.lock().unwrap();
+                if mirrors.get(&sid).is_some_and(|m| m.generation == generation) {
+                    mirrors.remove(&sid);
+                }
+            }
+            let _ = done_tx.send(true);
         });
         Some(hub)
     }
 
-    async fn run_mirror(&self, app: &Arc<App>, hub: HubHandle, sid: &str, owner: u64, mut stop: oneshot::Receiver<oneshot::Sender<()>>) {
+    /// 写しを動かす。上流が終わって止まったら true。
+    async fn run_mirror(&self, app: &Arc<App>, hub: HubHandle, sid: &str, owner: u64, mut stop: watch::Receiver<bool>) -> bool {
         let mut sub = self.hub.subscribe(sid, TrackSel::All);
         let peer = format!("relay:node-{owner}");
         let Ok(mut p) = hub.attach("relay", &peer).await else {
             app.log(&format!("relay: mirror {sid}: hub busy"));
-            return;
+            return false;
         };
         let mut pending: std::collections::VecDeque<StreamEvent> = sub.initial().into();
-        let done: Option<oneshot::Sender<()>> = loop {
+        let why = loop {
+            if *stop.borrow() {
+                break "stopped";
+            }
             let ev = match pending.pop_front() {
                 Some(ev) => ev,
                 None => tokio::select! {
-                    ev = sub.recv() => match ev { Some(ev) => ev, None => break None },
-                    r = &mut stop => break r.ok(),
+                    ev = sub.recv() => match ev { Some(ev) => ev, None => break "upstream closed" },
+                    _ = stop.changed() => break "stopped",
                 },
             };
             match ev {
                 StreamEvent::Config(t, c) => {
                     if p.config(t, c).await.is_err() {
-                        break None;
+                        break "hub closed";
                     }
                 }
                 StreamEvent::Au(a) => {
                     if p.access_unit(a).await.is_err() {
-                        break None;
+                        break "hub closed";
                     }
                 }
                 StreamEvent::Discontinuity => {
@@ -332,30 +433,51 @@ impl Relay {
                     p.detach("upstream discontinuity").await;
                     match hub.attach("relay", &peer).await {
                         Ok(np) => p = np,
-                        Err(_) => return,
+                        Err(_) => {
+                            app.log(&format!("relay: mirror of {sid} stopped (re-attach failed)"));
+                            return false;
+                        }
                     }
                 }
-                StreamEvent::End => break None,
+                StreamEvent::End => break "upstream ended",
                 StreamEvent::Segment { .. } | StreamEvent::Lost(_) => {}
             }
         };
         p.detach("mirror stopped").await;
-        app.log(&format!("relay: mirror of {sid} stopped"));
-        if let Some(d) = done {
-            let _ = d.send(());
+        app.log(&format!("relay: mirror of {sid} stopped ({why})"));
+        why == "upstream ended"
+    }
+
+    /// 上流が終わった写しの印と hub を外す（hub は呼び手が shutdown する）。
+    fn take_ended(&self, app: &App, stream: &str) -> Option<HubHandle> {
+        let mut mirrors = self.mirrors.lock().unwrap();
+        let m = mirrors.get(stream)?;
+        if m.ended_ms.load(Ordering::Relaxed) == 0 {
+            return None;
+        }
+        let shared = m.hub.clone();
+        mirrors.remove(stream);
+        let mut hubs = app.hubs.lock().unwrap();
+        match hubs.get(stream) {
+            Some(h) if Arc::ptr_eq(&h.shared, &shared) => hubs.remove(stream),
+            _ => None,
         }
     }
 
-    /// 写しを止める（所有権がこのノードへ移ったとき）。止まるまで待つ。
-    pub async fn stop_mirror(&self, stream: &str) {
-        let stop = self.mirrors.lock().unwrap().get_mut(stream).and_then(|m| m.stop.take());
-        if let Some(s) = stop {
-            let (tx, rx) = oneshot::channel();
-            if s.send(tx).is_ok() {
-                let _ = tokio::time::timeout(Duration::from_secs(2), rx).await;
-            }
+    /// 写しを止め、後片付け（hub を外す）が済むまで待つ。何人が同時に呼んでもみな待つ。
+    pub async fn stop_mirror(&self, app: &App, stream: &str) {
+        if let Some(h) = self.take_ended(app, stream) {
+            h.shutdown().await;
+            return;
         }
-        self.mirrors.lock().unwrap().remove(stream);
+        let done = {
+            let mirrors = self.mirrors.lock().unwrap();
+            let Some(m) = mirrors.get(stream) else { return };
+            let _ = m.stop.send(true);
+            m.done.clone()
+        };
+        let mut done = done;
+        let _ = tokio::time::timeout(Duration::from_secs(5), done.wait_for(|d| *d)).await;
     }
 
     /// 使われていない写しを片付ける（HLS の取得が途絶え、hub の購読者もいない）。
@@ -375,11 +497,7 @@ impl Relay {
                 self.touch(&sid);
                 continue;
             }
-            self.stop_mirror(&sid).await;
-            let removed = app.hubs.lock().unwrap().remove(&sid);
-            if let Some(h) = removed {
-                h.shutdown().await;
-            }
+            self.stop_mirror(app, &sid).await;
         }
     }
 

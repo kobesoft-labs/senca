@@ -90,7 +90,7 @@ impl Usage {
         }
         if let Some(c) = &r.capture {
             match n.capture_index(c) {
-                Some(i) if n.capture[i].healthy && self.capture[i] == 0 => {}
+                Some(i) if n.capture[i].usable() && self.capture[i] == 0 => {}
                 _ => return Err(Reject::Capture),
             }
         }
@@ -129,7 +129,7 @@ impl Usage {
                 }
                 if let Some(c) = &r.capture {
                     match n.capture_index(c) {
-                        Some(i) if n.capture[i].healthy => d += u64::from(self.capture[i]) * 1000,
+                        Some(i) if n.capture[i].usable() => d += u64::from(self.capture[i]) * 1000,
                         // 機器が無い・壊れている: 何を空けても収まらない
                         _ => d += 1_000_000,
                     }
@@ -190,7 +190,7 @@ pub(crate) fn pin_state(nodes: &BTreeMap<NodeId, Node>, w: &Workload) -> PinStat
     let ok = |n: &Node| {
         n.status.up
             && n.spec.roles.contains(&Role::Media)
-            && c.device.as_ref().is_none_or(|d| n.spec.gpus.iter().any(|g| &g.id == d && g.healthy))
+            && c.device.as_ref().is_none_or(|d| n.spec.gpus.iter().any(|g| &g.id == d && g.usable()))
     };
     match &c.node {
         Some(id) => match nodes.get(id) {
@@ -256,5 +256,5 @@ pub(crate) fn static_check(node: &Node, w: &Workload, pin: PinState, existing: b
 /// GPU `gi` が要求に使えるか（健康・製造元・指定）。
 pub(crate) fn gpu_ok(node: &NodeSpec, gi: usize, gr: &GpuReq, pin: Option<&str>) -> bool {
     let g = &node.gpus[gi];
-    g.healthy && gr.vendor.as_ref().is_none_or(|v| v.eq_ignore_ascii_case(&g.vendor)) && pin.is_none_or(|p| p == g.id)
+    g.usable() && gr.vendor.as_ref().is_none_or(|v| v.eq_ignore_ascii_case(&g.vendor)) && pin.is_none_or(|p| p == g.id)
 }

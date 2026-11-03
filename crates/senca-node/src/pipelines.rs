@@ -25,6 +25,9 @@ pub struct PipelineRuntime {
 
 struct Running {
     generation: u64,
+    /// 割り当ての token と縮退の段（どちらかが変われば起動し直す）。
+    token: u64,
+    level: usize,
     task: tokio::task::JoinHandle<()>,
     rt: Arc<Mutex<PipelineRuntime>>,
     control_tx: tokio::sync::mpsc::Sender<(Control, tokio::sync::oneshot::Sender<Result<Value, String>>)>,
@@ -48,24 +51,54 @@ impl PipelineManager {
         tokio::time::timeout(Duration::from_secs(15), rx).await.map_err(|_| "時間切れ".to_string())?.map_err(|_| "パイプラインが止まりました".to_string())?
     }
 
+    /// 動いている仕事（グリッドの心拍に載せる）。
+    pub fn running_workloads(&self) -> Vec<senca_grid::Running> {
+        self.running
+            .lock()
+            .unwrap()
+            .iter()
+            .filter(|(_, r)| !r.task.is_finished())
+            .map(|(id, r)| senca_grid::Running { workload: format!("{}{id}", senca_control::workloads::PIPELINE), token: r.token, level: r.level })
+            .collect()
+    }
+
+    /// 制御状態と突き合わせる: このノードに割り当てられたパイプラインだけを、割り当ての段で動かす（ADR-0013）。
+    /// 縮退の段では、段で止める節点を図から外して動かす。
     pub fn reconcile(&self, app: &Arc<App>) {
-        let want: Vec<Pipeline> = app.control.lock().unwrap().state.pipelines.values().filter(|p| p.desired_state == "running").cloned().collect();
+        let want: Vec<(Pipeline, u64, usize)> = {
+            let core = app.control.lock().unwrap();
+            core.state
+                .pipelines
+                .values()
+                .filter(|p| p.desired_state == "running")
+                .filter_map(|p| {
+                    let a = core.state.grid.assignments.get(&format!("{}{}", senca_control::workloads::PIPELINE, p.id))?;
+                    (a.node == app.node_id).then(|| (p.clone(), a.token, a.level))
+                })
+                .collect()
+        };
         let mut run = self.running.lock().unwrap();
         run.retain(|id, r| {
-            let keep = want.iter().any(|p| &p.id == id && p.generation == r.generation) && !r.task.is_finished();
+            let keep = want.iter().any(|(p, t, l)| &p.id == id && p.generation == r.generation && *t == r.token && *l == r.level) && !r.task.is_finished();
             if !keep {
                 r.task.abort();
             }
             keep
         });
-        for p in want {
+        for (p, token, level) in want {
             if run.contains_key(&p.id) {
                 continue;
             }
+            let mut pl = p.clone();
+            if level > 0 {
+                let off = senca_control::workloads::pipeline_disabled_at(&p, level);
+                pl.graph = senca_control::workloads::prune_graph(&p.graph, &off);
+                app.log(&format!("pipeline {}: running degraded (level {level}, without {:?})", p.id, off));
+            }
             let rt = Arc::new(Mutex::new(PipelineRuntime { state: "starting".into(), ..Default::default() }));
             let (control_tx, control_rx) = tokio::sync::mpsc::channel(32);
-            let task = tokio::spawn(supervise(app.clone(), p.clone(), rt.clone(), control_rx));
-            run.insert(p.id.clone(), Running { generation: p.generation, task, rt, control_tx });
+            let task = tokio::spawn(supervise(app.clone(), pl, rt.clone(), control_rx));
+            run.insert(p.id.clone(), Running { generation: p.generation, token, level, task, rt, control_tx });
         }
     }
 }
@@ -222,7 +255,8 @@ pub fn sink_streams(g: &Graph) -> Vec<String> {
 /// 入力の stream の AU を session へ（配信が始まるまで待つ）。
 async fn feed_source(app: Arc<App>, h: Arc<SessionHandle>, node_id: String, stream: String) {
     loop {
-        let hub = app.hubs.lock().unwrap().get(&stream).cloned();
+        // 別のノードが受けている stream は中継の写しから（ADR-0014）
+        let hub = app.source_hub(&stream);
         let Some(hub) = hub.filter(|h| h.is_live()) else {
             tokio::time::sleep(Duration::from_millis(300)).await;
             continue;

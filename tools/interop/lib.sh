@@ -10,13 +10,32 @@ NODE_BIN=${NODE_BIN:-$TARGET/debug/senca-node}
 PASS=0; FAIL=0
 pass() { echo "PASS $*"; PASS=$((PASS+1)); }
 fail() { echo "FAIL $*"; FAIL=$((FAIL+1)); }
-summary() { echo "== $PASS passed, $FAIL failed"; [ "$FAIL" = 0 ]; }
+summary() { rm -f "/tmp/senca-ports-$$"; echo "== $PASS passed, $FAIL failed"; [ "$FAIL" = 0 ]; }
 
 # フレームの md5 だけを並べる（時刻は比べない）
 frames() { { "$FFMPEG" -v error -i "$1" -map "0:$2" -f framemd5 - 2>"${FRAMES_ERR:-/dev/null}" || true; } | { grep -v "^#" || true; } | awk -F, '{gsub(/ /,"",$6); print $6}'; }
 
-# 空いているポート
-port() { python3 -c 'import socket;s=socket.socket();s.bind(("127.0.0.1",0));print(s.getsockname()[1])'; }
+# 空いているポート。
+# 試験の待ち受けの番号。カーネルが外向きの接続に使う範囲（ip_local_port_range）の外から選ぶ
+# （範囲の中だと、並んで起動するノードの外向きの接続が、まだ bind していない番号を先に取ることがある）。
+# 同じ試験の中で同じ番号を 2 度渡さない（$$ は $(port) の中でも呼んだシェルの番号）。
+port() { python3 - "/tmp/senca-ports-$$" <<'PY'
+import os, random, socket, sys
+used_file = sys.argv[1]
+used = set(open(used_file).read().split()) if os.path.exists(used_file) else set()
+lo, hi = (int(x) for x in open("/proc/sys/net/ipv4/ip_local_port_range").read().split())
+pool = [p for p in range(10000, lo) if not 30010 <= p <= 30019 and str(p) not in used]
+for _ in range(200):
+    p = random.choice(pool)
+    try:
+        for kind in (socket.SOCK_STREAM, socket.SOCK_DGRAM):
+            s = socket.socket(socket.AF_INET, kind); s.bind(("127.0.0.1", p)); s.close()
+        open(used_file, "a").write(f"{p}\n")
+        print(p); break
+    except OSError:
+        continue
+PY
+}
 
 json() { python3 -c "import json,sys;d=json.load(sys.stdin);print(eval('d'+sys.argv[1]))" "$1"; }
 

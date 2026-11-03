@@ -67,6 +67,14 @@ const KEYFRAME_INTERVAL: Duration = Duration::from_secs(2);
 pub struct Rtc {
     tx: mpsc::Sender<Cmd>,
     down_tx: mpsc::Sender<(u64, Down)>,
+    /// 部屋（ADR-0015）への頼みごと。
+    rooms_tx: mpsc::UnboundedSender<crate::rooms::RoomCmd>,
+}
+
+impl Rtc {
+    pub fn room_cmd(&self, c: crate::rooms::RoomCmd) {
+        let _ = self.rooms_tx.send(c);
+    }
 }
 
 pub async fn start(app: Arc<App>, udp: SocketAddr) -> Result<Arc<Rtc>, String> {
@@ -75,9 +83,11 @@ pub async fn start(app: Arc<App>, udp: SocketAddr) -> Result<Arc<Rtc>, String> {
     let (tx, rx) = mpsc::channel(256);
     let (down_tx, down_rx) = mpsc::channel(8192);
     // 公開する候補のアドレス（0.0.0.0 で待つときは、ノードの公開 URL のホストに置き換えるべきだが、ここでは待ち受けのアドレス）
-    tokio::spawn(drive(app.clone(), sock, cert, rx, down_rx, udp));
+    let (rooms_tx, rooms_rx) = mpsc::unbounded_channel();
+    let rooms = crate::rooms::RoomsHost::new(app.clone(), cert.clone(), udp);
+    tokio::spawn(drive(app.clone(), sock, cert, rx, down_rx, udp, rooms, rooms_rx));
     app.log(&format!("webrtc listening on udp {udp}"));
-    Ok(Arc::new(Rtc { tx, down_tx }))
+    Ok(Arc::new(Rtc { tx, down_tx, rooms_tx }))
 }
 
 /// セッション ID（推測できない 64 bit。DELETE・PATCH はこの ID を知っている者だけができる）。
@@ -96,13 +106,30 @@ fn epoch_ns() -> Option<i64> {
     SystemTime::now().duration_since(UNIX_EPOCH).ok().map(|d| d.as_nanos() as i64)
 }
 
-async fn drive(app: Arc<App>, sock: UdpSocket, cert: DtlsCertificate, mut rx: mpsc::Receiver<Cmd>, mut down_rx: mpsc::Receiver<(u64, Down)>, local: SocketAddr) {
+#[allow(clippy::too_many_arguments)]
+async fn drive(
+    app: Arc<App>,
+    sock: UdpSocket,
+    cert: DtlsCertificate,
+    mut rx: mpsc::Receiver<Cmd>,
+    mut down_rx: mpsc::Receiver<(u64, Down)>,
+    local: SocketAddr,
+    mut rooms: crate::rooms::RoomsHost,
+    mut rooms_rx: mpsc::UnboundedReceiver<crate::rooms::RoomCmd>,
+) {
     let mut sessions: HashMap<u64, Session> = HashMap::new();
     let mut next_id = 1u64;
     let mut buf = vec![0u8; 65536];
     loop {
         let now = Instant::now();
-        let wait = sessions.values().filter_map(|s| s.pc.poll_timeout()).map(|t| t.saturating_duration_since(now)).min().unwrap_or(Duration::from_millis(50)).clamp(Duration::from_micros(200), Duration::from_millis(50));
+        let wait = sessions
+            .values()
+            .filter_map(|s| s.pc.poll_timeout())
+            .chain(rooms.poll_timeout())
+            .map(|t| t.saturating_duration_since(now))
+            .min()
+            .unwrap_or(Duration::from_millis(50))
+            .clamp(Duration::from_micros(200), Duration::from_millis(50));
         tokio::select! {
             r = sock.recv_from(&mut buf) => {
                 if let Ok((n, from)) = r {
@@ -113,6 +140,9 @@ async fn drive(app: Arc<App>, sock: UdpSocket, cert: DtlsCertificate, mut rx: mp
                     });
                     if let Some(s) = id.and_then(|i| sessions.get_mut(&i)) {
                         s.pc.handle_datagram(Instant::now(), from, data);
+                    } else {
+                        // WHIP・WHEP のどれでもなければ部屋の参加者
+                        rooms.handle_datagram(Instant::now(), from, data);
                     }
                 }
             }
@@ -167,6 +197,11 @@ async fn drive(app: Arc<App>, sock: UdpSocket, cert: DtlsCertificate, mut rx: mp
                     }
                 }
             }
+            c = rooms_rx.recv() => {
+                if let Some(c) = c {
+                    rooms.handle_cmd(now, c);
+                }
+            }
             d = down_rx.recv() => {
                 if let Some((id, Down::Au(au, cfg))) = d
                     && let Some(s) = sessions.get_mut(&id)
@@ -191,6 +226,9 @@ async fn drive(app: Arc<App>, sock: UdpSocket, cert: DtlsCertificate, mut rx: mp
             _ = tokio::time::sleep(wait) => {}
         }
         let now = Instant::now();
+        for t in rooms.drive(now) {
+            let _ = sock.send_to(&t.data, t.remote).await;
+        }
         let mut dead = Vec::new();
         for (id, s) in sessions.iter_mut() {
             if s.pc.poll_timeout().is_some_and(|t| t <= now) {
@@ -391,6 +429,56 @@ pub async fn http(app: &Arc<App>, rtc: &Rtc, h: &senca_http::RequestHead, body: 
     }
 }
 
+/// WebRTC で受けた AU を hub に入れる形にする（WHIP と部屋の書き出しで共通）。
+/// - 設定: 最初と、変わったときに世代を上げて渡す（`media::enrich` で寸法などを補う）
+/// - 時刻: RTCP SR で壁時計に合わせ直されると時刻が飛ぶので、送り手の時間軸（µs）で滑らかにつなぐ。
+///   飛び（1 秒超の前進・200 ms 超の後退）は、直前の時刻＋直前の間隔へ寄せる。映像と音声の相対の位置を
+///   保つため、最初の基準は共通にする。
+#[derive(Default)]
+pub struct ToHub {
+    gens: HashMap<TrackId, u32>,
+    /// track → (offset_us, last_us, last_step_us)
+    tl: HashMap<TrackId, (i64, i64, i64)>,
+    base: Option<i64>,
+}
+
+impl ToHub {
+    /// `au.track` は hub のトラック番号に直してから渡す。渡すべき設定（あれば）と、直した AU を返す。
+    pub fn process(&mut self, mut au: AccessUnit, cfg: Option<CodecConfig>) -> (Option<CodecConfig>, AccessUnit) {
+        use senca_core::{Rescale, Timebase};
+        let ours = au.track;
+        let mut out_cfg = None;
+        if cfg.is_some() || !self.gens.contains_key(&ours) {
+            let mut c = cfg.unwrap_or_else(|| CodecConfig { codec: au.codec, generation: 1, record: Bytes::new(), video: None, audio: None });
+            crate::media::enrich(&mut c);
+            let g = self.gens.get(&ours).map(|g| g + 1).unwrap_or(1);
+            c.generation = g;
+            self.gens.insert(ours, g);
+            out_cfg = Some(c);
+        }
+        au.config_generation = self.gens[&ours];
+        let raw = au.dts.rescale(au.timebase, Timebase::MICROS).unwrap_or(0);
+        let cts = au.pts.rescale(au.timebase, Timebase::MICROS).unwrap_or(raw) - raw;
+        let b = *self.base.get_or_insert(raw);
+        let e = self.tl.entry(ours).or_insert((-b, -1, 33_000));
+        let mut v = raw + e.0;
+        if e.1 >= 0 && (v - e.1 > 1_000_000 || v <= e.1 - 200_000) {
+            let target = e.1 + e.2.clamp(1_000, 100_000);
+            e.0 += target - v;
+            v = target;
+        }
+        if e.1 >= 0 && v > e.1 {
+            e.2 = v - e.1;
+        }
+        e.1 = e.1.max(v);
+        au.timebase = Timebase::MICROS;
+        au.dts = v;
+        au.pts = v + cts;
+        au.discontinuity = false;
+        (out_cfg, au)
+    }
+}
+
 /// WHIP の受信を hub の送り手として流す。
 async fn forward_up(app: Arc<App>, key: String, peer: String, mut rx: mpsc::Receiver<Up>) {
     let p = match app.attach_publisher(&key, "webrtc", &peer).await {
@@ -402,12 +490,7 @@ async fn forward_up(app: Arc<App>, key: String, peer: String, mut rx: mpsc::Rece
     };
     // トラック番号は種類で決める（映像 0・音声 1。サイマルキャストは最初の層だけ）
     let mut map: HashMap<TrackId, TrackId> = HashMap::new();
-    let mut gens: HashMap<TrackId, u32> = HashMap::new();
-    // 時刻を付け直す: RTCP SR で壁時計に合わせ直されると時刻が飛ぶので、送り手の時間軸（µs）で滑らかにつなぐ。
-    // 飛び（1 秒超の前進・後退）は、直前の時刻＋直前の間隔へ寄せる。
-    let mut tl: HashMap<TrackId, (i64, i64, i64)> = HashMap::new(); // track → (offset_us, last_us, last_step_us)
-    // 映像と音声の相対の位置を保つため、最初の基準は共通にする
-    let mut base: Option<i64> = None;
+    let mut norm = ToHub::default();
     while let Some(m) = rx.recv().await {
         match m {
             Up::Track(t, k) => {
@@ -419,38 +502,11 @@ async fn forward_up(app: Arc<App>, key: String, peer: String, mut rx: mpsc::Rece
             Up::Au(mut au, cfg) => {
                 let Some(&ours) = map.get(&au.track) else { continue };
                 au.track = ours;
-                let need_cfg = cfg.is_some() || !gens.contains_key(&ours);
-                if need_cfg {
-                    let mut c = cfg.unwrap_or_else(|| CodecConfig { codec: au.codec, generation: 1, record: Bytes::new(), video: None, audio: None });
-                    crate::media::enrich(&mut c);
-                    let g = gens.get(&ours).map(|g| g + 1).unwrap_or(1);
-                    c.generation = g;
-                    gens.insert(ours, g);
-                    if p.config(ours, c).await.is_err() {
-                        break;
-                    }
-                }
-                au.config_generation = gens[&ours];
+                let (cfg, au) = norm.process(au, cfg);
+                if let Some(c) = cfg
+                    && p.config(ours, c).await.is_err()
                 {
-                    use senca_core::{Rescale, Timebase};
-                    let raw = au.dts.rescale(au.timebase, Timebase::MICROS).unwrap_or(0);
-                    let cts = au.pts.rescale(au.timebase, Timebase::MICROS).unwrap_or(raw) - raw;
-                    let b = *base.get_or_insert(raw);
-                    let e = tl.entry(ours).or_insert((-b, -1, 33_000));
-                    let mut v = raw + e.0;
-                    if e.1 >= 0 && (v - e.1 > 1_000_000 || v <= e.1 - 200_000) {
-                        let target = e.1 + e.2.clamp(1_000, 100_000);
-                        e.0 += target - v;
-                        v = target;
-                    }
-                    if e.1 >= 0 && v > e.1 {
-                        e.2 = v - e.1;
-                    }
-                    e.1 = e.1.max(v);
-                    au.timebase = Timebase::MICROS;
-                    au.dts = v;
-                    au.pts = v + cts;
-                    au.discontinuity = false;
+                    break;
                 }
                 if p.access_unit(au).await.is_err() {
                     break;

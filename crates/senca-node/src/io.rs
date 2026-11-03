@@ -22,6 +22,9 @@ pub struct IoStatus {
 
 struct Running {
     generation: u64,
+    /// グリッドの仕事の ID と、割り当ての token（移されたら変わる）。
+    workload: String,
+    token: u64,
     task: tokio::task::JoinHandle<()>,
     status: Arc<Mutex<IoStatus>>,
 }
@@ -36,44 +39,60 @@ impl IoManager {
         self.running.lock().unwrap().get(id).map(|r| r.status.lock().unwrap().clone())
     }
 
+    /// 動いている仕事（グリッドの心拍に載せる）。
+    pub fn running_workloads(&self) -> Vec<senca_grid::Running> {
+        self.running
+            .lock()
+            .unwrap()
+            .values()
+            .filter(|r| !r.task.is_finished())
+            .map(|r| senca_grid::Running { workload: r.workload.clone(), token: r.token, level: 0 })
+            .collect()
+    }
+
+    /// 制御状態と突き合わせる: このノードに割り当てられた入力・出力だけを動かす（ADR-0013）。
+    /// 定義が変わった（世代）・割り当てが移った（token）ものは止めて、必要なら起動し直す。
     pub fn reconcile(&self, app: &Arc<App>) {
-        let (inputs, outputs): (Vec<Input>, Vec<Output>) = {
+        use senca_control::workloads::{INPUT, OUTPUT};
+        type Assigned<T> = Vec<(T, u64)>;
+        let (inputs, outputs): (Assigned<Input>, Assigned<Output>) = {
             let core = app.control.lock().unwrap();
+            let token = |wid: String| core.state.grid.assignments.get(&wid).filter(|a| a.node == app.node_id).map(|a| a.token);
             (
-                core.state.inputs.values().filter(|i| i.enabled).cloned().collect(),
-                core.state.outputs.values().filter(|o| o.enabled).cloned().collect(),
+                core.state.inputs.values().filter(|i| i.enabled).filter_map(|i| token(format!("{INPUT}{}", i.id)).map(|t| (i.clone(), t))).collect(),
+                core.state.outputs.values().filter(|o| o.enabled).filter_map(|o| token(format!("{OUTPUT}{}", o.id)).map(|t| (o.clone(), t))).collect(),
             )
         };
-        let mut want: HashMap<String, u64> = HashMap::new();
-        for i in &inputs {
-            want.insert(i.id.clone(), i.generation);
+        let mut want: HashMap<String, (u64, u64)> = HashMap::new();
+        for (i, t) in &inputs {
+            want.insert(i.id.clone(), (i.generation, *t));
         }
-        for o in &outputs {
-            want.insert(o.id.clone(), o.generation);
+        for (o, t) in &outputs {
+            want.insert(o.id.clone(), (o.generation, *t));
         }
         let mut run = self.running.lock().unwrap();
         run.retain(|id, r| {
-            let keep = want.get(id) == Some(&r.generation) && !r.task.is_finished();
+            let keep = want.get(id) == Some(&(r.generation, r.token)) && !r.task.is_finished();
             if !keep {
                 r.task.abort();
             }
             keep
         });
-        for i in inputs {
+        for (i, token) in inputs {
             if run.contains_key(&i.id) {
                 continue;
             }
             let status = Arc::new(Mutex::new(IoStatus { state: "starting".into(), ..Default::default() }));
             let task = tokio::spawn(run_input(app.clone(), i.clone(), status.clone()));
-            run.insert(i.id.clone(), Running { generation: i.generation, task, status });
+            run.insert(i.id.clone(), Running { generation: i.generation, workload: format!("{INPUT}{}", i.id), token, task, status });
         }
-        for o in outputs {
+        for (o, token) in outputs {
             if run.contains_key(&o.id) {
                 continue;
             }
             let status = Arc::new(Mutex::new(IoStatus { state: "starting".into(), ..Default::default() }));
             let task = tokio::spawn(run_output(app.clone(), o.clone(), status.clone()));
-            run.insert(o.id.clone(), Running { generation: o.generation, task, status });
+            run.insert(o.id.clone(), Running { generation: o.generation, workload: format!("{OUTPUT}{}", o.id), token, task, status });
         }
     }
 }
@@ -304,8 +323,7 @@ async fn run_input(app: Arc<App>, i: Input, st: Arc<Mutex<IoStatus>>) {
 /// 入力の stream に送り手としてつなぐ（publish 鍵を使わない内部の経路）。
 pub async fn attach(app: &Arc<App>, stream: &str, transport: &'static str, peer: &str) -> Result<crate::hub::Publisher, String> {
     let s = app.control.lock().unwrap().state.streams.get(stream).cloned().ok_or("stream がありません")?;
-    let hub = app.hub(&s);
-    hub.attach(transport, peer).await.map_err(|e| format!("{e:?}"))
+    app.attach_stream(&s, transport, peer).await.map_err(|e| format!("{e:?}"))
 }
 
 async fn rtmp_pull(app: &Arc<App>, i: &Input, st: &Mutex<IoStatus>) -> Result<(), String> {

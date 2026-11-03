@@ -125,6 +125,10 @@ impl Drop for Publisher {
 pub struct Subscription {
     rx: broadcast::Receiver<HubEvent>,
     initial: Vec<HubEvent>,
+    /// 最初の GOP にも broadcast にも入っている AU（同じ payload・dts）。broadcast の側で 1 度だけ捨てる。
+    dup: Vec<(TrackId, i64, usize)>,
+    /// 重複を探すのをやめるまでの AU の数。
+    dup_budget: usize,
     /// 取りこぼした後は次のキーフレームまで映像を落とす。
     waiting_key: bool,
     flv: senca_flv::build::FlvMuxer,
@@ -139,6 +143,19 @@ impl Subscription {
     pub async fn recv(&mut self) -> Result<HubEvent, broadcast::error::RecvError> {
         loop {
             let ev = self.rx.recv().await?;
+            if self.dup_budget > 0
+                && let HubEvent::Au(au) = &ev
+            {
+                self.dup_budget -= 1;
+                let key = (au.track, au.dts, au.payload.as_ptr() as usize);
+                if let Some(i) = self.dup.iter().position(|d| *d == key) {
+                    self.dup.swap_remove(i);
+                    if self.dup.is_empty() {
+                        self.dup_budget = 0;
+                    }
+                    continue;
+                }
+            }
             if self.waiting_key {
                 match &ev {
                     HubEvent::Au(au) if au.codec.kind() == MediaKind::Video && !au.keyframe => continue,
@@ -234,7 +251,16 @@ impl HubHandle {
         let rx = self.shared.fanout.subscribe();
         let mut initial: Vec<HubEvent> = self.shared.configs.lock().unwrap().iter().map(|(t, c)| HubEvent::Config(*t, c.clone())).collect();
         initial.extend(self.shared.gop.lock().unwrap().iter().cloned());
-        Subscription { rx, initial, waiting_key: false, flv: senca_flv::build::FlvMuxer::new(), base_ms: None }
+        // GOP を写す前に受け始めているので、終わりの数個は broadcast にも来る（中継・パッケージャーへ二重に渡さない）
+        let dup: Vec<(TrackId, i64, usize)> = initial
+            .iter()
+            .filter_map(|e| match e {
+                HubEvent::Au(a) => Some((a.track, a.dts, a.payload.as_ptr() as usize)),
+                _ => None,
+            })
+            .collect();
+        let dup_budget = if dup.is_empty() { 0 } else { FANOUT.min(dup.len() * 2 + 64) };
+        Subscription { rx, initial, dup, dup_budget, waiting_key: false, flv: senca_flv::build::FlvMuxer::new(), base_ms: None }
     }
 
     pub fn is_live(&self) -> bool {

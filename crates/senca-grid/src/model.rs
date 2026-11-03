@@ -69,8 +69,19 @@ pub struct Gpu {
     pub decode_sessions: u32,
     #[serde(default)]
     pub memory_mb: u64,
+    /// 測った健康（心拍で変わる）。
     #[serde(default = "yes")]
     pub healthy: bool,
+    /// 運用者が手で止めた（心拍では変わらない。`DisableDevice`・`EnableDevice`）。
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub disabled: bool,
+}
+
+impl Gpu {
+    /// 仕事を置ける（健康で、手で止められていない）。
+    pub fn usable(&self) -> bool {
+        self.healthy && !self.disabled
+    }
 }
 
 /// キャプチャ機器（SDI・HDMI の入力など）。1 つの仕事が専有する。
@@ -81,6 +92,14 @@ pub struct CaptureDevice {
     pub kind: String,
     #[serde(default = "yes")]
     pub healthy: bool,
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub disabled: bool,
+}
+
+impl CaptureDevice {
+    pub fn usable(&self) -> bool {
+        self.healthy && !self.disabled
+    }
 }
 
 /// ノードが登録で申告する内容（`RegisterNode`）。容量は仕事に貸せる分（OS などの取り分を引いた値）。
@@ -149,6 +168,8 @@ pub enum WorkloadKind {
     Capture,
     Relay,
     MediaPipeline,
+    /// 外への送り出し（RTMP・SRT の push、PaaS）。
+    Egress,
 }
 
 /// 1 つの GPU 装置の上に要るもの（セッションはすべて同じ装置に置く）。

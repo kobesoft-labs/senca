@@ -346,6 +346,12 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "b7ac824320a75a52197e8f2d787f6a38b6718bb6897a35142d749af3c0e8f4fe"
 
 [[package]]
+name = "futures-core"
+version = "0.3.34"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "92d699e522242e69e3003b94ecc1f960f3a5e015aa7c5d7486e65ad01dd94f5e"
+
+[[package]]
 name = "generic-array"
 version = "0.14.9"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -860,6 +866,20 @@ dependencies = [
 ]
 
 [[package]]
+name = "senca-client"
+version = "0.1.0"
+dependencies = [
+ "bytes",
+ "futures-core",
+ "getrandom 0.3.4",
+ "senca-http",
+ "senca-tls",
+ "serde",
+ "serde_json",
+ "tokio",
+]
+
+[[package]]
 name = "senca-codec"
 version = "0.1.0"
 dependencies = [
@@ -899,6 +919,7 @@ dependencies = [
  "p256",
  "rsa",
  "senca-core",
+ "senca-grid",
  "serde",
  "serde_json",
  "sha2",
@@ -1066,6 +1087,7 @@ dependencies = [
  "senca-core",
  "senca-flv",
  "senca-fmp4",
+ "senca-grid",
  "senca-h264",
  "senca-h265",
  "senca-hls",
@@ -1077,6 +1099,7 @@ dependencies = [
  "senca-raft",
  "senca-record",
  "senca-relay",
+ "senca-rooms",
  "senca-rtmp",
  "senca-rtp",
  "senca-rtsp",
@@ -1084,6 +1107,7 @@ dependencies = [
  "senca-srt",
  "senca-tls",
  "senca-webrtc",
+ "senca-ws",
  "serde",
  "serde_json",
  "sha2",

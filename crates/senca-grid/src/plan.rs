@@ -322,7 +322,7 @@ impl<'a> Planner<'a> {
         let gpu = match (&req.gpu, &a.device) {
             (Some(gr), Some(d)) => {
                 let g = node.spec.gpu_index(d).ok_or(Reason::DeviceDown { device: d.clone() })?;
-                if !node.spec.gpus[g].healthy {
+                if !node.spec.gpus[g].usable() {
                     return Err(Reason::DeviceDown { device: d.clone() });
                 }
                 if !gpu_ok(&node.spec, g, gr, dev_pin(w, self.pins[i], true)) {
@@ -336,7 +336,7 @@ impl<'a> Planner<'a> {
         };
         if let Some(c) = &req.capture {
             match node.spec.capture_index(c) {
-                Some(k) if node.spec.capture[k].healthy => {
+                Some(k) if node.spec.capture[k].usable() => {
                     if self.load[n].u.capture[k] > 0 {
                         return Err(Reason::ConstraintChanged);
                     }
@@ -833,10 +833,11 @@ impl<'a> Planner<'a> {
 
     // ---- 4. 任意の移動 ----
 
+    /// 手動の割り当ての所にいるか（ノードの指定はそのノード、GPU の指定はその GPU を使っていること）。
     fn at_pin(&self, i: usize, p: Place) -> bool {
         let c = &self.wls[i].constraints;
         let spec = self.spec(p.node);
-        c.node.as_ref().is_none_or(|n| *n == spec.id) && c.device.as_ref().is_none_or(|d| spec.gpu_index(d).is_some())
+        c.node.as_ref().is_none_or(|n| *n == spec.id) && c.device.as_ref().is_none_or(|d| p.gpu.is_some_and(|g| spec.gpus[g].id == *d))
     }
 
     fn voluntary_moves(&mut self) -> bool {
@@ -861,8 +862,10 @@ impl<'a> Planner<'a> {
                 continue;
             }
             self.take(i);
-            let cands: Vec<usize> = self.candidates(i).iter().copied().filter(|&n| n != p.node).collect();
+            // 排出は別のノードへ。pin の戻りは同じノードの別の GPU（GPU の指定）もありうる
+            let cands: Vec<usize> = self.candidates(i).iter().copied().filter(|&n| pin_back || n != p.node).collect();
             match (self.min_level(i).min(p.level)..=p.level).find_map(|l| self.best_free(i, l, &cands, 0).map(|(n, g)| Place { node: n, gpu: g, level: l })) {
+                Some(q) if q.node == p.node && q.gpu == p.gpu => self.put(i, p),
                 Some(q) => {
                     self.put(i, q);
                     self.reason[i] = Some(if pin_back { Reason::PinReturned } else { Reason::Draining });

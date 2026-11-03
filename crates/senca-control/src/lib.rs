@@ -14,5 +14,6 @@ pub mod problem;
 pub mod schedule;
 pub mod secret;
 pub mod state;
+pub mod workloads;
 
 pub use problem::{Problem, ProblemCode};

@@ -34,6 +34,9 @@ senca-rtp = { path = "../senca-rtp" }
 senca-sdp = { path = "../senca-sdp" }
 senca-rtsp = { path = "../senca-rtsp" }
 senca-relay = { path = "../senca-relay", features = ["tokio"] }
+senca-grid = { path = "../senca-grid" }
+senca-rooms = { path = "../senca-rooms" }
+senca-ws = { path = "../senca-ws" }
 bytes.workspace = true
 tokio.workspace = true
 serde.workspace = true

@@ -186,7 +186,8 @@ if [[ $ONLY == *H* ]]; then
   sleep 0.5
   new_stream hh false
   api POST /streams/$(sid hh)/inputs -d "{\"protocol\":\"hls_pull\",\"url\":\"http://127.0.0.1:$P3/x.m3u8\"}" >/dev/null
-  # 実時間で送るので 12 秒＋猶予を待つ
+  # 実時間で送るので 12 秒＋猶予を待つ（始まる前も waiting_input なので、先に live を待つ）
+  for _ in $(seq 40); do api GET /streams/$(sid hh) | grep -q '"observed_state":"live"' && break; sleep 0.25; done
   for _ in $(seq 60); do api GET /streams/$(sid hh) | grep -q '"observed_state":"waiting_input"' && break; sleep 0.5; done
   sleep 1
   kill $HTTPD 2>/dev/null || true
@@ -309,7 +310,8 @@ J
   [ "$c" = 200 ] && pass "J operator take (preview → program)" || fail "J control $c"
   sleep 4
   URL=$(api POST /streams/$(sid jout)/playback-url | json "['playback']['hls']")
-  n=$(frames "$URL" v | wc -l)
+  # 合成の出力は実時間で出続ける（入力が終わっても）。6 秒だけ読む
+  n=$({ "$FFMPEG" -v error -t 6 -i "$URL" -map 0:v -f framemd5 - 2>/dev/null || true; } | grep -vc "^#" || true)
   [ "$n" -ge 30 ] && pass "J composed AV1 output decodes ($n frames)" || fail "J output frames $n"
   api GET /pipelines/$PID | json "['observed_state']" | grep -q running && pass "J pipeline running" || fail "J state"
   c=$(api POST /pipelines -d '{"name":"bad","graph":{"version":1,"nodes":[{"type":"source","id":"s","stream":"'"$(sid jt)"'","video":{"codec":"h264"}},{"type":"decode","id":"d","input":"s.video"},{"type":"encode","id":"e","input":"d","codec":"h264","bitrate_kbps":500},{"type":"sink","id":"o","inputs":["e"],"stream":"'"$(sid jout)"'"}]}}' -o "$W/bad.json" -w '%{http_code}')

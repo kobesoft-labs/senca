@@ -16,7 +16,7 @@ info:
     - **楽観的排他**: 応答の `ETag` は `"{generation}"`。PATCH は `If-Match` 必須（無いと 428、形が違う・古いと 412）。DELETE の `If-Match` は任意（付ければ検査）。
     - **一覧**: `limit`（1〜1000、既定 100）と `cursor`（前の応答の `next_cursor`）。順序は ID の昇順。知らないクエリは 400。
     - **エラー**: `application/problem+json`（`Problem`）。すべての応答に `X-Request-Id`（要求の `X-Request-Id` が 64 文字以内の英数字と `-_.` ならそれを、違えば生成した `req_...`）と `Cache-Control: no-store` が付く。
-    - **405**: 経路表にある資源（`/capabilities`・`/nodes/...`・`/devices`・`/events`・`/streams/...`・`/recordings/...`・`/schedules/...`・`/tokens/...`・`/inputs/...`・`/outputs/...`・`/secrets/...`・`/pipelines/...`）に、ここに書いていないメソッド（HEAD を含む）を送ると 405（`METHOD_NOT_ALLOWED`）。それ以外の知らないパスは 404。`x-senca-undefined-method-status` を参照。
+    - **405**: 経路表にある資源（`/capabilities`・`/nodes/...`・`/devices`・`/grid`・`/events`・`/streams/...`・`/recordings/...`・`/schedules/...`・`/tokens/...`・`/inputs/...`・`/outputs/...`・`/secrets/...`・`/pipelines/...`・`/rooms/...`）に、ここに書いていないメソッド（HEAD を含む）を送ると 405（`METHOD_NOT_ALLOWED`）。それ以外の知らないパスは 404。`x-senca-undefined-method-status` を参照。
     - **429**: 部品（`components.responses`）には定義するが、今の実装はどの操作でも返さない（レート制限は未実装）。
     - **422**: `GET /streams/{id}/snapshot` の復号でだけ返す。配信の作成・更新ではコーデックを検査しない（入力のコーデックは publish まで分からない）。不適合は `POST /streams/{id}/plan` の結果の `code: UNSUPPORTED_CODEC` で知らせる。
     - **5xx**: 制御状態の永続化に失敗すると 500（`INTERNAL_ERROR`、`retryable: true`）。再試行してよい 503 には `Retry-After: 1` が付く。
@@ -26,8 +26,8 @@ info:
     - 非同期処理の operation 資源（`GET /operations/{id}`）は無い。202 の応答は対象資源そのものを返す。
     - `PATCH /streams/{id}` は 202 ではなく 200（その場で反映した資源を返す）。`DELETE /streams/{id}` は 202 ではなく 204。
     - `POST /streams/{id}/sessions`、`DELETE /sessions/{id}`、`GET /inputs/{id}/reservations` は未実装。
-    - 入力（`/streams/{id}/inputs`・`/inputs/{id}`）は pull だけ（push は stream の鍵で受ける）。出力・パイプラインの変更は SSE のイベントにならない。
-    - 入力・出力・秘密値・パイプラインの DELETE は `If-Match` を読まない（付けても検査しない）。
+    - 入力（`/streams/{id}/inputs`・`/inputs/{id}`）は pull だけ（push は stream の鍵で受ける）。
+    - 入力・出力・秘密値・パイプライン・部屋の DELETE は `If-Match` を読まない（付けても検査しない）。
     - SSE は再送の保持を持たない（`Last-Event-ID` が今の位置より前なら必ず `resync`）。
 x-senca-undefined-method-status: 405
 servers:
@@ -36,7 +36,11 @@ security:
   - bearer: []
 tags:
   - name: system
-    description: 能力・ノード・デバイス（運用）。
+    description: |
+      能力・ノード・デバイス・グリッド（運用）。
+      **グリッド（ADR-0013）**: 各ノードは起動時に資源（CPU・メモリ・帯域・GPU・キャプチャ機器・ラベル）を申告し、毎秒の心拍をリーダーへ送る。
+      リーダー（単一ノードでは自分）の配置係が、入力・出力・パイプラインから導いた仕事をノード・装置に割り当てる。仕事は割り当てられたノードだけが動かす。
+      資源ごとの配置の指定は `placement`（`PlacementSpec`）、結果は `placement_status`（`PlacementStatus`）、全体の様子は `GET /grid`。
   - name: streams
     description: 配信（stream）の定義・鍵・再生 URL・計画・静止画。
   - name: recordings
@@ -55,6 +59,21 @@ tags:
     description: |
       パイプライン（REQ-002・REQ-005・REQ-008）。グラフは senca-pipeline の JSON（`crates/senca-pipeline/src/model.rs` の `Graph`、`cargo doc -p senca-pipeline`）。
       作成・更新のたびに検証し（参照する stream がテナントのものか、方針・装置）、`desired_state: running` ならコーデック worker のセッションで動かす。
+  - name: rooms
+    description: |
+      リアルタイムの部屋（ADR-0015、`docs/realtime/signaling.md` の 11 章）。SFU（転送だけ、変換しない）で参加者どうしが WebRTC で送り合う。
+      - **部屋そのもの**（作る・読む・変える・消す）は制御状態の資源で、どのノードでも受ける。部屋の ID は**テナントをまたいで一意**（他のテナントが使っている ID で作ると 409、他のテナントの部屋を読むと 404）。
+      - **置き場所**: 部屋はグリッドの仕事（`room:{id}`）になり、配置係が割り当てたノード（`placement_status.node`）の部屋の核が動かす。`placement` は入力・出力と同じ（`degrade` は 400）。
+      - **今の様子**（参加者・メッセージ・統計）は部屋を置いたノードの部屋の核に問い合わせる。別のノードにあれば、受けたノードが同じ認証のまま
+        そのノードの `/api/v1` へ中継し、応答（状態コード・本文・`ETag`）をそのまま返す（中継の中継はしない: 503）。置き場所が決まる前（作った直後）は 503（`retryable: true`）、
+        このノードで WebRTC（`--webrtc-udp`）が動いていなければ 503（`retryable: false`）、部屋の核がまだ部屋を開いていなければ 404。
+      - **参加トークン**（`POST /rooms/{id}/tokens`）はどのノードでも発行できる（署名の鍵は制御状態から導く、全ノードで同じ）。無い部屋を頼むと部屋を自動で作る（`auto: true`）。
+      - **シグナリング（`/api/v1` の外）**: `GET /signaling`（WebSocket、RFC 6455、subprotocol `senca.rooms.v1` が必須）。URL は部屋の `signaling_url`・
+        トークンの応答の `signaling_url`（`--public-http-url` の `http`→`ws`・`https`→`wss` に `/signaling` を付けたもの、別のノードに置いた部屋はそのノードの URL）。
+        つないだ後の最初の message `connect {version: 1, room_id, token, role, ...}` で参加トークンを渡す（HTTP の `Authorization` は使わない）。
+        message の形は `docs/realtime/signaling.md`。部屋が別のノードにあれば `redirect {location}` を送って閉じる（close code 4300）。
+        WebRTC が動いていないノードは 503（text/plain）、WebSocket の握手の誤り（subprotocol が無いなど）は握手の層の 4xx を返す。
+      - 部屋の核の出来事（参加・退出・トラック・スポットライト）は `GET /events` に `room.*` として流れる。
   - name: events
     description: SSE のイベント購読（仕様 10.5）。
   - name: playback
@@ -125,6 +144,7 @@ paths:
       summary: 新規割当の停止（drain）
       description: |
         `draining: true` にしたノードを返す。本文は読まない。仕様は 202 と operation 資源だが、実装は 202 で Node をそのまま返す。
+        グリッドに登録されたノードなら、グリッドの `draining` も変える: 新しい仕事を置かず、置いてある仕事は移せるものから別のノードへ移す（`reason.code: draining`）。
       x-senca-scope: node:admin
       parameters:
         - $ref: '#/components/parameters/IdempotencyKey'
@@ -143,6 +163,7 @@ paths:
       tags: [system]
       operationId: undrainNode
       summary: drain の解除
+      description: '`draining: false` にしたノードを返す。グリッドに登録されたノードなら、グリッドの `draining` も戻す（新しい仕事を受ける）。'
       x-senca-scope: node:admin
       parameters:
         - $ref: '#/components/parameters/IdempotencyKey'
@@ -171,6 +192,72 @@ paths:
         '401': { $ref: '#/components/responses/Unauthorized' }
         '403': { $ref: '#/components/responses/Forbidden' }
 
+  /grid:
+    get:
+      tags: [system]
+      operationId: getGrid
+      summary: グリッドの様子（ノードの資源・予約、仕事の割り当て）
+      description: |
+        配置係（ADR-0013）が見ている状態。ノードごとの申告（容量・GPU・キャプチャ機器・ラベル）と予約（割り当てた仕事の要求の和）、
+        仕事ごとの割り当て・縮退の段・置けない理由。テナントで絞らない（`node:admin`）。クエリは読まない。
+        `last_heartbeat` は応答したノードが配置係（リーダー）のときだけ値がある。
+      x-senca-scope: node:admin
+      responses:
+        '200':
+          description: 'グリッド'
+          headers: { X-Request-Id: { $ref: '#/components/headers/X-Request-Id' } }
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/Grid' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '403': { $ref: '#/components/responses/Forbidden' }
+  /nodes/{id}/devices/{dev}/disable:
+    parameters:
+      - $ref: '#/components/parameters/NodeId'
+      - $ref: '#/components/parameters/DeviceId'
+    post:
+      tags: [system]
+      operationId: disableDevice
+      summary: 装置（GPU・キャプチャ機器）を手で止める
+      description: |
+        グリッドの装置を手で止める（`enabled: false`。測った健康 `healthy` とは別の印）。止めた装置を使う仕事は、別の装置・ノードへ
+        移るか縮退する。`placement.pin_policy: strict` でその装置に割り当てた仕事は止まったままになる。本文は読まない。
+        手で止めた印は合意ログに載り、心拍・ノードの申告し直しでは戻らない（`enable` で戻すまで）。
+        ノード（ID か名前）・装置がグリッドに無ければ 404。
+      x-senca-scope: node:admin
+      parameters:
+        - $ref: '#/components/parameters/IdempotencyKey'
+      responses:
+        '202': { $ref: '#/components/responses/DeviceHealthAccepted' }
+        '400': { $ref: '#/components/responses/BadRequest' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '403': { $ref: '#/components/responses/Forbidden' }
+        '404': { $ref: '#/components/responses/NotFound' }
+        '409': { $ref: '#/components/responses/Conflict' }
+        '500': { $ref: '#/components/responses/InternalError' }
+  /nodes/{id}/devices/{dev}/enable:
+    parameters:
+      - $ref: '#/components/parameters/NodeId'
+      - $ref: '#/components/parameters/DeviceId'
+    post:
+      tags: [system]
+      operationId: enableDevice
+      summary: 止めた装置を戻す
+      description: |
+        手で止めた装置を戻す（`enabled: true`）。移した・縮退した仕事は、冷却の後に戻る（`reason.code: pin_returned`・`capacity_returned`）。本文は読まない。
+        ノード（ID か名前）・装置がグリッドに無ければ 404。
+      x-senca-scope: node:admin
+      parameters:
+        - $ref: '#/components/parameters/IdempotencyKey'
+      responses:
+        '202': { $ref: '#/components/responses/DeviceHealthAccepted' }
+        '400': { $ref: '#/components/responses/BadRequest' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '403': { $ref: '#/components/responses/Forbidden' }
+        '404': { $ref: '#/components/responses/NotFound' }
+        '409': { $ref: '#/components/responses/Conflict' }
+        '500': { $ref: '#/components/responses/InternalError' }
+
   # ------------------------------------------------------------------ events
   /events:
     get:
@@ -179,13 +266,24 @@ paths:
       summary: SSE のイベント購読
       description: |
         HTTP 層（`events.rs`）が扱う長く開いたままの応答。適用された制御コマンドをイベントにして、テナントで絞って流す。
-        テナントを持たないイベント（`node.updated`）は `node:admin` を持つ主体にだけ流す。15 秒ごとにコメント行（keepalive）を送る。
+        テナントを持たないイベント（`node.updated`・`stream.owner`・グリッドの `node.down`・`node.up`・`device.down`・`device.up`・`device.disabled`・
+        `device.enabled`・`grid.decisions`）は `node:admin` を持つ主体にだけ流す。15 秒ごとにコメント行（keepalive）を送る。
 
         - SSE の `id` は制御ログの位置（applied_index）、`event` はイベントの種類、`data` は `SseEventData` の JSON。
+        - 制御コマンドのイベント: `stream.created`・`stream.updated`・`stream.deleted`・`stream.owner`・`recording.updated`・`recording.deleted`・
+          `schedule.created`・`schedule.updated`・`schedule.deleted`・`schedule.run`・`node.updated`・`input.updated`・`input.deleted`・
+          `output.updated`・`output.deleted`・`secret.created`・`secret.deleted`・`pipeline.updated`・`pipeline.deleted`・
+          `room.updated`（部屋の作成・自動の作成・更新。`data: {auto}`）・`room.deleted`、グリッドの `node.down`・`node.up`・`device.*`・`grid.decisions`（`resource_id` は空、`data: {decisions}`）。
+        - **部屋の核の出来事**（ADR-0015。合意ログに載らず、部屋を置いたノードの購読者にだけ流れる）: `room.started`（部屋の核が部屋を開いた）・`room.stopped`・
+          `room.connection.created`・`room.connection.updated`・`room.connection.destroyed`・`room.track.published`・`room.track.unpublished`・`room.spotlight.changed`。
+          これらは SSE の `id` を持たない（`Last-Event-ID` の再開の対象外、取りこぼしは黙って飛ばす）。`data` に `event_id`（出来事の ID）と `node`（ノードの ID）があり、
+          `data.data` は部屋の核の出来事 `{type, data}`（`type` は核での名前 `room.created`・`connection.created` など）。テナントで絞り、`node:admin` でも他テナントのものは流さない。
+          部屋を消したとき（`DELETE /rooms/{id}`・自動の部屋の掃除）の `room.stopped` と、そのとき切った参加者の `room.connection.destroyed` は流れない
+          （部屋の核が出来事を出す時点で制御状態から部屋が消えていて、テナントが分からないため捨てる。実装の不備）。`room.stopped` が流れるのは部屋が別のノードへ移ったときだけ。
         - `Last-Event-ID` が今の位置より前なら、最初に `event: resync`（`id` は今の位置、`data: {}`）を送る（保持を持たないので必ず再同期になる）。
         - 取りこぼし（購読の遅れ）では `event: resync`（`data: {}`）を送って閉じる。
 
-        仕様との差: `data` に `event_id`・`generation` の欄は無い（`event_id` は SSE の `id`）。`occurred_at` は送った時刻。保持期間 24 時間の再送は無い。
+        仕様との差: 制御のイベントの `data` に `event_id`・`generation` の欄は無い（`event_id` は SSE の `id`）。`occurred_at` は送った時刻。保持期間 24 時間の再送は無い。
         401・403 は他の API と同じ problem+json。
       x-senca-scope: stream:read
       parameters:
@@ -207,6 +305,9 @@ paths:
                   event: stream.created
                   id: 42
                   data: {"type":"stream.created","resource_id":"...","occurred_at":"...","data":{"name":"studio-a"}}
+
+                  event: room.connection.created
+                  data: {"type":"room.connection.created","resource_id":"daily","event_id":"...","node":"...","occurred_at":"...","data":{"type":"connection.created","data":{"participant":{...}}}}
                   ```
               x-senca-event-data: { $ref: '#/components/schemas/SseEventData' }
         '401': { $ref: '#/components/responses/Unauthorized' }
@@ -947,7 +1048,8 @@ paths:
       summary: 入力（pull）の追加
       description: |
         外部から取りに行く入力を stream に足す（`rtmp_pull`・`rtsp_pull`・`srt_pull`・`hls_pull`）、またはこのノードのキャプチャ機器（`device`、`url: device:{機器 ID}`、機器は `GET /devices` の `capture`）。push（送り手がつなぐ）は stream の鍵で受けるのでここには無い。
-        検査の順: 本文の形（400・415）→ stream があるか（404）→ `protocol`（400）→ `url` のスキームと形（400、資格情報 `user:pass@` は拒否して `credential_ref` を求める）→ `credential_ref`（`secret:{name}` の形と、秘密値があるか、400）→ `options`（400）。
+        検査の順: 本文の形（400・415）→ stream があるか（404）→ `protocol`（400）→ `url` のスキームと形（400、資格情報 `user:pass@` は拒否して `credential_ref` を求める）→ `credential_ref`（`secret:{name}` の形と、秘密値があるか、400）→ `options`（400）→ `placement`（400、`PlacementSpec`）。
+        配置: `enabled: true` の入力はグリッドの仕事（`input:{id}`）になり、配置係が割り当てたノードが実行する（`placement_status`）。`placement.node` はノードの ID か名前で、応答では ID に直る。`placement.degrade` は 400（パイプラインだけ）。
         宛先の IP（リンクローカル・プライベートなど、`--egress-allow` に無いもの）は接続時に拒否し、`status.state` は `error`/`backoff`、`status.last_error` に理由が出る（作成そのものは 201）。
         1 つの stream の入力は 4 つまで（超えると 403 `QUOTA_EXCEEDED`）。`enabled: true` ならすぐに実行を始める（応答の `status` は null か `starting` のことがある）。
       x-senca-scope: stream:write
@@ -1020,8 +1122,8 @@ paths:
       operationId: patchInput
       summary: 入力の更新
       description: |
-        `url`・`credential_ref`（null で外す）・`enabled`・`options` を置き換える。`protocol` と `stream` は変えられない。作成と同じ検査をする。
-        更新すると実行中の接続を作り直す。
+        `url`・`credential_ref`（null で外す）・`enabled`・`options`・`placement`（null で外す）を置き換える。`protocol` と `stream` は変えられない。作成と同じ検査をする。
+        更新すると実行中の接続を作り直す。`placement` を変えると配置し直す（別のノードへ移ることがある）。
       x-senca-scope: stream:write
       parameters:
         - $ref: '#/components/parameters/IfMatchRequired'
@@ -1071,6 +1173,7 @@ paths:
         - `rtmp_push`・`srt_push`・`whip_push`: `url` が要る（スキームの検査と、資格情報 `user:pass@` の拒否は入力と同じ）。RTMP の stream key は `url` の最後か `credential_ref`。
         - `paas`: `provider`（`cloudflare_stream`・`aws_ivs`・`aws_medialive`）と `credential_ref`（その API の資格情報）が要る。`url` は使わない。SENCA が外部に作った資源は `provider_resource` に入り、出力の削除で後片付けする。
         1 つの stream の出力は 16 個まで（超えると 403 `QUOTA_EXCEEDED`）。
+        配置: `enabled: true` の出力はグリッドの仕事（`output:{id}`）になり、配置係が割り当てたノードが送り出す（`placement_status`。指定が無ければ配信を受けたノードを好む）。`placement` の検査は入力と同じ（`degrade` は 400）。
         注意: `whip_push` は受け付けるが、今のノードは実行できない（`status.state: error`、`last_error` に理由）。
       x-senca-scope: stream:write
       parameters:
@@ -1142,7 +1245,7 @@ paths:
       operationId: patchOutput
       summary: 出力の更新
       description: |
-        `url`・`credential_ref`（null で外す）・`enabled`・`options` を置き換える。`protocol`・`provider`・`stream` は変えられない。
+        `url`・`credential_ref`（null で外す）・`enabled`・`options`・`placement`（null で外す）を置き換える。`protocol`・`provider`・`stream` は変えられない。
         `paas` の出力に `url` を書くと 400（スキームが合わない）。
       x-senca-scope: stream:write
       parameters:
@@ -1262,6 +1365,9 @@ paths:
         - `source`・`sink` の stream がテナントに無い → 400（`INVALID_CONFIG`、`title` に stream の ID）
         - 装置が無い（H.264/H.265 のハードウェアが無い、セッション数の上限）→ 503（`CAPACITY_UNAVAILABLE`、`retryable: false`、`Retry-After` は付かない）
         name はテナント内で一意（重複は 409）、100 個まで（超えると 403 `QUOTA_EXCEEDED`）。コーデックの能力はこのノードのコーデック worker が報告するもの（worker が無ければ符号化・復号を含むグラフは 503）。
+        - `placement` の誤り → 400（`INVALID_CONFIG`、`PlacementSpec`。グラフの検査の後）
+        配置: `desired_state: running` のパイプラインはグリッドの仕事（`pipeline:{id}`）になり、配置係が割り当てたノードが動かす（`placement_status`。入力の stream を受けたノードを好む）。
+        `placement.degrade` に縮退の段を書くと、資源（CPU・GPU のセッション）が足りないとき段を下げ、その段の部品（と、入力がすべて止まった下流）を外したグラフで動かす（`placement_status.state: degraded`）。
       x-senca-scope: stream:write
       parameters:
         - $ref: '#/components/parameters/IdempotencyKey'
@@ -1324,7 +1430,8 @@ paths:
       operationId: patchPipeline
       summary: パイプラインの更新・開始・停止
       description: |
-        `name`・`graph`・`desired_state` を置き換える。`graph` は作成と同じ検査（400・503）。`desired_state: running` で開始、`stopped` で停止。
+        `name`・`graph`・`desired_state`・`placement`（null で外す）を置き換える。`graph` は作成と同じ検査（400・503）。`desired_state: running` で開始、`stopped` で停止。
+        `placement` を書かなくても、今の縮退の段は新しい `graph` で検査し直す（止める部品がグラフから消えれば 400）。
         更新すると generation が進み、動いていれば新しいグラフで作り直す（セッションを開き直す。シームレスな切り替えではない）。
         name はテナント内で一意（重複は 409）。注意: 本文の検査の後に `If-Match` を比べるので、古い `If-Match` と不正な本文では 400 が先に返る。
       x-senca-scope: stream:write
@@ -1425,6 +1532,322 @@ paths:
         '409': { $ref: '#/components/responses/Conflict' }
         '415': { $ref: '#/components/responses/UnsupportedMediaType' }
         '500': { $ref: '#/components/responses/InternalError' }
+
+  # ------------------------------------------------------------------ rooms
+  /rooms:
+    post:
+      tags: [rooms]
+      operationId: createRoom
+      summary: 部屋を作る
+      description: |
+        部屋を作る（ADR-0015）。`id` を省けば 24 文字の 16 進を作る。作った部屋はグリッドの仕事（`room:{id}`）になり、配置係が割り当てたノードの部屋の核が開く。
+        検査の順: 本文の形（400 `INVALID_REQUEST`・415）→ `id`（1〜128 文字の英数字と `-_.:@`、400）→ `settings`（400）→ `metadata`（JSON で 8 KiB まで、400）
+        → `placement`（400、`PlacementSpec`。`node` はノードの ID か名前で、応答では ID に直る。`degrade` は 400）→ 同じ ID の部屋（**どのテナントのものでも** 409）。
+        テナントあたり 10000 部屋まで（超えると 403 `QUOTA_EXCEEDED`）。
+        `settings` の検査は形（未知のフィールド・型・enum）と `max_participants`（1〜10000）だけ。他の範囲（`RoomSettings` の説明）は API では検査せず、
+        部屋の核が部屋を開くときに検査する（違反すると部屋が開かれず、参加者・統計などは 404 のまま。実装の不備）。
+      x-senca-scope: stream:write
+      parameters:
+        - $ref: '#/components/parameters/IdempotencyKey'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: '#/components/schemas/RoomCreate' }
+      responses:
+        '201':
+          description: 作成した
+          headers:
+            Location: { $ref: '#/components/headers/Location' }
+            ETag: { $ref: '#/components/headers/ETag' }
+            X-Request-Id: { $ref: '#/components/headers/X-Request-Id' }
+            Idempotency-Replayed: { $ref: '#/components/headers/Idempotency-Replayed' }
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/Room' }
+        '400': { $ref: '#/components/responses/BadRequest' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '403': { $ref: '#/components/responses/Forbidden' }
+        '409': { $ref: '#/components/responses/Conflict' }
+        '415': { $ref: '#/components/responses/UnsupportedMediaType' }
+        '500': { $ref: '#/components/responses/InternalError' }
+    get:
+      tags: [rooms]
+      operationId: listRooms
+      summary: 部屋の一覧
+      description: テナントの部屋（参加トークンで自動に作った部屋を含む）。ID の昇順。
+      x-senca-scope: stream:read
+      parameters:
+        - $ref: '#/components/parameters/Limit'
+        - $ref: '#/components/parameters/Cursor'
+      responses:
+        '200':
+          description: 部屋の一覧
+          headers: { X-Request-Id: { $ref: '#/components/headers/X-Request-Id' } }
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/RoomList' }
+        '400': { $ref: '#/components/responses/BadRequest' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '403': { $ref: '#/components/responses/Forbidden' }
+  /rooms/{id}:
+    parameters:
+      - $ref: '#/components/parameters/RoomId'
+    get:
+      tags: [rooms]
+      operationId: getRoom
+      summary: 部屋の定義と置き場所
+      description: 制御状態の部屋と配置の結果（`placement_status`）、つなぐ先（`signaling_url`）。参加者の数などの今の様子は `GET /rooms/{id}/participants`・`/stats`。他テナントの部屋は 404。
+      x-senca-scope: stream:read
+      responses:
+        '200':
+          description: 部屋
+          headers:
+            ETag: { $ref: '#/components/headers/ETag' }
+            X-Request-Id: { $ref: '#/components/headers/X-Request-Id' }
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/Room' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '403': { $ref: '#/components/responses/Forbidden' }
+        '404': { $ref: '#/components/responses/NotFound' }
+    patch:
+      tags: [rooms]
+      operationId: patchRoom
+      summary: 部屋の更新
+      description: |
+        `settings`（**全体を置き換える**。書かなかった設定は既定値に戻る）・`metadata`・`placement`（null で外す）を変える。`settings`・`metadata` の null は「変えない」。
+        検査の順: `If-Match`（428・412）→ 本文の形（400・415）→ 部屋があるか（404）→ 世代（412）→ 作成と同じ検査（400）。
+        部屋の核に参加者がいる間は `e2ee`・`video_codec`・`audio_codec` を変えられない（409。部屋を置いたノードがこのノードのときだけ確かめる）。
+        変更は部屋を置いたノードの部屋の核へ非同期に伝わる（スポットライトの変更は参加者の希望にも反映する）。
+      x-senca-scope: stream:write
+      parameters:
+        - $ref: '#/components/parameters/IfMatchRequired'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: '#/components/schemas/RoomPatch' }
+      responses:
+        '200':
+          description: 更新した部屋
+          headers:
+            ETag: { $ref: '#/components/headers/ETag' }
+            X-Request-Id: { $ref: '#/components/headers/X-Request-Id' }
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/Room' }
+        '400': { $ref: '#/components/responses/BadRequest' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '403': { $ref: '#/components/responses/Forbidden' }
+        '404': { $ref: '#/components/responses/NotFound' }
+        '409': { $ref: '#/components/responses/Conflict' }
+        '412': { $ref: '#/components/responses/PreconditionFailed' }
+        '415': { $ref: '#/components/responses/UnsupportedMediaType' }
+        '428': { $ref: '#/components/responses/PreconditionRequired' }
+        '500': { $ref: '#/components/responses/InternalError' }
+    delete:
+      tags: [rooms]
+      operationId: deleteRoom
+      summary: 部屋の削除
+      description: 部屋を消す。部屋の核は参加者に `room_deleted` を送って切る（非同期）。`If-Match` は読まない。
+      x-senca-scope: stream:write
+      responses:
+        '204': { $ref: '#/components/responses/NoContent' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '403': { $ref: '#/components/responses/Forbidden' }
+        '404': { $ref: '#/components/responses/NotFound' }
+        '500': { $ref: '#/components/responses/InternalError' }
+  /rooms/{id}/tokens:
+    parameters:
+      - { name: id, in: path, required: true, schema: { type: string }, description: '部屋の ID（無ければ自動で作る。1〜128 文字の英数字と `-_.:@` でなければ 404）' }
+    post:
+      tags: [rooms]
+      operationId: issueRoomToken
+      summary: 参加トークンの発行
+      description: |
+        シグナリングの `connect.token` に渡す参加トークン（JWT、EdDSA（Ed25519）・`kid: senca-rooms-1`、`iss: senca`・`aud: senca-rooms`、`sub` はテナント、`room`・`role`・`client_id`・`bundle_id`・`metadata`・`permissions` の claim）。
+        署名の鍵は制御状態から導くので、どのノードで発行しても全ノードで通る。`exp`・`iat`・`jti` が付く。
+        **部屋が無ければ自動で作る**（`auto: true`、既定の設定。誰もいないまま `empty_timeout_secs` 経つと消える。SSE の `room.updated` の `data.auto: true`）。
+        他テナントの部屋の ID は 404。
+        検査の順: 本文の形（400・415）→ 部屋の ID の形（404）→ `ttl_secs`（10〜86400、400）→ `client_id`・`bundle_id`（1〜255 文字で制御文字を含めない、400）→ `metadata`（8 KiB まで、400）。
+        署名の鍵がまだ無い（起動の直後）ときは 503（`retryable: true`）。
+        Idempotency-Key の再送では `token` を伏せる（`token: null`・`token_redacted: true`）。
+        仕様との差: senca-rooms 単体の発行（`RoomService::api_issue_token`）の `ttl_secs` の既定は 3600 で `expires_at` は UNIX 秒だが、ノードの API は既定 600 秒で RFC 3339。
+      x-senca-scope: stream:write
+      parameters:
+        - $ref: '#/components/parameters/IdempotencyKey'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: '#/components/schemas/RoomTokenRequest' }
+      responses:
+        '201':
+          description: 発行した
+          headers:
+            X-Request-Id: { $ref: '#/components/headers/X-Request-Id' }
+            Idempotency-Replayed: { $ref: '#/components/headers/Idempotency-Replayed' }
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/RoomToken' }
+        '400': { $ref: '#/components/responses/BadRequest' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '403': { $ref: '#/components/responses/Forbidden' }
+        '404': { $ref: '#/components/responses/NotFound' }
+        '409': { $ref: '#/components/responses/Conflict' }
+        '415': { $ref: '#/components/responses/UnsupportedMediaType' }
+        '500': { $ref: '#/components/responses/InternalError' }
+        '503': { $ref: '#/components/responses/ServiceUnavailable' }
+  /rooms/{id}/participants:
+    parameters:
+      - $ref: '#/components/parameters/RoomId'
+    get:
+      tags: [rooms]
+      operationId: listRoomParticipants
+      summary: 参加者の一覧
+      description: |
+        部屋の核の参加者（このノードにつないだ参加者と、カスケードで他のノードにいる参加者 `signaling: remote`）。`connection_id` の昇順。
+        部屋を置いたノードへ中継する（`rooms` タグの説明。置き場所が決まっていない・WebRTC が動いていないと 503、部屋の核が部屋をまだ開いていないと 404）。
+        `next_cursor` は返した数が `limit` と同じときだけ入る（続きが無くても入ることがある）。続きが無ければ欄そのものが無い。
+      x-senca-scope: stream:read
+      parameters:
+        - $ref: '#/components/parameters/Limit'
+        - $ref: '#/components/parameters/Cursor'
+      responses:
+        '200':
+          description: 参加者の一覧
+          headers: { X-Request-Id: { $ref: '#/components/headers/X-Request-Id' } }
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/ParticipantList' }
+        '400': { $ref: '#/components/responses/BadRequest' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '403': { $ref: '#/components/responses/Forbidden' }
+        '404': { $ref: '#/components/responses/NotFound' }
+        '500': { $ref: '#/components/responses/InternalError' }
+        '503': { $ref: '#/components/responses/ServiceUnavailable' }
+  /rooms/{id}/participants/{c}:
+    parameters:
+      - $ref: '#/components/parameters/RoomId'
+      - $ref: '#/components/parameters/ConnectionId'
+    get:
+      tags: [rooms]
+      operationId: getRoomParticipant
+      summary: 参加者
+      description: 参加者 1 人（`subscriptions` は受信の枠）。部屋を置いたノードへ中継する。参加していない接続は 404。
+      x-senca-scope: stream:read
+      responses:
+        '200':
+          description: 参加者
+          headers: { X-Request-Id: { $ref: '#/components/headers/X-Request-Id' } }
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/Participant' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '403': { $ref: '#/components/responses/Forbidden' }
+        '404': { $ref: '#/components/responses/NotFound' }
+        '500': { $ref: '#/components/responses/InternalError' }
+        '503': { $ref: '#/components/responses/ServiceUnavailable' }
+    patch:
+      tags: [rooms]
+      operationId: patchRoomParticipant
+      summary: 参加者の metadata を変える
+      description: |
+        参加者の `metadata` を置き換え、部屋の全員に `notify {event: connection.updated}` を送る（SSE は `room.connection.updated`）。
+        `If-Match` は読まない（参加者は世代を持たない）。このノードにつないだ参加者だけ（他のノードの参加者・参加していない接続は 404）。部屋を置いたノードへ中継する。
+      x-senca-scope: stream:write
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: '#/components/schemas/ParticipantPatch' }
+      responses:
+        '200':
+          description: 変えた参加者
+          headers: { X-Request-Id: { $ref: '#/components/headers/X-Request-Id' } }
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/Participant' }
+        '400': { $ref: '#/components/responses/BadRequest' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '403': { $ref: '#/components/responses/Forbidden' }
+        '404': { $ref: '#/components/responses/NotFound' }
+        '415': { $ref: '#/components/responses/UnsupportedMediaType' }
+        '500': { $ref: '#/components/responses/InternalError' }
+        '503': { $ref: '#/components/responses/ServiceUnavailable' }
+    delete:
+      tags: [rooms]
+      operationId: disconnectRoomParticipant
+      summary: 参加者を切る
+      description: '参加者を部屋から外す（シグナリングの `disconnect {reason: kicked}`）。トークンは無効にならない（入り直せる）。このノードにつないだ参加者だけ（他は 404）。部屋を置いたノードへ中継する。'
+      x-senca-scope: stream:write
+      responses:
+        '204': { $ref: '#/components/responses/NoContent' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '403': { $ref: '#/components/responses/Forbidden' }
+        '404': { $ref: '#/components/responses/NotFound' }
+        '500': { $ref: '#/components/responses/InternalError' }
+        '503': { $ref: '#/components/responses/ServiceUnavailable' }
+  /rooms/{id}/messages:
+    parameters:
+      - $ref: '#/components/parameters/RoomId'
+    post:
+      tags: [rooms]
+      operationId: postRoomMessage
+      summary: 部屋・参加者へ送る
+      description: |
+        `label` が無ければシグナリングの `push {data}`（JSON のまま）、あれば DataChannel（そのラベルを開いている参加者へ、`data` は文字列）。
+        `to`（connection_id の列）が空なら全員。`to` に部屋にいない接続があれば 404。`data` は JSON で 64 KiB まで、`label` は `#` で始まる（400）。
+        応答の `delivered` は送った相手の数（誰もいなければ 0）。部屋を置いたノードへ中継する。
+      x-senca-scope: stream:write
+      parameters:
+        - $ref: '#/components/parameters/IdempotencyKey'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: '#/components/schemas/RoomMessage' }
+      responses:
+        '200':
+          description: 送った
+          headers:
+            X-Request-Id: { $ref: '#/components/headers/X-Request-Id' }
+            Idempotency-Replayed: { $ref: '#/components/headers/Idempotency-Replayed' }
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/RoomMessageResult' }
+        '400': { $ref: '#/components/responses/BadRequest' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '403': { $ref: '#/components/responses/Forbidden' }
+        '404': { $ref: '#/components/responses/NotFound' }
+        '409': { $ref: '#/components/responses/Conflict' }
+        '415': { $ref: '#/components/responses/UnsupportedMediaType' }
+        '500': { $ref: '#/components/responses/InternalError' }
+        '503': { $ref: '#/components/responses/ServiceUnavailable' }
+  /rooms/{id}/stats:
+    parameters:
+      - $ref: '#/components/parameters/RoomId'
+    get:
+      tags: [rooms]
+      operationId: getRoomStats
+      summary: 部屋の統計
+      description: |
+        部屋を置いたノードにつないだ参加者ごとの RTT・推定帯域・送受の量・送る層の bitrate・受けている層・クライアントの getStats の要約。
+        カスケードで他のノードにいる参加者は含まない。部屋を置いたノードへ中継する。
+      x-senca-scope: stream:read
+      responses:
+        '200':
+          description: 統計
+          headers: { X-Request-Id: { $ref: '#/components/headers/X-Request-Id' } }
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/RoomStats' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '403': { $ref: '#/components/responses/Forbidden' }
+        '404': { $ref: '#/components/responses/NotFound' }
+        '500': { $ref: '#/components/responses/InternalError' }
+        '503': { $ref: '#/components/responses/ServiceUnavailable' }
 
   # ------------------------------------------------------------------ playback（/api/v1 の外）
   /s/{exp}/{sig}/live/{stream}/index.m3u8:
@@ -1594,10 +2017,13 @@ components:
     ScheduleId: { name: id, in: path, required: true, schema: { type: string }, description: 予約の ID }
     TokenId: { name: id, in: path, required: true, schema: { type: string }, description: トークンの ID }
     NodeId: { name: id, in: path, required: true, schema: { type: string }, description: ノードの ID }
+    DeviceId: { name: dev, in: path, required: true, schema: { type: string }, description: '装置の ID（`GET /grid` の `nodes[].gpus[].id`・`nodes[].capture[].id`）' }
     InputId: { name: id, in: path, required: true, schema: { type: string }, description: 入力の ID }
     OutputId: { name: id, in: path, required: true, schema: { type: string }, description: 出力の ID }
     SecretId: { name: id, in: path, required: true, schema: { type: string }, description: 秘密値の ID }
     PipelineId: { name: id, in: path, required: true, schema: { type: string }, description: パイプラインの ID }
+    RoomId: { name: id, in: path, required: true, schema: { type: string }, description: '部屋の ID（テナントをまたいで一意）' }
+    ConnectionId: { name: c, in: path, required: true, schema: { type: string }, description: '参加者の接続の ID（`connection_id`）' }
     SnapshotId: { name: sid, in: path, required: true, schema: { type: string }, description: 静止画の ID }
     Limit:
       name: limit
@@ -1716,6 +2142,12 @@ components:
       content:
         application/json:
           schema: { $ref: '#/components/schemas/Node' }
+    DeviceHealthAccepted:
+      description: '受け付けた'
+      headers: { X-Request-Id: { $ref: '#/components/headers/X-Request-Id' } }
+      content:
+        application/json:
+          schema: { $ref: '#/components/schemas/DeviceHealth' }
     BadRequest:
       description: |
         `INVALID_REQUEST`（本文・クエリ・ヘッダーの形）または `INVALID_CONFIG`（値の範囲・組み合わせ）
@@ -2377,7 +2809,7 @@ components:
     Node:
       type: object
       additionalProperties: false
-      required: [id, name, draining, registered_at, labels, live_streams, self]
+      required: [id, name, draining, registered_at, labels, live_streams, self, relay]
       properties:
         id: { type: string }
         name: { type: string }
@@ -2386,6 +2818,155 @@ components:
         labels: { type: object, additionalProperties: { type: string } }
         live_streams: { type: integer, minimum: 0, description: 配信中の stream 数（他ノードは今は 0） }
         self: { type: boolean, description: 応答したノード自身か }
+        relay:
+          description: 'ノード間の中継（ADR-0014）の様子。応答したノード自身（`self: true`）で、クラスタを組んでいるときだけ値がある（単一ノード・他ノードは null）。'
+          oneOf:
+            - { $ref: '#/components/schemas/RelayStatus' }
+            - { type: 'null' }
+    RelayStatus:
+      type: object
+      additionalProperties: false
+      required: [peers, mirrors]
+      properties:
+        peers:
+          type: array
+          description: '中継の接続（相手のノードごと）'
+          items:
+            type: object
+            additionalProperties: false
+            required: [node, rtt_ms, tx_bps, rx_bps, tx_bytes, rx_bytes, tx_aus, rx_aus, overhead_per_au, upstreams, downstreams, going_away]
+            properties:
+              node: { type: integer, minimum: 0, description: '相手のクラスタのノード番号（クラスタ設定の `peers[].id`。API のノード ID とは別）' }
+              rtt_ms: { type: [number, 'null'], description: 'RTT（平滑化、ミリ秒）。まだ測っていなければ null' }
+              tx_bps: { type: integer, minimum: 0, description: '直近の送りの速さ（bit/s）' }
+              rx_bps: { type: integer, minimum: 0, description: '直近の受けの速さ（bit/s）' }
+              tx_bytes: { type: integer, minimum: 0 }
+              rx_bytes: { type: integer, minimum: 0 }
+              tx_aus: { type: integer, minimum: 0, description: '送った AU の数' }
+              rx_aus: { type: integer, minimum: 0, description: '受けた AU の数' }
+              overhead_per_au: { type: number, minimum: 0, description: '送った AU 1 つ当たりの見出しのバイト数（枠の見出し・制御の枠を含む）' }
+              upstreams: { type: integer, minimum: 0, description: 'この接続で受けている stream の数' }
+              downstreams: { type: integer, minimum: 0, description: 'この接続で送っている stream の数' }
+              going_away: { type: boolean, description: 'どちらかが接続を閉じようとしている' }
+        mirrors: { type: array, items: { type: string }, description: '中継で受けている写しの stream の ID' }
+    Resources:
+      type: object
+      additionalProperties: false
+      required: [cpu_millis, memory_mb, net_in_mbps, net_out_mbps]
+      properties:
+        cpu_millis: { type: integer, minimum: 0, description: 'CPU（ミリコア）' }
+        memory_mb: { type: integer, minimum: 0 }
+        net_in_mbps: { type: integer, minimum: 0 }
+        net_out_mbps: { type: integer, minimum: 0 }
+    GridReason:
+      type: object
+      additionalProperties: false
+      required: [code]
+      description: '割り当て・決定の理由（`code` で種類を選ぶ。`node_down` は `node`、`device_down` は `device`、`preempted` は `by` を持つ）。'
+      properties:
+        code:
+          type: string
+          enum: [placed, no_capacity, node_down, device_down, draining, constraint_changed, preempted, overcommitted, capacity_returned, pin_returned, pin_target_down]
+          description: |
+            placed = 普通に置いた、no_capacity = 資源が足りず縮退した段で置いた・縮退した、node_down = ノードが止まった・消えた、device_down = 装置が故障した（手で止めたときも）、
+            draining = ノードの排出で移した、constraint_changed = 条件・ラベルが変わって合わなくなった、preempted = 高い優先度の仕事のために縮退・追い出しされた、
+            overcommitted = ノードの容量が減って収まらなくなった、capacity_returned = 資源が戻ったので元の段へ戻した、pin_returned = 手動の割り当ての対象が戻ったので戻した、
+            pin_target_down = 手動の割り当て（strict）の対象が止まっている。
+        node: { type: string }
+        device: { type: string }
+        by: { type: string, description: '追い出した仕事の ID' }
+    RejectCount:
+      type: object
+      additionalProperties: false
+      required: [reason, nodes, examples]
+      properties:
+        reason:
+          type: string
+          enum: [node_down, not_media, draining, pinned_elsewhere, pin_target_down, labels, anti_affinity, no_device, capture, cpu, memory, net_in, net_out, gpu_encode, gpu_decode, gpu_memory, contended]
+          description: 'ノードが仕事を受けられない理由（`contended` は単独なら収まるが、優先度の同じか高い仕事で埋まっている）'
+        nodes: { type: integer, minimum: 0, description: 'この理由で受けられないノードの数' }
+        examples: { type: array, maxItems: 8, items: { type: string }, description: 'そのノードの ID（8 個まで）' }
+    Grid:
+      type: object
+      additionalProperties: false
+      required: [scheduler, nodes, workloads]
+      properties:
+        scheduler: { type: [string, 'null'], description: '応答したノードが配置係（リーダー）ならその ID、違えば null' }
+        nodes:
+          type: array
+          items:
+            type: object
+            additionalProperties: false
+            required: [id, name, up, draining, roles, labels, capacity, reserved, gpus, capture, last_heartbeat, workloads]
+            properties:
+              id: { type: string }
+              name: { type: [string, 'null'], description: 'ノードの名前（`GET /nodes` に無ければ null）' }
+              up: { type: boolean, description: '心拍が届いている（5 秒途絶えると false）' }
+              draining: { type: boolean }
+              roles: { type: array, items: { type: string, enum: [control, media] }, description: 'control = Raft の投票者、media = 仕事を動かす（仕事は media にだけ置く）' }
+              labels: { type: object, additionalProperties: { type: string }, description: '`--label` の値と、予約のラベル `senca.io/name`（ノードの名前）' }
+              capacity: { $ref: '#/components/schemas/Resources', description: '仕事に貸せる分（`--capacity-cpu-millis`・`--capacity-memory-mb`・`--net-mbps`、既定は実機の 90%・85%・10000）' }
+              reserved: { $ref: '#/components/schemas/Resources', description: '割り当てた仕事の要求（今の段）の和' }
+              gpus:
+                type: array
+                items:
+                  type: object
+                  additionalProperties: false
+                  required: [id, vendor, healthy, enabled, encode_sessions, decode_sessions, encode_reserved, decode_reserved]
+                  properties:
+                    id: { type: string, description: '`{provider}:{装置の番号}`（例: `nvidia:0`）' }
+                    vendor: { type: string, description: '`nvidia`・`intel`・`amd`・`vaapi` など' }
+                    healthy: { type: boolean, description: '測った健康（心拍で変わる）' }
+                    enabled: { type: boolean, description: '運用者が手で止めていない（`disable`・`enable`）。仕事を置くのは healthy かつ enabled の装置だけ' }
+                    encode_sessions: { type: integer, minimum: 0 }
+                    decode_sessions: { type: integer, minimum: 0 }
+                    encode_reserved: { type: integer, minimum: 0 }
+                    decode_reserved: { type: integer, minimum: 0 }
+              capture:
+                type: array
+                items:
+                  type: object
+                  additionalProperties: false
+                  required: [id, kind, healthy]
+                  properties:
+                    id: { type: string, description: '機器の ID（`GET /devices` の `capture.devices[].id`、例: `synthetic:0`）' }
+                    kind: { type: string, description: '機器の種類（機器の一覧の `backend`、例: `synthetic`・`v4l2`）' }
+                    healthy: { type: boolean }
+                    disabled: { type: boolean, description: '運用者が手で止めた（止めたときだけ現れる）' }
+              last_heartbeat: { oneOf: [{ $ref: '#/components/schemas/Timestamp' }, { type: 'null' }], description: '最後の心拍（配置係のノードだけが知っている。違えば null）' }
+              workloads: { type: integer, minimum: 0, description: 'このノードに割り当てた仕事の数' }
+        workloads:
+          type: array
+          items:
+            type: object
+            additionalProperties: false
+            required: [id, kind, priority, pinned, state, node, device, level, level_label, reason, unschedulable]
+            properties:
+              id: { type: string, description: '資源から導いた仕事の ID（`input:{id}`・`output:{id}`・`pipeline:{id}`・`room:{id}`）' }
+              kind:
+                type: string
+                enum: [ingest, room, pipeline, recording, transcode, capture, relay, media_pipeline, egress]
+                description: '入力は `ingest`（`device` は `capture`）、出力は `egress`、パイプラインは `pipeline`、部屋は `room`'
+              priority: { $ref: '#/components/schemas/PlacementPriority' }
+              pinned: { type: boolean, description: '`placement.node`・`placement.device` で手動で割り当てた' }
+              state: { type: string, enum: [running, degraded, unschedulable, pending] }
+              node: { type: [string, 'null'] }
+              device: { type: [string, 'null'] }
+              level: { type: [integer, 'null'], minimum: 0, description: '今の縮退の段（0 = full）' }
+              level_label: { type: [string, 'null'] }
+              reason: { oneOf: [{ $ref: '#/components/schemas/GridReason' }, { type: 'null' }] }
+              unschedulable:
+                oneOf:
+                  - { type: array, items: { $ref: '#/components/schemas/RejectCount' } }
+                  - { type: 'null' }
+    DeviceHealth:
+      type: object
+      additionalProperties: false
+      required: [node, device, enabled]
+      properties:
+        node: { type: string, description: 'ノードの ID（名前で指定しても ID で返す）' }
+        device: { type: string }
+        enabled: { type: boolean, description: 'disable は false、enable は true' }
     NodeList:
       type: object
       additionalProperties: false
@@ -2482,6 +3063,114 @@ components:
         connects: { type: integer, minimum: 0, description: 接続に成功した回数 }
         since: { type: [string, 'null'], format: date-time, description: 今の state になった時刻 }
         bytes: { type: integer, minimum: 0, description: 送った・受けたバイト数（目安） }
+    PlacementPriority:
+      type: string
+      enum: [low, normal, high, critical]
+      description: '優先度（low < normal < high < critical）。資源が足りないとき、低い仕事から縮退・追い出しする。'
+    LabelSelector:
+      description: 'ノードのラベル（`--label`、予約の `senca.io/name`）の条件。`op` で種類を選ぶ。キー・値は 1〜128 文字で制御文字を含めない。'
+      oneOf:
+        - type: object
+          additionalProperties: false
+          required: [op, key, value]
+          properties:
+            op: { type: string, const: eq }
+            key: { type: string, minLength: 1, maxLength: 128 }
+            value: { type: string, minLength: 1, maxLength: 128 }
+        - type: object
+          additionalProperties: false
+          required: [op, key, values]
+          description: '`in` はキーの値が `values` のどれか。`not_in` はどれでもない（キーが無いノードも合う）。'
+          properties:
+            op: { type: string, enum: [in, not_in] }
+            key: { type: string, minLength: 1, maxLength: 128 }
+            values: { type: array, minItems: 1, maxItems: 32, items: { type: string, minLength: 1, maxLength: 128 } }
+    DegradeLevel:
+      type: object
+      additionalProperties: false
+      required: [label, disable]
+      properties:
+        label: { type: string, minLength: 1, maxLength: 128, description: '段の名前（例: `no_translation`・`audio_only`）。`full`（段 0 の名前）と重複は不可' }
+        disable:
+          type: array
+          minItems: 1
+          items: { $ref: '#/components/schemas/PipelineNodeId' }
+          description: 'この段で止めるグラフの部品の id（グラフに無ければ 400）。下流は入力がすべて止まれば止まる。段は積み重なる（段 2 は段 1 の分も止める）'
+    PlacementSpec:
+      type: object
+      additionalProperties: false
+      description: |
+        配置の指定（ADR-0013）。省略・null なら配置係に任せる（優先度 normal、spread）。検査の失敗は 400（`INVALID_CONFIG`、未知のフィールド・型の違いは `INVALID_REQUEST`）:
+        `node` が無い、文字列が空・128 文字超・制御文字を含む、`labels` が 17 個以上、`values` が空・33 個以上、`degrade` を入力・出力に書いた、
+        `degrade` が 9 段以上・段の名前が `full` か重複・`disable` が空・グラフに無い部品。
+      properties:
+        node:
+          type: [string, 'null']
+          description: '手動の割り当て。ノードの ID か名前（`GET /nodes`）。保存するときは ID に直す（応答は ID）'
+        device: { type: [string, 'null'], description: '手動の割り当て。装置の ID（GPU・キャプチャ機器、`GET /grid`）。`node` が無ければ、その装置を持つノードのどれか' }
+        labels: { type: array, maxItems: 16, items: { $ref: '#/components/schemas/LabelSelector' }, description: 'すべてに合うノードにだけ置く' }
+        anti_affinity: { type: [string, 'null'], description: '組の名前。同じ組の仕事は同じノードに置かない' }
+        pin_policy:
+          type: string
+          enum: [strict, prefer]
+          default: prefer
+          description: '手動の割り当て先が止まったとき。prefer = 他へ移し、戻ったら（冷却の後に）戻す、strict = 止めたまま（`placement_status.state: unschedulable`）'
+        priority: { $ref: '#/components/schemas/PlacementPriority', default: normal }
+        strategy: { type: string, enum: [spread, binpack], default: spread, description: 'spread = 余裕の多いノードへ、binpack = 詰める' }
+        degrade:
+          type: array
+          maxItems: 8
+          items: { $ref: '#/components/schemas/DegradeLevel' }
+          description: '縮退の段（**パイプラインだけ**、よい順）。資源が足りないとき、段を下げて（部品を止めて）動かし続ける。資源が戻れば元の段へ戻す'
+    PlacementSpecView:
+      type: object
+      additionalProperties: false
+      required: [pin_policy, priority, strategy]
+      description: '保存した配置の指定（`node` は ID に直したもの）。無い項目・空の配列は省く。`pin_policy`・`priority`・`strategy` は既定値でも出る。'
+      properties:
+        node: { type: string }
+        device: { type: string }
+        labels: { type: array, items: { $ref: '#/components/schemas/LabelSelector' } }
+        anti_affinity: { type: string }
+        pin_policy: { type: string, enum: [strict, prefer] }
+        priority: { $ref: '#/components/schemas/PlacementPriority' }
+        strategy: { type: string, enum: [spread, binpack] }
+        degrade: { type: array, items: { $ref: '#/components/schemas/DegradeLevel' } }
+    PlacementStatus:
+      description: |
+        配置の結果（グリッドの割り当て）。`state` で形が変わる:
+        - `not_scheduled`: 仕事になっていない（入力・出力の `enabled: false`、パイプラインの `desired_state: stopped`）。
+        - `running`・`degraded`: 割り当てた（`degraded` は縮退の段 `level` が 1 以上）。割り当てたノードだけが動かす（実際の実行の様子は `status`・`observed_state`）。
+        - `pending`: 置き場所を探している（作成・変更の直後。配置係は約 1 秒ごと、資源の変更のたびに計画する）。
+        - `unschedulable`: 置けるノードが無い（`reasons` に理由ごとのノード）。
+      oneOf:
+        - type: object
+          additionalProperties: false
+          required: [state]
+          properties:
+            state: { type: string, const: not_scheduled }
+        - type: object
+          additionalProperties: false
+          required: [state, node, node_name, device, level, level_label, since, reason]
+          properties:
+            state: { type: string, enum: [running, degraded] }
+            node: { type: string, description: '割り当てたノードの ID' }
+            node_name: { type: [string, 'null'], description: 'そのノードの名前' }
+            device: { type: [string, 'null'], description: '使う GPU の ID' }
+            level: { type: integer, minimum: 0, description: '今の縮退の段（0 = full、i は `placement.degrade[i-1]`）' }
+            level_label: { type: string, description: '段の名前（段 0 は `full`）' }
+            since: { $ref: '#/components/schemas/Timestamp', description: 'このノードに置いた時刻' }
+            reason: { $ref: '#/components/schemas/GridReason' }
+        - type: object
+          additionalProperties: false
+          required: [state, reasons]
+          properties:
+            state: { type: string, enum: [pending, unschedulable] }
+            reasons:
+              description: '置けない理由（`unschedulable` のとき。`pending` は null）'
+              oneOf:
+                - { type: array, items: { $ref: '#/components/schemas/RejectCount' } }
+                - { type: 'null' }
     InputCreate:
       type: object
       additionalProperties: false
@@ -2497,6 +3186,11 @@ components:
         credential_ref: { $ref: '#/components/schemas/CredentialRef' }
         enabled: { type: [boolean, 'null'], default: true }
         options: { $ref: '#/components/schemas/IoOptions' }
+        placement:
+          description: '配置の指定（`degrade` は使えない）'
+          oneOf:
+            - { $ref: '#/components/schemas/PlacementSpec' }
+            - { type: 'null' }
     OutputCreate:
       type: object
       additionalProperties: false
@@ -2514,10 +3208,15 @@ components:
           enum: [cloudflare_stream, aws_ivs, aws_medialive, null]
           description: '`paas` で必須（`credential_ref` も必須）'
         options: { $ref: '#/components/schemas/IoOptions' }
+        placement:
+          description: '配置の指定（`degrade` は使えない）。指定が無ければ、配信を受けたノードを好む'
+          oneOf:
+            - { $ref: '#/components/schemas/PlacementSpec' }
+            - { type: 'null' }
     IoPatch:
       type: object
       additionalProperties: false
-      description: '書いたフィールドだけ置き換える。`credential_ref: null` で参照を外す。他の null は「変えない」。'
+      description: '書いたフィールドだけ置き換える。`credential_ref: null` で参照を外す、`placement: null` で配置の指定を外す（配置係に任せる）。他の null は「変えない」。'
       properties:
         url: { type: [string, 'null'] }
         credential_ref: { $ref: '#/components/schemas/CredentialRef' }
@@ -2526,10 +3225,15 @@ components:
           oneOf:
             - { $ref: '#/components/schemas/IoOptions' }
             - { type: 'null' }
+        placement:
+          description: '配置の指定を丸ごと置き換える（部分の変更は無い。`degrade` は使えない）。null で外す'
+          oneOf:
+            - { $ref: '#/components/schemas/PlacementSpec' }
+            - { type: 'null' }
     Input:
       type: object
       additionalProperties: false
-      required: [id, stream, generation, protocol, url, credential_ref, enabled, options, created_at, status]
+      required: [id, stream, generation, protocol, url, credential_ref, enabled, options, created_at, status, placement, placement_status]
       properties:
         id: { type: string }
         stream: { type: string }
@@ -2541,10 +3245,16 @@ components:
         options: { type: object, additionalProperties: { type: string } }
         created_at: { $ref: '#/components/schemas/Timestamp' }
         status:
-          description: 'このノードでの実行の様子。`enabled: false`、または実行をまだ始めていなければ null。作成・PATCH の応答では、実行の作り直しが非同期なので前の実行のもの（または null）のことがある。'
+          description: 'このノードでの実行の様子。`enabled: false`、実行をまだ始めていない、またはこのノードに割り当てられていなければ null（分散のときは、割り当てたノード `placement_status.node` に問い合わせる）。作成・PATCH の応答では、実行の作り直しが非同期なので前の実行のもの（または null）のことがある。'
           oneOf:
             - { $ref: '#/components/schemas/IoStatus' }
             - { type: 'null' }
+        placement:
+          description: '配置の指定。指定が無ければ null'
+          oneOf:
+            - { $ref: '#/components/schemas/PlacementSpecView' }
+            - { type: 'null' }
+        placement_status: { $ref: '#/components/schemas/PlacementStatus' }
     InputList:
       type: object
       additionalProperties: false
@@ -2555,7 +3265,7 @@ components:
     Output:
       type: object
       additionalProperties: false
-      required: [id, stream, generation, protocol, url, credential_ref, enabled, provider, provider_resource, options, created_at, status]
+      required: [id, stream, generation, protocol, url, credential_ref, enabled, provider, provider_resource, options, created_at, status, placement, placement_status]
       properties:
         id: { type: string }
         stream: { type: string }
@@ -2569,10 +3279,16 @@ components:
         options: { type: object, additionalProperties: { type: string } }
         created_at: { $ref: '#/components/schemas/Timestamp' }
         status:
-          description: 'このノードでの実行の様子。`enabled: false`、または実行をまだ始めていなければ null。作成・PATCH の応答では、実行の作り直しが非同期なので前の実行のもの（または null）のことがある。'
+          description: 'このノードでの実行の様子。`enabled: false`、実行をまだ始めていない、またはこのノードに割り当てられていなければ null（分散のときは、割り当てたノード `placement_status.node` に問い合わせる）。作成・PATCH の応答では、実行の作り直しが非同期なので前の実行のもの（または null）のことがある。'
           oneOf:
             - { $ref: '#/components/schemas/IoStatus' }
             - { type: 'null' }
+        placement:
+          description: '配置の指定。指定が無ければ null'
+          oneOf:
+            - { $ref: '#/components/schemas/PlacementSpecView' }
+            - { type: 'null' }
+        placement_status: { $ref: '#/components/schemas/PlacementStatus' }
     OutputList:
       type: object
       additionalProperties: false
@@ -2739,14 +3455,24 @@ components:
         name: { $ref: '#/components/schemas/StreamName' }
         graph: { $ref: '#/components/schemas/PipelineGraph' }
         desired_state: { type: [string, 'null'], enum: [running, stopped, null], default: stopped }
+        placement:
+          description: '配置の指定と縮退の段'
+          oneOf:
+            - { $ref: '#/components/schemas/PlacementSpec' }
+            - { type: 'null' }
     PipelinePatch:
       type: object
       additionalProperties: false
-      description: 書いたフィールドだけ置き換える（null は「変えない」）。
+      description: '書いたフィールドだけ置き換える（null は「変えない」。ただし `placement: null` は配置の指定を外す）。'
       properties:
         name: { oneOf: [{ $ref: '#/components/schemas/StreamName' }, { type: 'null' }] }
         graph: { oneOf: [{ $ref: '#/components/schemas/PipelineGraph' }, { type: 'null' }] }
         desired_state: { type: [string, 'null'], enum: [running, stopped, null] }
+        placement:
+          description: '配置の指定を丸ごと置き換える（部分の変更は無い）。null で外す。書かなければ今の指定を新しい `graph` で検査し直す（縮退の段の `disable` が新しいグラフに無ければ 400）'
+          oneOf:
+            - { $ref: '#/components/schemas/PlacementSpec' }
+            - { type: 'null' }
     PipelineStatus:
       description: |
         パイプラインの直近の通知（senca-pipeline の `Event`、`event` で種類を選ぶ）。
@@ -2786,7 +3512,7 @@ components:
     Pipeline:
       type: object
       additionalProperties: false
-      required: [id, name, generation, graph, desired_state, created_at, updated_at, observed_state, last_error, plan, status, meters]
+      required: [id, name, generation, graph, desired_state, created_at, updated_at, observed_state, last_error, plan, status, meters, placement, placement_status]
       properties:
         id: { type: string }
         name: { type: string }
@@ -2817,6 +3543,12 @@ components:
           oneOf:
             - { $ref: '#/components/schemas/PipelineMeters' }
             - { type: 'null' }
+        placement:
+          description: '配置の指定。指定が無ければ null'
+          oneOf:
+            - { $ref: '#/components/schemas/PlacementSpecView' }
+            - { type: 'null' }
+        placement_status: { $ref: '#/components/schemas/PlacementStatus' }
     PipelineList:
       type: object
       additionalProperties: false
@@ -2919,6 +3651,281 @@ components:
         ok: { type: boolean, const: true }
         reply: { type: object, description: 操作の返事（今の操作では空のオブジェクト） }
 
+    RoomId:
+      type: string
+      minLength: 1
+      maxLength: 128
+      pattern: '^[A-Za-z0-9_.:@-]+$'
+      description: 部屋の ID（1〜128 文字の英数字と `-_.:@`、テナントをまたいで一意）
+    RoomMetadata:
+      description: '部屋・参加者の metadata（任意の JSON、JSON にして 8 KiB まで）。参加者の metadata は他の参加者に見える'
+    RoomSpotlight:
+      type: object
+      additionalProperties: false
+      required: [number]
+      description: スポットライト（話している人を注目し、注目の外の映像を下げる）。
+      properties:
+        number: { type: integer, minimum: 1, maximum: 16, description: 注目する話者の数（受け手は自分を除いてこの人数） }
+        unfocused: { type: string, enum: [lowest, off], default: lowest, description: 'lowest = 注目の外は一番低い層、off = 配らない（枠は `paused`）' }
+        focus_rid: { type: string, pattern: '^[A-Za-z0-9]{1,16}$', description: 注目した送り手の層（無ければ帯域で自動） }
+    ForwardingRule:
+      type: object
+      additionalProperties: false
+      required: [field, operator, values]
+      properties:
+        field:
+          type: string
+          description: '送り手の属性: `connection_id`・`client_id`・`bundle_id`・`kind`・`metadata.<key>`（key は 1〜64 文字。値が文字列・数・真偽のとき）'
+        operator: { type: string, enum: [is_in, is_not_in] }
+        values: { type: array, minItems: 1, maxItems: 100, items: { type: string, maxLength: 255 }, description: '`kind` なら `audio`・`video`' }
+    ForwardingFilter:
+      type: object
+      additionalProperties: false
+      required: [action, rules]
+      description: '転送フィルター（`docs/realtime/signaling.md` の 8 章）。`rules` は「AND の組」の OR。`block` は一致したものを配らない、`allow` は一致したものだけ配る。'
+      properties:
+        action: { type: string, enum: [block, allow] }
+        rules:
+          type: array
+          minItems: 1
+          maxItems: 10
+          items: { type: array, minItems: 1, maxItems: 10, items: { $ref: '#/components/schemas/ForwardingRule' } }
+    RoomSettings:
+      type: object
+      additionalProperties: false
+      description: |
+        部屋の設定。応答では既定値を埋めた全体を返す（`max_video_bitrate_kbps`・`spotlight`・`forwarding_filter` は無ければ省く）。
+        API で検査するのは形と `max_participants` だけ（範囲の他の制約は部屋の核が部屋を開くときに検査する。`POST /rooms` の説明）。
+      properties:
+        max_participants: { type: integer, minimum: 1, maximum: 10000, default: 50, description: 参加者の上限（ノードをまたぐ参加者も数える） }
+        e2ee: { type: boolean, default: false, description: 'E2EE（SFrame）の部屋。SFU は中身を見ずに配り、合成・合成の録画はできない' }
+        video_codec: { type: string, enum: [vp8, vp9, h264, av1], default: vp8, description: 部屋の映像のコーデック（SFU は変換しないので全員が同じ） }
+        audio_codec: { type: string, enum: [opus], default: opus }
+        max_video_bitrate_kbps: { type: [integer, 'null'], minimum: 50, maximum: 50000, description: 送り手に勧める映像の上限（kbit/s） }
+        spotlight:
+          oneOf:
+            - { $ref: '#/components/schemas/RoomSpotlight' }
+            - { type: 'null' }
+        recording: { type: string, enum: [none, per_participant, composite], default: none, description: '録画の方針（`composite` は `e2ee` と併用できない）' }
+        forwarding_filter:
+          description: 部屋全体の転送フィルター（購読者ごとのフィルターと両方を満たすものだけ配る）
+          oneOf:
+            - { $ref: '#/components/schemas/ForwardingFilter' }
+            - { type: 'null' }
+        data_labels:
+          type: array
+          maxItems: 32
+          default: ['#*']
+          items: { type: string, pattern: '^#', maxLength: 64 }
+          description: 使ってよい DataChannel のラベルの型（`#` で始まる。末尾の `*` は前方一致）
+        empty_timeout_secs: { type: integer, minimum: 0, default: 60, description: 誰もいなくなってから消すまでの秒数（参加トークンで自動に作った部屋だけ） }
+    RoomCreate:
+      type: object
+      additionalProperties: false
+      properties:
+        id: { $ref: '#/components/schemas/RoomId', description: 省けば作る（24 文字の 16 進） }
+        settings:
+          description: 部屋の設定（省略・null は既定値）
+          oneOf:
+            - { $ref: '#/components/schemas/RoomSettings' }
+            - { type: 'null' }
+        metadata: { $ref: '#/components/schemas/RoomMetadata' }
+        placement:
+          description: '配置の指定（`degrade` は使えない）'
+          oneOf:
+            - { $ref: '#/components/schemas/PlacementSpec' }
+            - { type: 'null' }
+    RoomPatch:
+      type: object
+      additionalProperties: false
+      description: '書いたフィールドだけ変える。`settings` は全体を置き換える。`settings`・`metadata` の null は「変えない」、`placement: null` は配置の指定を外す。'
+      properties:
+        settings:
+          oneOf:
+            - { $ref: '#/components/schemas/RoomSettings' }
+            - { type: 'null' }
+        metadata: { $ref: '#/components/schemas/RoomMetadata' }
+        placement:
+          description: '配置の指定を丸ごと置き換える（`degrade` は使えない）。null で外す'
+          oneOf:
+            - { $ref: '#/components/schemas/PlacementSpec' }
+            - { type: 'null' }
+    Room:
+      type: object
+      additionalProperties: false
+      required: [id, generation, settings, metadata, auto, created_at, updated_at, signaling_url, placement, placement_status]
+      properties:
+        id: { $ref: '#/components/schemas/RoomId' }
+        generation: { type: integer, minimum: 1 }
+        settings: { $ref: '#/components/schemas/RoomSettings' }
+        metadata: { $ref: '#/components/schemas/RoomMetadata' }
+        auto: { type: boolean, description: '参加トークンの発行で自動に作った部屋（誰もいないまま `empty_timeout_secs` 経つと消える）' }
+        created_at: { $ref: '#/components/schemas/Timestamp' }
+        updated_at: { $ref: '#/components/schemas/Timestamp' }
+        signaling_url:
+          type: [string, 'null']
+          pattern: '^wss?://.*/signaling$'
+          description: 'つなぐ先（`GET /signaling` の WebSocket）。部屋を別のノードに置いたらそのノードの URL。このノードの `--public-http-url` が無く、別のノードにも置いていなければ null'
+        placement:
+          description: 配置の指定。指定が無ければ null
+          oneOf:
+            - { $ref: '#/components/schemas/PlacementSpecView' }
+            - { type: 'null' }
+        placement_status: { $ref: '#/components/schemas/PlacementStatus' }
+    RoomList:
+      type: object
+      additionalProperties: false
+      required: [items, next_cursor]
+      properties:
+        items: { type: array, items: { $ref: '#/components/schemas/Room' } }
+        next_cursor: { type: [string, 'null'] }
+    RoomPermissions:
+      type: object
+      additionalProperties: false
+      description: 参加者に許すこと（省けばすべて）。
+      properties:
+        publish: { type: array, items: { type: string, enum: [audio, video] }, default: [audio, video], description: 送ってよいトラックの種類 }
+        subscribe: { type: boolean, default: true, description: 他の参加者のトラックを受けてよいか }
+        data: { type: array, items: { type: string }, default: ['#*'], description: '使ってよい DataChannel のラベルの型（`#*` で全部）' }
+    RoomTokenRequest:
+      type: object
+      additionalProperties: false
+      required: [role]
+      properties:
+        role: { type: string, enum: [sendrecv, sendonly, recvonly], description: '許す役割の上限（`sendrecv` のトークンはどの役割でも参加できる）' }
+        client_id: { type: [string, 'null'], minLength: 1, maxLength: 255, description: 'あれば `connect.client_id` はこれと同じでなければならない（転送フィルターの条件になる）' }
+        bundle_id: { type: [string, 'null'], minLength: 1, maxLength: 255, description: 同じ値の接続どうしは互いのトラックを受けない }
+        metadata: { $ref: '#/components/schemas/RoomMetadata', description: '参加者の metadata（他の参加者に見える）' }
+        permissions:
+          oneOf:
+            - { $ref: '#/components/schemas/RoomPermissions' }
+            - { type: 'null' }
+        ttl_secs: { type: [integer, 'null'], minimum: 10, maximum: 86400, default: 600, description: 有効期間（秒） }
+    RoomToken:
+      type: object
+      additionalProperties: false
+      required: [token, room_id, expires_at, signaling_url]
+      properties:
+        token: { type: [string, 'null'], description: '参加トークン（JWT）。Idempotency-Key の再送では null' }
+        token_redacted: { type: boolean, const: true, description: Idempotency-Key の再送で値を伏せたとき }
+        room_id: { $ref: '#/components/schemas/RoomId' }
+        expires_at: { $ref: '#/components/schemas/Timestamp' }
+        signaling_url: { type: [string, 'null'], pattern: '^wss?://.*/signaling$', description: '`Room.signaling_url` と同じ' }
+    RoomTrack:
+      type: object
+      additionalProperties: false
+      required: [track_id, connection_id, kind]
+      properties:
+        track_id: { type: string }
+        connection_id: { type: string, description: 送り手の接続 }
+        kind: { type: string, enum: [audio, video] }
+        rids: { type: array, items: { type: string }, description: サイマルキャストの層（低い順）。サイマルキャストでなければ省く }
+    RoomSlot:
+      type: object
+      additionalProperties: false
+      required: [mid, kind, state]
+      description: 受信の枠（クライアントの受ける m 行 1 つ）と、そこに今流しているトラック。
+      properties:
+        mid: { type: string }
+        kind: { type: string, enum: [audio, video] }
+        state: { type: string, enum: [empty, active, paused], description: 'active = 配っている、paused = 割り当てているが配っていない、empty = 空き' }
+        track_id: { type: string }
+        connection_id: { type: string }
+        client_id: { type: string }
+    Participant:
+      type: object
+      additionalProperties: false
+      required: [connection_id, bundle_id, role, metadata, tracks, peer_connected, signaling, subscriptions]
+      properties:
+        connection_id: { type: string }
+        client_id: { type: string, description: 無ければ省く }
+        bundle_id: { type: string }
+        role: { type: string, enum: [sendrecv, sendonly, recvonly] }
+        metadata: { $ref: '#/components/schemas/RoomMetadata' }
+        tracks: { type: array, items: { $ref: '#/components/schemas/RoomTrack' }, description: 送っているトラック }
+        node: { type: string, description: 他のノードにいる参加者（カスケード）のノード }
+        joined_at: { $ref: '#/components/schemas/Timestamp' }
+        peer_connected: { type: boolean, description: 'WebRTC（ICE・DTLS）がつながっているか（他のノードの参加者は true）' }
+        signaling: { type: string, enum: [websocket, datachannel, remote], description: 'シグナリングの経路（remote は他のノードの参加者）' }
+        subscriptions: { type: array, items: { $ref: '#/components/schemas/RoomSlot' }, description: 受信の枠（他のノードの参加者は空） }
+    ParticipantList:
+      type: object
+      additionalProperties: false
+      required: [items]
+      properties:
+        items: { type: array, items: { $ref: '#/components/schemas/Participant' } }
+        next_cursor: { type: [string, 'null'], description: '続きを読む `cursor`（続きがあるときだけ値、無ければ null）' }
+    ParticipantPatch:
+      type: object
+      additionalProperties: false
+      required: [metadata]
+      properties:
+        metadata: { $ref: '#/components/schemas/RoomMetadata' }
+    RoomMessage:
+      type: object
+      additionalProperties: false
+      required: [data]
+      properties:
+        to: { type: array, items: { type: string }, default: [], description: 送る相手の connection_id（空なら全員） }
+        label: { type: [string, 'null'], pattern: '^#', description: 'DataChannel のラベル（`#` で始まる）。無ければシグナリングの `push`' }
+        data: { description: '送るもの（JSON で 64 KiB まで）。`label` があれば文字列' }
+    RoomMessageResult:
+      type: object
+      additionalProperties: false
+      required: [delivered]
+      properties:
+        delivered: { type: integer, minimum: 0, description: 送った相手の数 }
+    RoomLayerStats:
+      type: object
+      additionalProperties: false
+      required: [rid, bitrate_bps]
+      properties:
+        rid: { type: [string, 'null'], description: 層（層の無いトラックは null） }
+        bitrate_bps: { type: [integer, 'null'], minimum: 0 }
+    RoomParticipantStats:
+      type: object
+      additionalProperties: false
+      required: [connection_id, rtt_ms, bandwidth_bps, send_bitrate_bps, retransmitted_packets, nack_requested, received_bytes, forwarded_bytes, forwarded_frames, published, subscriptions]
+      properties:
+        connection_id: { type: string }
+        rtt_ms: { type: integer, minimum: 0 }
+        bandwidth_bps: { type: integer, minimum: 0, description: 受け手への推定帯域 }
+        send_bitrate_bps: { type: integer, minimum: 0, description: この参加者へ送っている量 }
+        retransmitted_packets: { type: integer, minimum: 0 }
+        nack_requested: { type: integer, minimum: 0 }
+        received_bytes: { type: integer, minimum: 0 }
+        forwarded_bytes: { type: integer, minimum: 0 }
+        forwarded_frames: { type: integer, minimum: 0 }
+        published:
+          type: array
+          items:
+            type: object
+            additionalProperties: false
+            required: [track_id, kind, layers]
+            properties:
+              track_id: { type: string }
+              kind: { type: string, enum: [audio, video] }
+              layers: { type: array, items: { $ref: '#/components/schemas/RoomLayerStats' } }
+        subscriptions:
+          type: array
+          items:
+            type: object
+            additionalProperties: false
+            required: [mid, track_id, state, rid]
+            properties:
+              mid: { type: string }
+              track_id: { type: [string, 'null'] }
+              state: { type: string, enum: [empty, active, paused] }
+              rid: { type: [string, 'null'], description: '今配っている層（層の無いトラック・まだなら null）' }
+        client: { type: object, description: クライアントが送った getStats の要約（無ければ省く） }
+    RoomStats:
+      type: object
+      additionalProperties: false
+      required: [room_id, at, participants]
+      properties:
+        room_id: { $ref: '#/components/schemas/RoomId' }
+        at: { $ref: '#/components/schemas/Timestamp' }
+        participants: { type: array, items: { $ref: '#/components/schemas/RoomParticipantStats' }, description: '部屋を置いたノードにつないだ参加者' }
     SseEventData:
       type: object
       additionalProperties: false
@@ -2926,11 +3933,18 @@ components:
       properties:
         type:
           type: string
-          enum: [stream.created, stream.updated, stream.deleted, recording.updated, recording.deleted,
-                 schedule.created, schedule.updated, schedule.deleted, schedule.run, node.updated]
-        resource_id: { type: string }
+          enum: [stream.created, stream.updated, stream.deleted, stream.owner, recording.updated, recording.deleted,
+                 schedule.created, schedule.updated, schedule.deleted, schedule.run, node.updated,
+                 input.updated, input.deleted, output.updated, output.deleted, secret.created, secret.deleted,
+                 pipeline.updated, pipeline.deleted, room.updated, room.deleted,
+                 node.down, node.up, device.down, device.up, device.disabled, device.enabled, grid.decisions,
+                 room.started, room.stopped, room.connection.created, room.connection.updated, room.connection.destroyed,
+                 room.track.published, room.track.unpublished, room.spotlight.changed]
+        resource_id: { type: string, description: '資源の ID（部屋の出来事は部屋の ID、`grid.decisions` は空）' }
+        event_id: { type: string, description: '部屋の核の出来事の ID（部屋の核の出来事だけ。SSE の `id` は無い）' }
+        node: { type: string, description: '出来事を出したノードの ID（部屋の核の出来事だけ）' }
         occurred_at: { $ref: '#/components/schemas/Timestamp' }
-        data: { type: object, description: 種類ごとの中身（秘密は含まない） }
+        data: { type: object, description: '種類ごとの中身（秘密は含まない）。部屋の核の出来事は `{type, data}`' }
     ProblemCode:
       type: string
       enum: [INVALID_CONFIG, INVALID_REQUEST, UNSUPPORTED_PROTOCOL_VERSION, UNSUPPORTED_CODEC, UNSUPPORTED_MEDIA_TYPE,

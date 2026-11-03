@@ -47,6 +47,8 @@ pub async fn serve_sse<S: AsyncWrite + Unpin>(app: &Arc<App>, sock: &mut S, h: &
         let core = app.control.lock().unwrap();
         (core.applied_tx.subscribe(), core.state.applied_index)
     };
+    // 部屋の出来事（合意ログに載らない。event_id を持たないので Last-Event-ID の再開の対象外）
+    let mut room_rx = app.room_events.subscribe();
     let head = "HTTP/1.1 200 OK\r\nContent-Type: text/event-stream\r\nCache-Control: no-store\r\nConnection: close\r\n\r\n";
     if sock.write_all(head.as_bytes()).await.is_err() {
         return;
@@ -81,11 +83,50 @@ pub async fn serve_sse<S: AsyncWrite + Unpin>(app: &Arc<App>, sock: &mut S, h: &
                 }
                 Err(_) => return,
             },
+            r = room_rx.recv() => match r {
+                Ok(ev) => {
+                    if ev.tenant != p.tenant {
+                        continue;
+                    }
+                    let Some(ty) = room_event_name(&ev.envelope.event) else { continue };
+                    // RoomEvent は {type, data} の形。SSE の type は上の名前に、中身は data だけにする
+                    let body = serde_json::to_value(&ev.envelope.event).ok().and_then(|v| v.get("data").cloned()).unwrap_or_default();
+                    let data = json!({
+                        "type": ty, "resource_id": ev.envelope.room_id, "event_id": ev.envelope.id, "node": ev.envelope.node,
+                        "occurred_at": crate::util::rfc3339(ev.envelope.at), "data": body,
+                    })
+                    .to_string();
+                    let e = SseEvent { event: Some(ty), id: None, retry: None, data: &data };
+                    match e.encode() {
+                        Ok(b) => if sock.write_all(&b).await.is_err() { return },
+                        Err(_) => continue,
+                    }
+                }
+                // 部屋の出来事は保持しない: 取りこぼしは飛ばす
+                Err(tokio::sync::broadcast::error::RecvError::Lagged(_)) => continue,
+                Err(_) => return,
+            },
             _ = tokio::time::sleep(Duration::from_secs(15)) => {
                 if sock.write_all(&senca_http::sse::keepalive()).await.is_err() { return }
             }
         }
     }
+}
+
+/// 部屋の出来事の SSE の名前（設定の変更は制御のイベント `room.updated` が出すので、ここでは出さない）。
+fn room_event_name(e: &senca_rooms::RoomEvent) -> Option<&'static str> {
+    use senca_rooms::RoomEvent::*;
+    Some(match e {
+        RoomCreated { .. } => "room.started",
+        RoomUpdated { .. } => return None,
+        RoomDestroyed { .. } => "room.stopped",
+        ConnectionCreated { .. } => "room.connection.created",
+        ConnectionUpdated { .. } => "room.connection.updated",
+        ConnectionDestroyed { .. } => "room.connection.destroyed",
+        TrackPublished { .. } => "room.track.published",
+        TrackUnpublished { .. } => "room.track.unpublished",
+        SpotlightChanged { .. } => "room.spotlight.changed",
+    })
 }
 
 /// コマンド → (種類, テナント, 資源 ID, 中身)。秘密（鍵のハッシュなど）は出さない。
@@ -122,6 +163,19 @@ fn describe(c: &Command) -> Option<(&'static str, Option<String>, String, serde_
         Command::PutPipeline { pipeline: p, .. } => ("pipeline.updated", Some(p.tenant.clone()), p.id.clone(), json!({ "name": p.name, "desired_state": p.desired_state })),
         Command::DeletePipeline { tenant, id } => ("pipeline.deleted", Some(tenant.clone()), id.clone(), json!({})),
         Command::ClaimStream { stream, node, .. } => ("stream.owner", None, stream.clone(), json!({ "node": node })),
+        Command::PutRoom { room: r, .. } => ("room.updated", Some(r.tenant.clone()), r.id.clone(), json!({ "auto": r.auto })),
+        Command::DeleteRoom { tenant, id } => ("room.deleted", Some(tenant.clone()), id.clone(), json!({})),
+        // グリッド: 運用の権限だけに見せる（テナントの外）
+        Command::Grid { cmd } => match cmd {
+            senca_grid::GridCommand::NodeDown { node, .. } => ("node.down", None, node.clone(), json!({})),
+            senca_grid::GridCommand::NodeUp { node, .. } => ("node.up", None, node.clone(), json!({})),
+            senca_grid::GridCommand::DeviceDown { node, device } => ("device.down", None, node.clone(), json!({ "device": device })),
+            senca_grid::GridCommand::DeviceUp { node, device } => ("device.up", None, node.clone(), json!({ "device": device })),
+            senca_grid::GridCommand::DisableDevice { node, device } => ("device.disabled", None, node.clone(), json!({ "device": device })),
+            senca_grid::GridCommand::EnableDevice { node, device } => ("device.enabled", None, node.clone(), json!({ "device": device })),
+            senca_grid::GridCommand::ApplyDecisions { decisions, .. } => ("grid.decisions", None, String::new(), json!({ "decisions": decisions })),
+            _ => return None,
+        },
         _ => return None,
     })
 }

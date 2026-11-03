@@ -9,7 +9,9 @@
 
 pub mod io;
 pub mod pipelines;
+pub mod placement;
 pub mod recordings;
+pub mod rooms;
 pub mod schedules;
 pub mod streams;
 pub mod system;
@@ -395,6 +397,21 @@ fn route(ctx: &Ctx) -> ApiResult {
         ("POST", ["nodes", id, "drain"]) => system::drain(ctx, id, true),
         ("POST", ["nodes", id, "undrain"]) => system::drain(ctx, id, false),
         ("GET", ["devices"]) => system::devices(ctx),
+        ("GET", ["grid"]) => system::grid(ctx),
+        ("POST", ["rooms"]) => rooms::create(ctx),
+        ("GET", ["rooms"]) => rooms::list(ctx),
+        ("GET", ["rooms", id]) => rooms::get(ctx, id),
+        ("PATCH", ["rooms", id]) => rooms::patch(ctx, id),
+        ("DELETE", ["rooms", id]) => rooms::delete(ctx, id),
+        ("POST", ["rooms", id, "tokens"]) => rooms::issue_token(ctx, id),
+        ("GET", ["rooms", id, "participants"]) => rooms::participants(ctx, id),
+        ("GET", ["rooms", id, "participants", c]) => rooms::participant(ctx, id, c),
+        ("PATCH", ["rooms", id, "participants", c]) => rooms::update_participant(ctx, id, c),
+        ("DELETE", ["rooms", id, "participants", c]) => rooms::disconnect_participant(ctx, id, c),
+        ("POST", ["rooms", id, "messages"]) => rooms::post_message(ctx, id),
+        ("GET", ["rooms", id, "stats"]) => rooms::stats(ctx, id),
+        ("POST", ["nodes", id, "devices", dev, "disable"]) => system::device_health(ctx, id, dev, false),
+        ("POST", ["nodes", id, "devices", dev, "enable"]) => system::device_health(ctx, id, dev, true),
         ("GET", ["events"]) => system::events_unsupported(),
 
         ("POST", ["streams"]) => streams::create(ctx),
@@ -462,7 +479,9 @@ fn route(ctx: &Ctx) -> ApiResult {
             | ["inputs", ..]
             | ["outputs", ..]
             | ["secrets", ..]
-            | ["pipelines", ..],
+            | ["pipelines", ..]
+            | ["rooms", ..]
+            | ["grid"],
         ) => not_allowed(),
         _ => Err(Problem::not_found()),
     }

@@ -99,6 +99,11 @@ where
         let keep = h.keep_alive;
         let version = h.version;
         let head_only = h.method == Method::Head;
+        // 部屋のシグナリング（WebSocket に切り替える）
+        if h.method == Method::Get && h.path() == "/signaling" {
+            crate::rooms::serve_ws(app.clone(), sock, h, peer).await;
+            return;
+        }
         // SSE は長く開いたままにする
         if h.method == Method::Get && h.path() == "/api/v1/events" {
             crate::events::serve_sse(&app, &mut sock, &h).await;
@@ -201,12 +206,14 @@ async fn signed(app: &Arc<App>, rest: &str, h: &RequestHead) -> Reply {
     let cors = |r: Reply| r.header("Access-Control-Allow-Origin", "*");
     // 分散: データを持つノードへ案内する（仕事はデータのある所で。REQ-010 R10-9）
     // 中継があれば、手元に写しを作って配る（視聴者を案内しない。上流は stream ごとに 1 本）
+    let local_live = app.hubs.lock().unwrap().get(*id).is_some_and(|h| h.is_live());
     if *kind == "live"
         && let Some(r) = app.relay.get()
-        && (r.is_mirror(id) || app.live_cache(id).is_none())
+        && (r.is_mirror(id) || !local_live)
         && let Some(hub) = r.ensure_mirror(app, id)
     {
-        let deadline = tokio::time::Instant::now() + crate::relay::MIRROR_WARMUP;
+        // 作ったばかりの写しだけ、最初の再生リストを待つ（来ない配信で毎回待たせない）
+        let deadline = tokio::time::Instant::now() + r.warmup_left(id);
         while hub.shared.cache.playlist(false).is_none() && tokio::time::Instant::now() < deadline {
             tokio::time::sleep(std::time::Duration::from_millis(50)).await;
         }

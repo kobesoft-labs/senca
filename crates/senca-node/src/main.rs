@@ -25,6 +25,8 @@ mod plan;
 mod recorder;
 mod recovery;
 mod relay;
+mod grid;
+mod rooms;
 mod rtmp;
 mod rtsp_pull;
 mod rtsp_serve;
@@ -134,6 +136,7 @@ async fn run(cfg: Config) -> Result<(), String> {
         let nid = a.node_id.clone();
         tokio::task::spawn_blocking(move || cluster_bootstrap(&a, &cc, &nid));
     }
+    grid::start(&app);
     recovery::recover(&app);
     app.log(&format!("senca-node {} started (node {})", env!("CARGO_PKG_VERSION"), app.node_id));
 
@@ -228,6 +231,8 @@ async fn run(cfg: Config) -> Result<(), String> {
     }
     if let Some(addr) = cfg.webrtc_udp {
         let r = webrtc::start(app.clone(), addr).await?;
+        // 再起動の前から置かれている部屋を作る
+        r.room_cmd(rooms::RoomCmd::Reconcile);
         let _ = app.rtc.set(r);
     }
     tokio::spawn(scheduler::run(app.clone()));

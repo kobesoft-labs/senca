@@ -18,10 +18,11 @@ python3 "$CHECK" routes "$SPEC" "$ROOT/crates/senca-node/src/api" | tee /dev/std
 W=$(mktemp -d); NODE_PID=
 cleanup() { [ -n "$NODE_PID" ] && kill "$NODE_PID" 2>/dev/null || true; wait 2>/dev/null || true; [ -n "${KEEP:-}" ] && echo "kept $W" || rm -rf "$W"; }
 trap cleanup EXIT
-HTTP=$(port); RTMP=$(port)
+HTTP=$(port); RTMP=$(port); UDP=$(port)
 # パイプラインの検証・実行にコーデック worker を使う（ロイヤリティフリーのコーデック: dav1d・libvpx・SVT-AV1・Opus）
 CODEC_LIB_DIR=${CODEC_LIB_DIR:-$HOME/tools/codeclibs/usr/lib/x86_64-linux-gnu}
-"$NODE_BIN" --data-dir "$W/data" --http 127.0.0.1:$HTTP --rtmp 127.0.0.1:$RTMP \
+# 部屋の参加者・メッセージ・統計は部屋の核（WebRTC の駆動役）に問い合わせるので --webrtc-udp を付ける
+"$NODE_BIN" --data-dir "$W/data" --http 127.0.0.1:$HTTP --rtmp 127.0.0.1:$RTMP --webrtc-udp 127.0.0.1:$UDP \
   --public-rtmp-url rtmp://127.0.0.1:$RTMP --public-http-url http://127.0.0.1:$HTTP --reconnect-grace 1000 \
   --codec-lib-dir "$CODEC_LIB_DIR" --codec-workers 1 >>"$W/node.log" 2>&1 &
 NODE_PID=$!

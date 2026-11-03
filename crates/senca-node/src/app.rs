@@ -55,6 +55,10 @@ pub struct App {
     pub rtc: std::sync::OnceLock<Arc<crate::webrtc::Rtc>>,
     /// ノード間の中継（分散のとき）。
     pub relay: std::sync::OnceLock<Arc<crate::relay::Relay>>,
+    /// グリッド（資源の申告・心拍・配置。ADR-0013）。
+    pub grid: crate::grid::GridRuntime,
+    /// 部屋の出来事（SSE へ。合意ログに載せない）。
+    pub room_events: tokio::sync::broadcast::Sender<crate::rooms::RoomEventOut>,
 }
 
 impl App {
@@ -83,6 +87,8 @@ impl App {
             secret_box,
             cluster: std::sync::OnceLock::new(),
             relay: std::sync::OnceLock::new(),
+            grid: Default::default(),
+            room_events: tokio::sync::broadcast::channel(4096).0,
             io: crate::io::IoManager::default(),
             pipelines: crate::pipelines::PipelineManager::default(),
             captions_running: Mutex::new(HashMap::new()),
@@ -213,11 +219,18 @@ impl App {
         if !self.publish_allowed(&stream) {
             return Err(PublishError::Rejected("outside of the live schedule".into()));
         }
+        self.attach_stream(&stream, transport, peer).await
+    }
+
+    /// stream の送り手としてつなぐ（publish 鍵の経路と、入力の pull・キャプチャの経路に共通）。
+    /// 写しを止め、字幕・所有権の主張・自動録画を始める。
+    pub async fn attach_stream(&self, stream: &Stream, transport: &'static str, peer: &str) -> Result<Publisher, PublishError> {
+        let stream = stream.clone();
         // 写しがあれば止めて、本物の送り手に譲る
         if let Some(r) = self.relay.get()
             && r.is_mirror(&stream.id)
         {
-            r.stop_mirror(&stream.id).await;
+            r.stop_mirror(self, &stream.id).await;
         }
         let hub = self.hub(&stream);
         let p = hub.attach(transport, peer).await?;
@@ -657,8 +670,10 @@ impl App {
             loop {
                 match rx.recv().await {
                     Ok(a) => {
+                        // 写し（中継で受けている hub）は切らない: 写しは所有者の移動に中継の側で付いていく
                         if let Command::ClaimStream { stream, node, .. } = a.cmd.as_ref()
                             && *node != me.node_id
+                            && !me.relay.get().is_some_and(|r| r.is_mirror(stream))
                             && let Some(h) = me.hubs.lock().unwrap().get(stream)
                         {
                             h.evict();

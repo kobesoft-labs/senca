@@ -338,6 +338,9 @@ pub struct Input {
     #[serde(default)]
     pub options: BTreeMap<String, String>,
     pub created_at_ms: i64,
+    /// 配置の指定（ADR-0013）。無ければ配置係に任せる。
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub placement: Option<PlacementSpec>,
 }
 
 /// 出力（仕様 10.2 `POST /streams/{id}/outputs`）。外部への push と PaaS 連携（REQ-001）。
@@ -364,6 +367,9 @@ pub struct Output {
     #[serde(default)]
     pub options: BTreeMap<String, String>,
     pub created_at_ms: i64,
+    /// 配置の指定（ADR-0013）。
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub placement: Option<PlacementSpec>,
 }
 
 fn default_true() -> bool {
@@ -401,4 +407,163 @@ pub struct Pipeline {
     pub desired_state: String,
     pub created_at_ms: i64,
     pub updated_at_ms: i64,
+    /// 配置の指定と縮退の段（ADR-0013）。
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub placement: Option<PlacementSpec>,
+}
+
+/// リアルタイムの部屋（ADR-0015）。部屋の ID はテナントをまたいで一意（シグナリングの `room_id`）。
+/// 設定の中身は senca-rooms の `RoomSettings`（ノードが検査する）。部屋はグリッドの仕事として 1 つのノードに置く。
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct Room {
+    pub id: String,
+    pub tenant: String,
+    pub generation: u64,
+    #[serde(default)]
+    pub settings: serde_json::Value,
+    #[serde(default)]
+    pub metadata: serde_json::Value,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub placement: Option<PlacementSpec>,
+    /// 参加トークンの発行で自動に作った部屋（空いてしばらくすると消す）。
+    #[serde(default)]
+    pub auto: bool,
+    pub created_at_ms: i64,
+    pub updated_at_ms: i64,
+}
+
+/// 部屋のメディアパイプライン（ADR-0016、AWS Chime SDK Media Pipelines 相当）。部屋を置いたノードで動く。
+///
+/// - 書き出し（stream pipeline）: 参加者ごとに SENCA の stream を作り、送ってきた映像・音声をそのまま流す
+///   （再符号化しない）。以後は普通の stream と同じ（HLS・録画・出力・字幕）。
+/// - 合成（composite）: 参加者の stream を並べた 1 本の stream（senca-pipeline の合成で作る）。
+/// - 録画（capture）・送り出し（live connector）・文字起こし（insights）は、書き出した stream の録画・出力・字幕。
+/// - まとめ（concatenation）は録画の書き出し（`/recordings/{id}/export.mp4`・HLS）。
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct MediaPipeline {
+    pub id: String,
+    pub tenant: String,
+    pub generation: u64,
+    pub name: String,
+    pub room: String,
+    /// 書き出す参加者（client_id）。空なら全員。
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub participants: Vec<String>,
+    /// 参加者ごとの stream を残す（偽なら合成のためだけに使う）。
+    #[serde(default = "default_true")]
+    pub export_participants: bool,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub composite: Option<CompositeSpec>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub recording: Option<MediaPipelineRecording>,
+    /// 合成の送り出し（RTMP・SRT・PaaS。出力と同じ形）。
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub egress: Vec<MediaPipelineEgress>,
+    /// 文字起こし・翻訳（stream の `captions` と同じ形。参加者ごとの stream に付ける）。
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub captions: Option<serde_json::Value>,
+    /// "running" か "stopped"。
+    pub desired_state: String,
+    pub created_at_ms: i64,
+    pub updated_at_ms: i64,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct CompositeSpec {
+    /// "grid"（全員を並べる）か "speaker"（話している人を大きく）。
+    #[serde(default = "default_layout")]
+    pub layout: String,
+    #[serde(default = "default_width")]
+    pub width: u32,
+    #[serde(default = "default_height")]
+    pub height: u32,
+    #[serde(default = "default_fps")]
+    pub fps: u32,
+    /// "av1"・"vp9"・"vp8"・"h264"・"h265"（H.264/H.265 は GPU が要る）。
+    #[serde(default = "default_vcodec")]
+    pub video_codec: String,
+    #[serde(default = "default_bitrate")]
+    pub bitrate_kbps: u32,
+}
+
+fn default_layout() -> String {
+    "grid".into()
+}
+fn default_width() -> u32 {
+    1280
+}
+fn default_height() -> u32 {
+    720
+}
+fn default_fps() -> u32 {
+    30
+}
+fn default_vcodec() -> String {
+    "av1".into()
+}
+fn default_bitrate() -> u32 {
+    2500
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct MediaPipelineRecording {
+    #[serde(default = "default_true")]
+    pub participants: bool,
+    #[serde(default = "default_true")]
+    pub composite: bool,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub retention_days: Option<u32>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct MediaPipelineEgress {
+    /// "rtmp_push"・"srt_push"・"paas"
+    pub protocol: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub url: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub credential_ref: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub provider: Option<String>,
+    #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
+    pub options: BTreeMap<String, String>,
+}
+
+/// 配置の指定（入力・出力・パイプライン。ADR-0013）。手動の割り当て（ノード・GPU）、ラベル、反親和性、
+/// 優先度、縮退の段。
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct PlacementSpec {
+    /// ノードの ID（手動の割り当て）。
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub node: Option<String>,
+    /// 装置の ID（GPU・キャプチャ機器。手動の割り当て）。
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub device: Option<String>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub labels: Vec<senca_grid::LabelSelector>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub anti_affinity: Option<String>,
+    /// 割り当て先が止まったとき: `prefer`（他へ移し、戻ったら戻す）か `strict`（止めたまま）。
+    #[serde(default)]
+    pub pin_policy: senca_grid::PinPolicy,
+    #[serde(default)]
+    pub priority: senca_grid::Priority,
+    /// `spread`（余裕の多いノードへ）か `binpack`（詰める）。
+    #[serde(default)]
+    pub strategy: senca_grid::Placement,
+    /// 縮退の段（パイプラインだけ。よい順。段ごとに止める節点を足していく）。
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub degrade: Vec<DegradeLevel>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct DegradeLevel {
+    pub label: String,
+    /// この段で止める節点の ID（下流は入力がすべて止まれば止まる）。
+    pub disable: Vec<String>,
 }

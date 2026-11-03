@@ -278,7 +278,7 @@ fn shrunk_capacity_is_repaired() {
 fn capture_device_is_exclusive() {
     let mut g = Grid::new();
     let mut a = node("a", 8000, 8000);
-    a.capture = vec![CaptureDevice { id: "sdi0".into(), kind: "sdi".into(), healthy: true }];
+    a.capture = vec![CaptureDevice { id: "sdi0".into(), kind: "sdi".into(), healthy: true, disabled: false }];
     g.register(a);
     g.register(node("b", 8000, 8000));
     for (id, p) in [("cap1", Priority::Normal), ("cap2", Priority::High)] {
@@ -436,7 +436,45 @@ fn validation_errors() {
     assert!(s.apply(GridCommand::PutWorkload { workload: w }).is_err());
     let mut n = node("a", 1, 1);
     n.gpus = vec![gpu("d", "x", 1)];
-    n.capture = vec![CaptureDevice { id: "d".into(), kind: String::new(), healthy: true }];
+    n.capture = vec![CaptureDevice { id: "d".into(), kind: String::new(), healthy: true, disabled: false }];
     assert!(s.apply(GridCommand::RegisterNode { spec: n, now_ms: 0 }).is_err());
     assert_eq!(s, GridState::default());
+}
+
+/// 運用者が手で止めた装置: 仕事は別の装置へ移り、心拍の「健康」でも申告し直しでも戻らない。手で戻すと使える。
+#[test]
+fn admin_disabled_device_is_not_reenabled_by_heartbeats_or_reregistration() {
+    let mut g = Grid::new();
+    let mut a = node("a", 8000, 8000);
+    a.gpus = vec![gpu("g0", "nvidia", 4), gpu("g1", "nvidia", 4)];
+    g.register(a.clone());
+    let mut w = wl("enc", 100, 100, Priority::Normal);
+    w.requirements.gpu = Some(GpuReq { encode: 1, ..Default::default() });
+    w.constraints.device = Some("g0".into());
+    w.constraints.pin_policy = PinPolicy::Prefer;
+    g.put(w);
+    g.step();
+    assert_eq!(g.at("enc").unwrap().device.as_deref(), Some("g0"));
+    g.cmd(GridCommand::DisableDevice { node: "a".into(), device: "g0".into() });
+    g.step();
+    assert_eq!(g.at("enc").unwrap().device.as_deref(), Some("g1"), "moved off the disabled GPU");
+    // 心拍は健康と言う → 検出器は何もしない（健康は変わっていない）
+    let mut det = FailureDetector::new(5000, g.now);
+    det.heartbeat(Heartbeat { node: "a".into(), devices: vec![DeviceHealth { id: "g0".into(), healthy: true }], ..Default::default() }, g.now + 1000);
+    assert!(det.tick(&g.state, g.now + 1000).is_empty());
+    // 申告し直しても止めたまま
+    g.register(a);
+    assert!(g.state.nodes["a"].spec.gpus[0].disabled);
+    g.step();
+    assert_eq!(g.at("enc").unwrap().device.as_deref(), Some("g1"));
+    // 手で戻す → 冷却の後に（prefer の）割り当て先へ戻る
+    g.cmd(GridCommand::EnableDevice { node: "a".into(), device: "g0".into() });
+    assert!(!g.state.nodes["a"].spec.gpus[0].disabled);
+    g.advance(60_000);
+    g.step();
+    assert_eq!(g.at("enc").unwrap().device.as_deref(), Some("g0"));
+    assert!(matches!(
+        g.state.clone().apply(GridCommand::DisableDevice { node: "a".into(), device: "nope".into() }),
+        Err(GridError::UnknownDevice { .. })
+    ));
 }

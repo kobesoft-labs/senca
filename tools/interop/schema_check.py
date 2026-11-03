@@ -11,6 +11,7 @@
 jsonschema パッケージは使わない（下の小さな検証器: type・required・properties・additionalProperties・
 enum・const・items・oneOf/anyOf・$ref・pattern・min/max）。
 """
+import base64
 import http.client
 import json
 import os
@@ -285,6 +286,10 @@ def cmd_routes(spec_path, api_dir):
 
 # ---------------------------------------------------------------- 実地
 
+ROOM_CORE_EVENTS = {"room.started", "room.stopped", "room.connection.created", "room.connection.updated", "room.connection.destroyed",
+                    "room.track.published", "room.track.unpublished", "room.spotlight.changed"}
+
+
 class Live:
     def __init__(self, spec, base, token, rtmp, ffmpeg, src):
         self.spec = spec
@@ -454,6 +459,7 @@ class Live:
         self.captions()
         self.io(ro)
         self.pipelines(ro)
+        self.rooms(ro)
         self.events(sub_tok)
         self.methods()
         self.cleanup(sid, other, ro)
@@ -486,6 +492,44 @@ class Live:
         check(isinstance(n, dict) and n.get("draining") is False, "undrain で draining=false")
         self.call("POST", "/nodes/nosuch/drain", "drain 無い", 404)
         self.call("GET", "/devices", "devices", 200)
+        self.node_id = nid
+        items = nodes.get("items", []) if isinstance(nodes, dict) else []
+        self.node_name = items[0]["name"] if items else "x"
+        check(bool(items) and all(n.get("relay") is None for n in items), "単一ノードでは Node.relay は null")
+        self.grid()
+
+    def grid(self):
+        nid = self.node_id
+        # 起動直後はグリッドへの登録（RegisterNode）を待つ
+        g = None
+        for _ in range(100):
+            st, _, b = self.raw("GET", "/api/v1/grid")
+            j = json.loads(b) if st == 200 else {}
+            if any(n.get("id") == nid and n.get("up") for n in j.get("nodes", [])):
+                g = j
+                break
+            time.sleep(0.1)
+        s, _, g2 = self.call("GET", "/grid", "グリッド", 200)
+        check(g is not None, "ノードがグリッドに登録され up になる", f"{g2}")
+        me = next((n for n in (g2 or {}).get("nodes", []) if n.get("id") == nid), {}) if isinstance(g2, dict) else {}
+        check(isinstance(g2, dict) and g2.get("scheduler") == nid, "単一ノードでは自分が配置係", f"{g2.get('scheduler') if isinstance(g2, dict) else g2}")
+        check(me.get("name") == self.node_name and (me.get("labels") or {}).get("senca.io/name") == self.node_name
+              and "media" in me.get("roles", []), "グリッドのノードに名前・senca.io/name・media の役割", f"{me}")
+        check(me.get("last_heartbeat") is not None, "配置係は心拍の時刻を知っている")
+        self.call("GET", "/grid?x=1", "グリッド クエリ（読まない）", 200)
+        # 装置の停止・復帰: 無いノード・装置は 404
+        for op in ("disable", "enable"):
+            self.call("POST", f"/nodes/nosuch/devices/nvidia:0/{op}", f"装置 {op} 無いノード", 404)
+            self.call("POST", f"/nodes/{nid}/devices/nosuch:0/{op}", f"装置 {op} 無い装置", 404)
+        devs = [d["id"] for d in me.get("gpus", []) + me.get("capture", [])]
+        if devs:
+            dev = devs[0]
+            s, _, r = self.call("POST", f"/nodes/{nid}/devices/{dev}/disable", "装置の停止", 202)
+            check(r == {"node": nid, "device": dev, "enabled": False}, "装置の停止の応答", f"{r}")
+            s, _, r = self.call("POST", f"/nodes/{nid}/devices/{dev}/enable", "装置の復帰", 202)
+            check(r == {"node": nid, "device": dev, "enabled": True}, "装置の復帰の応答", f"{r}")
+        else:
+            print("SKIP 装置の停止・復帰の 202（このノードに GPU・キャプチャ機器が無い）")
 
     def tokens(self):
         s, h, t = self.call("POST", "/tokens", "token 発行 stream:read", 201, body={"name": "ro", "scopes": ["stream:read"]})
@@ -953,6 +997,7 @@ class Live:
         self.call("DELETE", f"/secrets/{sec_id}", "使っている秘密値は消せない", 409)
         s, h, p = self.call("PATCH", f"/inputs/{iid}", "入力 PATCH credential_ref: null", 200, headers={"If-Match": '"2"'}, body={"credential_ref": None})
         check(isinstance(p, dict) and p.get("credential_ref") is None, "credential_ref: null で参照を外す")
+        self.placement_io(sid, ro)
         # 上限（stream ごとに 4 つ）
         extra = []
         self.call("POST", f"/streams/{sid}/inputs", "入力 device の url の形", 400, body={"protocol": "device", "url": "v4l2:/dev/video0"})
@@ -1019,6 +1064,82 @@ class Live:
         self.call("DELETE", f"/secrets/{sec_id}", "参照が無くなった秘密値の削除", 204)
         self.raw("DELETE", f"/api/v1/streams/{sid}")
 
+    def wait_placement(self, path, states, secs=10):
+        """placement_status.state が states のどれかになるまで待つ（配置係は約 1 秒ごと）。"""
+        for _ in range(secs * 10):
+            st, _, b = self.raw("GET", f"/api/v1{path}")
+            if st == 200 and (json.loads(b).get("placement_status") or {}).get("state") in states:
+                return True
+            time.sleep(0.1)
+        return False
+
+    def placement_io(self, sid, ro):
+        """入力・出力の placement（ADR-0013）。"""
+        nid, name = self.node_id, self.node_name
+        self.call("GET", "/grid", "グリッド stream:read", 403, token=ro)
+        pl = {"node": name, "priority": "high", "strategy": "binpack",
+              "labels": [{"op": "eq", "key": "senca.io/name", "value": name}, {"op": "not_in", "key": "zone", "values": ["z9"]}]}
+        body = {"protocol": "rtmp_pull", "url": "rtmp://127.0.0.1:1/live/pl", "placement": pl}
+        s, h, inp = self.call("POST", f"/streams/{sid}/inputs", "入力の作成 placement（ノードの名前）", 201, body=body)
+        pid = inp["id"] if s == 201 else "x"
+        got = inp.get("placement") if isinstance(inp, dict) else None
+        check(isinstance(got, dict) and got.get("node") == nid and got.get("pin_policy") == "prefer" and got.get("priority") == "high"
+              and got.get("strategy") == "binpack" and len(got.get("labels", [])) == 2 and "degrade" not in got,
+              "placement.node は ID に直り、既定の pin_policy が付く", f"{got}")
+        ok_ = self.wait_placement(f"/inputs/{pid}", ("running", "degraded"))
+        s, _, g = self.call("GET", f"/inputs/{pid}", "入力の取得 placement_status", 200)
+        ps = (g.get("placement_status") or {}) if isinstance(g, dict) else {}
+        check(ok_ and ps.get("state") == "running" and ps.get("node") == nid and ps.get("node_name") == name
+              and ps.get("level") == 0 and ps.get("level_label") == "full" and (ps.get("reason") or {}).get("code") == "placed",
+              "placement_status は running で、指定したノードに置く", f"{ps}")
+        s, _, gr = self.call("GET", "/grid", "グリッド（入力の仕事）", 200)
+        w = next((x for x in (gr or {}).get("workloads", []) if x.get("id") == f"input:{pid}"), {}) if isinstance(gr, dict) else {}
+        check(w.get("kind") == "ingest" and w.get("pinned") is True and w.get("priority") == "high" and w.get("node") == nid,
+              "グリッドに input:{id} の仕事（ingest・pinned）", f"{w}")
+        # 不正な placement
+        for label, p_ in [("知らないノード", {"node": "nosuch-node"}),
+                          ("degrade は入力では使えない", {"degrade": [{"label": "x", "disable": ["a"]}]}),
+                          ("未知のフィールド", {"zone": "a"}),
+                          ("知らない priority", {"priority": "urgent"}),
+                          ("labels の values が空", {"labels": [{"op": "in", "key": "k", "values": []}]}),
+                          ("labels の知らない op", {"labels": [{"op": "exists", "key": "k"}]}),
+                          ("device が長すぎ", {"device": "d" * 129})]:
+            s, _, e = self.call("POST", f"/streams/{sid}/inputs", f"入力 placement {label}", 400, body=dict(body, placement=p_))
+        s, _, e = self.call("POST", f"/streams/{sid}/inputs", "入力 placement 知らないノードは INVALID_CONFIG", 400,
+                            body=dict(body, placement={"node": "nosuch-node"}))
+        check(isinstance(e, dict) and e.get("code") == "INVALID_CONFIG", "知らないノードは INVALID_CONFIG", f"{e}")
+        self.call("PATCH", f"/inputs/{pid}", "入力 PATCH placement 知らないノード", 400, headers={"If-Match": '"1"'}, body={"placement": {"node": "nosuch-node"}})
+        self.call("PATCH", f"/inputs/{pid}", "入力 PATCH placement degrade", 400, headers={"If-Match": '"1"'},
+                  body={"placement": {"degrade": [{"label": "x", "disable": ["a"]}]}})
+        s, h, p = self.call("PATCH", f"/inputs/{pid}", "入力 PATCH placement: null", 200, headers={"If-Match": '"1"'}, body={"placement": None})
+        check(isinstance(p, dict) and p.get("placement") is None and p.get("generation") == 2, "placement: null で指定を外す", f"{p.get('placement') if isinstance(p, dict) else p}")
+        self.wait_placement(f"/inputs/{pid}", ("running",))
+        s, _, g = self.call("GET", f"/inputs/{pid}", "入力の取得 指定を外した後", 200)
+        check(isinstance(g, dict) and g.get("placement") is None and (g.get("placement_status") or {}).get("state") == "running",
+              "指定を外しても配置係が置く", f"{g.get('placement_status') if isinstance(g, dict) else g}")
+        s, h, p = self.call("PATCH", f"/inputs/{pid}", "入力 PATCH placement（ID で指定）", 200, headers={"If-Match": '"2"'},
+                            body={"placement": {"node": nid, "pin_policy": "strict"}, "enabled": False})
+        check(isinstance(p, dict) and (p.get("placement") or {}).get("node") == nid and (p.get("placement") or {}).get("pin_policy") == "strict",
+              "placement.node は ID でも指定できる")
+        self.wait_placement(f"/inputs/{pid}", ("not_scheduled",))
+        s, _, g = self.call("GET", f"/inputs/{pid}", "無効にした入力の placement_status", 200)
+        check(isinstance(g, dict) and g.get("placement_status") == {"state": "not_scheduled"}, "無効にした入力は not_scheduled", f"{g.get('placement_status') if isinstance(g, dict) else g}")
+        self.call("DELETE", f"/inputs/{pid}", "入力の削除（placement）", 204)
+        # 出力
+        ob = {"protocol": "srt_push", "url": "srt://127.0.0.1:1", "placement": {"anti_affinity": "grp", "pin_policy": "strict", "priority": "low"}}
+        s, h, out = self.call("POST", f"/streams/{sid}/outputs", "出力の作成 placement", 201, body=ob)
+        oid = out["id"] if s == 201 else "x"
+        got = out.get("placement") if isinstance(out, dict) else None
+        check(got == {"anti_affinity": "grp", "pin_policy": "strict", "priority": "low", "strategy": "spread"}, "出力の placement（既定の strategy が付く）", f"{got}")
+        ok_ = self.wait_placement(f"/outputs/{oid}", ("running",))
+        s, _, g = self.call("GET", f"/outputs/{oid}", "出力の取得 placement_status", 200)
+        check(ok_ and (g.get("placement_status") or {}).get("node") == nid, "出力も配置される", f"{g.get('placement_status') if isinstance(g, dict) else g}")
+        self.call("POST", f"/streams/{sid}/outputs", "出力 placement degrade", 400, body=dict(ob, placement={"degrade": [{"label": "x", "disable": ["a"]}]}))
+        self.call("POST", f"/streams/{sid}/outputs", "出力 placement 知らないノード", 400, body=dict(ob, placement={"node": "nosuch-node"}))
+        s, h, p = self.call("PATCH", f"/outputs/{oid}", "出力 PATCH placement: null", 200, headers={"If-Match": '"1"'}, body={"placement": None})
+        check(isinstance(p, dict) and p.get("placement") is None, "出力の placement: null で指定を外す")
+        self.call("DELETE", f"/outputs/{oid}", "出力の削除（placement）", 204)
+
     def graph(self, src, dst, vcodec="vp9", enc="av1"):
         return {"version": 1, "options": {"status_interval_ms": 200}, "nodes": [
             {"type": "source", "id": "cam", "stream": src,
@@ -1029,6 +1150,42 @@ class Live:
             {"type": "encode", "id": "e", "input": "s", "codec": enc, "bitrate_kbps": 500},
             {"type": "sink", "id": "o", "inputs": ["e", "cam.audio"], "stream": dst},
         ]}
+
+    def placement_pipeline(self, g, ro):
+        """パイプラインの placement と縮退の段（ADR-0013）。"""
+        deg = [{"label": "no_video", "disable": ["e"]}, {"label": "audio_only", "disable": ["d"]}]
+        pl = {"node": self.node_name, "priority": "critical", "degrade": deg}
+        s, h, p = self.call("POST", "/pipelines", "パイプラインの作成 placement と縮退の段", 201, body={"name": "pl-deg", "graph": g, "placement": pl})
+        if s != 201:
+            return
+        pid = p["id"]
+        got = p.get("placement") or {}
+        check(got.get("node") == self.node_id and got.get("degrade") == deg and got.get("priority") == "critical",
+              "パイプラインの placement（縮退の段、node は ID に直る）", f"{got}")
+        check(p.get("placement_status") == {"state": "not_scheduled"}, "stopped のパイプラインは not_scheduled", f"{p.get('placement_status')}")
+        for label, d in [("知らない部品", [{"label": "x", "disable": ["nosuch"]}]),
+                         ("段の名前 full", [{"label": "full", "disable": ["e"]}]),
+                         ("段の名前の重複", [{"label": "x", "disable": ["e"]}, {"label": "x", "disable": ["d"]}]),
+                         ("disable が空", [{"label": "x", "disable": []}]),
+                         ("段が多すぎ", [{"label": f"l{i}", "disable": ["e"]} for i in range(9)]),
+                         ("段の未知のフィールド", [{"label": "x", "disable": ["e"], "y": 1}])]:
+            self.call("POST", "/pipelines", f"パイプライン 縮退の段 {label}", 400, body={"name": "pl-deg2", "graph": g, "placement": {"degrade": d}})
+        self.call("POST", "/pipelines", "パイプライン placement 知らないノード", 400, body={"name": "pl-deg2", "graph": g, "placement": {"node": "nosuch-node"}})
+        # 縮退の段が止める部品をグラフから消すと 400（placement を書かなくても検査し直す）
+        g2 = json.loads(json.dumps(g))
+        for n in g2["nodes"]:
+            if n["id"] == "e":
+                n["id"] = "e2"
+            if n["id"] == "o":
+                n["inputs"] = ["e2", "cam.audio"]
+        s, _, e = self.call("PATCH", f"/pipelines/{pid}", "パイプライン PATCH 縮退の段が消えた部品を指す", 400, headers={"If-Match": '"1"'}, body={"graph": g2})
+        check(isinstance(e, dict) and "縮退の段" in (e.get("title") or ""), "グラフだけの変更でも縮退の段を検査し直す", f"{e}")
+        s, h, p = self.call("PATCH", f"/pipelines/{pid}", "パイプライン PATCH placement: null", 200, headers={"If-Match": '"1"'}, body={"placement": None})
+        check(isinstance(p, dict) and p.get("placement") is None, "パイプラインの placement: null で指定を外す")
+        s, h, p = self.call("PATCH", f"/pipelines/{pid}", "パイプライン PATCH placement", 200, headers={"If-Match": '"2"'},
+                            body={"placement": {"degrade": deg[:1], "anti_affinity": "pl"}})
+        check(isinstance(p, dict) and (p.get("placement") or {}).get("degrade") == deg[:1], "パイプラインの placement を置き換える")
+        self.call("DELETE", f"/pipelines/{pid}", "パイプラインの削除（placement）", 204)
 
     def pipelines(self, ro):
         rf = {"codec_profile": "royalty_free", "hls": {"container": "fmp4"}}
@@ -1064,6 +1221,7 @@ class Live:
         self.call("POST", "/pipelines", "パイプライン 未知のフィールド", 400, body={"name": "pl2", "graph": g, "x": 1})
         self.call("POST", "/pipelines", "パイプライン Content-Type 違い", 415, body=b"{}", headers={"Content-Type": "text/plain"})
         self.call("POST", "/pipelines", "パイプライン stream:read では作れない", 403, token=ro, body={"name": "pl2", "graph": g})
+        self.placement_pipeline(g, ro)
         # H.264 は装置（ハードウェア）が無ければ 503
         self.call("POST", "/pipelines", "パイプライン H.264（装置が無ければ 503）", [201, 503],
                   body={"name": "pl-h264", "graph": self.graph(anyp, anyp, "h264", "h264")})
@@ -1118,6 +1276,8 @@ class Live:
         check(running is not None, "パイプラインが running になり status が出る", f"{g2.get('observed_state') if isinstance(g2, dict) else g2} {g2.get('last_error') if isinstance(g2, dict) else ''}")
         if running is not None:
             check(isinstance(g2.get("plan"), dict) and isinstance(g2.get("meters"), dict), "動いていれば plan と meters がある")
+            ps = g2.get("placement_status") or {}
+            check(ps.get("state") in ("running", "degraded") and ps.get("node") == self.node_id, "動いているパイプラインは自ノードに割り当てられている", f"{ps}")
             for _ in range(30):
                 st, _, b = self.raw("GET", f"/api/v1/pipelines/{pid}")
                 if (json.loads(b).get("status") or {}).get("event") == "status":
@@ -1144,6 +1304,198 @@ class Live:
         for x in (src, dst, anyp):
             self.raw("DELETE", f"/api/v1/streams/{x}")
 
+    def wait_room_live(self, rid, secs=10):
+        """部屋の核が部屋を開くまで待つ（置き場所の決定と部屋の核への反映は非同期）。"""
+        for _ in range(secs * 10):
+            st, _, _ = self.raw("GET", f"/api/v1/rooms/{rid}/stats")
+            if st == 200:
+                return True
+            time.sleep(0.1)
+        return False
+
+    @staticmethod
+    def jwt_claims(tok):
+        try:
+            p = tok.split(".")[1]
+            return json.loads(base64.urlsafe_b64decode(p + "=" * (-len(p) % 4)))
+        except (ValueError, IndexError, AttributeError):
+            return {}
+
+    def rooms(self, ro):
+        """リアルタイムの部屋（ADR-0015）。部屋そのもの・参加トークン・部屋の核（参加者・メッセージ・統計）。"""
+        nid, name = self.node_id, self.node_name
+        ws = "ws://" + self.http_base.split("://", 1)[1] + "/signaling"
+        rid = "oa-room-1"
+        # ---- 作成
+        body = {"id": rid, "settings": {"max_participants": 8, "video_codec": "vp9", "spotlight": {"number": 2}},
+                "metadata": {"topic": "t", "n": 1}, "placement": {"node": name}}
+        s, h, r = self.call("POST", "/rooms", "部屋の作成（ID あり、placement はノードの名前）", 201, body=body)
+        if s != 201:
+            return
+        check(h.get("location") == f"/api/v1/rooms/{rid}" and h.get("etag") == '"1"' and r.get("generation") == 1,
+              "部屋の Location・ETag", f"{h.get('location')} {h.get('etag')}")
+        st = r.get("settings") or {}
+        check(st.get("max_participants") == 8 and st.get("video_codec") == "vp9" and st.get("audio_codec") == "opus"
+              and st.get("e2ee") is False and st.get("recording") == "none" and st.get("data_labels") == ["#*"]
+              and st.get("empty_timeout_secs") == 60 and st.get("spotlight") == {"number": 2, "unfocused": "lowest"},
+              "部屋の設定は既定値を埋めて返す", f"{st}")
+        check(r.get("auto") is False and r.get("metadata") == {"topic": "t", "n": 1}, "部屋の auto・metadata")
+        check((r.get("placement") or {}).get("node") == nid, "部屋の placement.node は ID に直る", f"{r.get('placement')}")
+        check(r.get("signaling_url") == ws, "部屋の signaling_url は --public-http-url の ws:// + /signaling", f"{r.get('signaling_url')}")
+        s, h, r2 = self.call("POST", "/rooms", "部屋の作成（ID なし）", 201, body={})
+        rid2 = r2.get("id", "") if isinstance(r2, dict) else ""
+        check(re.fullmatch(r"[0-9a-f]{24}", rid2) is not None and r2.get("metadata") is None and r2.get("placement") is None
+              and (r2.get("settings") or {}).get("max_participants") == 50, "ID を省くと 24 文字の 16 進、設定は既定", f"{r2}")
+        s, h, r3 = self.call("POST", "/rooms", "部屋の作成（Idempotency 1 回目）", 201,
+                             headers={"Idempotency-Key": "room-1"}, body={"id": "oa-room-3", "metadata": None})
+        s, h, r3b = self.call("POST", "/rooms", "部屋の作成（Idempotency 再送）", 201,
+                              headers={"Idempotency-Key": "room-1"}, body={"id": "oa-room-3", "metadata": None})
+        check(h.get("idempotency-replayed") == "true" and r3b == r3, "部屋の作成の再送は同じ答え")
+        for label, b in [
+            ("id の形", {"id": "a/b"}), ("id が 129 文字", {"id": "x" * 129}), ("id が空", {"id": ""}),
+            ("max_participants 0", {"settings": {"max_participants": 0}}),
+            ("max_participants 10001", {"settings": {"max_participants": 10001}}),
+            ("知らない設定", {"settings": {"bogus": 1}}), ("video_codec h265", {"settings": {"video_codec": "h265"}}),
+            ("spotlight の知らないフィールド", {"settings": {"spotlight": {"number": 1, "x": 1}}}),
+            ("metadata が 8 KiB 超", {"metadata": {"x": "a" * 9000}}),
+            ("placement degrade", {"placement": {"degrade": [{"label": "x", "disable": ["a"]}]}}),
+            ("placement 知らないノード", {"placement": {"node": "nosuch-node"}}),
+            ("知らないフィールド", {"bogus": 1}),
+        ]:
+            self.call("POST", "/rooms", f"部屋の作成 {label}", 400, body=b)
+        self.call("POST", "/rooms", "部屋の作成 Content-Type", 415, body="{}", headers={"Content-Type": "text/plain"})
+        s, _, e = self.call("POST", "/rooms", "部屋の作成 ID の重複", 409, body={"id": rid})
+        check(isinstance(e, dict) and e.get("code") == "CONFLICT", "ID の重複は CONFLICT")
+        self.call("POST", "/rooms", "部屋の作成 stream:read", 403, token=ro, body={})
+        # ---- 一覧
+        s, _, lst = self.call("GET", "/rooms?limit=1", "部屋の一覧 1 件", 200)
+        check(isinstance(lst, dict) and len(lst.get("items", [])) == 1 and lst.get("next_cursor"), "部屋の一覧 next_cursor", f"{lst}")
+        seen = [x["id"] for x in lst.get("items", [])] if isinstance(lst, dict) else []
+        cur = lst.get("next_cursor") if isinstance(lst, dict) else None
+        while cur:
+            s, _, l2 = self.call("GET", f"/rooms?limit=1&cursor={urllib.parse.quote(cur)}", "部屋の一覧 次のページ", 200)
+            if s != 200:
+                break
+            seen += [x["id"] for x in l2.get("items", [])]
+            cur = l2.get("next_cursor")
+        check(seen == sorted(seen) and {rid, rid2, "oa-room-3"} <= set(seen), "部屋の一覧は ID の昇順で全部たどれる", f"{seen}")
+        self.call("GET", "/rooms?limit=0", "部屋の一覧 limit=0", 400)
+        self.call("GET", "/rooms?bogus=1", "部屋の一覧 知らないクエリ", 400)
+        self.call("GET", "/rooms", "部屋の一覧 stream:read", 200, token=ro)
+        # ---- 取得
+        s, h, g = self.call("GET", f"/rooms/{rid}", "部屋の取得", 200)
+        drop = lambda x: {k: v for k, v in x.items() if k != "placement_status"} if isinstance(x, dict) else x  # noqa: E731
+        check(h.get("etag") == '"1"' and drop(g) == drop(r), "部屋の取得は作成の応答と同じ（ETag \"1\"、配置の結果は変わりうる）", f"{h.get('etag')} {g}")
+        self.call("GET", "/rooms/nosuch-room", "部屋の取得 無い", 404)
+        ok_ = self.wait_placement(f"/rooms/{rid}", ("running",))
+        s, _, g = self.call("GET", f"/rooms/{rid}", "部屋の取得 placement_status", 200)
+        ps = (g.get("placement_status") or {}) if isinstance(g, dict) else {}
+        check(ok_ and ps.get("node") == nid and ps.get("node_name") == name, "部屋は指定したノードに置かれる", f"{ps}")
+        # ---- 更新
+        self.call("PATCH", f"/rooms/{rid}", "部屋の更新 If-Match なし", 428, body={"metadata": {}})
+        self.call("PATCH", f"/rooms/{rid}", "部屋の更新 古い If-Match", 412, headers={"If-Match": '"9"'}, body={"metadata": {}})
+        self.call("PATCH", f"/rooms/{rid}", "部屋の更新 If-Match の形", 412, headers={"If-Match": "1"}, body={"metadata": {}})
+        self.call("PATCH", "/rooms/nosuch-room", "部屋の更新 無い", 404, headers={"If-Match": '"1"'}, body={"metadata": {}})
+        self.call("PATCH", f"/rooms/{rid}", "部屋の更新 知らないフィールド", 400, headers={"If-Match": '"1"'}, body={"bogus": 1})
+        self.call("PATCH", f"/rooms/{rid}", "部屋の更新 max_participants 0", 400, headers={"If-Match": '"1"'},
+                  body={"settings": {"max_participants": 0}})
+        self.call("PATCH", f"/rooms/{rid}", "部屋の更新 placement degrade", 400, headers={"If-Match": '"1"'},
+                  body={"placement": {"degrade": [{"label": "x", "disable": ["a"]}]}})
+        self.call("PATCH", f"/rooms/{rid}", "部屋の更新 stream:read", 403, token=ro, headers={"If-Match": '"1"'}, body={"metadata": {}})
+        s, h, p = self.call("PATCH", f"/rooms/{rid}", "部屋の更新（設定を置き換え・metadata）", 200, headers={"If-Match": '"1"'},
+                            body={"settings": {"max_participants": 4, "video_codec": "vp9"}, "metadata": {"topic": "u"}})
+        pst = (p.get("settings") or {}) if isinstance(p, dict) else {}
+        check(h.get("etag") == '"2"' and p.get("generation") == 2 and pst.get("max_participants") == 4 and "spotlight" not in pst
+              and p.get("metadata") == {"topic": "u"} and (p.get("placement") or {}).get("node") == nid,
+              "部屋の更新: settings は全体を置き換え、placement は残る", f"{p}")
+        s, h, p = self.call("PATCH", f"/rooms/{rid}", "部屋の更新 placement: null・settings: null", 200, headers={"If-Match": '"2"'},
+                            body={"placement": None, "settings": None, "metadata": None})
+        check(isinstance(p, dict) and p.get("placement") is None and p.get("generation") == 3 and (p.get("settings") or {}).get("max_participants") == 4
+              and p.get("metadata") == {"topic": "u"}, "placement: null で指定を外す（settings・metadata の null は変えない）", f"{p}")
+        # ---- 参加トークン
+        auto = "oa-auto-1"
+        self.call("GET", f"/rooms/{auto}", "自動の部屋（作る前）", 404)
+        s, _, t = self.call("POST", f"/rooms/{auto}/tokens", "参加トークン（無い部屋は自動で作る）", 201,
+                            body={"role": "sendrecv", "client_id": "alice", "metadata": {"name": "Alice"}, "permissions": {"publish": ["audio"]}})
+        if isinstance(t, dict):
+            c = self.jwt_claims(t.get("token"))
+            check(t.get("room_id") == auto and t.get("signaling_url") == ws and str(t.get("token", "")).count(".") == 2,
+                  "参加トークンの応答（room_id・signaling_url・JWT）", f"{t}")
+            check(c.get("room") == auto and c.get("role") == "sendrecv" and c.get("client_id") == "alice" and c.get("iss") == "senca"
+                  and c.get("aud") == "senca-rooms" and c.get("exp", 0) - c.get("iat", 0) == 600
+                  and c.get("permissions", {}).get("publish") == ["audio"], "参加トークンの claim（既定の ttl は 600 秒）", f"{c}")
+        s, _, a = self.call("GET", f"/rooms/{auto}", "自動に作った部屋", 200)
+        check(isinstance(a, dict) and a.get("auto") is True and a.get("generation") == 1, "トークンの発行で部屋が auto: true で作られる", f"{a}")
+        s, _, t2 = self.call("POST", f"/rooms/{rid}/tokens", "参加トークン（ある部屋、ttl 10）", 201, body={"role": "recvonly", "ttl_secs": 10})
+        c2 = self.jwt_claims(t2.get("token")) if isinstance(t2, dict) else {}
+        check(c2.get("exp", 0) - c2.get("iat", 0) == 10 and c2.get("client_id") is None and c2.get("role") == "recvonly", "ttl_secs が exp に入る", f"{c2}")
+        s, _, g = self.call("GET", f"/rooms/{rid}", "トークンの発行で部屋は変わらない", 200)
+        check(isinstance(g, dict) and g.get("generation") == 3 and g.get("auto") is False, "ある部屋のトークンでは部屋を作り直さない")
+        for label, b in [
+            ("ttl_secs 9", {"role": "sendrecv", "ttl_secs": 9}), ("ttl_secs 86401", {"role": "sendrecv", "ttl_secs": 86401}),
+            ("ttl_secs が負", {"role": "sendrecv", "ttl_secs": -1}),
+            ("client_id が 256 文字", {"role": "sendrecv", "client_id": "c" * 256}), ("bundle_id が空", {"role": "sendrecv", "bundle_id": ""}),
+            ("client_id に制御文字", {"role": "sendrecv", "client_id": "a\nb"}),
+            ("metadata が 8 KiB 超", {"role": "sendrecv", "metadata": {"x": "a" * 9000}}),
+            ("role が無い", {}), ("role が違う", {"role": "admin"}),
+            ("permissions の知らないフィールド", {"role": "sendrecv", "permissions": {"x": 1}}),
+            ("知らないフィールド", {"role": "sendrecv", "room": "x"}),
+        ]:
+            self.call("POST", f"/rooms/{rid}/tokens", f"参加トークン {label}", 400, body=b)
+        self.call("POST", "/rooms/bad!id/tokens", "参加トークン 部屋の ID の形", 404, body={"role": "sendrecv"})
+        self.call("GET", "/rooms/bad!id", "自動で作らない（ID の形が違う）", 404)
+        self.call("POST", f"/rooms/{rid}/tokens", "参加トークン stream:read", 403, token=ro, body={"role": "sendrecv"})
+        s, h, i1 = self.call("POST", f"/rooms/{rid}/tokens", "参加トークン Idempotency 1 回目", 201,
+                             headers={"Idempotency-Key": "rtok-1"}, body={"role": "sendonly"})
+        s, h, i2 = self.call("POST", f"/rooms/{rid}/tokens", "参加トークン Idempotency 再送", 201,
+                             headers={"Idempotency-Key": "rtok-1"}, body={"role": "sendonly"})
+        check(h.get("idempotency-replayed") == "true" and isinstance(i2, dict) and i2.get("token") is None and i2.get("token_redacted") is True
+              and i2.get("expires_at") == (i1 or {}).get("expires_at"), "参加トークンの再送は値を伏せる", f"{i2}")
+        # ---- 部屋の核（参加者・メッセージ・統計）
+        live = self.wait_room_live(rid)
+        check(live, "部屋の核が部屋を開く（stats が 200 になる）")
+        s, _, pl = self.call("GET", f"/rooms/{rid}/participants", "参加者の一覧（空）", 200)
+        check(isinstance(pl, dict) and pl.get("items") == [] and pl.get("next_cursor") is None, "参加者は空（next_cursor は null）", f"{pl}")
+        self.call("GET", f"/rooms/{rid}/participants?limit=5", "参加者の一覧 limit", 200, token=ro)
+        self.call("GET", f"/rooms/{rid}/participants?limit=0", "参加者の一覧 limit=0", 400)
+        self.call("GET", f"/rooms/{rid}/participants?x=1", "参加者の一覧 知らないクエリ", 400)
+        self.call("GET", "/rooms/nosuch-room/participants", "参加者の一覧 無い部屋", 404)
+        self.call("GET", f"/rooms/{rid}/participants/nosuch-conn", "参加者 知らない接続", 404)
+        self.call("GET", "/rooms/nosuch-room/participants/c1", "参加者 無い部屋", 404)
+        self.call("PATCH", f"/rooms/{rid}/participants/nosuch-conn", "参加者の更新 知らない接続", 404, body={"metadata": {"a": 1}})
+        self.call("PATCH", f"/rooms/{rid}/participants/nosuch-conn", "参加者の更新 metadata が無い", 400, body={})
+        self.call("PATCH", f"/rooms/{rid}/participants/nosuch-conn", "参加者の更新 metadata が 8 KiB 超", 400, body={"metadata": "a" * 9000})
+        self.call("PATCH", f"/rooms/{rid}/participants/nosuch-conn", "参加者の更新 Content-Type", 415, body="{}", headers={"Content-Type": "text/plain"})
+        self.call("PATCH", f"/rooms/{rid}/participants/nosuch-conn", "参加者の更新 stream:read", 403, token=ro, body={"metadata": {}})
+        self.call("DELETE", f"/rooms/{rid}/participants/nosuch-conn", "参加者を切る 知らない接続", 404)
+        self.call("DELETE", f"/rooms/{rid}/participants/nosuch-conn", "参加者を切る stream:read", 403, token=ro)
+        s, _, m = self.call("POST", f"/rooms/{rid}/messages", "メッセージ（誰もいない部屋）", 200, body={"data": {"hello": 1}})
+        check(m == {"delivered": 0}, "誰もいない部屋へのメッセージは delivered 0", f"{m}")
+        s, _, m = self.call("POST", f"/rooms/{rid}/messages", "メッセージ DataChannel（誰もいない部屋）", 200, body={"label": "#chat", "data": "hi"})
+        check(m == {"delivered": 0}, "DataChannel へも delivered 0", f"{m}")
+        self.call("POST", f"/rooms/{rid}/messages", "メッセージ data が無い", 400, body={"to": []})
+        self.call("POST", f"/rooms/{rid}/messages", "メッセージ label が # で始まらない", 400, body={"label": "chat", "data": "hi"})
+        self.call("POST", f"/rooms/{rid}/messages", "メッセージ DataChannel へ文字列でない", 400, body={"label": "#chat", "data": {"a": 1}})
+        self.call("POST", f"/rooms/{rid}/messages", "メッセージ data が 64 KiB 超", 400, body={"data": "a" * 70000})
+        self.call("POST", f"/rooms/{rid}/messages", "メッセージ to に部屋にいない接続", 404, body={"to": ["nosuch-conn"], "data": 1})
+        self.call("POST", "/rooms/nosuch-room/messages", "メッセージ 無い部屋", 404, body={"data": 1})
+        self.call("POST", f"/rooms/{rid}/messages", "メッセージ stream:read", 403, token=ro, body={"data": 1})
+        s, _, stt = self.call("GET", f"/rooms/{rid}/stats", "部屋の統計", 200)
+        check(isinstance(stt, dict) and stt.get("room_id") == rid and stt.get("participants") == []
+              and isinstance(stt.get("at"), str) and stt["at"].endswith("Z"), "統計（参加者は空、at は RFC 3339）", f"{stt}")
+        self.call("GET", f"/rooms/{rid}/stats", "部屋の統計 stream:read", 200, token=ro)
+        self.call("GET", "/rooms/nosuch-room/stats", "部屋の統計 無い部屋", 404)
+        # ---- 削除
+        self.call("DELETE", f"/rooms/{rid}", "部屋の削除 stream:read", 403, token=ro)
+        self.call("DELETE", f"/rooms/{rid}", "部屋の削除", 204)
+        self.call("GET", f"/rooms/{rid}", "削除した部屋", 404)
+        self.call("DELETE", f"/rooms/{rid}", "部屋の削除 2 回目", 404)
+        self.call("GET", f"/rooms/{rid}/stats", "削除した部屋の統計", 404)
+        for x in (rid2, "oa-room-3", auto):
+            self.call("DELETE", f"/rooms/{x}", f"部屋の削除 {x}", 204)
+        s, _, lst = self.call("GET", "/rooms", "部屋の一覧（全部消した）", 200)
+        check(isinstance(lst, dict) and lst.get("items") == [] and lst.get("next_cursor") is None, "部屋が残らない", f"{lst}")
+
     def events(self, sub_tok):
         # 認証なし・権限なし
         for label, tok, want in [("SSE 認証なし", None, 401), ("SSE stream:read が無い", sub_tok, 403)]:
@@ -1166,15 +1518,24 @@ class Live:
             hdrs[k.strip().lower()] = v.strip()
         status = int(status_line.split()[1])
         self.verify("GET", "/events", status, hdrs, b"", "SSE 購読", self.api, api=True)
-        # 変更を起こす
+        # 変更を起こす（stream と、部屋: 制御のイベント room.updated・room.deleted と部屋の核の room.started）。
+        # 部屋を消したときの room.stopped は流れない（部屋の核が出す時点で制御状態から部屋が消え、テナントが分からない。文書に書いた不備）
         s, _, st = self.raw("POST", "/api/v1/streams", body={"name": "sse-probe"})
         probe = json.loads(st)["id"]
         self.raw("DELETE", f"/api/v1/streams/{probe}")
+        self.raw("POST", "/api/v1/rooms", body={"id": "oa-sse-room"})
+        self.wait_room_live("oa-sse-room")
+        self.raw("DELETE", "/api/v1/rooms/oa-sse-room")
+        want = {"stream.created", "stream.deleted", "room.updated", "room.deleted", "room.started"}
         events = []
         cur = {}
         deadline = time.time() + 10
-        while time.time() < deadline and len([e for e in events if e.get("event") != "resync"]) < 2:
-            line = f.readline().decode().rstrip("\r\n")
+        sock.settimeout(3)
+        while time.time() < deadline and not want <= {e.get("event") for e in events}:
+            try:
+                line = f.readline().decode().rstrip("\r\n")
+            except (TimeoutError, socket.timeout):
+                break  # makefile は時間切れの後に読めなくなる
             if line == "":
                 if cur:
                     events.append(cur)
@@ -1198,10 +1559,15 @@ class Live:
                 bad(f"SSE data が JSON でない: {e}")
                 continue
             errs = self.v.errors(d, sch)
-            check(not errs and e.get("event") == d.get("type") and e.get("id", "").isdigit(),
-                  f"SSE イベント {e.get('event')} が文書どおり", "; ".join(errs))
+            # 部屋の核の出来事は SSE の id を持たず、data に event_id・node がある。制御のイベントは id が制御ログの位置
+            core = d.get("type") in ROOM_CORE_EVENTS
+            id_ok = ("id" not in e and bool(d.get("event_id")) and d.get("node") == self.node_id) if core else e.get("id", "").isdigit()
+            check(not errs and e.get("event") == d.get("type") and id_ok,
+                  f"SSE イベント {e.get('event')} が文書どおり", "; ".join(errs) or f"{e}")
             types.append(d.get("type"))
         check("stream.created" in types and "stream.deleted" in types, "SSE に stream.created / stream.deleted が流れる", f"{types}")
+        check("room.updated" in types and "room.deleted" in types, "SSE に room.updated / room.deleted が流れる", f"{types}")
+        check("room.started" in types, "SSE に部屋の核の room.started が流れる", f"{types}")
 
     def methods(self):
         self.call("PUT", "/streams", "PUT /streams は 405", 405, body={})

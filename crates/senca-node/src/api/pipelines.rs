@@ -19,6 +19,8 @@ struct Body {
     graph: Value,
     #[serde(default)]
     desired_state: Option<String>,
+    #[serde(default)]
+    placement: Option<senca_control::model::PlacementSpec>,
 }
 
 #[derive(Debug, Deserialize, Default)]
@@ -27,6 +29,16 @@ struct Patch {
     name: Option<String>,
     graph: Option<Value>,
     desired_state: Option<String>,
+    #[serde(default, deserialize_with = "double_option")]
+    placement: Option<Option<senca_control::model::PlacementSpec>>,
+}
+
+fn double_option<'de, D, T>(d: D) -> Result<Option<Option<T>>, D::Error>
+where
+    D: serde::Deserializer<'de>,
+    T: Deserialize<'de>,
+{
+    Ok(Some(Option::deserialize(d)?))
 }
 
 fn render(ctx: &Ctx, p: &Pipeline) -> Value {
@@ -39,6 +51,8 @@ fn render(ctx: &Ctx, p: &Pipeline) -> Value {
         "plan": rt.as_ref().and_then(|r| r.plan.clone()),
         "status": rt.as_ref().and_then(|r| r.status.clone()),
         "meters": rt.as_ref().map(|r| json!(r.meters)),
+        "placement": p.placement,
+        "placement_status": super::placement::status(ctx, &format!("{}{}", senca_control::workloads::PIPELINE, p.id)),
     })
 }
 
@@ -77,6 +91,7 @@ pub fn create(ctx: &Ctx) -> ApiResult {
     let desired = b.desired_state.unwrap_or_else(|| "stopped".into());
     state_ok(&desired)?;
     check(ctx, &b.graph)?;
+    let placement = super::placement::check(ctx, b.placement, Some(&b.graph))?;
     let p = Pipeline {
         id: new_id()?,
         tenant: ctx.tenant().into(),
@@ -86,6 +101,7 @@ pub fn create(ctx: &Ctx) -> ApiResult {
         desired_state: desired,
         created_at_ms: ctx.now_ms,
         updated_at_ms: ctx.now_ms,
+        placement,
     };
     ctx.app.propose(Command::PutPipeline { pipeline: p.clone(), expect_generation: None })?;
     ctx.app.pipelines_reconcile();
@@ -135,6 +151,11 @@ pub fn patch(ctx: &Ctx, id: &str) -> ApiResult {
     if let Some(s) = b.desired_state {
         state_ok(&s)?;
         p.desired_state = s;
+    }
+    match b.placement {
+        Some(pl) => p.placement = super::placement::check(ctx, pl, Some(&p.graph))?,
+        // 図だけ変えたとき: 今の縮退の段が新しい図に合うか確かめる
+        None => p.placement = super::placement::check(ctx, p.placement.take(), Some(&p.graph))?,
     }
     p.updated_at_ms = ctx.now_ms;
     ctx.app.propose(Command::PutPipeline { pipeline: p, expect_generation: Some(expect) })?;

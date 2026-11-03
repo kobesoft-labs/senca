@@ -129,10 +129,11 @@ impl World {
                 decode_sessions: r.range(3, 10) as u32,
                 memory_mb: r.range(4, 16) * 1000,
                 healthy: true,
+                disabled: false,
             })
             .collect();
         let capture = if r.chance(25) {
-            vec![CaptureDevice { id: format!("cap-n{i:02}"), kind: "sdi".into(), healthy: true }]
+            vec![CaptureDevice { id: format!("cap-n{i:02}"), kind: "sdi".into(), healthy: true, disabled: false }]
         } else {
             vec![]
         };
@@ -779,6 +780,7 @@ fn big_world(nodes: usize, workloads: usize, seed: u64) -> (GridState, PlanConfi
             decode_sessions: 16,
             memory_mb: 16_000,
             healthy: true,
+            disabled: false,
         });
         let spec = NodeSpec {
             id: format!("n{i:05}"),

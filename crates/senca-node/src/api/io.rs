@@ -3,7 +3,7 @@
 use super::{ApiResponse, ApiResult, Ctx, etag, new_id, paginate};
 use crate::util::rfc3339;
 use senca_control::auth::Scope;
-use senca_control::model::{Input, Output, SecretEntry};
+use senca_control::model::{Input, Output, PlacementSpec, SecretEntry};
 use senca_control::state::Command;
 use senca_control::{Problem, ProblemCode};
 use serde::Deserialize;
@@ -78,6 +78,8 @@ struct InputBody {
     enabled: Option<bool>,
     #[serde(default)]
     options: BTreeMap<String, String>,
+    #[serde(default)]
+    placement: Option<PlacementSpec>,
 }
 
 pub fn render_input(ctx: &Ctx, i: &Input) -> Value {
@@ -85,6 +87,8 @@ pub fn render_input(ctx: &Ctx, i: &Input) -> Value {
         "id": i.id, "stream": i.stream, "generation": i.generation, "protocol": i.protocol, "url": i.url,
         "credential_ref": i.credential_ref, "enabled": i.enabled, "options": i.options,
         "created_at": rfc3339(i.created_at_ms), "status": ctx.app.io_status(&i.id),
+        "placement": i.placement,
+        "placement_status": super::placement::status(ctx, &format!("{}{}", senca_control::workloads::INPUT, i.id)),
     })
 }
 
@@ -94,6 +98,8 @@ pub fn render_output(ctx: &Ctx, o: &Output) -> Value {
         "credential_ref": o.credential_ref, "enabled": o.enabled, "provider": o.provider,
         "provider_resource": o.provider_resource, "options": o.options,
         "created_at": rfc3339(o.created_at_ms), "status": ctx.app.io_status(&o.id),
+        "placement": o.placement,
+        "placement_status": super::placement::status(ctx, &format!("{}{}", senca_control::workloads::OUTPUT, o.id)),
     })
 }
 
@@ -107,6 +113,7 @@ pub fn create_input(ctx: &Ctx, stream: &str) -> ApiResult {
     check_url(&b.protocol, &b.url)?;
     check_ref(ctx, &b.credential_ref)?;
     check_options(&b.options)?;
+    let placement = super::placement::check(ctx, b.placement, None)?;
     let i = Input {
         id: new_id()?,
         tenant: ctx.tenant().into(),
@@ -118,6 +125,7 @@ pub fn create_input(ctx: &Ctx, stream: &str) -> ApiResult {
         enabled: b.enabled.unwrap_or(true),
         options: b.options,
         created_at_ms: ctx.now_ms,
+        placement,
     };
     ctx.app.propose(Command::PutInput { input: i.clone() })?;
     ctx.app.io_reconcile();
@@ -157,6 +165,8 @@ struct IoPatch {
     credential_ref: Option<Option<String>>,
     enabled: Option<bool>,
     options: Option<BTreeMap<String, String>>,
+    #[serde(default, deserialize_with = "double_option")]
+    placement: Option<Option<PlacementSpec>>,
 }
 
 fn double_option<'de, D, T>(d: D) -> Result<Option<Option<T>>, D::Error>
@@ -190,6 +200,9 @@ pub fn patch_input(ctx: &Ctx, id: &str) -> ApiResult {
         check_options(&o)?;
         i.options = o;
     }
+    if let Some(pl) = p.placement {
+        i.placement = super::placement::check(ctx, pl, None)?;
+    }
     i.generation += 1;
     ctx.app.propose(Command::PutInput { input: i.clone() })?;
     ctx.app.io_reconcile();
@@ -219,6 +232,8 @@ struct OutputBody {
     provider: Option<String>,
     #[serde(default)]
     options: BTreeMap<String, String>,
+    #[serde(default)]
+    placement: Option<PlacementSpec>,
 }
 
 pub fn create_output(ctx: &Ctx, stream: &str) -> ApiResult {
@@ -242,6 +257,7 @@ pub fn create_output(ctx: &Ctx, stream: &str) -> ApiResult {
     }
     check_ref(ctx, &b.credential_ref)?;
     check_options(&b.options)?;
+    let placement = super::placement::check(ctx, b.placement, None)?;
     let o = Output {
         id: new_id()?,
         tenant: ctx.tenant().into(),
@@ -255,6 +271,7 @@ pub fn create_output(ctx: &Ctx, stream: &str) -> ApiResult {
         provider_resource: None,
         options: b.options,
         created_at_ms: ctx.now_ms,
+        placement,
     };
     ctx.app.propose(Command::PutOutput { output: o.clone() })?;
     ctx.app.io_reconcile();
@@ -300,6 +317,9 @@ pub fn patch_output(ctx: &Ctx, id: &str) -> ApiResult {
     if let Some(op) = p.options {
         check_options(&op)?;
         o.options = op;
+    }
+    if let Some(pl) = p.placement {
+        o.placement = super::placement::check(ctx, pl, None)?;
     }
     o.generation += 1;
     ctx.app.propose(Command::PutOutput { output: o.clone() })?;

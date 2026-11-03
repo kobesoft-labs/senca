@@ -20,7 +20,7 @@ pub fn node(id: &str, cpu: u64, mem: u64) -> NodeSpec {
 }
 
 pub fn gpu(id: &str, vendor: &str, enc: u32) -> Gpu {
-    Gpu { id: id.into(), vendor: vendor.into(), encode_sessions: enc, decode_sessions: enc, memory_mb: 16_000, healthy: true }
+    Gpu { id: id.into(), vendor: vendor.into(), encode_sessions: enc, decode_sessions: enc, memory_mb: 16_000, healthy: true, disabled: false }
 }
 
 pub fn wl(id: &str, cpu: u64, mem: u64, prio: Priority) -> Workload {
