@@ -11,7 +11,7 @@
 これはこの章ではなく [4. 取り込みと再生](04-ingest-playback.md) で扱います。
 
 - 設計の背景: [ADR-0007 入力・出力と外向きの接続](../../dev/adr/0007-inputs-outputs-egress.md)、[ADR-0010 PaaS 連携](../../dev/adr/0010-paas.md)、[ADR-0013 グリッド](../../dev/adr/0013-grid.md)
-- 関連するページ: [4. 取り込みと再生](04-ingest-playback.md)、[9. クラスタとグリッド](09-cluster-grid.md)、[12. セキュリティ](12-security.md)、[15. API と SDK](15-api-and-sdks.md)
+- 関連するページ: [4. 取り込みと再生](04-ingest-playback.md)、[9. クラスターとグリッド](09-cluster-grid.md)、[12. セキュリティ](12-security.md)、[15. API と SDK](15-api-and-sdks.md)
 
 例で使う `API`・`TOKEN`・`H` は [4. 取り込みと再生](04-ingest-playback.md) と同じです。
 
@@ -212,7 +212,7 @@ curl -s -X POST "$API/secrets" "${H[@]}" -d '{"name":"cam-login","value":"viewer
 
 - `name` の規則はストリームの名前と同じ（1〜64 文字の英数字と `-_.`）で、テナント内で一意です（重複すると 409）。`value` は 1〜8192 バイトです。
 - 値は AES-256-GCM で暗号化して保存します。暗号化の鍵は、単一ノードではノードの鍵 `{data-dir}/control/secret-key`、
-  クラスタではクラスタ共通の鍵です（[12. セキュリティ](12-security.md)）。**保存した値は API から読み出せません**
+  クラスターではクラスター共通の鍵です（[12. セキュリティ](12-security.md)）。**保存した値は API から読み出せません**
   （一覧に表示されるのは `id`・`name`・`ref`・`created_at` だけです）。値を変えるには、削除して作り直してください。
 - 1 つのテナントに保存できるシークレットは 500 個までです。
 - 入力・出力・ストリームの字幕から参照されているシークレットは削除できません（409）。
@@ -256,4 +256,4 @@ senca-node ... --egress-allow 192.0.2.0/24 --egress-allow 10.20.0.0/16
   割り当て先が停止したときの扱い（`pin_policy`）を指定できます。`degrade` はパイプライン専用で、入力・出力に指定すると 400 になります。
 - 配置の結果は `placement_status` に表示されます（`state`: `running`・`pending`・`unschedulable`・`not_scheduled`。ほかに `node`・`node_name`・`reason` など）。
 
-詳しくは [9. クラスタとグリッド](09-cluster-grid.md) を参照してください。単一ノードでも同じ仕組みで動作します（配置先はそのノードだけです）。
+詳しくは [9. クラスターとグリッド](09-cluster-grid.md) を参照してください。単一ノードでも同じ仕組みで動作します（配置先はそのノードだけです）。

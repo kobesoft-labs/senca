@@ -6,10 +6,7 @@ A SENCA node is managed over its HTTP management API (`/api/v1`); the web consol
 conventions shared by every endpoint, the OpenAPI document, the event stream (SSE), the JavaScript SDK (`@senca/sdk`) and the Rust
 client (`senca-client`).
 
-- Definition: [`docs/api/openapi.yaml`](../../api/openapi.yaml). It describes what the implementation actually does;
-  `tools/interop/openapi.sh` checks it against the route table, the required scopes and real responses.
-- Implementation: `crates/senca-node/src/api/` (routing and shared conventions in `api/mod.rs`), `crates/senca-node/src/events.rs` (SSE),
-  `crates/senca-control/src/auth.rs`, `jwt.rs`, `problem.rs`.
+- Definition: [`docs/api/openapi.yaml`](../../api/openapi.yaml). It describes what the node actually does.
 - Individual resources: streams and playback in [04-ingest-playback.md](04-ingest-playback.md), recordings in
   [05-recording.md](05-recording.md), inputs and outputs in [06-inputs-outputs.md](06-inputs-outputs.md), pipelines in
   [07-pipelines.md](07-pipelines.md), nodes and the grid in [09-cluster-grid.md](09-cluster-grid.md), rooms in [10-rooms.md](10-rooms.md),
@@ -179,7 +176,7 @@ Errors are returned as `Content-Type: application/problem+json` in the RFC 9457 
 | `INVALID_CONFIG` | 400 | no | Semantic validation (ranges, combinations, references) |
 | `INVALID_REQUEST` | 400 | no | Unparseable body, unknown fields, unknown query parameters, `limit` out of range, malformed Idempotency-Key |
 | `UNSUPPORTED_PROTOCOL_VERSION` | 422 | no | Defined only; not returned by the node API today |
-| `UNSUPPORTED_CODEC` | 422 | no | Snapshot decoding (`GET /streams/{id}/snapshot`), 422 from the room core |
+| `UNSUPPORTED_CODEC` | 422 | no | Snapshot decoding (`GET /streams/{id}/snapshot`), 422 from room processing |
 | `UNSUPPORTED_MEDIA_TYPE` | 415 | no | `Content-Type` is not `application/json` |
 | `AUTH_FAILED` | 401 | no | Authentication failed |
 | `FORBIDDEN` | 403 | no | Missing scope, or trying to grant a scope you do not hold |
@@ -190,7 +187,7 @@ Errors are returned as `Content-Type: application/problem+json` in the RFC 9457 
 | `PRECONDITION_FAILED` | 412 | no | Stale or malformed `If-Match` |
 | `PRECONDITION_REQUIRED` | 428 | no | PATCH without `If-Match` |
 | `QUOTA_EXCEEDED` | 403 | no | A limit was hit (for example, at most 8 concurrent recordings per stream) |
-| `RATE_LIMITED` | 429 | yes | Defined only; rate limiting is not implemented and this is not returned today |
+| `RATE_LIMITED` | 429 | yes | Defined only; rate limiting is not supported and this is not returned today |
 | `CAPACITY_UNAVAILABLE` | 503 | usually yes | The cluster cannot accept the proposal (leader change, congestion), the room lives on another node, `--webrtc-udp` is not enabled, no codec worker (this one is not retryable) |
 | `INPUT_TIMEOUT` | 504 | yes | Defined only; not returned today |
 | `OWNERSHIP_LOST` | 409 | no | Defined only; not returned by the API today |
@@ -218,12 +215,8 @@ Japanese.
   - `x-senca-scope`: the scope an operation requires (`null` = authenticated only)
   - `x-senca-undefined-method-status: 405`: how undocumented methods are answered
   - `x-senca-event-data`: the schema of the SSE `data` payload (`SseEventData`)
-- Each operation notes where it differs from the specification; the top of the document summarizes them (no operation resources,
-  `PATCH /streams/{id}` returns 200, and so on).
-- The types of the JS SDK (`apps/sdk-js/scripts/gen_types.py`) and of the Rust client (`crates/senca-client/gen/gen_models.py`) are
-  generated from this document.
-- Verification: `tools/interop/openapi.sh` (a) compares the route table and handler scopes in `api/mod.rs` with the document, and
-  (b) starts a node, sends every operation, and checks that each status code is documented and each body matches its schema.
+- Features that are not supported yet (such as asynchronous operation resources) are summarized at the top of the document.
+- The types of the JS SDK and of the Rust client are generated from this document.
 
 ## 3. Events (SSE)
 
@@ -290,7 +283,7 @@ Control events (with an `id`):
 
 Room events ([10-rooms.md](10-rooms.md), ADR-0015):
 
-| Type | Name in the room core | `data.data` |
+| Type | Internal room event name | `data.data` |
 |---|---|---|
 | `room.started` | `room.created` | `{settings, auto_created}` |
 | `room.stopped` | `room.destroyed` | `{reason}` |
@@ -303,10 +296,11 @@ Room events ([10-rooms.md](10-rooms.md), ADR-0015):
 
 - Room events are not part of the consensus log. **They have no SSE `id`**, so they are not covered by `Last-Event-ID` resumption, and
   dropped room events are skipped silently.
-- **They are delivered only to subscribers connected to the node hosting the room.** To see room events for every room in a cluster,
+- **They are delivered only to subscribers connected to the node where the event happened** (for cascaded rooms see [10-rooms.md](10-rooms.md)).
+  To see room events for every room in a cluster,
   subscribe to `/api/v1/events` on every node.
 - `data` is `{type, resource_id (room ID), event_id (unique per event; use it to de-duplicate), node (emitting node ID), occurred_at, data}`.
-  The inner `data` holds only the payload in the table above (the room-core `type` name is not included).
+  The inner `data` holds only the payload in the table above (the internal room event name is not included).
 - Filtered by tenant; even `node:admin` does not receive other tenants' room events. Room setting changes are reported by the control event
   `room.updated`.
 
@@ -320,9 +314,9 @@ data: {"type":"room.connection.created","resource_id":"daily","event_id":"...","
 `apps/sdk-js` contains both the browser realtime-room client (`Senca.connect()`) and the management API client (`SencaClient`) for browsers
 and Node.js 20+. It has no runtime dependencies; the source is plain ES modules with JSDoc types and runs without a build step. Type
 definitions live in `types/`, the API reference is [`apps/sdk-js/API.md`](../../../apps/sdk-js/API.md) and the detailed guide is
-[`apps/sdk-js/README.md`](../../../apps/sdk-js/README.md) (both in Japanese).
+[`apps/sdk-js/README.en.md`](../../../apps/sdk-js/README.en.md) (the API reference is in Japanese).
 
-- Not yet published to npm (version 0.0.0). Install it from the repository, e.g. `npm install /path/to/senca/apps/sdk-js`.
+- Not published to npm. Install it from the repository, e.g. `npm install /path/to/senca/apps/sdk-js`.
 - Entry points: `@senca/sdk` (everything), `@senca/sdk/rest` (management API only), `@senca/sdk/protocol` (signaling types).
 
 ### 4.1 Management API (`SencaClient`)
@@ -415,19 +409,10 @@ for await (const track of session.remoteTracks()) {
 - Errors are `SencaError` (`code`, `fatal`, `closeCode`, `request`).
 - Room features and limits: [10-rooms.md](10-rooms.md). Protocol: [docs/realtime/signaling.en.md](../../realtime/signaling.en.md).
 
-### 4.3 Tests
-
-```
-cd apps/sdk-js && npm test        # unit tests (fake WebSocket, RTCPeerConnection and fetch; offline)
-npm run build                     # type-check with tsc and generate types/ and API.md (TypeScript 5.x)
-npm run gen                       # regenerate types after openapi.yaml changes
-tools/interop/sdk_js.sh           # everything, including a real senca-node and three Chrome pages in Docker
-```
-
 ## 5. Rust client (`senca-client`)
 
 `crates/senca-client` is an async client for tokio. It uses `senca-http` for HTTP/1.1 and `senca-tls` for TLS, with no external HTTP
-client. See [`crates/senca-client/README.md`](../../../crates/senca-client/README.md) (in Japanese). It is not on crates.io yet; depend on it
+client. See [`crates/senca-client/README.en.md`](../../../crates/senca-client/README.en.md). It is not published on crates.io; depend on it
 by path or git.
 
 ```rust
@@ -491,14 +476,12 @@ client.streams().delete(&s.id, s.if_match()).await?;
   `Last-Event-ID`; does not reconnect on 401 or 403.
 - **Builder**: `SencaClient::builder(url).token(..).timeout(..)` (default 30 s) `.user_agent(..).root_certificates_pem(pem).build()`. TLS
   trusts the OS certificate store by default.
-- **Models**: `src/models.rs` is generated from openapi.yaml (`python3 crates/senca-client/gen/gen_models.py`). Unknown response fields
+- **Models**: the types in `senca_client::models` are generated from openapi.yaml. Unknown response fields
   are skipped and unknown enum values become `Unknown`. Nullable fields in `*Patch` types are `Option<Option<T>>` (`None` = leave as is,
   `Some(None)` = clear with null).
-- Tests: `cargo test -p senca-client` (`tests/node.rs` starts a real senca-node).
 
 ## 6. Related
 
-- Basis of the API contract: specification SENCA-SRS-001 chapter 10, [REQ-002](../../dev/requirements/REQ-002-control-api-and-console.md)
 - Writes in a cluster (any node accepts them; proposals are forwarded to the leader): [09-cluster-grid.md](09-cluster-grid.md),
   [ADR-0009](../../dev/adr/0009-cluster.md)
 - Rooms and room events on SSE: [10-rooms.md](10-rooms.md), [ADR-0015](../../dev/adr/0015-realtime-rooms.md)

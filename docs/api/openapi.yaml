@@ -3,32 +3,31 @@ info:
   title: SENCA 管理 API
   version: v1
   description: |
-    SENCA ノードの管理 API（仕様 SENCA-SRS-001 10 章、REQ-002）。この文書は **実装（`crates/senca-node/src/api/`）の挙動** を書いたもの。
-    仕様と違うところは各操作の説明に「仕様との差」として書く。`tools/interop/openapi.sh` が、実装の経路表との一致と、実際の応答がここに書いた状態コード・形に合うことを確かめる。
+    SENCA ノードの管理 API です。配信・録画・入出力・パイプライン・部屋などの資源を HTTP と JSON で操作します。
+    この文書は、ノードが実際に返す状態コードと応答の形を記述しています。
 
     ## 共通の決まり
 
-    - base path は `/api/v1`。本文は JSON（UTF-8）、時刻は UTC の RFC 3339（`2026-10-25T00:00:00.000Z` の形）。
-    - **認証**: すべての `/api/v1` は `Authorization: Bearer <token>` が要る。値が `senca_` で始まれば API トークン、それ以外は JWT（`--jwks` を設定したときだけ）。失敗は 401（`WWW-Authenticate: Bearer`）。失敗の理由は応答に出さない。
-    - **権限**: 各操作に要る権限を拡張 `x-senca-scope` に書く（`null` は認証だけ）。`tenant:admin` は `node:admin` 以外のすべてを含む。足りなければ 403（`FORBIDDEN`）。テナントは認証の文脈から決まり、本文のテナントは使わない。他テナントの資源は 404。
-    - **本文**: `Content-Type: application/json` 以外は 415。未知のフィールドは 400（`deny_unknown_fields`、スキーマでは `additionalProperties: false`）。HTTP 層の本文上限は 1 MiB（超えると HTTP 層が text/plain の 413 を返し、接続を閉じる）。
-    - **Idempotency-Key**: POST に付けると 24 時間、同じ答え（状態コード・本文・Location）を返す。再送の応答には `Idempotency-Replayed: true` が付く。同じ鍵で別の要求（メソッド・パス・クエリ・本文の SHA-256 が違う）は 409（`IDEMPOTENCY_CONFLICT`）。鍵は 1〜255 文字の表示可能 ASCII（違えば 400）。覚える本文からは秘密（`stream_key`・`token`・`secret`）を消し、代わりに `stream_key_redacted: true`・`token_redacted: true`（`secret_redacted: true`）を入れる。5xx は覚えない。
-    - **楽観的排他**: 応答の `ETag` は `"{generation}"`。PATCH は `If-Match` 必須（無いと 428、形が違う・古いと 412）。DELETE の `If-Match` は任意（付ければ検査）。
-    - **一覧**: `limit`（1〜1000、既定 100）と `cursor`（前の応答の `next_cursor`）。順序は ID の昇順。知らないクエリは 400。
-    - **エラー**: `application/problem+json`（`Problem`）。すべての応答に `X-Request-Id`（要求の `X-Request-Id` が 64 文字以内の英数字と `-_.` ならそれを、違えば生成した `req_...`）と `Cache-Control: no-store` が付く。
-    - **405**: 経路表にある資源（`/capabilities`・`/nodes/...`・`/devices`・`/grid`・`/events`・`/streams/...`・`/recordings/...`・`/schedules/...`・`/tokens/...`・`/inputs/...`・`/outputs/...`・`/secrets/...`・`/pipelines/...`・`/rooms/...`・`/media-pipelines/...`）に、ここに書いていないメソッド（HEAD を含む）を送ると 405（`METHOD_NOT_ALLOWED`）。それ以外の知らないパスは 404。`x-senca-undefined-method-status` を参照。
-    - **429**: 部品（`components.responses`）には定義するが、今の実装はどの操作でも返さない（レート制限は未実装）。
-    - **422**: `GET /streams/{id}/snapshot` の復号でだけ返す。配信の作成・更新ではコーデックを検査しない（入力のコーデックは publish まで分からない）。不適合は `POST /streams/{id}/plan` の結果の `code: UNSUPPORTED_CODEC` で知らせる。
-    - **5xx**: 制御状態の永続化に失敗すると 500（`INTERNAL_ERROR`、`retryable: true`）。再試行してよい 503 には `Retry-After: 1` が付く。
+    - base path は `/api/v1` です。本文は JSON（UTF-8）で、時刻は UTC の RFC 3339（`2026-10-25T00:00:00.000Z` の形）です。
+    - **認証**: `/api/v1` 以下はすべて `Authorization: Bearer <token>` が必要です。値が `senca_` で始まれば API トークン、それ以外は JWT として扱います（JWT は `--jwks` を設定したときだけ使えます）。認証に失敗すると 401（`WWW-Authenticate: Bearer`）を返します。失敗の理由は応答に含めません。
+    - **権限（scope）**: 各操作に必要な権限は拡張フィールド `x-senca-scope` に記載します（`null` は認証だけで使えることを表します）。`tenant:admin` は `node:admin` 以外のすべての権限を含みます。権限が足りなければ 403（`FORBIDDEN`）です。テナントは認証情報から決まり、本文に書いたテナントは使いません。他のテナントの資源は 404 になります。
+    - **本文**: `Content-Type: application/json` 以外は 415 です。未知のフィールドは 400 です（スキーマでは `additionalProperties: false`）。HTTP 層の本文の上限は 1 MiB で、超えると text/plain の 413 を返して接続を閉じます。
+    - **Idempotency-Key**: POST に付けると、24 時間は同じ応答（状態コード・本文・Location）を返します。再送に対する応答には `Idempotency-Replayed: true` が付きます。同じキーで別の要求（メソッド・パス・クエリ・本文の SHA-256 のいずれかが違う）を送ると 409（`IDEMPOTENCY_CONFLICT`）です。キーは 1〜255 文字の表示可能な ASCII で、違反すると 400 です。保存する応答からは秘密（`stream_key`・`token`・`secret`）を取り除き、代わりに `stream_key_redacted: true`・`token_redacted: true`（`secret_redacted: true`）を入れます。5xx の応答は保存しません。
+    - **楽観的排他制御**: 応答の `ETag` は `"{generation}"` です。PATCH には `If-Match` が必須で、無ければ 428、形式が違うか古ければ 412 です。DELETE の `If-Match` は任意です（付けた場合は検査します）。
+    - **一覧**: `limit`（1〜1000、既定 100）と `cursor`（前の応答の `next_cursor`）でページングします。並び順は ID の昇順です。知らないクエリパラメーターは 400 です。
+    - **エラー**: エラーは `application/problem+json`（`Problem`）で返します。すべての応答に `X-Request-Id` と `Cache-Control: no-store` が付きます。`X-Request-Id` は、要求の `X-Request-Id` が 64 文字以内の英数字と `-_.` であればその値、そうでなければ生成した `req_...` です。
+    - **405**: 定義済みの資源（`/capabilities`・`/nodes/...`・`/devices`・`/grid`・`/events`・`/streams/...`・`/recordings/...`・`/schedules/...`・`/tokens/...`・`/inputs/...`・`/outputs/...`・`/secrets/...`・`/pipelines/...`・`/rooms/...`・`/media-pipelines/...`）に、この文書に無いメソッド（HEAD を含む）を送ると 405（`METHOD_NOT_ALLOWED`）です。それ以外の未知のパスは 404 です。`x-senca-undefined-method-status` を参照してください。
+    - **429**: 部品（`components.responses`）として定義していますが、現在どの操作も 429 は返しません（レート制限には未対応です）。
+    - **422**: `GET /streams/{id}/snapshot` の復号でだけ返します。配信の作成・更新ではコーデックを検査しません（入力のコーデックは publish されるまで分からないためです）。対応しないコーデックは `POST /streams/{id}/plan` の結果の `code: UNSUPPORTED_CODEC` で分かります。
+    - **5xx**: 制御状態の保存に失敗すると 500（`INTERNAL_ERROR`、`retryable: true`）です。再試行してよい 503 には `Retry-After: 1` が付きます。
 
-    ## 仕様との主な差（まとめ）
+    ## 現在対応していないもの
 
-    - 非同期処理の operation 資源（`GET /operations/{id}`）は無い。202 の応答は対象資源そのものを返す。
-    - `PATCH /streams/{id}` は 202 ではなく 200（その場で反映した資源を返す）。`DELETE /streams/{id}` は 202 ではなく 204。
-    - `POST /streams/{id}/sessions`、`DELETE /sessions/{id}`、`GET /inputs/{id}/reservations` は未実装。
-    - 入力（`/streams/{id}/inputs`・`/inputs/{id}`）は pull だけ（push は stream の鍵で受ける）。
-    - 入力・出力・秘密値・パイプライン・部屋・メディアパイプラインの DELETE は `If-Match` を読まない（付けても検査しない）。
-    - SSE は再送の保持を持たない（`Last-Event-ID` が今の位置より前なら必ず `resync`）。
+    - 非同期処理の operation 資源（`GET /operations/{id}`）はありません。202 の応答は対象の資源そのものを返します。
+    - `POST /streams/{id}/sessions`、`DELETE /sessions/{id}`、`GET /inputs/{id}/reservations` はありません。
+    - 入力（`/streams/{id}/inputs`・`/inputs/{id}`）は pull だけです（push は stream の鍵で受信します）。
+    - 入力・出力・秘密値・パイプライン・部屋・メディアパイプラインの DELETE は `If-Match` を検査しません。
+    - SSE は過去のイベントを保持しません（`Last-Event-ID` が現在の位置より前なら必ず `resync` になります）。
 x-senca-undefined-method-status: 405
 servers:
   - url: /api/v1
@@ -37,79 +36,79 @@ security:
 tags:
   - name: system
     description: |
-      能力・ノード・デバイス・グリッド（運用）。
-      **グリッド（ADR-0013）**: 各ノードは起動時に資源（CPU・メモリ・帯域・GPU・キャプチャ機器・ラベル）を申告し、毎秒の心拍をリーダーへ送る。
-      リーダー（単一ノードでは自分）の配置係が、入力・出力・パイプラインから導いた仕事をノード・装置に割り当てる。仕事は割り当てられたノードだけが動かす。
-      資源ごとの配置の指定は `placement`（`PlacementSpec`）、結果は `placement_status`（`PlacementStatus`）、全体の様子は `GET /grid`。
+      能力・ノード・デバイス・グリッドの情報と、運用の操作です。
+      **グリッド（ADR-0013）**: 各ノードは起動時に自分の資源（CPU・メモリ・帯域・GPU・キャプチャ機器・ラベル）を登録し、毎秒ハートビートをリーダーへ送ります。
+      リーダー（単一ノードでは自分自身）のスケジューラーが、入力・出力・パイプラインなどから求めたワークロードをノードと装置に割り当てます。ワークロードは割り当てられたノードだけが実行します。
+      資源ごとの配置の指定は `placement`（`PlacementSpec`）、配置の結果は `placement_status`（`PlacementStatus`）、全体の状態は `GET /grid` で確認できます。
   - name: streams
-    description: 配信（stream）の定義・鍵・再生 URL・計画・静止画。
+    description: 配信（stream）の定義・鍵・再生 URL・計画・静止画です。
   - name: recordings
-    description: 録画・VOD・MP4 書き出し。
+    description: 録画・VOD・MP4 の書き出しです。
   - name: schedules
-    description: 予約（REQ-002）。
+    description: 配信や録画の予約です。
   - name: tokens
-    description: API トークン（ADR-0005、仕様 10.2 の表にない追加）。
+    description: API トークンです（ADR-0005）。
   - name: io
     description: |
-      入力（pull）と出力（push・PaaS 連携）。仕様 10.2。定義は制御状態に保存し、ノードの中の係（`io.rs`）が非同期に実行する。
-      実行の様子は応答の `status`（`IoStatus`）で見る。宛先の IP（SSRF の防止）は接続時に検査し、拒否は `status.last_error` に出る（作成は 201 で通る）。
+      入力（pull）と出力（push・PaaS 連携）です。定義は制御状態に保存され、ノードが非同期に実行します。
+      実行の状態は応答の `status`（`IoStatus`）で確認します。接続先の IP アドレス（SSRF 対策）は接続のときに検査します。拒否された場合は `status.last_error` に表示されます（作成自体は 201 で成功します）。
   - name: secrets
-    description: '秘密値（仕様 10.2「credentials は secret reference」）。値はノードの鍵で暗号化して保存し、API からは読めない。入力・出力は `credential_ref: "secret:{name}"` で参照する。'
+    description: '秘密値です。値はノードの鍵で暗号化して保存され、API から読み出すことはできません。入力・出力からは `credential_ref: "secret:{name}"` で参照します。'
   - name: pipelines
     description: |
-      パイプライン（REQ-002・REQ-005・REQ-008）。グラフは senca-pipeline の JSON（`crates/senca-pipeline/src/model.rs` の `Graph`、`cargo doc -p senca-pipeline`）。
-      作成・更新のたびに検証し（参照する stream がテナントのものか、方針・装置）、`desired_state: running` ならコーデック worker のセッションで動かす。
+      パイプラインです。グラフは senca-pipeline の JSON 形式で記述します（`cargo doc -p senca-pipeline` の `Graph`）。
+      作成・更新のたびにグラフを検証し（参照する stream がテナントのものか、コーデックの方針・装置）、`desired_state: running` であればコーデック worker で実行します。
   - name: rooms
     description: |
-      リアルタイムの部屋（ADR-0015、`docs/realtime/signaling.md` の 11 章）。SFU（転送だけ、変換しない）で参加者どうしが WebRTC で送り合う。
-      - **部屋そのもの**（作る・読む・変える・消す）は制御状態の資源で、どのノードでも受ける。部屋の ID は**テナントをまたいで一意**（他のテナントが使っている ID で作ると 409、他のテナントの部屋を読むと 404）。
-      - **置き場所**: 部屋はグリッドの仕事（`room:{id}`）になり、配置係が割り当てたノード（`placement_status.node`）の部屋の核が動かす。`placement` は入力・出力と同じ（`degrade` は 400）。
-      - **今の様子**（参加者・メッセージ・統計）は部屋を置いたノードの部屋の核に問い合わせる。別のノードにあれば、受けたノードが同じ認証のまま
-        そのノードの `/api/v1` へ中継し、応答（状態コード・本文・`ETag`）をそのまま返す（中継の中継はしない: 503）。置き場所が決まる前（作った直後）は 503（`retryable: true`）、
-        このノードで WebRTC（`--webrtc-udp`）が動いていなければ 503（`retryable: false`）、部屋の核がまだ部屋を開いていなければ 404。
-      - **参加トークン**（`POST /rooms/{id}/tokens`）はどのノードでも発行できる（署名の鍵は制御状態から導く、全ノードで同じ）。無い部屋を頼むと部屋を自動で作る（`auto: true`）。
-      - **シグナリング（`/api/v1` の外）**: `GET /signaling`（WebSocket、RFC 6455、subprotocol `senca.rooms.v1` が必須）。URL は部屋の `signaling_url`・
-        トークンの応答の `signaling_url`（`--public-http-url` の `http`→`ws`・`https`→`wss` に `/signaling` を付けたもの、別のノードに置いた部屋はそのノードの URL）。
-        つないだ後の最初の message `connect {version: 1, room_id, token, role, ...}` で参加トークンを渡す（HTTP の `Authorization` は使わない）。
-        message の形は `docs/realtime/signaling.md`。部屋が別のノードにあれば `redirect {location}` を送って閉じる（close code 4300）。
-        WebRTC が動いていないノードは 503（text/plain）、WebSocket の握手の誤り（subprotocol が無いなど）は握手の層の 4xx を返す。
-      - 部屋の核の出来事（参加・退出・トラック・スポットライト）は `GET /events` に `room.*` として流れる。
+      リアルタイムの部屋です（ADR-0015、`docs/realtime/signaling.md` の 11 章）。SFU（転送だけを行い、変換はしません）を介して、参加者どうしが WebRTC で映像・音声を送り合います。
+      - **部屋そのもの**（作成・取得・更新・削除）は制御状態の資源で、どのノードでも受け付けます。部屋の ID は**テナントをまたいで一意**です（他のテナントが使っている ID で作成すると 409、他のテナントの部屋を取得すると 404）。
+      - **配置先**: 部屋はグリッドのワークロード（`room:{id}`）になり、スケジューラーが割り当てたノード（`placement_status.node`）で実行されます。`placement` は入力・出力と同じ形式です（`degrade` は 400）。
+      - **現在の状態**（参加者・メッセージ・統計）は、部屋を配置したノードに問い合わせます。部屋が別のノードにあれば、要求を受けたノードが同じ認証情報のままそのノードの `/api/v1` へ転送し、
+        応答（状態コード・本文・`ETag`）をそのまま返します（転送先からさらに転送はしません。その場合は 503）。配置先が決まる前（作成した直後）は 503（`retryable: true`）、
+        このノードで WebRTC（`--webrtc-udp`）が動いていなければ 503（`retryable: false`）、部屋がまだ開かれていなければ 404 です。
+      - **参加トークン**（`POST /rooms/{id}/tokens`）はどのノードでも発行できます（署名の鍵は制御状態から導出され、全ノードで同じです）。存在しない部屋を指定すると、部屋を自動で作成します（`auto: true`）。
+      - **シグナリング（`/api/v1` の外）**: `GET /signaling`（WebSocket、RFC 6455、subprotocol `senca.rooms.v1` が必須）です。URL は部屋の `signaling_url`、
+        またはトークン発行の応答の `signaling_url` です（`--public-http-url` の `http` を `ws` に、`https` を `wss` に替えて `/signaling` を付けたもの。別のノードに配置した部屋はそのノードの URL）。
+        接続後の最初のメッセージ `connect {version: 1, room_id, token, role, ...}` で参加トークンを渡します（HTTP の `Authorization` は使いません）。
+        メッセージの形式は `docs/realtime/signaling.md` を参照してください。部屋が別のノードにあれば `redirect {location}` を送って切断します（close code 4300）。
+        WebRTC が動いていないノードは 503（text/plain）を返し、WebSocket のハンドシェイクの誤り（subprotocol が無いなど）にはハンドシェイク層の 4xx を返します。
+      - 部屋で起きたこと（参加・退出・トラック・スポットライト）は `GET /events` に `room.*` として配信されます。
   - name: media-pipelines
     description: |
-      部屋のメディアパイプライン（ADR-0016、AWS Chime SDK Media Pipelines 相当）。部屋（`rooms`）の参加者を SENCA の stream に書き出し、
-      録画・合成・送り出し・文字起こしを 1 つの資源で指定する。定義は制御状態の資源で、どのノードでも受ける。
+      部屋のメディアパイプラインです（ADR-0016、AWS Chime SDK Media Pipelines に相当）。部屋（`rooms`）の参加者を SENCA の stream に書き出し、
+      録画・合成・外部への配信・文字起こしを 1 つの資源で指定します。定義は制御状態の資源で、どのノードでも受け付けます。
 
       | AWS（Chime SDK Media Pipelines） | SENCA |
       |---|---|
-      | Media stream pipeline（Kinesis Video Streams へ） | 参加者ごとの stream（`export_participants`）。以後は普通の stream と同じく HLS・録画・出力・パイプラインに乗る |
-      | Media capture pipeline（会議を S3 へ録る） | `recording`（参加者ごとの stream と合成の stream の自動録画。置き場所は録画の設定どおり、ローカル・S3 互換） |
-      | Media concatenation pipeline | 録画の断片を 1 本にまとめるのは普通の録画の API（`GET /recordings/{id}/export.mp4`・VOD の HLS） |
-      | Media live connector pipeline（会議を RTMP へ） | `egress`（合成の stream の出力。RTMP・SRT・PaaS。`composite` が要る） |
-      | Media insights pipeline（文字起こし・分析） | `captions`（参加者ごとの stream の字幕・翻訳、`CaptionSettings`。`export_participants` が要る） |
+      | Media stream pipeline（Kinesis Video Streams へ） | 参加者ごとの stream（`export_participants`）。以後は通常の stream と同じく HLS・録画・出力・パイプラインで扱えます |
+      | Media capture pipeline（会議を録画する） | `recording`（参加者ごとの stream と合成の stream の自動録画。保存先はノードのデータディレクトリ） |
+      | Media concatenation pipeline | 録画の断片を 1 本にまとめるのは通常の録画の API です（`GET /recordings/{id}/export.mp4`・VOD の HLS） |
+      | Media live connector pipeline（会議を RTMP へ） | `egress`（合成の stream の出力。RTMP・SRT・PaaS。`composite` が必要） |
+      | Media insights pipeline（文字起こし・分析） | `captions`（参加者ごとの stream の字幕・翻訳、`CaptionSettings`。`export_participants` が必要） |
 
-      - **動かす係**: 部屋を置いたノード（`GET /rooms/{id}` の `placement_status.node`）の係が毎秒、部屋の参加者を見て突き合わせる（部屋が別のノードへ移れば、移った先の係が引き継ぐ）。
-        `desired_state: running` のものだけ動かす。
-      - **参加者ごとの stream**: 参加者（`client_id`、無ければ `connection_id`）ごとに stream を 1 本作り、送ってきた映像（いちばん良い層）と音声を
-        **再符号化せずに** 流す。`participants` が空なら全員、書けばその `client_id` の参加者だけ。カスケードで他のノードにいる参加者は書き出さない。
-        stream の `metadata` に `media_pipeline`（メディアパイプラインの ID）と `room` が入る。stream の名前は `{name}-{参加者}-{ID の頭 6 文字}`。
-        publish 鍵では受けない（使えない鍵を入れてある）。部屋の `video_codec` が H.264・H.265 なら `codec_profile: any`、他は `royalty_free`。
-      - **合成**（`composite`）: 映像のある参加者を並べ（`grid` は格子、`speaker` は最初の参加者を大きく）、音声はすべて混ぜて 1 本の stream にする
-        パイプライン（`pipelines` タグの資源、部屋を置いたノードに固定）を作る。参加者の stream が流れ始めてから図に入れ、参加者が変われば図を直す。
-        映像のある参加者がいなければパイプラインは `stopped`。
-      - **子の資源の ID** はメディアパイプラインの ID から決まる（何度作っても同じ。`artifacts` に出る）。合成のパイプライン・送り出しの出力は
-        普通の `GET /pipelines/{id}`・`GET /outputs/{id}` でも読める。
-      - **片付け**: メディアパイプラインや部屋を消す、`stopped` にする、合成・送り出しを変えると、合成のパイプラインと送り出しの出力を消す
-        （動かすなら係が作り直す）。書き出した stream と録画は成果物として**残る**（要らなければ `DELETE /streams/{id}` で消す）。
-      - SSE: 作成・更新は `media_pipeline.updated`（`data: {room, desired_state}`）、削除は `media_pipeline.deleted`（`data: {}`）。
+      - **実行するノード**: 部屋を配置したノード（`GET /rooms/{id}` の `placement_status.node`）が毎秒、部屋の参加者を確認して状態を合わせます。部屋が別のノードへ移れば、移動先のノードが引き継ぎます。
+        `desired_state: running` のものだけを実行します。
+      - **参加者ごとの stream**: 参加者（`client_id`、無ければ `connection_id`）ごとに stream を 1 本作り、送信された映像（最も品質の高い層）と音声を
+        **再エンコードせずに**流します。`participants` が空なら全員、指定すればその `client_id` の参加者だけが対象です。カスケードで他のノードにいる参加者は書き出しません。
+        stream の `metadata` には `media_pipeline`（メディアパイプラインの ID）と `room` が入ります。stream の名前は `{name}-{参加者}-{ID の先頭 6 文字}` です。
+        publish 鍵では受信しません（使えない鍵が設定されています）。部屋の `video_codec` が H.264・H.265 なら `codec_profile: any`、それ以外は `royalty_free` です。
+      - **合成**（`composite`）: 映像のある参加者を並べ（`grid` は格子状、`speaker` は最初の参加者を大きく表示）、音声はすべてミックスして 1 本の stream にする
+        パイプライン（`pipelines` タグの資源。部屋を配置したノードに固定）を作ります。参加者は、その stream が流れ始めてからグラフに加えます。参加者が変わればグラフを更新します。
+        映像のある参加者がいなければ、パイプラインは `stopped` です。
+      - **子の資源の ID** はメディアパイプラインの ID から決まります（何度作り直しても同じ ID で、`artifacts` に表示されます）。合成のパイプラインと外部配信の出力は、
+        通常の `GET /pipelines/{id}`・`GET /outputs/{id}` でも取得できます。
+      - **後片付け**: メディアパイプラインや部屋を削除する、`stopped` にする、合成や外部配信の設定を変える、のいずれかを行うと、合成のパイプラインと外部配信の出力を削除します
+        （実行を続ける場合は作り直します）。書き出した stream と録画は成果物として**残ります**（不要なら `DELETE /streams/{id}` で削除してください）。
+      - SSE: 作成・更新では `media_pipeline.updated`（`data: {room, desired_state}`）、削除では `media_pipeline.deleted`（`data: {}`）が配信されます。
   - name: events
-    description: SSE のイベント購読（仕様 10.5）。
+    description: SSE によるイベントの購読です。
   - name: playback
     description: |
-      署名付きの再生パス（`/api/v1` の外、認証ヘッダーなし）。URL は `POST /streams/{id}/playback-url`・`POST /recordings/{id}/playback-url` が返す。
-      署名は `HMAC-SHA256(playback_key, "{kind}/{id}/{exp}")` の先頭 16 バイトを base64url（パディングなし）にしたもの。署名違い・期限切れは 403（text/plain）。応答には `Access-Control-Allow-Origin: *` が付く。
-      **分散（クラスター）**: 署名を確かめた後、このノードにデータが無く（ライブは配信を受けていない、VOD は録画を持っていない）、持っているノードの公開 URL（`media_addr`）が分かれば 307 で案内する（`Location: {media_addr}/s/{exp}/{sig}/...?{元のクエリ}`、本文は text/plain）。単一ノードでは返さない。
+      署名付きの再生パスです（`/api/v1` の外にあり、認証ヘッダーは不要です）。URL は `POST /streams/{id}/playback-url`・`POST /recordings/{id}/playback-url` が返します。
+      署名は `HMAC-SHA256(playback_key, "{kind}/{id}/{exp}")` の先頭 16 バイトを base64url（パディングなし）にしたものです。署名が違う場合や期限切れの場合は 403（text/plain）です。応答には `Access-Control-Allow-Origin: *` が付きます。
+      **クラスター**: 署名を確認した後、このノードにデータが無く（ライブなら配信を受信していない、VOD なら録画を持っていない）、データを持つノードの公開 URL（`media_addr`）が分かれば、307 でリダイレクトします（`Location: {media_addr}/s/{exp}/{sig}/...?{元のクエリ}`、本文は text/plain）。単一ノードでは 307 を返しません。
   - name: health
-    description: 稼働確認（`/api/v1` の外、認証なし）。
+    description: 稼働確認です（`/api/v1` の外にあり、認証は不要です）。
 
 paths:
   # ------------------------------------------------------------------ system
@@ -117,11 +116,11 @@ paths:
     get:
       tags: [system]
       operationId: getCapabilities
-      summary: 対応版・コーデック・機能の一覧
+      summary: 対応するバージョン・コーデック・機能の一覧
       x-senca-scope: null
       responses:
         '200':
-          description: 能力
+          description: 能力の一覧
           headers: { X-Request-Id: { $ref: '#/components/headers/X-Request-Id' } }
           content:
             application/json:
@@ -133,7 +132,7 @@ paths:
       operationId: listNodes
       summary: ノードの一覧
       description: |
-        仕様との差: ページングは無い（`items` だけ、`next_cursor` なし）。クエリは読まない。
+        ページングはありません（`items` だけを返し、`next_cursor` はありません）。クエリパラメーターは読みません。
       x-senca-scope: node:admin
       responses:
         '200':
@@ -168,12 +167,12 @@ paths:
     post:
       tags: [system]
       operationId: drainNode
-      summary: 新規割当の停止（drain）
+      summary: 新しい割り当ての停止（drain）
       description: |
-        `draining: true` にしたノードを返す。本文は読まない。仕様は 202 と operation 資源だが、実装は 202 で Node をそのまま返す。
-        グリッドに登録されたノードなら、グリッドの `draining` も変える: 新しい仕事を置かず、置いてある仕事は移せるものから別のノードへ移す（`reason.code: draining`）。
-        排出中のノードは新しい送り手（RTMP・SRT・WHIP の publish）を断る（RTMP は `NetStream.Publish.Rejected`、SRT は拒否の理由 1503、
-        WHIP は排出中でない別のノードの `/whip/...` へ 307、無ければ 503）。つながっている送り手・視聴者はそのまま。
+        `draining: true` にしたノードを返します。本文は読みません。
+        グリッドに登録されたノードであれば、グリッドの `draining` も変更します。新しいワークロードを配置しなくなり、配置済みのワークロードは移動できるものから別のノードへ移します（`reason.code: draining`）。
+        drain 中のノードは、新しい配信者（RTMP・SRT・WHIP の publish）を拒否します（RTMP は `NetStream.Publish.Rejected`、SRT は拒否理由 1503、
+        WHIP は drain 中でない別のノードの `/whip/...` へ 307。そのようなノードが無ければ 503）。接続済みの配信者・視聴者はそのまま維持されます。
       x-senca-scope: node:admin
       parameters:
         - $ref: '#/components/parameters/IdempotencyKey'
@@ -192,7 +191,7 @@ paths:
       tags: [system]
       operationId: undrainNode
       summary: drain の解除
-      description: '`draining: false` にしたノードを返す。グリッドに登録されたノードなら、グリッドの `draining` も戻す（新しい仕事を受ける）。'
+      description: '`draining: false` にしたノードを返します。グリッドに登録されたノードであれば、グリッドの `draining` も戻します（新しいワークロードを受け付けます）。'
       x-senca-scope: node:admin
       parameters:
         - $ref: '#/components/parameters/IdempotencyKey'
@@ -208,8 +207,8 @@ paths:
     get:
       tags: [system]
       operationId: listDevices
-      summary: 全ノードのハードウェア（GPU・キャプチャボード）
-      description: 今の実装は自ノードだけを返す（コーデック worker が未接続なら `devices` は空）。
+      summary: ノードのハードウェア（GPU・キャプチャボード）
+      description: 現在は、要求を受けたノード自身の装置だけを返します（コーデック worker に接続していなければ `devices` は空です）。
       x-senca-scope: node:admin
       responses:
         '200':
@@ -225,11 +224,11 @@ paths:
     get:
       tags: [system]
       operationId: getGrid
-      summary: グリッドの様子（ノードの資源・予約、仕事の割り当て）
+      summary: グリッドの状態（ノードの資源・予約、ワークロードの割り当て）
       description: |
-        配置係（ADR-0013）が見ている状態。ノードごとの申告（容量・GPU・キャプチャ機器・ラベル）と予約（割り当てた仕事の要求の和）、
-        仕事ごとの割り当て・縮退の段・置けない理由。テナントで絞らない（`node:admin`）。クエリは読まない。
-        `last_heartbeat` は応答したノードが配置係（リーダー）のときだけ値がある。
+        スケジューラー（ADR-0013）が把握している状態です。ノードごとの登録内容（容量・GPU・キャプチャ機器・ラベル）と予約（割り当てたワークロードの要求の合計）、
+        ワークロードごとの割り当て先・縮退の段階・配置できない理由を返します。テナントでは絞り込みません（`node:admin`）。クエリパラメーターは読みません。
+        `last_heartbeat` は、応答したノードがスケジューラー（リーダー）のときだけ値が入ります。
       x-senca-scope: node:admin
       responses:
         '200':
@@ -247,12 +246,12 @@ paths:
     post:
       tags: [system]
       operationId: disableDevice
-      summary: 装置（GPU・キャプチャ機器）を手で止める
+      summary: 装置（GPU・キャプチャ機器）を手動で無効にする
       description: |
-        グリッドの装置を手で止める（`enabled: false`。測った健康 `healthy` とは別の印）。止めた装置を使う仕事は、別の装置・ノードへ
-        移るか縮退する。`placement.pin_policy: strict` でその装置に割り当てた仕事は止まったままになる。本文は読まない。
-        手で止めた印は合意ログに載り、心拍・ノードの申告し直しでは戻らない（`enable` で戻すまで）。
-        ノード（ID か名前）・装置がグリッドに無ければ 404。
+        グリッドの装置を手動で無効にします（`enabled: false`。計測による健全性 `healthy` とは別のフラグです）。無効にした装置を使うワークロードは、別の装置やノードへ
+        移るか、縮退します。`placement.pin_policy: strict` でその装置に割り当てたワークロードは停止したままになります。本文は読みません。
+        手動で無効にした状態は合意ログに記録され、ハートビートやノードの再登録では元に戻りません（`enable` で戻すまで続きます）。
+        ノード（ID または名前）や装置がグリッドに無ければ 404 です。
       x-senca-scope: node:admin
       parameters:
         - $ref: '#/components/parameters/IdempotencyKey'
@@ -271,10 +270,10 @@ paths:
     post:
       tags: [system]
       operationId: enableDevice
-      summary: 止めた装置を戻す
+      summary: 無効にした装置を有効に戻す
       description: |
-        手で止めた装置を戻す（`enabled: true`）。移した・縮退した仕事は、冷却の後に戻る（`reason.code: pin_returned`・`capacity_returned`）。本文は読まない。
-        ノード（ID か名前）・装置がグリッドに無ければ 404。
+        手動で無効にした装置を有効に戻します（`enabled: true`）。移動・縮退したワークロードは、クールダウンの後に戻ります（`reason.code: pin_returned`・`capacity_returned`）。本文は読みません。
+        ノード（ID または名前）や装置がグリッドに無ければ 404 です。
       x-senca-scope: node:admin
       parameters:
         - $ref: '#/components/parameters/IdempotencyKey'
@@ -292,38 +291,38 @@ paths:
     get:
       tags: [events]
       operationId: streamEvents
-      summary: SSE のイベント購読
+      summary: SSE によるイベントの購読
       description: |
-        HTTP 層（`events.rs`）が扱う長く開いたままの応答。適用された制御コマンドをイベントにして、テナントで絞って流す。
-        テナントを持たないイベント（`node.updated`・`stream.owner`・グリッドの `node.down`・`node.up`・`device.down`・`device.up`・`device.disabled`・
-        `device.enabled`・`grid.decisions`）は `node:admin` を持つ主体にだけ流す。15 秒ごとにコメント行（keepalive）を送る。
+        接続を開いたままイベントを送り続ける応答です。適用された制御コマンドをイベントとして、テナントで絞り込んで配信します。
+        テナントに属さないイベント（`node.updated`・`stream.owner`・グリッドの `node.down`・`node.up`・`device.down`・`device.up`・`device.disabled`・
+        `device.enabled`・`grid.decisions`）は、`node:admin` を持つ主体にだけ配信します。15 秒ごとにコメント行（keepalive）を送ります。
 
-        - SSE の `id` は制御ログの位置（applied_index）、`event` はイベントの種類、`data` は `SseEventData` の JSON。
+        - SSE の `id` は制御ログの位置（applied_index）、`event` はイベントの種類、`data` は `SseEventData` の JSON です。
         - 制御コマンドのイベント: `stream.created`・`stream.updated`・`stream.deleted`・`stream.owner`・`recording.updated`・`recording.deleted`・
           `schedule.created`・`schedule.updated`・`schedule.deleted`・`schedule.run`・`node.updated`・`input.updated`・`input.deleted`・
           `output.updated`・`output.deleted`・`secret.created`・`secret.deleted`・`pipeline.updated`・`pipeline.deleted`・
-          `room.updated`（部屋の作成・自動の作成・更新。`data: {auto}`）・`room.deleted`、
+          `room.updated`（部屋の作成・自動作成・更新。`data: {auto}`）・`room.deleted`、
           `media_pipeline.updated`（メディアパイプラインの作成・更新。`data: {room, desired_state}`）・`media_pipeline.deleted`、グリッドの `node.down`・`node.up`・`device.*`・`grid.decisions`（`resource_id` は空、`data: {decisions}`）。
-        - **部屋の核の出来事**（ADR-0015。合意ログに載らず、部屋を置いたノードの購読者にだけ流れる）: `room.started`（部屋の核が部屋を開いた）・`room.stopped`・
+        - **部屋のイベント**（ADR-0015。合意ログには記録されず、部屋を配置したノードの購読者にだけ配信されます）: `room.started`（部屋が開かれた）・`room.stopped`・
           `room.connection.created`・`room.connection.updated`・`room.connection.destroyed`・`room.track.published`・`room.track.unpublished`・`room.spotlight.changed`。
-          これらは SSE の `id` を持たない（`Last-Event-ID` の再開の対象外、取りこぼしは黙って飛ばす）。`data` に `event_id`（出来事の ID）と `node`（ノードの ID）があり、
-          `data.data` は出来事の中身（部屋の核の `data`）。テナントで絞り、`node:admin` でも他テナントのものは流さない。
-          部屋を消したとき（`DELETE /rooms/{id}`・自動の部屋の掃除）も `room.stopped` と、そのとき切った参加者の `room.connection.destroyed` が流れる。
-        - `Last-Event-ID` が今の位置より前なら、最初に `event: resync`（`id` は今の位置、`data: {}`）を送る（保持を持たないので必ず再同期になる）。
-        - 取りこぼし（購読の遅れ）では `event: resync`（`data: {}`）を送って閉じる。
+          これらには SSE の `id` がありません（`Last-Event-ID` による再開の対象外で、取りこぼした分は通知なく失われます）。`data` には `event_id`（イベントの ID）と `node`（ノードの ID）が入り、
+          `data.data` がイベントの内容です。テナントで絞り込み、`node:admin` であっても他のテナントのものは配信しません。
+          部屋を削除したとき（`DELETE /rooms/{id}`・自動作成した部屋の自動削除）も、`room.stopped` と、そのとき切断した参加者の `room.connection.destroyed` が配信されます。
+        - `Last-Event-ID` が現在の位置より前であれば、最初に `event: resync`（`id` は現在の位置、`data: {}`）を送ります（過去のイベントを保持しないため、必ず再同期になります）。
+        - 購読の遅れでイベントを取りこぼした場合は、`event: resync`（`data: {}`）を送って接続を閉じます。
 
-        仕様との差: 制御のイベントの `data` に `event_id`・`generation` の欄は無い（`event_id` は SSE の `id`）。`occurred_at` は送った時刻。保持期間 24 時間の再送は無い。
-        401・403 は他の API と同じ problem+json。
+        制御コマンドのイベントの `data` に `event_id`・`generation` はありません（`event_id` に相当するのは SSE の `id` です）。`occurred_at` は送信した時刻です。過去のイベントの再送はありません。
+        401・403 は他の API と同じ problem+json です。
       x-senca-scope: stream:read
       parameters:
         - name: Last-Event-ID
           in: header
           required: false
-          description: 最後に受け取ったイベントの `id`（整数）。
+          description: 最後に受信したイベントの `id`（整数）。
           schema: { type: string }
       responses:
         '200':
-          description: イベントの列
+          description: イベントのストリーム
           content:
             text/event-stream:
               schema:
@@ -349,10 +348,10 @@ paths:
       operationId: createStream
       summary: 配信定義の作成
       description: |
-        `ingest.stream_key` はこの応答と `POST /streams/{id}/keys` の応答でだけ渡す（再送の応答では `null` と `stream_key_redacted: true`）。
-        name は テナント内で一意（重複は 409）。stream 数の上限（1000/テナント）を超えると 403（`QUOTA_EXCEEDED`）。
-        仕様との差: 仕様 10.3 の `input`・`outputs`・`transform` は本文に無い（push の入力は RTMP/SRT/WHIP、pull の入力・外部への出力は `POST /streams/{id}/inputs`・`/outputs`、変換は `/pipelines`）。
-        `captions` を書くと、配信中に音声を外部の音声認識（と翻訳）へ送り、ライブ HLS に WebVTT の字幕（`master.m3u8`・`sub_{lang}.m3u8`）を足す。書かなければ外部へは何も送らない。
+        `ingest.stream_key` はこの応答と `POST /streams/{id}/keys` の応答でだけ返します（再送に対する応答では `null` になり、`stream_key_redacted: true` が付きます）。
+        name はテナント内で一意です（重複すると 409）。stream 数の上限（テナントあたり 1000）を超えると 403（`QUOTA_EXCEEDED`）です。
+        本文には入力・出力・変換の指定はありません。push の入力は RTMP/SRT/WHIP で受信し、pull の入力と外部への出力は `POST /streams/{id}/inputs`・`/outputs`、変換は `/pipelines` で設定します。
+        `captions` を指定すると、配信中に音声を外部の音声認識（と翻訳）サービスへ送り、ライブ HLS に WebVTT の字幕（`master.m3u8`・`sub_{lang}.m3u8`）を追加します。指定しなければ外部へは何も送りません。
       x-senca-scope: stream:write
       parameters:
         - $ref: '#/components/parameters/IdempotencyKey'
@@ -363,7 +362,7 @@ paths:
             schema: { $ref: '#/components/schemas/StreamCreate' }
       responses:
         '201':
-          description: 作成した
+          description: 作成しました
           headers:
             Location: { $ref: '#/components/headers/Location' }
             ETag: { $ref: '#/components/headers/ETagNotOnReplay' }
@@ -402,7 +401,7 @@ paths:
     get:
       tags: [streams]
       operationId: getStream
-      summary: desired / observed 状態の取得
+      summary: 望ましい状態（desired）と観測した状態（observed）の取得
       x-senca-scope: stream:read
       responses:
         '200': { $ref: '#/components/responses/StreamOk' }
@@ -414,8 +413,8 @@ paths:
       operationId: patchStream
       summary: 設定の更新
       description: |
-        書いたフィールドだけを置き換える（JSON Merge Patch の簡易版。`snapshots: null` で静止画の方針を、`captions: null` で字幕を消す。`captions` は丸ごと置き換える）。`desired_state: stopped` で publish を拒否する。
-        **仕様との差: 202 ではなく 200**（その場で反映した Stream を返す）。
+        指定したフィールドだけを置き換えます（JSON Merge Patch の簡易版です。`snapshots: null` で静止画の方針を、`captions: null` で字幕の設定を削除します。`captions` は全体を置き換えます）。`desired_state: stopped` にすると publish を拒否します。
+        成功すると 200 で、変更を反映した Stream を返します。
       x-senca-scope: stream:write
       parameters:
         - $ref: '#/components/parameters/IfMatchRequired'
@@ -440,8 +439,8 @@ paths:
       operationId: deleteStream
       summary: 配信の削除
       description: |
-        stream とその予約を消す（録画は消さない、仕様 10.2）。publish 中なら切る。
-        **仕様との差: 202 ではなく 204**（非同期の operation は無い）。
+        stream とその予約を削除します（録画は削除しません）。publish 中であれば切断します。
+        成功すると 204 です。
       x-senca-scope: stream:write
       parameters:
         - $ref: '#/components/parameters/IfMatchOptional'
@@ -458,14 +457,14 @@ paths:
     post:
       tags: [streams]
       operationId: rotateStreamKey
-      summary: publish 鍵の作り直し
-      description: 新しい鍵を `ingest.stream_key` で返す（古い鍵は無効）。本文は読まない。201 ではなく 200。
+      summary: publish 鍵の再発行
+      description: 新しい鍵を `ingest.stream_key` で返します（古い鍵は無効になります）。本文は読みません。成功すると 200 です（201 ではありません）。
       x-senca-scope: stream:write
       parameters:
         - $ref: '#/components/parameters/IdempotencyKey'
       responses:
         '200':
-          description: 新しい鍵を入れた stream
+          description: 新しい鍵を含む stream
           headers:
             ETag: { $ref: '#/components/headers/ETagNotOnReplay' }
             X-Request-Id: { $ref: '#/components/headers/X-Request-Id' }
@@ -487,7 +486,7 @@ paths:
       operationId: createStreamPlaybackUrl
       summary: ライブ再生の署名付き URL
       description: |
-        署名付きの HLS・RTMP play・WHEP の URL を返す。本文は省略できる（空なら Content-Type を見ない）。`ttl_secs` の既定は 300、上限は `--max-playback-ttl`。
+        署名付きの HLS・RTMP play・WHEP の URL を返します。本文は省略できます（空の場合は Content-Type を確認しません）。`ttl_secs` の既定は 300 秒、上限は `--max-playback-ttl` です。
       x-senca-scope: subscribe
       parameters:
         - $ref: '#/components/parameters/IdempotencyKey'
@@ -517,9 +516,9 @@ paths:
       operationId: startRecording
       summary: 録画の開始
       description: |
-        Recording を作って 202 で返す（`Location` は `/api/v1/recordings/{id}`）。本文は省略できる。
-        stream が `stopped` なら 409。同じ stream の同時録画が 8 本なら 403（`QUOTA_EXCEEDED`）。
-        仕様との差: operation 資源ではなく Recording を返す。
+        Recording を作成して 202 で返します（`Location` は `/api/v1/recordings/{id}`）。本文は省略できます。
+        stream が `stopped` であれば 409 です。同じ stream の同時録画がすでに 8 本あれば 403（`QUOTA_EXCEEDED`）です。
+        応答は operation 資源ではなく Recording そのものです。
       x-senca-scope: stream:write
       parameters:
         - $ref: '#/components/parameters/IdempotencyKey'
@@ -530,7 +529,7 @@ paths:
             schema: { $ref: '#/components/schemas/RecordingStart' }
       responses:
         '202':
-          description: 録画を始めた
+          description: 録画を開始しました
           headers:
             Location: { $ref: '#/components/headers/Location' }
             ETag: { $ref: '#/components/headers/ETagNotOnReplay' }
@@ -552,8 +551,8 @@ paths:
     post:
       tags: [streams]
       operationId: planStream
-      summary: 変換・資源計画（副作用なし）
-      description: 'publish 前は `state: provisional`。本文は読まない。'
+      summary: 変換と資源の計画（副作用なし）
+      description: 'publish 前は `state: provisional` です。本文は読みません。'
       x-senca-scope: stream:read
       parameters:
         - $ref: '#/components/parameters/IdempotencyKey'
@@ -575,11 +574,11 @@ paths:
     get:
       tags: [streams]
       operationId: getStreamSnapshot
-      summary: 今の画（静止画）
+      summary: 現在の映像の静止画
       description: |
-        配信中でなければ 409。キーフレーム待ち・映像のトラックが無いときも 409。復号はコーデック worker で行う。
-        worker が動いていない・映像を復号できる装置が無い（H.264/H.265 はハードウェアだけ）ときは 503（`CAPACITY_UNAVAILABLE`、`retryable: false` で `Retry-After` は付かない）。
-        worker が `UNSUPPORTED_CODEC`（royalty_free の方針など）を返すと 422、`INVALID_CONFIG` なら 400、それ以外の失敗は 500。
+        配信中でなければ 409 です。キーフレームを待っている間や、映像のトラックが無いときも 409 です。復号はコーデック worker が行います。
+        worker が動いていない場合や、映像を復号できる装置が無い場合（H.264/H.265 はハードウェアでのみ復号します）は 503（`CAPACITY_UNAVAILABLE`、`retryable: false` のため `Retry-After` は付きません）です。
+        worker が `UNSUPPORTED_CODEC`（royalty_free の方針など）を返すと 422、`INVALID_CONFIG` を返すと 400、それ以外の失敗は 500 です。
       x-senca-scope: stream:read
       parameters:
         - name: format
@@ -608,7 +607,7 @@ paths:
       tags: [streams]
       operationId: listStreamSnapshots
       summary: 保存した静止画の一覧
-      description: 撮った時刻の順。ページングは無い（クエリは読まない）。
+      description: 撮影した時刻の順に返します。ページングはありません（クエリパラメーターは読みません）。
       x-senca-scope: stream:read
       responses:
         '200':
@@ -656,7 +655,7 @@ paths:
       tags: [recordings]
       operationId: listRecordings
       summary: 録画の一覧
-      description: 削除中（`deleting`）の録画は出さない。`state` は受け付けるが絞り込みに使わない（実装の不備）。
+      description: 削除中（`deleting`）の録画は含めません。`state` クエリパラメーターは受け付けますが、絞り込みには使いません。
       x-senca-scope: recording:read
       parameters:
         - $ref: '#/components/parameters/Limit'
@@ -679,7 +678,7 @@ paths:
     get:
       tags: [recordings]
       operationId: getRecording
-      summary: 録画の索引と状態
+      summary: 録画のインデックスと状態
       x-senca-scope: recording:read
       responses:
         '200': { $ref: '#/components/responses/RecordingOk' }
@@ -689,10 +688,9 @@ paths:
     patch:
       tags: [recordings]
       operationId: patchRecording
-      summary: 保持期限・法的保全・名前の更新
+      summary: 保持期限・リーガルホールド・名前の更新
       description: |
-        法的保全の解除（`legal_hold: false`）には追加で `recording:delete` が要る（無いと 403）。
-        要る権限が `recording:*` ではなく `stream:write` なのは実装の選択（仕様の表に無い操作）。
+        リーガルホールドの解除（`legal_hold: false`）には、追加で `recording:delete` が必要です（無ければ 403）。
       x-senca-scope: stream:write
       parameters:
         - $ref: '#/components/parameters/IfMatchRequired'
@@ -714,14 +712,14 @@ paths:
     delete:
       tags: [recordings]
       operationId: deleteRecording
-      summary: 録画の削除ジョブ
-      description: 録画中なら止めてから消す。法的保全中は 409。
+      summary: 録画の削除（ジョブ）
+      description: 録画中であれば停止してから削除します。リーガルホールド中は 409 です。
       x-senca-scope: recording:delete
       parameters:
         - $ref: '#/components/parameters/IfMatchOptional'
       responses:
         '202':
-          description: 削除を受け付けた
+          description: 削除を受け付けました
           headers: { X-Request-Id: { $ref: '#/components/headers/X-Request-Id' } }
           content:
             application/json:
@@ -739,13 +737,13 @@ paths:
       tags: [recordings]
       operationId: stopRecording
       summary: 録画の停止
-      description: 録画中でなければ 409。停止は非同期で、応答の `state` はまだ `recording` のことがある。本文は読まない。
+      description: 録画中でなければ 409 です。停止は非同期で行われるため、応答の `state` がまだ `recording` のことがあります。本文は読みません。
       x-senca-scope: stream:write
       parameters:
         - $ref: '#/components/parameters/IdempotencyKey'
       responses:
         '202':
-          description: 停止を受け付けた
+          description: 停止を受け付けました
           headers: { X-Request-Id: { $ref: '#/components/headers/X-Request-Id' } }
           content:
             application/json:
@@ -763,7 +761,7 @@ paths:
       tags: [recordings]
       operationId: createRecordingPlaybackUrl
       summary: VOD 再生の署名付き URL
-      description: 本文は省略できる。`playback.mp4` は今は常に `null`（MP4 は `GET /recordings/{id}/export.mp4`）。
+      description: 本文は省略できます。`playback.mp4` は現在常に `null` です（MP4 は `GET /recordings/{id}/export.mp4` で取得します）。
       x-senca-scope: recording:read
       parameters:
         - $ref: '#/components/parameters/IdempotencyKey'
@@ -791,8 +789,8 @@ paths:
     get:
       tags: [recordings]
       operationId: getRecordingThumbnail
-      summary: 録画の代表画
-      description: 録画の確定後に作る。まだ無ければ 404。
+      summary: 録画のサムネイル
+      description: 録画の確定後に作成します。まだ無ければ 404 です。
       x-senca-scope: recording:read
       responses:
         '200':
@@ -809,8 +807,8 @@ paths:
     get:
       tags: [recordings]
       operationId: exportRecordingMp4
-      summary: MP4 書き出し
-      description: '録画中・空の録画は 409。大きすぎれば 413（`PAYLOAD_TOO_LARGE`）。`Content-Disposition: attachment` が付く。'
+      summary: MP4 の書き出し
+      description: '録画中の録画と空の録画は 409 です。大きすぎる録画は 413（`PAYLOAD_TOO_LARGE`）です。応答には `Content-Disposition: attachment` が付きます。'
       x-senca-scope: recording:read
       responses:
         '200':
@@ -834,9 +832,9 @@ paths:
       operationId: createSchedule
       summary: 予約の作成
       description: |
-        検査（`POST /schedules/check` と同じ）に通れば作る。窓は 24 時間まで、`end_at` は未来。
-        同じ stream の録画予約が同時 4 本を超えると 409（`details.overlaps` に重なる予約）。stream が無ければ 404。
-        予約数の上限（1000/テナント）を超えると 403（`QUOTA_EXCEEDED`）。
+        検査（`POST /schedules/check` と同じ）に通れば作成します。期間は 24 時間までで、`end_at` は未来の時刻である必要があります。
+        同じ stream の録画予約が同時に 4 本を超えると 409 です（`details.overlaps` に重なる予約が入ります）。stream が無ければ 404 です。
+        予約数の上限（テナントあたり 1000）を超えると 403（`QUOTA_EXCEEDED`）です。
       x-senca-scope: stream:write
       parameters:
         - $ref: '#/components/parameters/IdempotencyKey'
@@ -847,7 +845,7 @@ paths:
             schema: { $ref: '#/components/schemas/ScheduleCreate' }
       responses:
         '201':
-          description: 作成した
+          description: 作成しました
           headers:
             Location: { $ref: '#/components/headers/Location' }
             ETag: { $ref: '#/components/headers/ETagNotOnReplay' }
@@ -867,7 +865,7 @@ paths:
       tags: [schedules]
       operationId: listSchedules
       summary: 予約の一覧
-      description: '`state` は受け付けるが絞り込みに使わない（実装の不備）。'
+      description: '`state` クエリパラメーターは受け付けますが、絞り込みには使いません。'
       x-senca-scope: stream:read
       parameters:
         - $ref: '#/components/parameters/Limit'
@@ -888,8 +886,8 @@ paths:
     post:
       tags: [schedules]
       operationId: checkSchedule
-      summary: 作成前の検査（重なり・資源・競合、副作用なし）
-      description: 作成と同じ本文。通れば 200、だめなら作成と同じ 400 / 404 / 409。
+      summary: 作成前の検査（重なり・資源・競合。副作用なし）
+      description: 作成と同じ本文を送ります。検査に通れば 200、通らなければ作成と同じ 400 / 404 / 409 を返します。
       x-senca-scope: stream:read
       parameters:
         - $ref: '#/components/parameters/IdempotencyKey'
@@ -930,8 +928,8 @@ paths:
       operationId: patchSchedule
       summary: 予約の更新・取り消し
       description: |
-        実行中の予約の `start_at` は変えられない（409）。`state` は `canceled` だけ指定できる。取り消し以外は作成と同じ検査をする。
-        `recurrence`・`action`・`stream` は変えられない。`snapshot_interval_secs`・`retention_days` は消せない（null は「変えない」）。
+        実行中の予約の `start_at` は変更できません（409）。`state` には `canceled` だけを指定できます。取り消し以外の変更には作成と同じ検査を行います。
+        `recurrence`・`action`・`stream` は変更できません。`snapshot_interval_secs`・`retention_days` は削除できません（null は「変更しない」の意味です）。
       x-senca-scope: stream:write
       parameters:
         - $ref: '#/components/parameters/IfMatchRequired'
@@ -972,7 +970,7 @@ paths:
       tags: [schedules]
       operationId: listScheduleRuns
       summary: 実行履歴と結果
-      description: 直近 100 件。ページングは無い（`items` だけ）。
+      description: 直近の 100 件です。ページングはありません（`items` だけを返します）。
       x-senca-scope: stream:read
       responses:
         '200':
@@ -992,9 +990,8 @@ paths:
       operationId: createToken
       summary: API トークンの発行
       description: |
-        値（`token`、`senca_` で始まる）はこの応答でだけ渡す（再送の応答では `null` と `token_redacted: true`）。
-        自分が持っていない権限は渡せない（403）。トークン数の上限（100/テナント）を超えると 403（`QUOTA_EXCEEDED`）。
-        注意: `Location` は `/api/v1/tokens/{id}` を指すが、`GET /tokens/{id}` は無い（405）。
+        値（`token`。`senca_` で始まります）はこの応答でだけ返します（再送に対する応答では `null` になり、`token_redacted: true` が付きます）。
+        自分が持っていない権限を付けることはできません（403）。トークン数の上限（テナントあたり 100）を超えると 403（`QUOTA_EXCEEDED`）です。
       x-senca-scope: tenant:admin
       parameters:
         - $ref: '#/components/parameters/IdempotencyKey'
@@ -1005,7 +1002,7 @@ paths:
             schema: { $ref: '#/components/schemas/TokenCreate' }
       responses:
         '201':
-          description: 発行した
+          description: 発行しました
           headers:
             Location: { $ref: '#/components/headers/Location' }
             X-Request-Id: { $ref: '#/components/headers/X-Request-Id' }
@@ -1057,7 +1054,7 @@ paths:
       tags: [tokens]
       operationId: deleteToken
       summary: API トークンの失効
-      description: テナントの最後の `tenant:admin` トークンは消せない（409）。
+      description: テナントで最後の `tenant:admin` トークンは削除できません（409）。
       x-senca-scope: tenant:admin
       responses:
         '204': { $ref: '#/components/responses/NoContent' }
@@ -1076,11 +1073,11 @@ paths:
       operationId: createInput
       summary: 入力（pull）の追加
       description: |
-        外部から取りに行く入力を stream に足す（`rtmp_pull`・`rtsp_pull`・`srt_pull`・`hls_pull`）、またはこのノードのキャプチャ機器（`device`、`url: device:{機器 ID}`、機器は `GET /devices` の `capture`）。push（送り手がつなぐ）は stream の鍵で受けるのでここには無い。
-        検査の順: 本文の形（400・415）→ stream があるか（404）→ `protocol`（400）→ `url` のスキームと形（400、資格情報 `user:pass@` は拒否して `credential_ref` を求める）→ `credential_ref`（`secret:{name}` の形と、秘密値があるか、400）→ `options`（400）→ `placement`（400、`PlacementSpec`）。
-        配置: `enabled: true` の入力はグリッドの仕事（`input:{id}`）になり、配置係が割り当てたノードが実行する（`placement_status`）。`placement.node` はノードの ID か名前で、応答では ID に直る。`placement.degrade` は 400（パイプラインだけ）。
-        宛先の IP（リンクローカル・プライベートなど、`--egress-allow` に無いもの）は接続時に拒否し、`status.state` は `error`/`backoff`、`status.last_error` に理由が出る（作成そのものは 201）。
-        1 つの stream の入力は 4 つまで（超えると 403 `QUOTA_EXCEEDED`）。`enabled: true` ならすぐに実行を始める（応答の `status` は null か `starting` のことがある）。
+        外部から取得する入力（`rtmp_pull`・`rtsp_pull`・`srt_pull`・`hls_pull`）、またはこのノードのキャプチャ機器（`device`、`url: device:{機器 ID}`。機器は `GET /devices` の `capture`）を stream に追加します。push（配信者から接続する入力）は stream の鍵で受信するため、ここでは扱いません。
+        検査の順序: 本文の形式（400・415）→ stream の有無（404）→ `protocol`（400）→ `url` のスキームと形式（400。資格情報 `user:pass@` は拒否するので `credential_ref` を使います）→ `credential_ref`（`secret:{name}` の形式と秘密値の有無、400）→ `options`（400）→ `placement`（400、`PlacementSpec`）。
+        配置: `enabled: true` の入力はグリッドのワークロード（`input:{id}`）になり、スケジューラーが割り当てたノードが実行します（`placement_status`）。`placement.node` にはノードの ID か名前を指定でき、応答では ID に変換されます。`placement.degrade` は 400 です（パイプライン専用）。
+        接続先の IP アドレス（リンクローカル・プライベートなど、`--egress-allow` で許可していないもの）は接続のときに拒否されます。このとき `status.state` は `error`/`backoff` になり、`status.last_error` に理由が表示されます（作成自体は 201 で成功します）。
+        1 つの stream に追加できる入力は 4 つまでです（超えると 403 `QUOTA_EXCEEDED`）。`enabled: true` であればすぐに実行を始めます（応答の `status` は null か `starting` のことがあります）。
       x-senca-scope: stream:write
       parameters:
         - $ref: '#/components/parameters/IdempotencyKey'
@@ -1091,7 +1088,7 @@ paths:
             schema: { $ref: '#/components/schemas/InputCreate' }
       responses:
         '201':
-          description: 作成した
+          description: 作成しました
           headers:
             Location: { $ref: '#/components/headers/Location' }
             ETag: { $ref: '#/components/headers/ETagNotOnReplay' }
@@ -1132,7 +1129,7 @@ paths:
     get:
       tags: [io]
       operationId: getInput
-      summary: 入力の定義と実行の様子
+      summary: 入力の定義と実行の状態
       x-senca-scope: stream:read
       responses:
         '200':
@@ -1151,8 +1148,8 @@ paths:
       operationId: patchInput
       summary: 入力の更新
       description: |
-        `url`・`credential_ref`（null で外す）・`enabled`・`options`・`placement`（null で外す）を置き換える。`protocol` と `stream` は変えられない。作成と同じ検査をする。
-        更新すると実行中の接続を作り直す。`placement` を変えると配置し直す（別のノードへ移ることがある）。
+        `url`・`credential_ref`（null で削除）・`enabled`・`options`・`placement`（null で削除）を置き換えます。`protocol` と `stream` は変更できません。作成と同じ検査を行います。
+        更新すると実行中の接続を作り直します。`placement` を変更すると配置をやり直します（別のノードへ移ることがあります）。
       x-senca-scope: stream:write
       parameters:
         - $ref: '#/components/parameters/IfMatchRequired'
@@ -1163,7 +1160,7 @@ paths:
             schema: { $ref: '#/components/schemas/IoPatch' }
       responses:
         '200':
-          description: 更新した入力
+          description: 更新後の入力
           headers:
             ETag: { $ref: '#/components/headers/ETag' }
             X-Request-Id: { $ref: '#/components/headers/X-Request-Id' }
@@ -1182,7 +1179,7 @@ paths:
       tags: [io]
       operationId: deleteInput
       summary: 入力の削除
-      description: 実行中の接続を止めて定義を消す。`If-Match` は読まない。
+      description: 実行中の接続を停止して定義を削除します。`If-Match` は検査しません。
       x-senca-scope: stream:write
       responses:
         '204': { $ref: '#/components/responses/NoContent' }
@@ -1198,12 +1195,12 @@ paths:
       operationId: createOutput
       summary: 出力（push・PaaS 連携）の追加
       description: |
-        stream を外部へ送る出力を足す（`rtmp_push`・`srt_push`・`paas`、REQ-001）。配信が始まるまでは `status.state: waiting_input`。
-        - `rtmp_push`・`srt_push`: `url` が要る（スキームの検査と、資格情報 `user:pass@` の拒否は入力と同じ）。RTMP の stream key は `url` の最後か `credential_ref`。
-        - `paas`: `provider`（`cloudflare_stream`・`aws_ivs`・`aws_medialive`）と `credential_ref`（その API の資格情報）が要る。`url` は使わない。SENCA が外部に作った資源は `provider_resource` に入り、出力の削除で後片付けする。
-        1 つの stream の出力は 16 個まで（超えると 403 `QUOTA_EXCEEDED`）。
-        配置: `enabled: true` の出力はグリッドの仕事（`output:{id}`）になり、配置係が割り当てたノードが送り出す（`placement_status`。指定が無ければ配信を受けたノードを好む）。`placement` の検査は入力と同じ（`degrade` は 400）。
-        `whip_push`（外部の WHIP サーバーへ送る）はまだ無い（400）。
+        stream を外部へ送信する出力を追加します（`rtmp_push`・`srt_push`・`paas`）。配信が始まるまでは `status.state: waiting_input` です。
+        - `rtmp_push`・`srt_push`: `url` が必要です（スキームの検査と、資格情報 `user:pass@` の拒否は入力と同じです）。RTMP の stream key は `url` の末尾か `credential_ref` で指定します。
+        - `paas`: `provider`（`cloudflare_stream`・`aws_ivs`・`aws_medialive`）と `credential_ref`（その API の資格情報）が必要です。`url` は使いません。SENCA が外部サービスに作成した資源は `provider_resource` に記録され、出力を削除すると後片付けします。
+        1 つの stream に追加できる出力は 16 個までです（超えると 403 `QUOTA_EXCEEDED`）。
+        配置: `enabled: true` の出力はグリッドのワークロード（`output:{id}`）になり、スケジューラーが割り当てたノードが送信します（`placement_status`。指定が無ければ、配信を受信したノードを優先します）。`placement` の検査は入力と同じです（`degrade` は 400）。
+        `whip_push`（外部の WHIP サーバーへの送信）には未対応です（400）。
       x-senca-scope: stream:write
       parameters:
         - $ref: '#/components/parameters/IdempotencyKey'
@@ -1214,7 +1211,7 @@ paths:
             schema: { $ref: '#/components/schemas/OutputCreate' }
       responses:
         '201':
-          description: 作成した
+          description: 作成しました
           headers:
             Location: { $ref: '#/components/headers/Location' }
             ETag: { $ref: '#/components/headers/ETagNotOnReplay' }
@@ -1255,7 +1252,7 @@ paths:
     get:
       tags: [io]
       operationId: getOutput
-      summary: 出力の定義と実行の様子
+      summary: 出力の定義と実行の状態
       x-senca-scope: stream:read
       responses:
         '200':
@@ -1274,8 +1271,8 @@ paths:
       operationId: patchOutput
       summary: 出力の更新
       description: |
-        `url`・`credential_ref`（null で外す）・`enabled`・`options`・`placement`（null で外す）を置き換える。`protocol`・`provider`・`stream` は変えられない。
-        `paas` の出力に `url` を書くと 400（スキームが合わない）。
+        `url`・`credential_ref`（null で削除）・`enabled`・`options`・`placement`（null で削除）を置き換えます。`protocol`・`provider`・`stream` は変更できません。
+        `paas` の出力に `url` を指定すると 400 です（スキームが合わないため）。
       x-senca-scope: stream:write
       parameters:
         - $ref: '#/components/parameters/IfMatchRequired'
@@ -1286,7 +1283,7 @@ paths:
             schema: { $ref: '#/components/schemas/IoPatch' }
       responses:
         '200':
-          description: 更新した出力
+          description: 更新後の出力
           headers:
             ETag: { $ref: '#/components/headers/ETag' }
             X-Request-Id: { $ref: '#/components/headers/X-Request-Id' }
@@ -1306,7 +1303,7 @@ paths:
       operationId: deleteOutput
       summary: 出力の削除
       description: |
-        送出を止めて定義を消す。`paas` で SENCA が外部に作った資源は後片付けする（失敗してもログに残して定義は消す）。`If-Match` は読まない。
+        送信を停止して定義を削除します。`paas` で SENCA が外部サービスに作成した資源は後片付けします（後片付けに失敗してもログに記録し、定義は削除します）。`If-Match` は検査しません。
       x-senca-scope: stream:write
       responses:
         '204': { $ref: '#/components/responses/NoContent' }
@@ -1322,8 +1319,8 @@ paths:
       operationId: createSecret
       summary: 秘密値の登録
       description: |
-        値はノードの鍵（AES-256-GCM）で暗号化して保存する。応答にも一覧にも値は出ない。参照は `ref`（`secret:{name}`）。
-        name はテナント内で一意（重複は 409）、500 個まで（超えると 403 `QUOTA_EXCEEDED`）。値は 1〜8192 バイト。置き換えは「消して作り直す」（PATCH は無い）。
+        値はノードの鍵（AES-256-GCM）で暗号化して保存します。応答にも一覧にも値は含まれません。参照には `ref`（`secret:{name}`）を使います。
+        name はテナント内で一意です（重複すると 409）。500 個まで登録できます（超えると 403 `QUOTA_EXCEEDED`）。値は 1〜8192 バイトです。値を変えるには、削除してから登録し直します（PATCH はありません）。
       x-senca-scope: tenant:admin
       parameters:
         - $ref: '#/components/parameters/IdempotencyKey'
@@ -1334,7 +1331,7 @@ paths:
             schema: { $ref: '#/components/schemas/SecretCreate' }
       responses:
         '201':
-          description: 登録した（ETag は付かない）
+          description: 登録しました（ETag は付きません）
           headers:
             Location: { $ref: '#/components/headers/Location' }
             X-Request-Id: { $ref: '#/components/headers/X-Request-Id' }
@@ -1353,7 +1350,7 @@ paths:
       operationId: listSecrets
       summary: 秘密値の一覧（値は含まない）
       description: |
-        **ページングは無い**（すべてを返し、`next_cursor` は常に null）。クエリは読まない（`limit`・`cursor`・知らないクエリも 400 にならない。他の一覧と違う、実装の不備）。
+        **ページングはありません**（すべてを返し、`next_cursor` は常に null です）。クエリパラメーターは読みません（他の一覧と違い、`limit`・`cursor`・未知のクエリパラメーターを付けても 400 になりません）。
       x-senca-scope: tenant:admin
       responses:
         '200':
@@ -1372,7 +1369,7 @@ paths:
       operationId: deleteSecret
       summary: 秘密値の削除
       description: |
-        入力・出力の `credential_ref`、stream の `captions.asr_credential_ref`・`translate_credential_ref` が参照している秘密値は消せない（409）。`If-Match` は読まない。
+        入力・出力の `credential_ref`、stream の `captions.asr_credential_ref`・`translate_credential_ref` から参照されている秘密値は削除できません（409）。`If-Match` は検査しません。
       x-senca-scope: tenant:admin
       responses:
         '204': { $ref: '#/components/responses/NoContent' }
@@ -1389,14 +1386,14 @@ paths:
       operationId: createPipeline
       summary: パイプラインの作成
       description: |
-        グラフを検証して保存する（`desired_state` の既定は `stopped`）。検証の失敗:
-        - グラフが読めない・部品の設定が不正・参照の誤り・方針（`royalty_free` の stream に H.264 など）・対応しないコーデック → 400（`INVALID_CONFIG`、`details.issues` に `PipelineIssue` の配列）
-        - `source`・`sink` の stream がテナントに無い → 400（`INVALID_CONFIG`、`title` に stream の ID）
-        - 装置が無い（H.264/H.265 のハードウェアが無い、セッション数の上限）→ 503（`CAPACITY_UNAVAILABLE`、`retryable: false`、`Retry-After` は付かない）
-        name はテナント内で一意（重複は 409）、100 個まで（超えると 403 `QUOTA_EXCEEDED`）。コーデックの能力はこのノードのコーデック worker が報告するもの（worker が無ければ符号化・復号を含むグラフは 503）。
-        - `placement` の誤り → 400（`INVALID_CONFIG`、`PlacementSpec`。グラフの検査の後）
-        配置: `desired_state: running` のパイプラインはグリッドの仕事（`pipeline:{id}`）になり、配置係が割り当てたノードが動かす（`placement_status`。入力の stream を受けたノードを好む）。
-        `placement.degrade` に縮退の段を書くと、資源（CPU・GPU のセッション）が足りないとき段を下げ、その段の部品（と、入力がすべて止まった下流）を外したグラフで動かす（`placement_status.state: degraded`）。
+        グラフを検証して保存します（`desired_state` の既定は `stopped`）。検証に失敗した場合:
+        - グラフを解釈できない、処理ノードの設定が不正、参照の誤り、方針違反（`royalty_free` の stream に H.264 など）、対応しないコーデック → 400（`INVALID_CONFIG`。`details.issues` に `PipelineIssue` の配列）
+        - `source`・`sink` の stream がテナントに無い → 400（`INVALID_CONFIG`。`title` に stream の ID）
+        - 装置が無い（H.264/H.265 のハードウェアが無い、セッション数が上限に達している）→ 503（`CAPACITY_UNAVAILABLE`、`retryable: false`。`Retry-After` は付きません）
+        name はテナント内で一意です（重複すると 409）。100 個まで作成できます（超えると 403 `QUOTA_EXCEEDED`）。コーデックの能力は、このノードのコーデック worker が報告したものです（worker が無ければ、エンコード・デコードを含むグラフは 503）。
+        - `placement` の誤り → 400（`INVALID_CONFIG`、`PlacementSpec`。グラフの検査の後に検査します）
+        配置: `desired_state: running` のパイプラインはグリッドのワークロード（`pipeline:{id}`）になり、スケジューラーが割り当てたノードが実行します（`placement_status`。入力の stream を受信したノードを優先します）。
+        `placement.degrade` に縮退の段階を指定すると、資源（CPU・GPU のセッション）が足りないときに段階を下げ、その段階で指定した処理ノード（と、入力がすべて止まった下流の処理ノード）を外したグラフで実行します（`placement_status.state: degraded`）。
       x-senca-scope: stream:write
       parameters:
         - $ref: '#/components/parameters/IdempotencyKey'
@@ -1407,7 +1404,7 @@ paths:
             schema: { $ref: '#/components/schemas/PipelineCreate' }
       responses:
         '201':
-          description: 作成した
+          description: 作成しました
           headers:
             Location: { $ref: '#/components/headers/Location' }
             ETag: { $ref: '#/components/headers/ETagNotOnReplay' }
@@ -1447,7 +1444,7 @@ paths:
     get:
       tags: [pipelines]
       operationId: getPipeline
-      summary: パイプラインの定義と実行の様子
+      summary: パイプラインの定義と実行の状態
       x-senca-scope: stream:read
       responses:
         '200': { $ref: '#/components/responses/PipelineOk' }
@@ -1459,10 +1456,10 @@ paths:
       operationId: patchPipeline
       summary: パイプラインの更新・開始・停止
       description: |
-        `name`・`graph`・`desired_state`・`placement`（null で外す）を置き換える。`graph` は作成と同じ検査（400・503）。`desired_state: running` で開始、`stopped` で停止。
-        `placement` を書かなくても、今の縮退の段は新しい `graph` で検査し直す（止める部品がグラフから消えれば 400）。
-        更新すると generation が進み、動いていれば新しいグラフで作り直す（セッションを開き直す。シームレスな切り替えではない）。
-        name はテナント内で一意（重複は 409）。注意: 本文の検査の後に `If-Match` を比べるので、古い `If-Match` と不正な本文では 400 が先に返る。
+        `name`・`graph`・`desired_state`・`placement`（null で削除）を置き換えます。`graph` には作成と同じ検査を行います（400・503）。`desired_state: running` で開始し、`stopped` で停止します。
+        `placement` を指定しなくても、現在の縮退の段階を新しい `graph` で検査し直します（停止する処理ノードがグラフに無くなっていれば 400）。
+        更新すると generation が増え、実行中であれば新しいグラフで作り直します（セッションを開き直すため、シームレスな切り替えではありません）。
+        name はテナント内で一意です（重複すると 409）。本文の検査は `If-Match` の比較より先に行うため、古い `If-Match` と不正な本文を同時に送ると 400 が返ります。
       x-senca-scope: stream:write
       parameters:
         - $ref: '#/components/parameters/IfMatchRequired'
@@ -1487,7 +1484,7 @@ paths:
       tags: [pipelines]
       operationId: deletePipeline
       summary: パイプラインの削除
-      description: 動いていれば止めて消す。`If-Match` は読まない。
+      description: 実行中であれば停止してから削除します。`If-Match` は検査しません。
       x-senca-scope: stream:write
       responses:
         '204': { $ref: '#/components/responses/NoContent' }
@@ -1503,8 +1500,8 @@ paths:
       operationId: validatePipeline
       summary: グラフの検証と計画（副作用なし）
       description: |
-        本文が空なら保存したグラフを、本文があればそのグラフ（`PipelineGraph`、保存しない）を検証して計画を返す。失敗は作成と同じ 400・503。
-        権限は `stream:read`（副作用が無いので）。
+        本文が空であれば保存済みのグラフを、本文があればそのグラフ（`PipelineGraph`。保存はしません）を検証し、計画を返します。失敗時の応答は作成と同じ 400・503 です。
+        副作用が無いため、必要な権限は `stream:read` です。
       x-senca-scope: stream:read
       parameters:
         - $ref: '#/components/parameters/IdempotencyKey'
@@ -1515,7 +1512,7 @@ paths:
             schema: { $ref: '#/components/schemas/PipelineGraph' }
       responses:
         '200':
-          description: 検証に通った
+          description: 検証に成功しました
           headers: { X-Request-Id: { $ref: '#/components/headers/X-Request-Id' } }
           content:
             application/json:
@@ -1533,12 +1530,12 @@ paths:
     post:
       tags: [pipelines]
       operationId: controlPipeline
-      summary: オペレーターの操作（シーンの切り替え・トランジション・フェーダーなど）
+      summary: オペレーター操作（シーンの切り替え・トランジション・フェーダーなど）
       description: |
-        動いているパイプラインに `PipelineControl` を送り、返事を待つ（最長 15 秒）。合成・ミキサーへの操作は次の出力の刻みで反映する。
-        - 本文の形が違う（知らない `op`・知らない項目）→ 400（`INVALID_REQUEST`）。`prepare`・`commit`・`rollback`（世代の操作）も 400（グラフの変更は `PATCH` で）。
-        - パイプラインが動いていない（`stopped`・起動中・worker が無い）→ 409（`CONFLICT`）。
-        - 操作が実行時に拒否された（知らない部品・シーン・レイヤーなど）も 409（`CONFLICT`、`title` に worker の誤り）。本来は 400 にすべきもの（実装の不備）。
+        実行中のパイプラインに `PipelineControl` を送り、応答を待ちます（最長 15 秒）。合成・ミキサーへの操作は、次の出力フレームから反映されます。
+        - 本文の形式が違う（未知の `op`・未知の項目）→ 400（`INVALID_REQUEST`）。`prepare`・`commit`・`rollback`（世代の操作）も 400 です（グラフの変更には `PATCH` を使います）。
+        - パイプラインが実行中でない（`stopped`・起動中・worker が無い）→ 409（`CONFLICT`）。
+        - 実行時に操作が拒否された（未知の処理ノード・シーン・レイヤーなど）場合も 409（`CONFLICT`。`title` に worker のエラー）です。
       x-senca-scope: stream:write
       parameters:
         - $ref: '#/components/parameters/IdempotencyKey'
@@ -1549,7 +1546,7 @@ paths:
             schema: { $ref: '#/components/schemas/PipelineControl' }
       responses:
         '200':
-          description: 反映した
+          description: 反映しました
           headers: { X-Request-Id: { $ref: '#/components/headers/X-Request-Id' } }
           content:
             application/json:
@@ -1567,13 +1564,13 @@ paths:
     post:
       tags: [rooms]
       operationId: createRoom
-      summary: 部屋を作る
+      summary: 部屋の作成
       description: |
-        部屋を作る（ADR-0015）。`id` を省けば 24 文字の 16 進を作る。作った部屋はグリッドの仕事（`room:{id}`）になり、配置係が割り当てたノードの部屋の核が開く。
-        検査の順: 本文の形（400 `INVALID_REQUEST`・415）→ `id`（1〜128 文字の英数字と `-_.:@`、400）→ `settings`（400）→ `metadata`（JSON で 8 KiB まで、400）
-        → `placement`（400、`PlacementSpec`。`node` はノードの ID か名前で、応答では ID に直る。`degrade` は 400）→ 同じ ID の部屋（**どのテナントのものでも** 409）。
-        テナントあたり 10000 部屋まで（超えると 403 `QUOTA_EXCEEDED`）。
-        `settings` は部屋の核と同じ検査をする（形・範囲。違反は 400 で、`details.errors` に欄ごとの理由）。
+        部屋を作成します（ADR-0015）。`id` を省略すると 24 文字の 16 進数を生成します。作成した部屋はグリッドのワークロード（`room:{id}`）になり、スケジューラーが割り当てたノードで開かれます。
+        検査の順序: 本文の形式（400 `INVALID_REQUEST`・415）→ `id`（1〜128 文字の英数字と `-_.:@`、400）→ `settings`（400）→ `metadata`（JSON で 8 KiB まで、400）
+        → `placement`（400、`PlacementSpec`。`node` にはノードの ID か名前を指定でき、応答では ID に変換されます。`degrade` は 400）→ 同じ ID の部屋（**どのテナントのものでも** 409）。
+        テナントあたり 10000 部屋まで作成できます（超えると 403 `QUOTA_EXCEEDED`）。
+        `settings` には、部屋を開くときと同じ検査（形式・範囲）を行います。違反すると 400 で、`details.errors` に項目ごとの理由が入ります。
       x-senca-scope: stream:write
       parameters:
         - $ref: '#/components/parameters/IdempotencyKey'
@@ -1584,7 +1581,7 @@ paths:
             schema: { $ref: '#/components/schemas/RoomCreate' }
       responses:
         '201':
-          description: 作成した
+          description: 作成しました
           headers:
             Location: { $ref: '#/components/headers/Location' }
             ETag: { $ref: '#/components/headers/ETag' }
@@ -1603,7 +1600,7 @@ paths:
       tags: [rooms]
       operationId: listRooms
       summary: 部屋の一覧
-      description: テナントの部屋（参加トークンで自動に作った部屋を含む）。ID の昇順。
+      description: テナントの部屋（参加トークンの発行で自動作成された部屋を含む）を ID の昇順で返します。
       x-senca-scope: stream:read
       parameters:
         - $ref: '#/components/parameters/Limit'
@@ -1624,8 +1621,8 @@ paths:
     get:
       tags: [rooms]
       operationId: getRoom
-      summary: 部屋の定義と置き場所
-      description: 制御状態の部屋と配置の結果（`placement_status`）、つなぐ先（`signaling_url`）。参加者の数などの今の様子は `GET /rooms/{id}/participants`・`/stats`。他テナントの部屋は 404。
+      summary: 部屋の定義と配置先
+      description: 制御状態の部屋、配置の結果（`placement_status`）、接続先（`signaling_url`）を返します。参加者の数などの現在の状態は `GET /rooms/{id}/participants`・`/stats` で取得します。他のテナントの部屋は 404 です。
       x-senca-scope: stream:read
       responses:
         '200':
@@ -1644,10 +1641,10 @@ paths:
       operationId: patchRoom
       summary: 部屋の更新
       description: |
-        `settings`（**全体を置き換える**。書かなかった設定は既定値に戻る）・`metadata`・`placement`（null で外す）を変える。`settings`・`metadata` の null は「変えない」。
-        検査の順: `If-Match`（428・412）→ 本文の形（400・415）→ 部屋があるか（404）→ 世代（412）→ 作成と同じ検査（400）。
-        部屋の核に参加者がいる間は `e2ee`・`video_codec`・`audio_codec` を変えられない（409。部屋を置いたノードがこのノードのときだけ確かめる）。
-        変更は部屋を置いたノードの部屋の核へ非同期に伝わる（スポットライトの変更は参加者の希望にも反映する）。
+        `settings`（**全体を置き換えます**。指定しなかった設定は既定値に戻ります）・`metadata`・`placement`（null で削除）を変更します。`settings`・`metadata` の null は「変更しない」の意味です。
+        検査の順序: `If-Match`（428・412）→ 本文の形式（400・415）→ 部屋の有無（404）→ 世代（412）→ 作成と同じ検査（400）。
+        部屋に参加者がいる間は `e2ee`・`video_codec`・`audio_codec` を変更できません（409。部屋を配置したノードが要求を受けたノード自身の場合だけ確認します）。
+        変更は、部屋を配置したノードへ非同期に伝わります（スポットライトの変更は、参加者側の指定にも反映されます）。
       x-senca-scope: stream:write
       parameters:
         - $ref: '#/components/parameters/IfMatchRequired'
@@ -1658,7 +1655,7 @@ paths:
             schema: { $ref: '#/components/schemas/RoomPatch' }
       responses:
         '200':
-          description: 更新した部屋
+          description: 更新後の部屋
           headers:
             ETag: { $ref: '#/components/headers/ETag' }
             X-Request-Id: { $ref: '#/components/headers/X-Request-Id' }
@@ -1679,9 +1676,9 @@ paths:
       operationId: deleteRoom
       summary: 部屋の削除
       description: |
-        部屋を消す。部屋の核は参加者に `room_deleted` を送って切る（非同期）。`If-Match` は読まない。
-        部屋のメディアパイプライン（`media-pipelines`）も消え、その子の合成のパイプライン・送り出しの出力も消す（書き出した stream・録画は残る）。
-        このときメディアパイプラインの `media_pipeline.deleted` は流れない（`room.deleted` だけ）。
+        部屋を削除します。参加者には `room_deleted` を送って切断します（非同期）。`If-Match` は検査しません。
+        部屋のメディアパイプライン（`media-pipelines`）も削除され、その子である合成のパイプラインと外部配信の出力も削除されます（書き出した stream と録画は残ります）。
+        このとき、メディアパイプラインの `media_pipeline.deleted` は配信されません（`room.deleted` だけが配信されます）。
       x-senca-scope: stream:write
       responses:
         '204': { $ref: '#/components/responses/NoContent' }
@@ -1691,20 +1688,20 @@ paths:
         '500': { $ref: '#/components/responses/InternalError' }
   /rooms/{id}/tokens:
     parameters:
-      - { name: id, in: path, required: true, schema: { type: string }, description: '部屋の ID（無ければ自動で作る。1〜128 文字の英数字と `-_.:@` でなければ 404）' }
+      - { name: id, in: path, required: true, schema: { type: string }, description: '部屋の ID（存在しなければ自動で作成します。1〜128 文字の英数字と `-_.:@` でなければ 404）' }
     post:
       tags: [rooms]
       operationId: issueRoomToken
       summary: 参加トークンの発行
       description: |
-        シグナリングの `connect.token` に渡す参加トークン（JWT、EdDSA（Ed25519）・`kid: senca-rooms-1`、`iss: senca`・`aud: senca-rooms`、`sub` はテナント、`room`・`role`・`client_id`・`bundle_id`・`metadata`・`permissions` の claim）。
-        署名の鍵は制御状態から導くので、どのノードで発行しても全ノードで通る。`exp`・`iat`・`jti` が付く。
-        **部屋が無ければ自動で作る**（`auto: true`、既定の設定。誰もいないまま `empty_timeout_secs` 経つと消える。SSE の `room.updated` の `data.auto: true`）。
-        他テナントの部屋の ID は 404。
-        検査の順: 本文の形（400・415）→ 部屋の ID の形（404）→ `ttl_secs`（10〜86400、400）→ `client_id`・`bundle_id`（1〜255 文字で制御文字を含めない、400）→ `metadata`（8 KiB まで、400）。
-        署名の鍵がまだ無い（起動の直後）ときは 503（`retryable: true`）。
-        Idempotency-Key の再送では `token` を伏せる（`token: null`・`token_redacted: true`）。
-        仕様との差: senca-rooms 単体の発行（`RoomService::api_issue_token`）の `ttl_secs` の既定は 3600 で `expires_at` は UNIX 秒だが、ノードの API は既定 600 秒で RFC 3339。
+        シグナリングの `connect.token` に渡す参加トークンです（JWT。EdDSA（Ed25519）・`kid: senca-rooms-1`、`iss: senca`・`aud: senca-rooms`、`sub` はテナント、claim は `room`・`role`・`client_id`・`bundle_id`・`metadata`・`permissions`）。
+        署名の鍵は制御状態から導出されるため、どのノードで発行したトークンも全ノードで使えます。`exp`・`iat`・`jti` が付きます。
+        **部屋が無ければ自動で作成します**（`auto: true`、設定は既定値。誰もいない状態で `empty_timeout_secs` が経過すると削除されます。SSE の `room.updated` では `data.auto: true` です）。
+        他のテナントの部屋の ID を指定すると 404 です。
+        検査の順序: 本文の形式（400・415）→ 部屋の ID の形式（404）→ `ttl_secs`（10〜86400、400）→ `client_id`・`bundle_id`（1〜255 文字で制御文字を含まない、400）→ `metadata`（8 KiB まで、400）。
+        署名の鍵がまだ無いとき（起動の直後）は 503（`retryable: true`）です。
+        Idempotency-Key による再送では `token` を伏せます（`token: null`・`token_redacted: true`）。
+        `ttl_secs` の既定は 600 秒で、`expires_at` は RFC 3339 形式です。
       x-senca-scope: stream:write
       parameters:
         - $ref: '#/components/parameters/IdempotencyKey'
@@ -1715,7 +1712,7 @@ paths:
             schema: { $ref: '#/components/schemas/RoomTokenRequest' }
       responses:
         '201':
-          description: 発行した
+          description: 発行しました
           headers:
             X-Request-Id: { $ref: '#/components/headers/X-Request-Id' }
             Idempotency-Replayed: { $ref: '#/components/headers/Idempotency-Replayed' }
@@ -1738,9 +1735,9 @@ paths:
       operationId: listRoomParticipants
       summary: 参加者の一覧
       description: |
-        部屋の核の参加者（このノードにつないだ参加者と、カスケードで他のノードにいる参加者 `signaling: remote`）。`connection_id` の昇順。
-        部屋を置いたノードへ中継する（`rooms` タグの説明。置き場所が決まっていない・WebRTC が動いていないと 503、部屋の核が部屋をまだ開いていないと 404）。
-        `next_cursor` は返した数が `limit` と同じときだけ入る（続きが無くても入ることがある）。続きが無ければ欄そのものが無い。
+        部屋の参加者（このノードに接続した参加者と、カスケードで他のノードにいる参加者 `signaling: remote`）を `connection_id` の昇順で返します。
+        要求は部屋を配置したノードへ転送されます（`rooms` タグの説明を参照。配置先が決まっていない、または WebRTC が動いていなければ 503、部屋がまだ開かれていなければ 404）。
+        `next_cursor` は、返した件数が `limit` と同じときだけ入ります（続きが無くても入ることがあります）。続きが無ければ項目そのものがありません。
       x-senca-scope: stream:read
       parameters:
         - $ref: '#/components/parameters/Limit'
@@ -1765,8 +1762,8 @@ paths:
     get:
       tags: [rooms]
       operationId: getRoomParticipant
-      summary: 参加者
-      description: 参加者 1 人（`subscriptions` は受信の枠）。部屋を置いたノードへ中継する。参加していない接続は 404。
+      summary: 参加者の取得
+      description: 参加者 1 人の情報です（`subscriptions` は受信の枠）。要求は部屋を配置したノードへ転送されます。参加していない接続は 404 です。
       x-senca-scope: stream:read
       responses:
         '200':
@@ -1783,10 +1780,10 @@ paths:
     patch:
       tags: [rooms]
       operationId: patchRoomParticipant
-      summary: 参加者の metadata を変える
+      summary: 参加者の metadata の変更
       description: |
-        参加者の `metadata` を置き換え、部屋の全員に `notify {event: connection.updated}` を送る（SSE は `room.connection.updated`）。
-        `If-Match` は読まない（参加者は世代を持たない）。このノードにつないだ参加者だけ（他のノードの参加者・参加していない接続は 404）。部屋を置いたノードへ中継する。
+        参加者の `metadata` を置き換え、部屋の全員に `notify {event: connection.updated}` を送ります（SSE では `room.connection.updated`）。
+        `If-Match` は検査しません（参加者には世代がありません）。対象はこのノードに接続した参加者だけです（他のノードの参加者や、参加していない接続は 404）。要求は部屋を配置したノードへ転送されます。
       x-senca-scope: stream:write
       requestBody:
         required: true
@@ -1795,7 +1792,7 @@ paths:
             schema: { $ref: '#/components/schemas/ParticipantPatch' }
       responses:
         '200':
-          description: 変えた参加者
+          description: 変更後の参加者
           headers: { X-Request-Id: { $ref: '#/components/headers/X-Request-Id' } }
           content:
             application/json:
@@ -1810,8 +1807,8 @@ paths:
     delete:
       tags: [rooms]
       operationId: disconnectRoomParticipant
-      summary: 参加者を切る
-      description: '参加者を部屋から外す（シグナリングの `disconnect {reason: kicked}`）。トークンは無効にならない（入り直せる）。このノードにつないだ参加者だけ（他は 404）。部屋を置いたノードへ中継する。'
+      summary: 参加者の切断
+      description: '参加者を部屋から退出させます（シグナリングの `disconnect {reason: kicked}`）。トークンは無効にならないため、再入室できます。対象はこのノードに接続した参加者だけです（それ以外は 404）。要求は部屋を配置したノードへ転送されます。'
       x-senca-scope: stream:write
       responses:
         '204': { $ref: '#/components/responses/NoContent' }
@@ -1826,11 +1823,11 @@ paths:
     post:
       tags: [rooms]
       operationId: postRoomMessage
-      summary: 部屋・参加者へ送る
+      summary: 部屋・参加者へのメッセージ送信
       description: |
-        `label` が無ければシグナリングの `push {data}`（JSON のまま）、あれば DataChannel（そのラベルを開いている参加者へ、`data` は文字列）。
-        `to`（connection_id の列）が空なら全員。`to` に部屋にいない接続があれば 404。`data` は JSON で 64 KiB まで、`label` は `#` で始まる（400）。
-        応答の `delivered` は送った相手の数（誰もいなければ 0）。部屋を置いたノードへ中継する。
+        `label` が無ければシグナリングの `push {data}`（JSON のまま）で、`label` があれば DataChannel（そのラベルを開いている参加者へ。`data` は文字列）で送ります。
+        `to`（connection_id の配列）が空なら全員に送ります。`to` に部屋にいない接続が含まれていれば 404 です。`data` は JSON で 64 KiB まで、`label` は `#` で始める必要があります（違反すると 400）。
+        応答の `delivered` は送信した相手の数です（誰もいなければ 0）。要求は部屋を配置したノードへ転送されます。
       x-senca-scope: stream:write
       parameters:
         - $ref: '#/components/parameters/IdempotencyKey'
@@ -1841,7 +1838,7 @@ paths:
             schema: { $ref: '#/components/schemas/RoomMessage' }
       responses:
         '200':
-          description: 送った
+          description: 送信しました
           headers:
             X-Request-Id: { $ref: '#/components/headers/X-Request-Id' }
             Idempotency-Replayed: { $ref: '#/components/headers/Idempotency-Replayed' }
@@ -1864,8 +1861,8 @@ paths:
       operationId: getRoomStats
       summary: 部屋の統計
       description: |
-        部屋を置いたノードにつないだ参加者ごとの RTT・推定帯域・送受の量・送る層の bitrate・受けている層・クライアントの getStats の要約。
-        カスケードで他のノードにいる参加者は含まない。部屋を置いたノードへ中継する。
+        部屋を配置したノードに接続した参加者ごとに、RTT・推定帯域・送受信量・送信する層のビットレート・受信している層・クライアントの getStats の要約を返します。
+        カスケードで他のノードにいる参加者は含みません。要求は部屋を配置したノードへ転送されます。
       x-senca-scope: stream:read
       responses:
         '200':
@@ -1887,19 +1884,19 @@ paths:
       operationId: createMediaPipeline
       summary: メディアパイプラインの作成
       description: |
-        部屋のメディアパイプラインを作る（ADR-0016）。`desired_state` の既定は `running`（作るとすぐ、部屋を置いたノードの係が動かし始める）。
-        検査の順: 本文の形（400 `INVALID_REQUEST`・415）→ `room` がテナントの部屋か（無ければ 400 `INVALID_CONFIG`）→ 中身の検査（400 `INVALID_CONFIG`）
+        部屋のメディアパイプラインを作成します（ADR-0016）。`desired_state` の既定は `running` です（作成するとすぐに、部屋を配置したノードが実行を始めます）。
+        検査の順序: 本文の形式（400 `INVALID_REQUEST`・415）→ `room` がテナントの部屋か（無ければ 400 `INVALID_CONFIG`）→ 内容の検査（400 `INVALID_CONFIG`）
         → name の重複（テナント内で一意、409）→ 部屋あたり 8 つまで（超えると 403 `QUOTA_EXCEEDED`）。
-        中身の検査（順に）:
-        - `name`: 1〜40 文字の英数字と `-_.`（`.` で始まらない。子の stream の名前に使うので stream より短い）
+        内容の検査（この順に行います）:
+        - `name`: 1〜40 文字の英数字と `-_.`（`.` で始まらないこと。子の stream の名前に使うため、stream の名前より短くなっています）
         - `desired_state`: `running` か `stopped`
         - `participants`: 100 人まで、各 1〜255 バイト
-        - `composite`: `layout`（`grid`・`speaker`）、大きさ（幅 64〜3840・高さ 64〜2160 の偶数）、`fps`（1〜60）、`video_codec`（`av1`・`vp9`・`vp8`・`h264`・`h265`）、`bitrate_kbps`（100〜50000）
-        - `recording`: `composite: true` には `composite` が要る、`participants: true` には `export_participants: true` が要る、`retention_days`（1〜36500）。
-          **`recording` の `participants`・`composite` は省くと true**（`composite` の無いメディアパイプラインで `recording` を書くなら `composite: false` を明示する）
-        - `egress`: `composite` が要る（合成した 1 本を送る）、8 個まで。各要素は出力（`OutputCreate`）と同じ検査（`protocol`、`paas` 以外は `url`、`paas` は `provider`、`credential_ref` の秘密値、`options`）
-        - `captions`: stream の `captions` と同じ検査（`CaptionSettings`）、`export_participants: true` が要る
-        H.264・H.265 の合成は GPU が要るが、作成では検査しない（合成のパイプラインの配置・検証で失敗し、パイプラインの `placement_status` に出る）。
+        - `composite`: `layout`（`grid`・`speaker`）、サイズ（幅 64〜3840・高さ 64〜2160 の偶数）、`fps`（1〜60）、`video_codec`（`av1`・`vp9`・`vp8`・`h264`・`h265`）、`bitrate_kbps`（100〜50000）
+        - `recording`: `composite: true` には `composite` が、`participants: true` には `export_participants: true` が必要です。`retention_days` は 1〜36500 です。
+          **`recording` の `participants`・`composite` は省略すると true になります**（`composite` の無いメディアパイプラインで `recording` を指定する場合は、`composite: false` を明示してください）
+        - `egress`: `composite` が必要です（合成した 1 本を送信します）。8 個まで指定できます。各要素には出力（`OutputCreate`）と同じ検査を行います（`protocol`、`paas` 以外は `url`、`paas` は `provider`、`credential_ref` の秘密値、`options`）
+        - `captions`: stream の `captions` と同じ検査を行います（`CaptionSettings`）。`export_participants: true` が必要です
+        H.264・H.265 の合成には GPU が必要ですが、作成時には検査しません（合成のパイプラインの配置・検証で失敗し、そのパイプラインの `placement_status` に表示されます）。
       x-senca-scope: stream:write
       parameters:
         - $ref: '#/components/parameters/IdempotencyKey'
@@ -1910,7 +1907,7 @@ paths:
             schema: { $ref: '#/components/schemas/MediaPipelineCreate' }
       responses:
         '201':
-          description: 作成した
+          description: 作成しました
           headers:
             Location: { $ref: '#/components/headers/Location' }
             ETag: { $ref: '#/components/headers/ETag' }
@@ -1930,8 +1927,8 @@ paths:
       operationId: listMediaPipelines
       summary: メディアパイプラインの一覧
       description: |
-        テナントのメディアパイプライン。ID の昇順。
-        `room` で部屋を絞る（値は URL の復号をしてから比べる）。
+        テナントのメディアパイプラインを ID の昇順で返します。
+        `room` で部屋を絞り込めます（値は URL デコードしてから比較します）。
       x-senca-scope: stream:read
       parameters:
         - $ref: '#/components/parameters/RoomFilter'
@@ -1953,8 +1950,8 @@ paths:
     get:
       tags: [media-pipelines]
       operationId: getMediaPipeline
-      summary: メディアパイプラインの定義・成果物・様子
-      description: 定義と、子の資源（`artifacts`）、このノードでの実行の様子（`status`）。他テナントのものは 404。
+      summary: メディアパイプラインの定義・成果物・状態
+      description: 定義と、子の資源（`artifacts`）、このノードでの実行の状態（`status`）を返します。他のテナントのものは 404 です。
       x-senca-scope: stream:read
       responses:
         '200':
@@ -1973,11 +1970,11 @@ paths:
       operationId: patchMediaPipeline
       summary: メディアパイプラインの更新・開始・停止
       description: |
-        書いたフィールドだけ置き換える（`MediaPipelinePatch`）。`room` は変えられない（知らないフィールドとして 400）。`desired_state: stopped` で止め、`running` で動かす。
-        検査の順: `If-Match`（428・412）→ 本文の形（400・415）→ あるか（404）→ 世代（412）→ 作成と同じ中身の検査（400）。
-        `stopped` にする・`composite` を外す・`egress` を変えると、前の定義の子（合成のパイプライン・送り出しの出力）を消す（動かすなら係が作り直す）。
-        書き出した stream はそのまま（`participants` を減らしても、外れた参加者の stream は残る）。
-        name を変えるときも、テナントの中の重複を検査する（409）。
+        指定したフィールドだけを置き換えます（`MediaPipelinePatch`）。`room` は変更できません（未知のフィールドとして 400）。`desired_state: stopped` で停止し、`running` で実行します。
+        検査の順序: `If-Match`（428・412）→ 本文の形式（400・415）→ 資源の有無（404）→ 世代（412）→ 作成と同じ内容の検査（400）。
+        `stopped` にする、`composite` を外す、`egress` を変更する、のいずれかを行うと、以前の定義の子の資源（合成のパイプラインと外部配信の出力）を削除します（実行を続ける場合は作り直します）。
+        書き出した stream はそのまま残ります（`participants` を減らしても、対象から外れた参加者の stream は残ります）。
+        name を変更する場合も、テナント内での重複を検査します（409）。
       x-senca-scope: stream:write
       parameters:
         - $ref: '#/components/parameters/IfMatchRequired'
@@ -1988,7 +1985,7 @@ paths:
             schema: { $ref: '#/components/schemas/MediaPipelinePatch' }
       responses:
         '200':
-          description: 更新したメディアパイプライン
+          description: 更新後のメディアパイプライン
           headers:
             ETag: { $ref: '#/components/headers/ETag' }
             X-Request-Id: { $ref: '#/components/headers/X-Request-Id' }
@@ -2008,8 +2005,8 @@ paths:
       operationId: deleteMediaPipeline
       summary: メディアパイプラインの削除
       description: |
-        消して、子の合成のパイプラインと送り出しの出力を消す（PaaS の資源も片付ける）。書き出した stream（参加者ごと・合成）と録画は残る。
-        参加者の書き出しは、部屋を置いたノードの係が次の見回り（1 秒以内）で止める。`If-Match` は読まない。
+        メディアパイプラインと、その子である合成のパイプラインと外部配信の出力を削除します（PaaS 側の資源も後片付けします）。書き出した stream（参加者ごと・合成）と録画は残ります。
+        参加者の書き出しは、部屋を配置したノードが次の確認（1 秒以内）で停止します。`If-Match` は検査しません。
       x-senca-scope: stream:write
       responses:
         '204': { $ref: '#/components/responses/NoContent' }
@@ -2032,12 +2029,12 @@ paths:
       security: []
       x-senca-scope: null
       parameters:
-        - { name: _HLS_msn, in: query, required: false, schema: { type: integer, minimum: 0 }, description: この Media Sequence が出るまで待つ（最長 6 秒） }
+        - { name: _HLS_msn, in: query, required: false, schema: { type: integer, minimum: 0 }, description: この Media Sequence が現れるまで待ちます（最長 6 秒） }
         - { name: _HLS_part, in: query, required: false, schema: { type: integer, minimum: 0 }, description: _HLS_msn の中の part 番号 }
         - { name: _HLS_skip, in: query, required: false, schema: { type: string, enum: ['YES', v2] }, description: Playlist Delta Update }
       description: |
-        映像・音声のメディアプレイリスト。stream に `captions` があり字幕ができ始めると、字幕付きの multivariant（`master.m3u8`）も出る（`GET /s/.../live/{stream}/{file}`）。
-        配信を受けていない（このノードにも、案内できる他のノードにも無い）ときは 404。
+        映像・音声のメディアプレイリストです。stream に `captions` が設定されていて字幕が生成され始めると、字幕付きの multivariant プレイリスト（`master.m3u8`）も取得できます（`GET /s/.../live/{stream}/{file}`）。
+        配信を受信していない（このノードにも、リダイレクト先にできる他のノードにも無い）場合は 404 です。
       responses:
         '200':
           description: 'プレイリスト（`Cache-Control: no-cache`）'
@@ -2048,7 +2045,7 @@ paths:
         '403': { $ref: '#/components/responses/PlainError' }
         '404': { $ref: '#/components/responses/PlainError' }
         '503':
-          description: _HLS_msn / _HLS_part の待ちが時間切れ
+          description: _HLS_msn / _HLS_part の待機がタイムアウトしました
           headers: { Retry-After: { $ref: '#/components/headers/Retry-After' } }
           content:
             text/plain: { schema: { type: string } }
@@ -2062,12 +2059,12 @@ paths:
     get:
       tags: [playback]
       operationId: getLiveObject
-      summary: ライブ HLS のセグメント・part・init・字幕（メモリから）
+      summary: ライブ HLS のセグメント・part・init・字幕（メモリから配信）
       description: |
         - セグメント・part・init: `video/mp2t`・`video/mp4`・`video/iso.segment`、`Cache-Control: max-age=60`。
-        - 字幕（stream に `captions` があるとき、R6-4）: `master.m3u8`（`index.m3u8` と字幕の `EXT-X-MEDIA:TYPE=SUBTITLES` を束ねた multivariant）、
-          `sub_{lang}.m3u8`（言語ごとの字幕のメディアプレイリスト、`lang` は `captions.language` と `captions.targets`）、`sub_{lang}_{n}.vtt`（WebVTT のセグメント、古いものから消える）。
-          いずれも `Cache-Control: no-cache`。字幕がまだ無ければ 404。
+        - 字幕（stream に `captions` が設定されているとき）: `master.m3u8`（`index.m3u8` と字幕の `EXT-X-MEDIA:TYPE=SUBTITLES` をまとめた multivariant プレイリスト）、
+          `sub_{lang}.m3u8`（言語ごとの字幕のメディアプレイリスト。`lang` は `captions.language` と `captions.targets`）、`sub_{lang}_{n}.vtt`（WebVTT のセグメント。古いものから削除されます）。
+          いずれも `Cache-Control: no-cache` です。字幕がまだ無ければ 404 です。
       security: []
       x-senca-scope: null
       responses:
@@ -2092,7 +2089,7 @@ paths:
       tags: [playback]
       operationId: getVodPlaylist
       summary: 録画の HLS プレイリスト
-      description: 確定した録画は VOD（ENDLIST あり）、録画中は EVENT（ENDLIST なし）。削除中は 404。
+      description: 確定した録画は VOD（ENDLIST あり）、録画中の録画は EVENT（ENDLIST なし）として返します。削除中は 404 です。
       security: []
       x-senca-scope: null
       responses:
@@ -2117,7 +2114,7 @@ paths:
       security: []
       x-senca-scope: null
       parameters:
-        - { name: Range, in: header, required: false, schema: { type: string }, description: 1 区間だけ（`bytes=a-b`） }
+        - { name: Range, in: header, required: false, schema: { type: string }, description: 1 区間だけ指定できます（`bytes=a-b`） }
       responses:
         '200':
           description: '`Accept-Ranges: bytes`、`Cache-Control: max-age=3600`'
@@ -2126,7 +2123,7 @@ paths:
             video/mp4: { schema: { type: string } }
             video/iso.segment: { schema: { type: string } }
         '206':
-          description: 部分
+          description: 部分的な内容
           headers: { Content-Range: { schema: { type: string } } }
           content:
             video/mp2t: { schema: { type: string } }
@@ -2147,7 +2144,7 @@ paths:
     get:
       tags: [health]
       operationId: healthz
-      summary: 生きているか
+      summary: 稼働しているか（liveness）
       security: []
       x-senca-scope: null
       responses:
@@ -2160,8 +2157,8 @@ paths:
     get:
       tags: [health]
       operationId: readyz
-      summary: 要求を受けられるか
-      description: 起動処理の後に 200。停止中（SIGTERM 後）は 503。クラスタでは、過半数（またはリーダー）との連絡が 4 秒を超えて途絶えている間も 503（そのノードはグリッドの仕事を止めている）。
+      summary: 要求を受け付けられるか（readiness）
+      description: 起動処理が終わると 200 を返します。停止中（SIGTERM の後）は 503 です。クラスターでは、過半数のノード（またはリーダー）との通信が 4 秒を超えて途絶えている間も 503 です（そのノードはグリッドのワークロードを停止しています）。
       security: []
       x-senca-scope: null
       responses:
@@ -2177,8 +2174,8 @@ components:
       type: http
       scheme: bearer
       description: |
-        API トークン（`senca_` で始まる、`POST /tokens` で発行。初回起動時に `{data-dir}/control/bootstrap-admin-token` に `tenant:admin`+`node:admin` のものを書く）
-        または JWT（`--jwks`・`--jwt-issuer`・`--jwt-audience` を設定したとき。テナントは `--jwt-tenant-claim` の claim）。
+        API トークン（`senca_` で始まり、`POST /tokens` で発行します。初回起動時に、`tenant:admin`+`node:admin` のトークンが `{data-dir}/control/bootstrap-admin-token` に書き出されます）
+        または JWT（`--jwks`・`--jwt-issuer`・`--jwt-audience` を設定したとき。テナントは `--jwt-tenant-claim` で指定した claim から決まります）。
 
   parameters:
     StreamId: { name: id, in: path, required: true, schema: { type: string }, description: stream の ID }
@@ -2199,7 +2196,7 @@ components:
       name: room
       in: query
       required: false
-      description: '部屋の ID で絞る（今は 400 になる。`GET /media-pipelines` の説明）'
+      description: '部屋の ID で絞り込みます'
       schema: { type: string }
     Limit:
       name: limit
@@ -2210,45 +2207,45 @@ components:
       name: cursor
       in: query
       required: false
-      description: 前の応答の `next_cursor`（最後に返した ID。これより大きい ID から返す）
+      description: 前の応答の `next_cursor`（最後に返した ID。これより大きい ID から返します）
       schema: { type: string }
     StreamFilter:
       name: stream
       in: query
       required: false
-      description: stream の ID で絞る
+      description: stream の ID で絞り込みます
       schema: { type: string }
     StateIgnored:
       name: state
       in: query
       required: false
       deprecated: true
-      description: 受け付けるが今は無視する（絞り込まない）。
+      description: 受け付けますが、現在は無視します（絞り込みません）。
       schema: { type: string }
     IdempotencyKey:
       name: Idempotency-Key
       in: header
       required: false
-      description: 1〜255 文字の表示可能 ASCII。24 時間、同じ答えを返す。
+      description: 1〜255 文字の表示可能な ASCII。24 時間、同じ応答を返します。
       schema: { type: string, minLength: 1, maxLength: 255, pattern: '^[!-~]+$' }
     IfMatchRequired:
       name: If-Match
       in: header
       required: true
-      description: '`"{generation}"`（`W/` 付きも可）。無いと 428、形が違う・古いと 412。'
+      description: '`"{generation}"`（`W/` 付きも可）。無ければ 428、形式が違うか古ければ 412 です。'
       schema: { type: string, pattern: '^(W/)?"[0-9]+"$' }
     IfMatchOptional:
       name: If-Match
       in: header
       required: false
-      description: 付ければ `"{generation}"` と比べる（違えば 412）。
+      description: 付けた場合は `"{generation}"` と比較します（違えば 412）。
       schema: { type: string, pattern: '^(W/)?"[0-9]+"$' }
     SignedExp: { name: exp, in: path, required: true, schema: { type: integer }, description: 期限（UNIX 秒） }
     SignedSig: { name: sig, in: path, required: true, schema: { type: string }, description: 署名（base64url、22 文字） }
 
   headers:
     X-Request-Id:
-      description: 要求 ID（エラーの `request_id` と同じ）
+      description: 要求 ID（エラーの `request_id` と同じ値）
       required: true
       schema: { type: string }
     ETag:
@@ -2256,19 +2253,19 @@ components:
       required: true
       schema: { type: string, pattern: '^"[0-9]+"$' }
     ETagNotOnReplay:
-      description: '`"{generation}"`。Idempotency-Key の再送の応答にも、覚えた値を付ける。'
+      description: '`"{generation}"`。Idempotency-Key による再送の応答にも、保存した値が付きます。'
       required: false
       schema: { type: string, pattern: '^"[0-9]+"$' }
     Location:
-      description: 作った資源の絶対パス（`/api/v1/...`）
+      description: 作成した資源の絶対パス（`/api/v1/...`）
       required: true
       schema: { type: string, pattern: '^/api/v1/' }
     Idempotency-Replayed:
-      description: Idempotency-Key の再送に覚えた答えを返したとき `true`（初回には付かない）
+      description: Idempotency-Key による再送に対して、保存済みの応答を返したときに `true`（初回の応答には付きません）
       required: false
       schema: { type: string, const: 'true' }
     Retry-After:
-      description: '再試行までの秒数（今は常に 1）。`retryable: false` のときは付かない'
+      description: '再試行までの秒数（現在は常に 1）。`retryable: false` のときは付きません'
       required: false
       schema: { type: integer }
     WWW-Authenticate:
@@ -2278,7 +2275,7 @@ components:
 
   responses:
     NoContent:
-      description: 完了（本文なし）
+      description: 完了しました（本文なし）
       headers: { X-Request-Id: { $ref: '#/components/headers/X-Request-Id' } }
     StreamOk:
       description: stream
@@ -2313,21 +2310,21 @@ components:
         application/json:
           schema: { $ref: '#/components/schemas/Pipeline' }
     NodeAccepted:
-      description: 受け付けた（変更後のノード）
+      description: 受け付けました（変更後のノード）
       headers: { X-Request-Id: { $ref: '#/components/headers/X-Request-Id' } }
       content:
         application/json:
           schema: { $ref: '#/components/schemas/Node' }
     DeviceHealthAccepted:
-      description: '受け付けた'
+      description: '受け付けました'
       headers: { X-Request-Id: { $ref: '#/components/headers/X-Request-Id' } }
       content:
         application/json:
           schema: { $ref: '#/components/schemas/DeviceHealth' }
     BadRequest:
       description: |
-        `INVALID_REQUEST`（本文・クエリ・ヘッダーの形）または `INVALID_CONFIG`（値の範囲・組み合わせ）
-        Idempotency-Key の再送で覚えた失敗を返すときも `application/problem+json` で、`request_id` は再送の要求のものになる。
+        `INVALID_REQUEST`（本文・クエリ・ヘッダーの形式の誤り）または `INVALID_CONFIG`（値の範囲・組み合わせの誤り）
+        Idempotency-Key による再送で、保存済みの失敗を返す場合も `application/problem+json` で、`request_id` は再送した要求のものになります。
       headers: { X-Request-Id: { $ref: '#/components/headers/X-Request-Id' } }
       content:
         application/problem+json:
@@ -2344,8 +2341,8 @@ components:
           schema: { $ref: '#/components/schemas/Problem' }
     Forbidden:
       description: |
-        `FORBIDDEN`（権限が足りない）または `QUOTA_EXCEEDED`（上限）
-        Idempotency-Key の再送で覚えた失敗を返すときも `application/problem+json` で、`request_id` は再送の要求のものになる。
+        `FORBIDDEN`（権限が足りない）または `QUOTA_EXCEEDED`（上限を超えた）
+        Idempotency-Key による再送で、保存済みの失敗を返す場合も `application/problem+json` で、`request_id` は再送した要求のものになります。
       headers: { X-Request-Id: { $ref: '#/components/headers/X-Request-Id' } }
       content:
         application/problem+json:
@@ -2354,8 +2351,8 @@ components:
           schema: { $ref: '#/components/schemas/Problem' }
     NotFound:
       description: |
-        `NOT_FOUND`（無い、または他テナント）
-        Idempotency-Key の再送で覚えた失敗を返すときも `application/problem+json` で、`request_id` は再送の要求のものになる。
+        `NOT_FOUND`（存在しない、または他のテナントの資源）
+        Idempotency-Key による再送で、保存済みの失敗を返す場合も `application/problem+json` で、`request_id` は再送した要求のものになります。
       headers: { X-Request-Id: { $ref: '#/components/headers/X-Request-Id' } }
       content:
         application/problem+json:
@@ -2363,7 +2360,7 @@ components:
         application/json:
           schema: { $ref: '#/components/schemas/Problem' }
     MethodNotAllowed:
-      description: '`METHOD_NOT_ALLOWED`（経路表にある資源に、書いていないメソッド）'
+      description: '`METHOD_NOT_ALLOWED`（定義済みの資源に、定義されていないメソッドを送った）'
       headers: { X-Request-Id: { $ref: '#/components/headers/X-Request-Id' } }
       content:
         application/problem+json:
@@ -2371,7 +2368,7 @@ components:
     Conflict:
       description: |
         `CONFLICT`（状態・一意性・上限の衝突）または `IDEMPOTENCY_CONFLICT`
-        Idempotency-Key の再送で覚えた失敗を返すときも `application/problem+json` で、`request_id` は再送の要求のものになる。
+        Idempotency-Key による再送で、保存済みの失敗を返す場合も `application/problem+json` で、`request_id` は再送した要求のものになります。
       headers: { X-Request-Id: { $ref: '#/components/headers/X-Request-Id' } }
       content:
         application/problem+json:
@@ -2379,7 +2376,7 @@ components:
         application/json:
           schema: { $ref: '#/components/schemas/Problem' }
     PreconditionFailed:
-      description: '`PRECONDITION_FAILED`（If-Match が古い・形が違う）'
+      description: '`PRECONDITION_FAILED`（If-Match が古い、または形式が違う）'
       headers: { X-Request-Id: { $ref: '#/components/headers/X-Request-Id' } }
       content:
         application/problem+json:
@@ -2393,7 +2390,7 @@ components:
     UnsupportedMediaType:
       description: |
         `UNSUPPORTED_MEDIA_TYPE`（Content-Type が application/json でない）
-        Idempotency-Key の再送で覚えた失敗を返すときも `application/problem+json` で、`request_id` は再送の要求のものになる。
+        Idempotency-Key による再送で、保存済みの失敗を返す場合も `application/problem+json` で、`request_id` は再送した要求のものになります。
       headers: { X-Request-Id: { $ref: '#/components/headers/X-Request-Id' } }
       content:
         application/problem+json:
@@ -2401,7 +2398,7 @@ components:
         application/json:
           schema: { $ref: '#/components/schemas/Problem' }
     UnprocessableEntity:
-      description: '`UNSUPPORTED_CODEC`（今は `GET /streams/{id}/snapshot` の復号でだけ返す）'
+      description: '`UNSUPPORTED_CODEC`（現在は `GET /streams/{id}/snapshot` の復号でだけ返します）'
       headers: { X-Request-Id: { $ref: '#/components/headers/X-Request-Id' } }
       content:
         application/problem+json:
@@ -2413,7 +2410,7 @@ components:
         application/problem+json:
           schema: { $ref: '#/components/schemas/Problem' }
     TooManyRequests:
-      description: '`RATE_LIMITED`（予約。今はどの操作も返さない）。`Retry-After` が付く。'
+      description: '`RATE_LIMITED`（予約済み。現在どの操作も返しません）。`Retry-After` が付きます。'
       headers:
         Retry-After: { $ref: '#/components/headers/Retry-After' }
         X-Request-Id: { $ref: '#/components/headers/X-Request-Id' }
@@ -2427,7 +2424,7 @@ components:
         application/problem+json:
           schema: { $ref: '#/components/schemas/Problem' }
     ServiceUnavailable:
-      description: '`CAPACITY_UNAVAILABLE`。`retryable` が再試行の可否、`Retry-After` が付く。'
+      description: '`CAPACITY_UNAVAILABLE`。`retryable` で再試行できるかどうかを示し、`Retry-After` が付きます。'
       headers:
         Retry-After: { $ref: '#/components/headers/Retry-After' }
         X-Request-Id: { $ref: '#/components/headers/X-Request-Id' }
@@ -2435,13 +2432,13 @@ components:
         application/problem+json:
           schema: { $ref: '#/components/schemas/Problem' }
     PlainError:
-      description: '`/api/v1` の外のエラー（本文は状態の理由句、text/plain）'
+      description: '`/api/v1` の外のエラー（本文は状態の説明文、text/plain）'
       content:
         text/plain: { schema: { type: string } }
     PlaybackRedirect:
       description: |
-        分散: データを持つ別のノードへの案内（このノードには配信・録画が無い）。署名と期限は確かめた後。
-        `Location` は `{そのノードの media_addr}/s/{exp}/{sig}/{kind}/{id}/{file}`（元のクエリを付ける）。本文は理由句（text/plain）。
+        クラスター: データを持つ別のノードへのリダイレクトです（このノードには配信・録画がありません）。署名と期限を確認した後に返します。
+        `Location` は `{そのノードの media_addr}/s/{exp}/{sig}/{kind}/{id}/{file}` です（元のクエリを付けます）。本文は状態の説明文（text/plain）です。
       headers:
         Location: { required: true, schema: { type: string } }
         Access-Control-Allow-Origin: { required: false, schema: { type: string, const: '*' } }
@@ -2463,12 +2460,12 @@ components:
     CodecProfile:
       type: string
       enum: [any, royalty_free]
-      description: royalty_free は H.264・H.265・AAC を理由付きで拒否する（REQ-007）。royalty_free では hls.container は fmp4 にする。
+      description: royalty_free は H.264・H.265・AAC を理由付きで拒否します。royalty_free では hls.container を fmp4 にしてください。
     RecordingPolicy:
       type: object
       additionalProperties: false
       properties:
-        enabled: { type: boolean, default: false, description: publish が始まったら自動で録画する }
+        enabled: { type: boolean, default: false, description: publish が始まったら自動で録画します }
         retention_days: { type: [integer, 'null'], minimum: 1, maximum: 36500, description: 保持日数（null は無期限） }
     SnapshotPolicy:
       type: object
@@ -2524,7 +2521,7 @@ components:
     StreamPatch:
       type: object
       additionalProperties: false
-      description: '書いたフィールドだけ置き換える。`snapshots: null` は静止画の方針を、`captions: null` は字幕を消す。他のフィールドの null は「変えない」。'
+      description: '指定したフィールドだけを置き換えます。`snapshots: null` は静止画の方針を、`captions: null` は字幕の設定を削除します。他のフィールドの null は「変更しない」の意味です。'
       properties:
         name: { $ref: '#/components/schemas/StreamName' }
         latency_profile: { $ref: '#/components/schemas/LatencyProfile' }
@@ -2547,12 +2544,12 @@ components:
       additionalProperties: false
       required: [rtmp_url, stream_key]
       properties:
-        rtmp_url: { type: string, description: 'RTMP の publish 先（`{public-rtmp-url}/live`）。stream name に stream_key を使う。' }
+        rtmp_url: { type: string, description: 'RTMP の publish 先（`{public-rtmp-url}/live`）。stream name には stream_key を使います。' }
         stream_key:
           type: [string, 'null']
           pattern: '^sk_'
-          description: publish 鍵。作成・作り直しの応答でだけ値が入る（それ以外は null）。
-        stream_key_redacted: { type: boolean, const: true, description: Idempotency-Key の再送で鍵を伏せたとき }
+          description: publish 鍵。作成時と再発行時の応答でだけ値が入ります（それ以外は null）。
+        stream_key_redacted: { type: boolean, const: true, description: Idempotency-Key による再送で鍵を伏せたとき }
         srt_url: { type: string, description: '`--public-srt-url` を設定したとき' }
         srt_streamid_format: { type: string, const: 'publish:{stream_key}' }
         whip_url: { type: string, description: '`--public-http-url` を設定したとき' }
@@ -2563,7 +2560,7 @@ components:
       properties:
         transport: { type: string, description: 'rtmp・srt など' }
         started_at: { $ref: '#/components/schemas/Timestamp' }
-        epoch: { type: integer, minimum: 0, description: 再接続ごとに増える }
+        epoch: { type: integer, minimum: 0, description: 再接続のたびに増えます }
         tracks: { type: array, items: { type: object } }
         bitrate_bps: { type: integer, minimum: 0 }
         viewers_hint: { type: integer, minimum: 0 }
@@ -2582,7 +2579,7 @@ components:
         observed_state:
           type: string
           enum: [waiting_input, live, stopped]
-          description: 仕様 10.4 の provisioning・draining・degraded・failed は今は出さない。
+          description: 観測した配信の状態です。
         latency_profile: { $ref: '#/components/schemas/LatencyProfile' }
         codec_profile: { $ref: '#/components/schemas/CodecProfile' }
         recording: { $ref: '#/components/schemas/RecordingPolicy' }
@@ -2599,7 +2596,7 @@ components:
             - { $ref: '#/components/schemas/LiveInfo' }
             - { type: 'null' }
         captions:
-          description: 字幕と翻訳の設定（無ければ null）。資格情報は `secret:{name}` の参照で、値は返さない。
+          description: 字幕と翻訳の設定（無ければ null）。資格情報は `secret:{name}` で参照し、値は返しません。
           oneOf:
             - { $ref: '#/components/schemas/CaptionSettings' }
             - { type: 'null' }
@@ -2607,17 +2604,17 @@ components:
       type: object
       additionalProperties: false
       description: |
-        字幕と翻訳（R6-4）。配信中の音声を `asr_endpoint` に送って文字にし、`targets` の言語へ翻訳して、ライブ HLS に WebVTT の字幕を足す。
-        検査: `asr_provider`・`translate_provider` の値、`asr_endpoint`・`translate_endpoint` が URL として読めること、言語は `language` と `targets` 合わせて英数字と `-` の 1〜8 文字（`targets` は 8 個まで）。違えば 400（`INVALID_CONFIG`）。
-        `asr_credential_ref`・`translate_credential_ref` は `secret:{name}` の形で、テナントに秘密値があること（無ければ 400）。参照している秘密値は消せない（409）。
+        字幕と翻訳の設定です。配信中の音声を `asr_endpoint` に送って文字に起こし、`targets` の言語へ翻訳して、ライブ HLS に WebVTT の字幕を追加します。
+        検査: `asr_provider`・`translate_provider` の値、`asr_endpoint`・`translate_endpoint` が URL として解釈できること、言語（`language` と `targets`）が英数字と `-` の 1〜8 文字であること（`targets` は 8 個まで）。違反すると 400（`INVALID_CONFIG`）です。
+        `asr_credential_ref`・`translate_credential_ref` は `secret:{name}` の形式で、テナントにその秘密値が登録されている必要があります（無ければ 400）。参照されている秘密値は削除できません（409）。
       required: [asr_provider, asr_endpoint]
       properties:
         asr_provider: { type: string, enum: [openai, whisper_cpp], description: 'openai = OpenAI 互換の `/audio/transcriptions`、whisper_cpp = whisper.cpp のサーバー' }
-        asr_endpoint: { type: string, description: '送り先の URL（例: `https://api.openai.com/v1`、社内の whisper サーバー）' }
+        asr_endpoint: { type: string, description: '送信先の URL（例: `https://api.openai.com/v1`、社内の whisper サーバー）' }
         asr_credential_ref: { $ref: '#/components/schemas/CredentialRef' }
         asr_model: { type: [string, 'null'] }
-        language: { type: string, default: ja, pattern: '^[A-Za-z0-9-]{1,8}$', description: 話している言語（ISO 639-1） }
-        translate_provider: { type: [string, 'null'], enum: [anthropic, deepl, openai, null], description: 翻訳（省けば翻訳しない）。書くなら translate_endpoint が要る }
+        language: { type: string, default: ja, pattern: '^[A-Za-z0-9-]{1,8}$', description: 話されている言語（ISO 639-1） }
+        translate_provider: { type: [string, 'null'], enum: [anthropic, deepl, openai, null], description: 翻訳サービス（省略すると翻訳しません）。指定する場合は translate_endpoint が必要です }
         translate_endpoint: { type: [string, 'null'] }
         translate_credential_ref: { $ref: '#/components/schemas/CredentialRef' }
         translate_model: { type: [string, 'null'] }
@@ -2652,7 +2649,7 @@ components:
           properties:
             hls: { type: string, description: '`{http}/s/{exp}/{sig}/live/{id}/index.m3u8`' }
             rtmp: { type: string, description: '`{rtmp}/play/{id}?exp=&sig=`' }
-            whep: { type: [string, 'null'], description: '`{http}/whep/{id}?exp=&sig=`（`--webrtc-udp` を設定しないノードでは null）' }
+            whep: { type: [string, 'null'], description: '`{http}/whep/{id}?exp=&sig=`（`--webrtc-udp` を設定していないノードでは null）' }
             rtsp: { type: string, description: '`{public-rtsp-url}/live/{id}?exp=&sig=`（`--public-rtsp-url` を設定したときだけ）' }
             moq: { type: string, description: 'MoQ（draft-22）の WebTransport の URL `https://{host}:{quic port}/moq?exp=&sig=`。namespace は `senca/live/{id}`（`--quic` を設定したときだけ）' }
     VodPlayback:
@@ -2667,7 +2664,7 @@ components:
           required: [hls, mp4]
           properties:
             hls: { type: string, description: '`{http}/s/{exp}/{sig}/vod/{id}/index.m3u8`' }
-            mp4: { type: 'null', description: 今は常に null }
+            mp4: { type: 'null', description: 現在は常に null }
     PlanOutput:
       type: object
       additionalProperties: false
@@ -2703,10 +2700,10 @@ components:
             properties:
               id: { type: string }
               taken_at: { $ref: '#/components/schemas/Timestamp' }
-              reason: { type: string, enum: [interval, schedule, board_change], description: 撮った理由 }
+              reason: { type: string, enum: [interval, schedule, board_change], description: 撮影した理由 }
               width: { type: integer, minimum: 1 }
               height: { type: integer, minimum: 1 }
-              bytes: { type: integer, minimum: 0, description: JPEG の大きさ }
+              bytes: { type: integer, minimum: 0, description: JPEG のサイズ }
     RecordingStart:
       type: object
       additionalProperties: false
@@ -2719,8 +2716,8 @@ components:
       properties:
         retention_until:
           type: [string, 'null']
-          description: RFC 3339。null で無期限。
-        legal_hold: { type: boolean, description: 解除には recording:delete が要る }
+          description: RFC 3339。null は無期限。
+        legal_hold: { type: boolean, description: 解除には recording:delete が必要です }
         name: { type: string, maxLength: 128 }
     Gap:
       type: object
@@ -2737,25 +2734,25 @@ components:
                  duration_ms, gaps, segments, bytes, thumbnail]
       properties:
         id: { type: string }
-        stream: { type: string, description: 元の stream の ID（stream を消しても残る） }
+        stream: { type: string, description: 元の stream の ID（stream を削除しても残ります） }
         name: { type: [string, 'null'] }
         generation: { type: integer, minimum: 1 }
         state:
           type: string
           enum: [recording, finalized, interrupted]
-          description: 削除中（deleting）の録画は API から見えない（404）。
+          description: 削除中（deleting）の録画は API から見えません（404）。
         started_at: { $ref: '#/components/schemas/Timestamp' }
         ended_at: { type: [string, 'null'], format: date-time }
         retention_until: { type: [string, 'null'], format: date-time }
         legal_hold: { type: boolean }
-        schedule: { type: [string, 'null'], description: 予約で作った録画なら予約の ID }
+        schedule: { type: [string, 'null'], description: 予約で作成した録画であれば予約の ID }
         duration_ms: { type: [integer, 'null'], minimum: 0 }
         gaps:
           type: [array, 'null']
           items: { $ref: '#/components/schemas/Gap' }
         segments: { type: [integer, 'null'], minimum: 0 }
         bytes: { type: [integer, 'null'], minimum: 0 }
-        thumbnail: { type: boolean, description: '`GET /recordings/{id}/thumbnail` があるか' }
+        thumbnail: { type: boolean, description: '`GET /recordings/{id}/thumbnail` があるかどうか' }
     RecordingDeleting:
       type: object
       additionalProperties: false
@@ -2773,7 +2770,7 @@ components:
     ScheduleAction:
       type: string
       enum: [record, live, snapshot]
-      description: record = 窓の間録画、live = 窓の間だけ publish を受け付ける、snapshot = 窓の間一定間隔で静止画
+      description: record = 期間中に録画する、live = 期間中だけ publish を受け付ける、snapshot = 期間中に一定間隔で静止画を撮る
     ScheduleState:
       type: string
       enum: [pending, running, completed, missed, canceled, failed]
@@ -2784,8 +2781,8 @@ components:
       properties:
         freq: { type: string, enum: [daily, weekly] }
         weekdays: { type: array, items: { type: integer, minimum: 0, maximum: 6 }, description: weekly の曜日（0 = 日曜） }
-        timezone: { type: string, description: 'IANA 名（例: Asia/Tokyo）。壁時計の時刻で繰り返す' }
-        until_ms: { type: [integer, 'null'], description: 繰り返しの終わり（含まない、UTC ミリ秒） }
+        timezone: { type: string, description: 'IANA のタイムゾーン名（例: Asia/Tokyo）。現地時刻で繰り返します' }
+        until_ms: { type: [integer, 'null'], description: 繰り返しの終了（この時刻を含まない、UTC ミリ秒） }
         count: { type: [integer, 'null'], minimum: 0 }
     ScheduleCreate:
       type: object
@@ -2796,11 +2793,11 @@ components:
         name: { type: [string, 'null'] }
         action: { $ref: '#/components/schemas/ScheduleAction' }
         start_at: { type: string, description: RFC 3339 }
-        end_at: { type: string, description: 'RFC 3339。start_at より後、窓は 24 時間まで、未来' }
+        end_at: { type: string, description: 'RFC 3339。start_at より後で未来の時刻。期間は 24 時間まで' }
         pre_roll_ms: { type: [integer, 'null'], minimum: 0, maximum: 300000, description: 既定 0 }
         post_roll_ms: { type: [integer, 'null'], minimum: 0, maximum: 300000, description: 既定 0 }
-        grace_ms: { type: [integer, 'null'], minimum: 0, maximum: 3600000, description: 既定 60000。実行時刻を過ぎてもこの間なら途中から実行 }
-        snapshot_interval_secs: { type: [integer, 'null'], minimum: 1, maximum: 3600, description: action が snapshot のときだけ（必須） }
+        grace_ms: { type: [integer, 'null'], minimum: 0, maximum: 3600000, description: 既定 60000。実行時刻を過ぎても、この時間内であれば途中から実行します }
+        snapshot_interval_secs: { type: [integer, 'null'], minimum: 1, maximum: 3600, description: action が snapshot のときだけ指定します（その場合は必須） }
         recurrence:
           oneOf:
             - { $ref: '#/components/schemas/Recurrence' }
@@ -2888,7 +2885,7 @@ components:
               id: { type: string }
               start_at: { $ref: '#/components/schemas/Timestamp' }
               end_at: { $ref: '#/components/schemas/Timestamp' }
-        shared_input: { type: boolean, description: 重なりがあり、入力を共有するか }
+        shared_input: { type: boolean, description: 重なりがあり、入力を共有するかどうか }
     TokenCreate:
       type: object
       additionalProperties: false
@@ -2896,7 +2893,7 @@ components:
       properties:
         name: { type: string, minLength: 1, maxLength: 64 }
         scopes: { type: array, minItems: 1, items: { $ref: '#/components/schemas/Scope' } }
-        expires_at: { type: [string, 'null'], description: RFC 3339（未来） }
+        expires_at: { type: [string, 'null'], description: RFC 3339（未来の時刻） }
     Token:
       type: object
       additionalProperties: false
@@ -2910,8 +2907,8 @@ components:
         token:
           type: [string, 'null']
           pattern: '^senca_'
-          description: 値。発行の応答でだけ入る（一覧では null）。
-        token_redacted: { type: boolean, const: true, description: Idempotency-Key の再送で値を伏せたとき }
+          description: トークンの値。発行時の応答でだけ値が入ります（一覧では null）。
+        token_redacted: { type: boolean, const: true, description: Idempotency-Key による再送で値を伏せたとき }
     TokenList:
       type: object
       additionalProperties: false
@@ -2924,10 +2921,10 @@ components:
       additionalProperties: false
       required: [api_version, node, ingest, output, codecs, codec_profiles, recordings, schedules]
       properties:
-        inputs: { type: array, items: { type: string }, description: 使える入力の種類 }
-        outputs: { type: array, items: { type: string }, description: 使える出力の種類 }
+        inputs: { type: array, items: { type: string }, description: 使用できる入力の種類 }
+        outputs: { type: array, items: { type: string }, description: 使用できる出力の種類 }
         paas_providers: { type: array, items: { type: string } }
-        pipelines: { type: boolean, description: パイプライン（codec worker が動いているとき） }
+        pipelines: { type: boolean, description: パイプラインが使えるか（コーデック worker が動いているとき） }
         captions:
           type: object
           properties:
@@ -2961,7 +2958,7 @@ components:
                 ll_hls: { type: boolean }
             rtmp_play: { type: boolean }
             whep: { type: boolean }
-            moq: { type: boolean, description: MoQ（draft-22）の購読と送出（`--quic`） }
+            moq: { type: boolean, description: MoQ（draft-22）による購読と配信（`--quic`） }
             http3: { type: boolean, description: HTTP/3（`--quic`） }
         codecs:
           type: object
@@ -2995,13 +2992,48 @@ components:
         draining: { type: boolean }
         registered_at: { $ref: '#/components/schemas/Timestamp' }
         labels: { type: object, additionalProperties: { type: string } }
-        live_streams: { type: integer, minimum: 0, description: 配信中の stream 数（他ノードは今は 0） }
-        self: { type: boolean, description: 応答したノード自身か }
+        live_streams: { type: integer, minimum: 0, description: 配信中の stream の数（他のノードについては現在常に 0） }
+        self: { type: boolean, description: 応答したノード自身かどうか }
         relay:
-          description: 'ノード間の中継（ADR-0014）の様子。応答したノード自身（`self: true`）で、クラスタを組んでいるときだけ値がある（単一ノード・他ノードは null）。'
+          description: 'ノード間の中継（ADR-0014）の状態。応答したノード自身（`self: true`）で、クラスターを構成しているときだけ値が入ります（単一ノードや他のノードでは null）。'
           oneOf:
             - { $ref: '#/components/schemas/RelayStatus' }
             - { type: 'null' }
+        rooms:
+          description: 'このノードのリアルタイムの部屋の状態（カスケードの役割・イベント Webhook の配送）。応答したノード自身で、WebRTC（`--webrtc-udp`）が有効なときだけ値が入ります（それ以外は null）。'
+          oneOf:
+            - { $ref: '#/components/schemas/NodeRoomsStatus' }
+            - { type: 'null' }
+    NodeRoomsStatus:
+      type: object
+      additionalProperties: false
+      required: [rooms, relay_upstreams, relay_downstreams]
+      properties:
+        rooms:
+          type: array
+          description: このノードにある部屋のインスタンス（カスケードしている部屋）
+          items:
+            type: object
+            additionalProperties: false
+            required: [room, role, home, peers]
+            properties:
+              room: { type: string }
+              role: { type: string, enum: [home, edge], description: '`home` は部屋の配置先のノード、`edge` は参加者がつないだ別のノード' }
+              home: { type: [string, 'null'], description: '`edge` のとき、home のノード（不明なら null）' }
+              peers: { type: object, additionalProperties: { type: integer, minimum: 0 }, description: 'ノードごとの参加者の数' }
+        relay_upstreams: { type: integer, minimum: 0, description: 'ほかのノードから受けている部屋のトラックの数' }
+        relay_downstreams: { type: integer, minimum: 0, description: 'ほかのノードへ送っている部屋のトラックの数' }
+        event_webhook:
+          type: object
+          additionalProperties: false
+          description: イベント Webhook の配送の状況（`--rooms-event-webhook` を設定したときだけ）
+          required: [delivered, pending, dead_letters, dropped, recent_dead_letters]
+          properties:
+            delivered: { type: integer, minimum: 0 }
+            pending: { type: integer, minimum: 0 }
+            dead_letters: { type: integer, minimum: 0, description: 再送をあきらめたイベントの数 }
+            dropped: { type: integer, minimum: 0, description: 待ち行列があふれて捨てたイベントの数 }
+            recent_dead_letters: { type: array, items: { type: string }, description: 直近にあきらめたイベントの ID（新しい順、最大 20） }
     RelayStatus:
       type: object
       additionalProperties: false
@@ -3015,19 +3047,19 @@ components:
             additionalProperties: false
             required: [node, rtt_ms, tx_bps, rx_bps, tx_bytes, rx_bytes, tx_aus, rx_aus, overhead_per_au, upstreams, downstreams, going_away]
             properties:
-              node: { type: integer, minimum: 0, description: '相手のクラスタのノード番号（クラスタ設定の `peers[].id`。API のノード ID とは別）' }
-              rtt_ms: { type: [number, 'null'], description: 'RTT（平滑化、ミリ秒）。まだ測っていなければ null' }
-              tx_bps: { type: integer, minimum: 0, description: '直近の送りの速さ（bit/s）' }
-              rx_bps: { type: integer, minimum: 0, description: '直近の受けの速さ（bit/s）' }
+              node: { type: integer, minimum: 0, description: '相手のノードのクラスター内の番号（クラスター設定の `peers[].id`。API のノード ID とは別のもの）' }
+              rtt_ms: { type: [number, 'null'], description: 'RTT（平滑化した値、ミリ秒）。まだ計測していなければ null' }
+              tx_bps: { type: integer, minimum: 0, description: '直近の送信速度（bit/s）' }
+              rx_bps: { type: integer, minimum: 0, description: '直近の受信速度（bit/s）' }
               tx_bytes: { type: integer, minimum: 0 }
               rx_bytes: { type: integer, minimum: 0 }
-              tx_aus: { type: integer, minimum: 0, description: '送った AU の数' }
-              rx_aus: { type: integer, minimum: 0, description: '受けた AU の数' }
-              overhead_per_au: { type: number, minimum: 0, description: '送った AU 1 つ当たりの見出しのバイト数（枠の見出し・制御の枠を含む）' }
-              upstreams: { type: integer, minimum: 0, description: 'この接続で受けている stream の数' }
-              downstreams: { type: integer, minimum: 0, description: 'この接続で送っている stream の数' }
-              going_away: { type: boolean, description: 'どちらかが接続を閉じようとしている' }
-        mirrors: { type: array, items: { type: string }, description: '中継で受けている写しの stream の ID' }
+              tx_aus: { type: integer, minimum: 0, description: '送信した AU の数' }
+              rx_aus: { type: integer, minimum: 0, description: '受信した AU の数' }
+              overhead_per_au: { type: number, minimum: 0, description: '送信した AU 1 つあたりのヘッダーのバイト数（フレームのヘッダー・制御フレームを含む）' }
+              upstreams: { type: integer, minimum: 0, description: 'この接続で受信している stream の数' }
+              downstreams: { type: integer, minimum: 0, description: 'この接続で送信している stream の数' }
+              going_away: { type: boolean, description: 'どちらかが接続を閉じようとしているかどうか' }
+        mirrors: { type: array, items: { type: string }, description: '中継で受信しているミラーの stream の ID' }
     Resources:
       type: object
       additionalProperties: false
@@ -3041,19 +3073,19 @@ components:
       type: object
       additionalProperties: false
       required: [code]
-      description: '割り当て・決定の理由（`code` で種類を選ぶ。`node_down` は `node`、`device_down` は `device`、`preempted` は `by` を持つ）。'
+      description: '割り当て・決定の理由（`code` で種類を表します。`node_down` は `node`、`device_down` は `device`、`preempted` は `by` を持ちます）。'
       properties:
         code:
           type: string
           enum: [placed, no_capacity, node_down, device_down, draining, constraint_changed, preempted, overcommitted, capacity_returned, pin_returned, pin_target_down]
           description: |
-            placed = 普通に置いた、no_capacity = 資源が足りず縮退した段で置いた・縮退した、node_down = ノードが止まった・消えた、device_down = 装置が故障した（手で止めたときも）、
-            draining = ノードの排出で移した、constraint_changed = 条件・ラベルが変わって合わなくなった、preempted = 高い優先度の仕事のために縮退・追い出しされた、
-            overcommitted = ノードの容量が減って収まらなくなった、capacity_returned = 資源が戻ったので元の段へ戻した、pin_returned = 手動の割り当ての対象が戻ったので戻した、
-            pin_target_down = 手動の割り当て（strict）の対象が止まっている。
+            placed = 通常どおり配置した、no_capacity = 資源が足りず縮退した段階で配置した・縮退した、node_down = ノードが停止した・削除された、device_down = 装置が故障した（手動で無効にした場合も含む）、
+            draining = ノードの drain で移動した、constraint_changed = 条件・ラベルが変わって合わなくなった、preempted = 優先度の高いワークロードのために縮退・退去させられた、
+            overcommitted = ノードの容量が減って収まらなくなった、capacity_returned = 資源が戻ったので元の段階へ戻した、pin_returned = 手動の割り当て先が戻ったので戻した、
+            pin_target_down = 手動の割り当て先（strict）が停止している。
         node: { type: string }
         device: { type: string }
-        by: { type: string, description: '追い出した仕事の ID' }
+        by: { type: string, description: '退去させたワークロードの ID' }
     RejectCount:
       type: object
       additionalProperties: false
@@ -3062,15 +3094,15 @@ components:
         reason:
           type: string
           enum: [node_down, not_media, draining, pinned_elsewhere, pin_target_down, labels, anti_affinity, no_device, capture, cpu, memory, net_in, net_out, gpu_encode, gpu_decode, gpu_memory, contended]
-          description: 'ノードが仕事を受けられない理由（`contended` は単独なら収まるが、優先度の同じか高い仕事で埋まっている）'
-        nodes: { type: integer, minimum: 0, description: 'この理由で受けられないノードの数' }
-        examples: { type: array, maxItems: 8, items: { type: string }, description: 'そのノードの ID（8 個まで）' }
+          description: 'ノードがワークロードを受け入れられない理由（`contended` は、単独なら収まるが、優先度が同じか高いワークロードで埋まっている状態）'
+        nodes: { type: integer, minimum: 0, description: 'この理由で受け入れられないノードの数' }
+        examples: { type: array, maxItems: 8, items: { type: string }, description: '該当するノードの ID（8 個まで）' }
     Grid:
       type: object
       additionalProperties: false
       required: [scheduler, nodes, workloads]
       properties:
-        scheduler: { type: [string, 'null'], description: '応答したノードが配置係（リーダー）ならその ID、違えば null' }
+        scheduler: { type: [string, 'null'], description: '応答したノードがスケジューラー（リーダー）であればその ID、そうでなければ null' }
         nodes:
           type: array
           items:
@@ -3080,12 +3112,12 @@ components:
             properties:
               id: { type: string }
               name: { type: [string, 'null'], description: 'ノードの名前（`GET /nodes` に無ければ null）' }
-              up: { type: boolean, description: '心拍が届いている（5 秒途絶えると false）' }
+              up: { type: boolean, description: 'ハートビートが届いているかどうか（5 秒途絶えると false）' }
               draining: { type: boolean }
-              roles: { type: array, items: { type: string, enum: [control, media] }, description: 'control = Raft の投票者、media = 仕事を動かす（仕事は media にだけ置く）' }
-              labels: { type: object, additionalProperties: { type: string }, description: '`--label` の値と、予約のラベル `senca.io/name`（ノードの名前）' }
-              capacity: { $ref: '#/components/schemas/Resources', description: '仕事に貸せる分（`--capacity-cpu-millis`・`--capacity-memory-mb`・`--net-mbps`、既定は実機の 90%・85%・10000）' }
-              reserved: { $ref: '#/components/schemas/Resources', description: '割り当てた仕事の要求（今の段）の和' }
+              roles: { type: array, items: { type: string, enum: [control, media] }, description: 'control = Raft の投票者、media = ワークロードを実行する（ワークロードは media のノードにだけ配置します）' }
+              labels: { type: object, additionalProperties: { type: string }, description: '`--label` の値と、予約済みのラベル `senca.io/name`（ノードの名前）' }
+              capacity: { $ref: '#/components/schemas/Resources', description: 'ワークロードに割り当てられる量（`--capacity-cpu-millis`・`--capacity-memory-mb`・`--net-mbps`。既定は実機の 90%・85%・10000）' }
+              reserved: { $ref: '#/components/schemas/Resources', description: '割り当てたワークロードの要求（現在の段階）の合計' }
               gpus:
                 type: array
                 items:
@@ -3095,8 +3127,8 @@ components:
                   properties:
                     id: { type: string, description: '`{provider}:{装置の番号}`（例: `nvidia:0`）' }
                     vendor: { type: string, description: '`nvidia`・`intel`・`amd`・`vaapi` など' }
-                    healthy: { type: boolean, description: '測った健康（心拍で変わる）' }
-                    enabled: { type: boolean, description: '運用者が手で止めていない（`disable`・`enable`）。仕事を置くのは healthy かつ enabled の装置だけ' }
+                    healthy: { type: boolean, description: '計測による健全性（ハートビートで更新されます）' }
+                    enabled: { type: boolean, description: '運用者が手動で無効にしていないかどうか（`disable`・`enable`）。ワークロードは healthy かつ enabled の装置にだけ配置します' }
                     encode_sessions: { type: integer, minimum: 0 }
                     decode_sessions: { type: integer, minimum: 0 }
                     encode_reserved: { type: integer, minimum: 0 }
@@ -3108,13 +3140,13 @@ components:
                   additionalProperties: false
                   required: [id, kind, healthy]
                   properties:
-                    id: { type: string, description: '機器の ID（`GET /devices` の `capture.devices[].id`、例: `synthetic:0`）' }
-                    kind: { type: string, description: '機器の種類（機器の一覧の `backend`、例: `synthetic`・`v4l2`）' }
+                    id: { type: string, description: '機器の ID（`GET /devices` の `capture.devices[].id`。例: `synthetic:0`）' }
+                    kind: { type: string, description: '機器の種類（機器の一覧の `backend`。例: `synthetic`・`v4l2`）' }
                     healthy: { type: boolean }
-                    disabled: { type: boolean, description: '運用者が手で止めた（止めたときだけ現れる）' }
-              usage: { oneOf: [{ $ref: '#/components/schemas/Resources' }, { type: 'null' }], description: '最後の心拍の実測の使用量（CPU は /proc/stat の差、メモリは /proc/meminfo の MemTotal − MemAvailable、帯域はループバックを除く /proc/net/dev の差）。配置係のノードだけが知っている。違えば null。配置は予約（reserved）で数え、この値は使わない' }
-              last_heartbeat: { oneOf: [{ $ref: '#/components/schemas/Timestamp' }, { type: 'null' }], description: '最後の心拍（配置係のノードだけが知っている。違えば null）' }
-              workloads: { type: integer, minimum: 0, description: 'このノードに割り当てた仕事の数' }
+                    disabled: { type: boolean, description: '運用者が手動で無効にした（無効のときだけ含まれます）' }
+              usage: { oneOf: [{ $ref: '#/components/schemas/Resources' }, { type: 'null' }], description: '最後のハートビートで報告された実際の使用量（CPU は /proc/stat の差分、メモリは /proc/meminfo の MemTotal − MemAvailable、帯域はループバックを除く /proc/net/dev の差分）。スケジューラーのノードだけが把握しており、それ以外では null です。配置は予約（reserved）で計算し、この値は使いません' }
+              last_heartbeat: { oneOf: [{ $ref: '#/components/schemas/Timestamp' }, { type: 'null' }], description: '最後のハートビート（スケジューラーのノードだけが把握しており、それ以外では null）' }
+              workloads: { type: integer, minimum: 0, description: 'このノードに割り当てたワークロードの数' }
         workloads:
           type: array
           items:
@@ -3122,17 +3154,17 @@ components:
             additionalProperties: false
             required: [id, kind, priority, pinned, state, node, device, level, level_label, reason, unschedulable]
             properties:
-              id: { type: string, description: '資源から導いた仕事の ID（`input:{id}`・`output:{id}`・`pipeline:{id}`・`room:{id}`）' }
+              id: { type: string, description: '資源から求めたワークロードの ID（`input:{id}`・`output:{id}`・`pipeline:{id}`・`room:{id}`）' }
               kind:
                 type: string
                 enum: [ingest, room, pipeline, recording, transcode, capture, relay, media_pipeline, egress]
                 description: '入力は `ingest`（`device` は `capture`）、出力は `egress`、パイプラインは `pipeline`、部屋は `room`'
               priority: { $ref: '#/components/schemas/PlacementPriority' }
-              pinned: { type: boolean, description: '`placement.node`・`placement.device` で手動で割り当てた' }
+              pinned: { type: boolean, description: '`placement.node`・`placement.device` で手動で割り当てたかどうか' }
               state: { type: string, enum: [running, degraded, unschedulable, pending] }
               node: { type: [string, 'null'] }
               device: { type: [string, 'null'] }
-              level: { type: [integer, 'null'], minimum: 0, description: '今の縮退の段（0 = full）' }
+              level: { type: [integer, 'null'], minimum: 0, description: '現在の縮退の段階（0 = full）' }
               level_label: { type: [string, 'null'] }
               reason: { oneOf: [{ $ref: '#/components/schemas/GridReason' }, { type: 'null' }] }
               unschedulable:
@@ -3144,7 +3176,7 @@ components:
       additionalProperties: false
       required: [node, device, enabled]
       properties:
-        node: { type: string, description: 'ノードの ID（名前で指定しても ID で返す）' }
+        node: { type: string, description: 'ノードの ID（名前で指定した場合も ID で返します）' }
         device: { type: string }
         enabled: { type: boolean, description: 'disable は false、enable は true' }
     NodeList:
@@ -3168,16 +3200,16 @@ components:
               node: { type: string }
               capture:
                 description: |
-                  このノードのキャプチャ機器（REQ-004、隔離した `senca-capture-worker` に問い合わせる。入力の `protocol: device` で使う）。
-                  worker が無い・失敗したときは `{available: false, reason}`、ランタイムが無ければ null。
+                  このノードのキャプチャ機器です（分離された `senca-capture-worker` に問い合わせます。入力の `protocol: device` で使います）。
+                  worker が無い場合や失敗した場合は `{available: false, reason}`、ランタイムが無ければ null です。
                 oneOf:
                   - type: object
                     additionalProperties: false
                     required: [version, backends, devices]
                     properties:
                       version: { type: integer }
-                      backends: { type: array, items: { type: object }, description: 'バックエンド（V4L2・ALSA・DeckLink・合成）ごとの可否' }
-                      devices: { type: array, items: { type: object }, description: '機器（`id` を入力の `url: device:{id}` に書く）' }
+                      backends: { type: array, items: { type: object }, description: 'バックエンド（V4L2・ALSA・DeckLink・合成）ごとの利用可否' }
+                      devices: { type: array, items: { type: object }, description: '機器の一覧（`id` を入力の `url: device:{id}` に指定します）' }
                   - type: object
                     additionalProperties: false
                     required: [available, reason]
@@ -3186,7 +3218,7 @@ components:
                       reason: { type: string }
                   - { type: 'null' }
               devices:
-                description: コーデック worker のプールが動いていなければ `providers` は空、`sandbox` は null。
+                description: コーデック worker のプールが動いていなければ、`providers` は空、`sandbox` は null です。
                 $ref: '#/components/schemas/DeviceStatus'
     DeviceStatus:
       type: object
@@ -3220,35 +3252,35 @@ components:
     CredentialRef:
       type: [string, 'null']
       pattern: '^secret:'
-      description: '`secret:{name}`（`POST /secrets` で登録した秘密値の名前）。無い秘密値・形の違いは 400。'
+      description: '`secret:{name}`（`POST /secrets` で登録した秘密値の名前）。存在しない秘密値や形式の誤りは 400 です。'
     IoOptions:
       type: object
       maxProperties: 16
       additionalProperties: { type: string, maxLength: 256 }
       propertyNames: { minLength: 1, maxLength: 64 }
-      description: 'プロトコルごとの設定（例: RTSP の `transport: tcp|udp`、device の `width`・`height`・`fps`・`codec`・`bitrate_bps`・`audio_device`・`audio_codec`）。16 個まで、キー 64 文字・値 256 文字まで。'
+      description: 'プロトコルごとの設定（例: RTSP の `transport: tcp|udp`、device の `width`・`height`・`fps`・`codec`・`bitrate_bps`・`audio_device`・`audio_codec`）。16 個まで、キーは 64 文字・値は 256 文字までです。'
     IoStatus:
       type: object
       additionalProperties: false
       required: [state, last_error, connects, since, bytes]
-      description: このノードでの実行の様子（制御状態には保存しない）。
+      description: このノードでの実行の状態です（制御状態には保存されません）。
       properties:
         state:
           type: string
           enum: [starting, provisioning, waiting_input, connecting, active, backoff, error, ended]
           description: |
-            starting = 実行を始めた、provisioning = PaaS の資源を用意している、waiting_input = 出力で配信を待っている、connecting = 接続中、
-            active = 送受信している、backoff = 失敗の後の待ち（1〜60 秒の指数バックオフ）、error = 失敗した（すぐ backoff になる）、ended = VOD の HLS を読み終えた（`hls_pull` だけ）。
-        last_error: { type: [string, 'null'], description: '最後の失敗の理由（宛先の拒否は「… は許されていない宛先です」）。成功しても消えない' }
+            starting = 実行を開始した、provisioning = PaaS の資源を準備している、waiting_input = 出力が配信の開始を待っている、connecting = 接続中、
+            active = 送受信している、backoff = 失敗の後の待機中（1〜60 秒の指数バックオフ）、error = 失敗した（すぐに backoff になる）、ended = VOD の HLS を最後まで読んだ（`hls_pull` だけ）。
+        last_error: { type: [string, 'null'], description: '最後の失敗の理由（接続先が拒否された場合は「… は許されていない宛先です」）。その後成功しても消えません' }
         connects: { type: integer, minimum: 0, description: 接続に成功した回数 }
-        since: { type: [string, 'null'], format: date-time, description: 今の state になった時刻 }
-        bytes: { type: integer, minimum: 0, description: 送った・受けたバイト数（目安） }
+        since: { type: [string, 'null'], format: date-time, description: 現在の state になった時刻 }
+        bytes: { type: integer, minimum: 0, description: 送受信したバイト数（目安） }
     PlacementPriority:
       type: string
       enum: [low, normal, high, critical]
-      description: '優先度（low < normal < high < critical）。資源が足りないとき、低い仕事から縮退・追い出しする。'
+      description: '優先度（low < normal < high < critical）。資源が足りないときは、優先度の低いワークロードから縮退・退去させます。'
     LabelSelector:
-      description: 'ノードのラベル（`--label`、予約の `senca.io/name`）の条件。`op` で種類を選ぶ。キー・値は 1〜128 文字で制御文字を含めない。'
+      description: 'ノードのラベル（`--label`、予約済みの `senca.io/name`）の条件です。`op` で種類を指定します。キーと値は 1〜128 文字で、制御文字を含めることはできません。'
       oneOf:
         - type: object
           additionalProperties: false
@@ -3260,7 +3292,7 @@ components:
         - type: object
           additionalProperties: false
           required: [op, key, values]
-          description: '`in` はキーの値が `values` のどれか。`not_in` はどれでもない（キーが無いノードも合う）。'
+          description: '`in` はキーの値が `values` のいずれかであること、`not_in` はいずれでもないこと（キーが無いノードも該当します）。'
           properties:
             op: { type: string, enum: [in, not_in] }
             key: { type: string, minLength: 1, maxLength: 128 }
@@ -3270,43 +3302,43 @@ components:
       additionalProperties: false
       required: [label, disable]
       properties:
-        label: { type: string, minLength: 1, maxLength: 128, description: '段の名前（例: `no_translation`・`audio_only`）。`full`（段 0 の名前）と重複は不可' }
+        label: { type: string, minLength: 1, maxLength: 128, description: '段階の名前（例: `no_translation`・`audio_only`）。`full`（段階 0 の名前）や他の段階と同じ名前は使えません' }
         disable:
           type: array
           minItems: 1
           items: { $ref: '#/components/schemas/PipelineNodeId' }
-          description: 'この段で止めるグラフの部品の id（グラフに無ければ 400）。下流は入力がすべて止まれば止まる。段は積み重なる（段 2 は段 1 の分も止める）'
+          description: 'この段階で停止する処理ノードの id（グラフに無ければ 400）。下流の処理ノードは、入力がすべて停止すると停止します。段階は累積します（段階 2 では段階 1 の分も停止します）'
     PlacementSpec:
       type: object
       additionalProperties: false
       description: |
-        配置の指定（ADR-0013）。省略・null なら配置係に任せる（優先度 normal、spread）。検査の失敗は 400（`INVALID_CONFIG`、未知のフィールド・型の違いは `INVALID_REQUEST`）:
-        `node` が無い、文字列が空・128 文字超・制御文字を含む、`labels` が 17 個以上、`values` が空・33 個以上、`degrade` を入力・出力に書いた、
-        `degrade` が 9 段以上・段の名前が `full` か重複・`disable` が空・グラフに無い部品。
+        配置の指定です（ADR-0013）。省略または null の場合はスケジューラーに任せます（優先度 normal、spread）。検査に失敗すると 400 です（`INVALID_CONFIG`。未知のフィールドや型の誤りは `INVALID_REQUEST`）。失敗する条件:
+        `node` が存在しない、文字列が空・128 文字を超える・制御文字を含む、`labels` が 17 個以上、`values` が空または 33 個以上、入力・出力に `degrade` を指定した、
+        `degrade` が 9 段階以上、段階の名前が `full` または重複している、`disable` が空、グラフに無い処理ノードを指定した。
       properties:
         node:
           type: [string, 'null']
-          description: '手動の割り当て。ノードの ID か名前（`GET /nodes`）。保存するときは ID に直す（応答は ID）'
-        device: { type: [string, 'null'], description: '手動の割り当て。装置の ID（GPU・キャプチャ機器、`GET /grid`）。`node` が無ければ、その装置を持つノードのどれか' }
-        labels: { type: array, maxItems: 16, items: { $ref: '#/components/schemas/LabelSelector' }, description: 'すべてに合うノードにだけ置く' }
-        anti_affinity: { type: [string, 'null'], description: '組の名前。同じ組の仕事は同じノードに置かない' }
+          description: '手動の割り当て。ノードの ID または名前（`GET /nodes`）。保存時に ID に変換します（応答では ID）'
+        device: { type: [string, 'null'], description: '手動の割り当て。装置の ID（GPU・キャプチャ機器、`GET /grid`）。`node` が無ければ、その装置を持つノードのいずれかに配置します' }
+        labels: { type: array, maxItems: 16, items: { $ref: '#/components/schemas/LabelSelector' }, description: 'すべての条件に合うノードにだけ配置します' }
+        anti_affinity: { type: [string, 'null'], description: 'グループの名前。同じグループのワークロードは同じノードに配置しません' }
         pin_policy:
           type: string
           enum: [strict, prefer]
           default: prefer
-          description: '手動の割り当て先が止まったとき。prefer = 他へ移し、戻ったら（冷却の後に）戻す、strict = 止めたまま（`placement_status.state: unschedulable`）'
+          description: '手動の割り当て先が停止したときの動作。prefer = 他のノードへ移し、割り当て先が戻ったら（クールダウンの後に）戻す、strict = 停止したままにする（`placement_status.state: unschedulable`）'
         priority: { $ref: '#/components/schemas/PlacementPriority', default: normal }
-        strategy: { type: string, enum: [spread, binpack], default: spread, description: 'spread = 余裕の多いノードへ、binpack = 詰める' }
+        strategy: { type: string, enum: [spread, binpack], default: spread, description: 'spread = 余裕の多いノードへ分散する、binpack = 詰めて配置する' }
         degrade:
           type: array
           maxItems: 8
           items: { $ref: '#/components/schemas/DegradeLevel' }
-          description: '縮退の段（**パイプラインだけ**、よい順）。資源が足りないとき、段を下げて（部品を止めて）動かし続ける。資源が戻れば元の段へ戻す'
+          description: '縮退の段階（**パイプライン専用**。品質の高い順）。資源が足りないときは段階を下げて（処理ノードを停止して）実行を続けます。資源が戻れば元の段階へ戻します'
     PlacementSpecView:
       type: object
       additionalProperties: false
       required: [pin_policy, priority, strategy]
-      description: '保存した配置の指定（`node` は ID に直したもの）。無い項目・空の配列は省く。`pin_policy`・`priority`・`strategy` は既定値でも出る。'
+      description: '保存された配置の指定（`node` は ID に変換したもの）。値の無い項目と空の配列は省きます。`pin_policy`・`priority`・`strategy` は既定値でも含まれます。'
       properties:
         node: { type: string }
         device: { type: string }
@@ -3318,11 +3350,11 @@ components:
         degrade: { type: array, items: { $ref: '#/components/schemas/DegradeLevel' } }
     PlacementStatus:
       description: |
-        配置の結果（グリッドの割り当て）。`state` で形が変わる:
-        - `not_scheduled`: 仕事になっていない（入力・出力の `enabled: false`、パイプラインの `desired_state: stopped`）。
-        - `running`・`degraded`: 割り当てた（`degraded` は縮退の段 `level` が 1 以上）。割り当てたノードだけが動かす（実際の実行の様子は `status`・`observed_state`）。
-        - `pending`: 置き場所を探している（作成・変更の直後。配置係は約 1 秒ごと、資源の変更のたびに計画する）。
-        - `unschedulable`: 置けるノードが無い（`reasons` に理由ごとのノード）。
+        配置の結果（グリッドでの割り当て）です。`state` によって形が変わります。
+        - `not_scheduled`: ワークロードになっていない（入力・出力が `enabled: false`、パイプラインが `desired_state: stopped`）。
+        - `running`・`degraded`: 割り当て済み（`degraded` は縮退の段階 `level` が 1 以上）。割り当てたノードだけが実行します（実際の実行状態は `status`・`observed_state` で確認します）。
+        - `pending`: 配置先を探している（作成・変更の直後。スケジューラーは約 1 秒ごとと、資源が変わるたびに計画します）。
+        - `unschedulable`: 配置できるノードが無い（`reasons` に理由ごとのノード）。
       oneOf:
         - type: object
           additionalProperties: false
@@ -3336,10 +3368,10 @@ components:
             state: { type: string, enum: [running, degraded] }
             node: { type: string, description: '割り当てたノードの ID' }
             node_name: { type: [string, 'null'], description: 'そのノードの名前' }
-            device: { type: [string, 'null'], description: '使う GPU の ID' }
-            level: { type: integer, minimum: 0, description: '今の縮退の段（0 = full、i は `placement.degrade[i-1]`）' }
-            level_label: { type: string, description: '段の名前（段 0 は `full`）' }
-            since: { $ref: '#/components/schemas/Timestamp', description: 'このノードに置いた時刻' }
+            device: { type: [string, 'null'], description: '使用する GPU の ID' }
+            level: { type: integer, minimum: 0, description: '現在の縮退の段階（0 = full、i は `placement.degrade[i-1]`）' }
+            level_label: { type: string, description: '段階の名前（段階 0 は `full`）' }
+            since: { $ref: '#/components/schemas/Timestamp', description: 'このノードに配置した時刻' }
             reason: { $ref: '#/components/schemas/GridReason' }
         - type: object
           additionalProperties: false
@@ -3347,7 +3379,7 @@ components:
           properties:
             state: { type: string, enum: [pending, unschedulable] }
             reasons:
-              description: '置けない理由（`unschedulable` のとき。`pending` は null）'
+              description: '配置できない理由（`unschedulable` のとき。`pending` では null）'
               oneOf:
                 - { type: array, items: { $ref: '#/components/schemas/RejectCount' } }
                 - { type: 'null' }
@@ -3361,13 +3393,13 @@ components:
           type: string
           maxLength: 2048
           description: |
-            取りに行く URL。スキームは protocol で決まる（rtmp_pull: `rtmp`・`rtmps`、rtsp_pull: `rtsp`・`rtsps`、srt_pull: `srt`、hls_pull: `http`・`https`、device: `device:{機器 ID}`（300 文字まで））。
-            ホストが要る。空白・制御文字は不可。資格情報（`user:pass@`）は入れられない（`credential_ref` を使う）。
+            取得元の URL。スキームは protocol によって決まります（rtmp_pull: `rtmp`・`rtmps`、rtsp_pull: `rtsp`・`rtsps`、srt_pull: `srt`、hls_pull: `http`・`https`、device: `device:{機器 ID}`（300 文字まで））。
+            ホストが必要です。空白・制御文字は使えません。資格情報（`user:pass@`）は含められません（`credential_ref` を使います）。
         credential_ref: { $ref: '#/components/schemas/CredentialRef' }
         enabled: { type: [boolean, 'null'], default: true }
         options: { $ref: '#/components/schemas/IoOptions' }
         placement:
-          description: '配置の指定（`degrade` は使えない）'
+          description: '配置の指定（`degrade` は使えません）'
           oneOf:
             - { $ref: '#/components/schemas/PlacementSpec' }
             - { type: 'null' }
@@ -3380,7 +3412,7 @@ components:
         url:
           type: [string, 'null']
           maxLength: 2048
-          description: '`paas` 以外で必須。rtmp_push: `rtmp`・`rtmps`、srt_push: `srt`。資格情報は入れられない。'
+          description: '`paas` 以外で必須。rtmp_push: `rtmp`・`rtmps`、srt_push: `srt`。資格情報は含められません。'
         credential_ref: { $ref: '#/components/schemas/CredentialRef' }
         enabled: { type: [boolean, 'null'], default: true }
         provider:
@@ -3389,14 +3421,14 @@ components:
           description: '`paas` で必須（`credential_ref` も必須）'
         options: { $ref: '#/components/schemas/IoOptions' }
         placement:
-          description: '配置の指定（`degrade` は使えない）。指定が無ければ、配信を受けたノードを好む'
+          description: '配置の指定（`degrade` は使えません）。指定が無ければ、配信を受信したノードを優先します'
           oneOf:
             - { $ref: '#/components/schemas/PlacementSpec' }
             - { type: 'null' }
     IoPatch:
       type: object
       additionalProperties: false
-      description: '書いたフィールドだけ置き換える。`credential_ref: null` で参照を外す、`placement: null` で配置の指定を外す（配置係に任せる）。他の null は「変えない」。'
+      description: '指定したフィールドだけを置き換えます。`credential_ref: null` で参照を、`placement: null` で配置の指定を削除します（スケジューラーに任せます）。他のフィールドの null は「変更しない」の意味です。'
       properties:
         url: { type: [string, 'null'] }
         credential_ref: { $ref: '#/components/schemas/CredentialRef' }
@@ -3406,7 +3438,7 @@ components:
             - { $ref: '#/components/schemas/IoOptions' }
             - { type: 'null' }
         placement:
-          description: '配置の指定を丸ごと置き換える（部分の変更は無い。`degrade` は使えない）。null で外す'
+          description: '配置の指定の全体を置き換えます（一部だけの変更はできません。`degrade` は使えません）。null で削除します'
           oneOf:
             - { $ref: '#/components/schemas/PlacementSpec' }
             - { type: 'null' }
@@ -3425,7 +3457,7 @@ components:
         options: { type: object, additionalProperties: { type: string } }
         created_at: { $ref: '#/components/schemas/Timestamp' }
         status:
-          description: 'このノードでの実行の様子。`enabled: false`、実行をまだ始めていない、またはこのノードに割り当てられていなければ null（分散のときは、割り当てたノード `placement_status.node` に問い合わせる）。作成・PATCH の応答では、実行の作り直しが非同期なので前の実行のもの（または null）のことがある。'
+          description: 'このノードでの実行の状態。`enabled: false` の場合、実行がまだ始まっていない場合、またはこのノードに割り当てられていない場合は null です（クラスターでは、割り当てたノード `placement_status.node` に問い合わせてください）。作成・PATCH の応答では、実行の作り直しが非同期で行われるため、以前の実行の状態（または null）のことがあります。'
           oneOf:
             - { $ref: '#/components/schemas/IoStatus' }
             - { type: 'null' }
@@ -3455,11 +3487,11 @@ components:
         credential_ref: { $ref: '#/components/schemas/CredentialRef' }
         enabled: { type: boolean }
         provider: { type: [string, 'null'], enum: [cloudflare_stream, aws_ivs, aws_medialive, null] }
-        provider_resource: { type: [string, 'null'], description: SENCA が PaaS に作った資源（後片付けに使う） }
+        provider_resource: { type: [string, 'null'], description: SENCA が PaaS に作成した資源（後片付けに使います） }
         options: { type: object, additionalProperties: { type: string } }
         created_at: { $ref: '#/components/schemas/Timestamp' }
         status:
-          description: 'このノードでの実行の様子。`enabled: false`、実行をまだ始めていない、またはこのノードに割り当てられていなければ null（分散のときは、割り当てたノード `placement_status.node` に問い合わせる）。作成・PATCH の応答では、実行の作り直しが非同期なので前の実行のもの（または null）のことがある。'
+          description: 'このノードでの実行の状態。`enabled: false` の場合、実行がまだ始まっていない場合、またはこのノードに割り当てられていない場合は null です（クラスターでは、割り当てたノード `placement_status.node` に問い合わせてください）。作成・PATCH の応答では、実行の作り直しが非同期で行われるため、以前の実行の状態（または null）のことがあります。'
           oneOf:
             - { $ref: '#/components/schemas/IoStatus' }
             - { type: 'null' }
@@ -3482,7 +3514,7 @@ components:
       required: [name, value]
       properties:
         name: { $ref: '#/components/schemas/StreamName' }
-        value: { type: string, minLength: 1, description: 1〜8192 バイト（UTF-8）。応答には出ない }
+        value: { type: string, minLength: 1, description: 1〜8192 バイト（UTF-8）。応答には含まれません }
     Secret:
       type: object
       additionalProperties: false
@@ -3490,7 +3522,7 @@ components:
       properties:
         id: { type: string }
         name: { type: string }
-        ref: { type: string, pattern: '^secret:', description: '`credential_ref` に書く値' }
+        ref: { type: string, pattern: '^secret:', description: '`credential_ref` に指定する値' }
         created_at: { $ref: '#/components/schemas/Timestamp' }
     SecretList:
       type: object
@@ -3498,16 +3530,16 @@ components:
       required: [items, next_cursor]
       properties:
         items: { type: array, items: { $ref: '#/components/schemas/Secret' } }
-        next_cursor: { type: 'null', description: 常に null（ページングは無い） }
+        next_cursor: { type: 'null', description: 常に null（ページングはありません） }
 
     # ---- パイプライン
     PipelineGraph:
       type: object
       additionalProperties: false
       description: |
-        パイプラインの定義（senca-pipeline の `Graph`、`crates/senca-pipeline/src/model.rs`）。有向非巡回グラフで、知らない項目は拒否する。大きさは 16 MiB まで（ただし HTTP 層の本文の上限 1 MiB が先にかかる）。
-        部品（`nodes`）は `type` で種類を選ぶ。入力の参照は `"部品"` または `"部品.ポート"`（`source` のポートは `video`・`audio` で省けない、`compose` は `program`（既定）・`preview`、他は `out`）。
-        部品ごとの設定のすべては crate の文書（`cargo doc -p senca-pipeline`）を見る。ここでは種類と必須の項目だけを書く。値の範囲は検証（`POST /pipelines/{id}/validate`）で調べる。
+        パイプラインの定義です。有向非巡回グラフで、未知の項目は拒否します。サイズは 16 MiB までです（ただし、HTTP 層の本文の上限 1 MiB が先に適用されます）。
+        処理ノード（`nodes` の各要素）は `type` で種類を指定します。入力は `"処理ノード"` または `"処理ノード.ポート"` の形式で参照します（`source` のポートは `video`・`audio` で、省略できません。`compose` は `program`（既定）・`preview`、それ以外は `out`）。
+        処理ノードごとの設定の詳細はガイドの「7. パイプライン」（`docs/guide/ja/07-pipelines.md`）を参照してください。ここでは種類と必須の項目だけを記載します。値の範囲は検証（`POST /pipelines/{id}/validate`）で確認できます。
       required: [version, nodes]
       properties:
         version: { type: integer, const: 1 }
@@ -3524,10 +3556,10 @@ components:
         block_timeout_ms: { type: integer, minimum: 0, default: 2000 }
         input_queue_aus: { type: integer, minimum: 0, default: 256 }
         frame_queue: { type: integer, minimum: 0, default: 8 }
-        status_interval_ms: { type: integer, minimum: 0, default: 100, description: 状態・メーターの更新の間隔（0 で出さない） }
+        status_interval_ms: { type: integer, minimum: 0, default: 100, description: 状態・メーターを通知する間隔（0 で通知しない） }
         commit_timeout_ms: { type: integer, minimum: 0, default: 10000 }
     PipelineNode:
-      description: 部品。`type` ごとの必須の項目だけを書く（他の項目は crate の文書）。`id` は英数字・`_`・`-` の 1〜64 文字でグラフ内で一意。
+      description: 処理ノードです。`type` ごとの必須の項目だけを記載します（他の項目はガイドの「7. パイプライン」を参照）。`id` は英数字・`_`・`-` からなる 1〜64 文字で、グラフ内で一意です。
       oneOf:
         - { type: object, required: [type, id, stream], properties: { type: { const: source }, id: { $ref: '#/components/schemas/PipelineNodeId' }, stream: { type: string, description: 入力の stream の ID（テナントのもの） }, video: { $ref: '#/components/schemas/PipelineSourceTrack' }, audio: { $ref: '#/components/schemas/PipelineSourceTrack' } } }
         - { type: object, required: [type, id, input], properties: { type: { const: decode }, id: { $ref: '#/components/schemas/PipelineNodeId' }, input: { type: string } } }
@@ -3536,9 +3568,9 @@ components:
         - { type: object, required: [type, id, input, x, y, width, height], properties: { type: { const: crop }, id: { $ref: '#/components/schemas/PipelineNodeId' }, input: { type: string } } }
         - { type: object, required: [type, id, inputs, canvas, scenes, program], properties: { type: { const: compose }, id: { $ref: '#/components/schemas/PipelineNodeId' }, inputs: { type: object, additionalProperties: { type: string }, description: シーンから参照する名前 → 上流の参照 }, canvas: { type: object, required: [width, height, fps_num] }, scenes: { type: object, additionalProperties: { type: object, required: [layers] } }, program: { type: string }, preview: { type: [string, 'null'] } } }
         - { type: object, required: [type, id, inputs], properties: { type: { const: audio_mix }, id: { $ref: '#/components/schemas/PipelineNodeId' }, inputs: { type: object, additionalProperties: { type: object, required: [from] } } } }
-        - { type: object, required: [type, id, input, codec, bitrate_kbps], properties: { type: { const: encode }, id: { $ref: '#/components/schemas/PipelineNodeId' }, input: { type: string }, codec: { type: string, description: 'av1・vp9・vp8・opus・h264・h265 など（使えるものはコーデック worker の能力と方針で決まる）' }, bitrate_kbps: { type: integer } } }
+        - { type: object, required: [type, id, input, codec, bitrate_kbps], properties: { type: { const: encode }, id: { $ref: '#/components/schemas/PipelineNodeId' }, input: { type: string }, codec: { type: string, description: 'av1・vp9・vp8・opus・h264・h265 など（使えるものはコーデック worker の能力と方針で決まります）' }, bitrate_kbps: { type: integer } } }
         - { type: object, required: [type, id, input], properties: { type: { const: snapshot_on_change }, id: { $ref: '#/components/schemas/PipelineNodeId' }, input: { type: string } } }
-        - { type: object, required: [type, id, inputs, stream], properties: { type: { const: sink }, id: { $ref: '#/components/schemas/PipelineNodeId' }, inputs: { type: array, items: { type: string } }, stream: { type: string, description: 出力先の stream の ID（テナントのもの。パイプラインが送り手になる） } } }
+        - { type: object, required: [type, id, inputs, stream], properties: { type: { const: sink }, id: { $ref: '#/components/schemas/PipelineNodeId' }, inputs: { type: array, items: { type: string } }, stream: { type: string, description: 出力先の stream の ID（テナントのもの。パイプラインが配信者になります） } } }
     PipelineNodeType:
       type: string
       enum: [source, decode, board, scale, crop, compose, audio_mix, encode, snapshot_on_change, sink]
@@ -3561,21 +3593,21 @@ components:
       type: object
       additionalProperties: false
       required: [code, message]
-      description: 検証の失敗（400・503 の `details.issues` の要素）。
+      description: 検証で見つかった問題（400・503 の `details.issues` の要素）。
       properties:
         code:
           type: string
           enum: [MALFORMED, INVALID_PARAM, DUPLICATE_ID, UNKNOWN_REFERENCE, TYPE_MISMATCH, CYCLE, UNCONSUMED_OUTPUT, POLICY_REJECTED,
                  UNSUPPORTED_CODEC, CAPACITY_UNAVAILABLE, LIMIT_EXCEEDED]
-        node: { type: string, description: 問題の部品の id }
+        node: { type: string, description: 問題のある処理ノードの id }
         message: { type: string }
     PipelinePlan:
       type: object
       additionalProperties: false
       required: [order, nodes, sinks, totals]
-      description: 実行の計画（処理の形・必要な資源・追加の遅延）。
+      description: 実行の計画（処理の構成・必要な資源・追加の遅延）。
       properties:
-        order: { type: array, items: { type: string }, description: 実行の順（トポロジカル順） }
+        order: { type: array, items: { type: string }, description: 実行の順序（トポロジカル順） }
         nodes:
           type: array
           items:
@@ -3636,35 +3668,35 @@ components:
         graph: { $ref: '#/components/schemas/PipelineGraph' }
         desired_state: { type: [string, 'null'], enum: [running, stopped, null], default: stopped }
         placement:
-          description: '配置の指定と縮退の段'
+          description: '配置の指定と縮退の段階'
           oneOf:
             - { $ref: '#/components/schemas/PlacementSpec' }
             - { type: 'null' }
     PipelinePatch:
       type: object
       additionalProperties: false
-      description: '書いたフィールドだけ置き換える（null は「変えない」。ただし `placement: null` は配置の指定を外す）。'
+      description: '指定したフィールドだけを置き換えます（null は「変更しない」の意味です。ただし `placement: null` は配置の指定を削除します）。'
       properties:
         name: { oneOf: [{ $ref: '#/components/schemas/StreamName' }, { type: 'null' }] }
         graph: { oneOf: [{ $ref: '#/components/schemas/PipelineGraph' }, { type: 'null' }] }
         desired_state: { type: [string, 'null'], enum: [running, stopped, null] }
         placement:
-          description: '配置の指定を丸ごと置き換える（部分の変更は無い）。null で外す。書かなければ今の指定を新しい `graph` で検査し直す（縮退の段の `disable` が新しいグラフに無ければ 400）'
+          description: '配置の指定の全体を置き換えます（一部だけの変更はできません）。null で削除します。指定しなければ、現在の指定を新しい `graph` で検査し直します（縮退の段階の `disable` が新しいグラフに無ければ 400）'
           oneOf:
             - { $ref: '#/components/schemas/PlacementSpec' }
             - { type: 'null' }
     PipelineStatus:
       description: |
-        パイプラインの直近の通知（senca-pipeline の `Event`、`event` で種類を選ぶ）。
-        `event: status`（`status_interval_ms` ごと）は `sources`（入力ごとの state `waiting`・`live`・`stalled`・`ended`、AU 数、タリー `on_program`/`on_preview`）、
-        `compose`（シーン・トランジション中か・スレートを出している入力）、`encoders`（フレーム数・誤り）を持つ。
-        メーター（`event: meters`）は `meters` に入り、ここにはそれ以外の直近の通知が残る（世代・誤りの通知のこともある）。
+        パイプラインからの直近の通知です（`event` で種類を表します）。
+        `event: status`（`status_interval_ms` ごと）には、`sources`（入力ごとの state `waiting`・`live`・`stalled`・`ended`、AU 数、タリー `on_program`/`on_preview`）、
+        `compose`（シーン、トランジション中かどうか、スレートを表示している入力）、`encoders`（フレーム数・エラー）が含まれます。
+        メーター（`event: meters`）は `meters` に入り、ここにはそれ以外の直近の通知が入ります（世代やエラーの通知のこともあります）。
       oneOf:
         - type: object
           required: [event, generation, session_us, sources, compose, encoders]
           properties:
             event: { type: string, const: status }
-            generation: { type: integer, minimum: 0, description: 実行中のグラフの世代（worker の中の番号。パイプラインの generation とは別） }
+            generation: { type: integer, minimum: 0, description: 実行中のグラフの世代（worker 内部の番号で、パイプラインの generation とは別のもの） }
             session_us: { type: integer }
             sources:
               type: array
@@ -3683,7 +3715,7 @@ components:
               enum: [input_dropped, error, generation_prepared, generation_committed, generation_failed, generation_rolled_back]
     PipelineMeters:
       type: object
-      description: '`audio_mix` の部品の id → 直近のメーター（`Event::Meters`: `inputs`・`master` の peak/rms dBFS、`limiter_reduction_db`）。'
+      description: '`audio_mix` の処理ノードの id → 直近のメーター（`inputs`・`master` の peak/rms dBFS、`limiter_reduction_db`）。'
       additionalProperties:
         type: object
         required: [event, node, inputs, master, limiter_reduction_db]
@@ -3705,21 +3737,21 @@ components:
           type: string
           enum: [starting, running, error, stopped]
           description: |
-            このノードでの実行の様子。starting = セッションを開いている（`desired_state: running` でまだ実行を始めていないときも）、running = 動いている、
-            error = 失敗して作り直しを待っている（`last_error`、1〜32 秒のバックオフ）、stopped = 止まっている。
-        last_error: { type: [string, 'null'], description: '直近の失敗（例: `codec worker が動いていません`）。動き出すと null に戻る' }
+            このノードでの実行の状態。starting = セッションを開いている（`desired_state: running` で、まだ実行を始めていない場合も含む）、running = 実行中、
+            error = 失敗して作り直しを待っている（`last_error`、1〜32 秒のバックオフ）、stopped = 停止している。
+        last_error: { type: [string, 'null'], description: '直近の失敗（例: `codec worker が動いていません`）。実行が始まると null に戻ります' }
         plan:
-          description: 実行中の計画（worker が開いたセッションのもの）。動いていなければ null（検証の計画は `POST /pipelines/{id}/validate`）。
+          description: 実行中の計画（worker が開いたセッションのもの）。実行中でなければ null です（検証時の計画は `POST /pipelines/{id}/validate` で取得します）。
           oneOf:
             - { $ref: '#/components/schemas/PipelinePlan' }
             - { type: 'null' }
         status:
-          description: 直近の状態の通知。まだ無ければ null。
+          description: 直近の状態の通知。まだ無ければ null です。
           oneOf:
             - { $ref: '#/components/schemas/PipelineStatus' }
             - { type: 'null' }
         meters:
-          description: 実行していなければ null、実行中は `audio_mix` の部品の id → 直近のメーター（ミキサーが無い・まだ通知が無ければ `{}`）。
+          description: 実行していなければ null です。実行中は `audio_mix` の処理ノードの id → 直近のメーターです（ミキサーが無い場合や、まだ通知が無い場合は `{}`）。
           oneOf:
             - { $ref: '#/components/schemas/PipelineMeters' }
             - { type: 'null' }
@@ -3751,32 +3783,32 @@ components:
         duration_ms: { type: integer, minimum: 0, default: 0 }
     PipelineLayer:
       type: object
-      description: 'シーンのレイヤー（senca-pipeline の `LayerSpec`: source・image・color のどれか、x・y・width・height、crop・fit・z・opacity・corner_radius・border・visible・filter）'
+      description: 'シーンのレイヤー（source・image・color のいずれか、x・y・width・height、crop・fit・z・opacity・corner_radius・border・visible・filter）'
       required: [x, y, width, height]
     PipelineControl:
       description: |
-        操作（senca-pipeline の `Control`、`op` で種類を選ぶ。知らない項目は 400）。`node` は対象の部品の id（`compose` または `audio_mix`）。
-        `prepare`・`commit`・`rollback` は型としては読めるが、この API では 400（グラフの変更は `PATCH /pipelines/{id}`）。
+        操作です（`op` で種類を指定します。未知の項目は 400）。`node` は対象の処理ノードの id（`compose` または `audio_mix`）です。
+        `prepare`・`commit`・`rollback` は形式としては受け付けますが、この API では 400 です（グラフの変更には `PATCH /pipelines/{id}` を使います）。
       oneOf:
         - type: object
           additionalProperties: false
           required: [op, node, scene]
-          description: プログラムのシーンを切り替える（省略時はカット）
+          description: プログラムのシーンを切り替えます（省略時はカット）
           properties: { op: { const: switch_program }, node: { type: string }, scene: { type: string }, transition: { $ref: '#/components/schemas/PipelineTransition' } }
         - type: object
           additionalProperties: false
           required: [op, node, scene]
-          description: プレビューのシーンを決める
+          description: プレビューのシーンを設定します
           properties: { op: { const: set_preview }, node: { type: string }, scene: { type: string } }
         - type: object
           additionalProperties: false
           required: [op, node]
-          description: プレビューをプログラムへ
+          description: プレビューをプログラムに切り替えます
           properties: { op: { const: take }, node: { type: string }, transition: { $ref: '#/components/schemas/PipelineTransition' } }
         - type: object
           additionalProperties: false
           required: [op, node, scene, layer, patch]
-          description: レイヤーを部分的に変える
+          description: レイヤーの一部を変更します
           properties:
             op: { const: update_layer }
             node: { type: string }
@@ -3797,12 +3829,12 @@ components:
         - type: object
           additionalProperties: false
           required: [op, node, scene, layers]
-          description: シーンを作る・置き換える
+          description: シーンを作成または置き換えます
           properties: { op: { const: set_scene }, node: { type: string }, scene: { type: string }, layers: { type: array, items: { $ref: '#/components/schemas/PipelineLayer' } } }
         - type: object
           additionalProperties: false
           required: [op, node, input]
-          description: ミキサーの入力（与えた項目だけ変える）
+          description: ミキサーの入力（指定した項目だけを変更します）
           properties: { op: { const: set_audio }, node: { type: string }, input: { type: string }, gain_db: { type: number }, mute: { type: boolean }, solo: { type: boolean }, pan: { type: number }, delay_ms: { type: number } }
         - type: object
           additionalProperties: false
@@ -3812,12 +3844,12 @@ components:
         - type: object
           additionalProperties: false
           required: [op, node, enabled]
-          description: 板書の変化の検出を始める・止める
+          description: 板書の変化の検出を開始・停止します
           properties: { op: { const: snapshot }, node: { type: string }, enabled: { type: boolean } }
         - type: object
           additionalProperties: false
           required: [op]
-          description: キーフレームを求める（`node` を省くとすべての映像の符号化）
+          description: キーフレームを要求します（`node` を省略すると、すべての映像のエンコーダーが対象）
           properties: { op: { const: request_keyframe }, node: { type: [string, 'null'] } }
         - type: object
           required: [op]
@@ -3829,25 +3861,25 @@ components:
       required: [ok, reply]
       properties:
         ok: { type: boolean, const: true }
-        reply: { type: object, description: 操作の返事（今の操作では空のオブジェクト） }
+        reply: { type: object, description: 操作への応答（現在の操作ではすべて空のオブジェクト） }
 
     RoomId:
       type: string
       minLength: 1
       maxLength: 128
       pattern: '^[A-Za-z0-9_.:@-]+$'
-      description: 部屋の ID（1〜128 文字の英数字と `-_.:@`、テナントをまたいで一意）
+      description: 部屋の ID（1〜128 文字の英数字と `-_.:@`。テナントをまたいで一意）
     RoomMetadata:
-      description: '部屋・参加者の metadata（任意の JSON、JSON にして 8 KiB まで）。参加者の metadata は他の参加者に見える'
+      description: '部屋・参加者の metadata（任意の JSON。JSON にして 8 KiB まで）。参加者の metadata は他の参加者にも見えます'
     RoomSpotlight:
       type: object
       additionalProperties: false
       required: [number]
-      description: スポットライト（話している人を注目し、注目の外の映像を下げる）。
+      description: スポットライト（話している人に注目し、それ以外の人の映像の品質を下げます）。
       properties:
-        number: { type: integer, minimum: 1, maximum: 16, description: 注目する話者の数（受け手は自分を除いてこの人数） }
-        unfocused: { type: string, enum: [lowest, off], default: lowest, description: 'lowest = 注目の外は一番低い層、off = 配らない（枠は `paused`）' }
-        focus_rid: { type: string, pattern: '^[A-Za-z0-9]{1,16}$', description: 注目した送り手の層（無ければ帯域で自動） }
+        number: { type: integer, minimum: 1, maximum: 16, description: 注目する話者の数（受信者から見て、自分を除いたこの人数） }
+        unfocused: { type: string, enum: [lowest, off], default: lowest, description: 'lowest = 注目していない人は最も低い層で配信する、off = 配信しない（受信の枠は `paused`）' }
+        focus_rid: { type: string, pattern: '^[A-Za-z0-9]{1,16}$', description: 注目した配信者の層（無ければ帯域に応じて自動で選びます） }
     ForwardingRule:
       type: object
       additionalProperties: false
@@ -3855,14 +3887,14 @@ components:
       properties:
         field:
           type: string
-          description: '送り手の属性: `connection_id`・`client_id`・`bundle_id`・`kind`・`metadata.<key>`（key は 1〜64 文字。値が文字列・数・真偽のとき）'
+          description: '配信者の属性: `connection_id`・`client_id`・`bundle_id`・`kind`・`metadata.<key>`（key は 1〜64 文字。値が文字列・数値・真偽値のとき）'
         operator: { type: string, enum: [is_in, is_not_in] }
-        values: { type: array, minItems: 1, maxItems: 100, items: { type: string, maxLength: 255 }, description: '`kind` なら `audio`・`video`' }
+        values: { type: array, minItems: 1, maxItems: 100, items: { type: string, maxLength: 255 }, description: '`kind` の場合は `audio`・`video`' }
     ForwardingFilter:
       type: object
       additionalProperties: false
       required: [action, rules]
-      description: '転送フィルター（`docs/realtime/signaling.md` の 8 章）。`rules` は「AND の組」の OR。`block` は一致したものを配らない、`allow` は一致したものだけ配る。'
+      description: '転送フィルター（`docs/realtime/signaling.md` の 8 章）。`rules` は「AND 条件の組」の OR です。`block` は一致したものを配信せず、`allow` は一致したものだけを配信します。'
       properties:
         action: { type: string, enum: [block, allow] }
         rules:
@@ -3874,21 +3906,21 @@ components:
       type: object
       additionalProperties: false
       description: |
-        部屋の設定。応答では既定値を埋めた全体を返す（`max_video_bitrate_kbps`・`spotlight`・`forwarding_filter` は無ければ省く）。
-        API で検査するのは形と `max_participants` だけ（範囲の他の制約は部屋の核が部屋を開くときに検査する。`POST /rooms` の説明）。
+        部屋の設定です。応答では既定値を補った全体を返します（`max_video_bitrate_kbps`・`spotlight`・`forwarding_filter` は値が無ければ省きます）。
+        API で検査するのは形式と `max_participants` だけです（それ以外の範囲の制約は、部屋を開くときに検査します。`POST /rooms` の説明を参照）。
       properties:
-        max_participants: { type: integer, minimum: 1, maximum: 10000, default: 50, description: 参加者の上限（ノードをまたぐ参加者も数える） }
-        e2ee: { type: boolean, default: false, description: 'E2EE（SFrame）の部屋。SFU は中身を見ずに配り、合成・合成の録画はできない' }
-        video_codec: { type: string, enum: [vp8, vp9, h264, av1], default: vp8, description: 部屋の映像のコーデック（SFU は変換しないので全員が同じ） }
+        max_participants: { type: integer, minimum: 1, maximum: 10000, default: 50, description: 参加者の上限（他のノードにいる参加者も数えます） }
+        e2ee: { type: boolean, default: false, description: 'E2EE（SFrame）の部屋。SFU は中身を見ずに転送するため、合成や合成の録画はできません' }
+        video_codec: { type: string, enum: [vp8, vp9, h264, av1], default: vp8, description: 部屋の映像のコーデック（SFU は変換しないため、全員が同じコーデックを使います） }
         audio_codec: { type: string, enum: [opus], default: opus }
-        max_video_bitrate_kbps: { type: [integer, 'null'], minimum: 50, maximum: 50000, description: 送り手に勧める映像の上限（kbit/s） }
+        max_video_bitrate_kbps: { type: [integer, 'null'], minimum: 50, maximum: 50000, description: 配信者に推奨する映像のビットレートの上限（kbit/s） }
         spotlight:
           oneOf:
             - { $ref: '#/components/schemas/RoomSpotlight' }
             - { type: 'null' }
-        recording: { type: string, enum: [none, per_participant, composite], default: none, description: '録画の方針（`composite` は `e2ee` と併用できない）' }
+        recording: { type: string, enum: [none, per_participant, composite], default: none, description: '録画の方針（`composite` は `e2ee` と併用できません）' }
         forwarding_filter:
-          description: 部屋全体の転送フィルター（購読者ごとのフィルターと両方を満たすものだけ配る）
+          description: 部屋全体の転送フィルター（購読者ごとのフィルターと、両方の条件を満たすものだけを配信します）
           oneOf:
             - { $ref: '#/components/schemas/ForwardingFilter' }
             - { type: 'null' }
@@ -3897,28 +3929,28 @@ components:
           maxItems: 32
           default: ['#*']
           items: { type: string, pattern: '^#', maxLength: 64 }
-          description: 使ってよい DataChannel のラベルの型（`#` で始まる。末尾の `*` は前方一致）
-        empty_timeout_secs: { type: integer, minimum: 0, default: 60, description: 誰もいなくなってから消すまでの秒数（参加トークンで自動に作った部屋だけ） }
+          description: 使用を許可する DataChannel のラベルのパターン（`#` で始まります。末尾の `*` は前方一致）
+        empty_timeout_secs: { type: integer, minimum: 0, default: 60, description: 誰もいなくなってから削除するまでの秒数（参加トークンの発行で自動作成された部屋だけが対象） }
     RoomCreate:
       type: object
       additionalProperties: false
       properties:
-        id: { $ref: '#/components/schemas/RoomId', description: 省けば作る（24 文字の 16 進） }
+        id: { $ref: '#/components/schemas/RoomId', description: 省略すると生成します（24 文字の 16 進数） }
         settings:
-          description: 部屋の設定（省略・null は既定値）
+          description: 部屋の設定（省略または null の場合は既定値）
           oneOf:
             - { $ref: '#/components/schemas/RoomSettings' }
             - { type: 'null' }
         metadata: { $ref: '#/components/schemas/RoomMetadata' }
         placement:
-          description: '配置の指定（`degrade` は使えない）'
+          description: '配置の指定（`degrade` は使えません）'
           oneOf:
             - { $ref: '#/components/schemas/PlacementSpec' }
             - { type: 'null' }
     RoomPatch:
       type: object
       additionalProperties: false
-      description: '書いたフィールドだけ変える。`settings` は全体を置き換える。`settings`・`metadata` の null は「変えない」、`placement: null` は配置の指定を外す。'
+      description: '指定したフィールドだけを変更します。`settings` は全体を置き換えます。`settings`・`metadata` の null は「変更しない」の意味で、`placement: null` は配置の指定を削除します。'
       properties:
         settings:
           oneOf:
@@ -3926,7 +3958,7 @@ components:
             - { type: 'null' }
         metadata: { $ref: '#/components/schemas/RoomMetadata' }
         placement:
-          description: '配置の指定を丸ごと置き換える（`degrade` は使えない）。null で外す'
+          description: '配置の指定の全体を置き換えます（`degrade` は使えません）。null で削除します'
           oneOf:
             - { $ref: '#/components/schemas/PlacementSpec' }
             - { type: 'null' }
@@ -3939,13 +3971,13 @@ components:
         generation: { type: integer, minimum: 1 }
         settings: { $ref: '#/components/schemas/RoomSettings' }
         metadata: { $ref: '#/components/schemas/RoomMetadata' }
-        auto: { type: boolean, description: '参加トークンの発行で自動に作った部屋（誰もいないまま `empty_timeout_secs` 経つと消える）' }
+        auto: { type: boolean, description: '参加トークンの発行で自動作成された部屋かどうか（誰もいない状態で `empty_timeout_secs` が経過すると削除されます）' }
         created_at: { $ref: '#/components/schemas/Timestamp' }
         updated_at: { $ref: '#/components/schemas/Timestamp' }
         signaling_url:
           type: [string, 'null']
           pattern: '^wss?://.*/signaling$'
-          description: 'つなぐ先（`GET /signaling` の WebSocket）。部屋を別のノードに置いたらそのノードの URL。このノードの `--public-http-url` が無く、別のノードにも置いていなければ null'
+          description: '接続先（`GET /signaling` の WebSocket）。部屋を別のノードに配置した場合はそのノードの URL です。このノードに `--public-http-url` が設定されておらず、別のノードにも配置していなければ null'
         placement:
           description: 配置の指定。指定が無ければ null
           oneOf:
@@ -3962,20 +3994,20 @@ components:
     RoomPermissions:
       type: object
       additionalProperties: false
-      description: 参加者に許すこと（省けばすべて）。
+      description: 参加者に許可する操作（省略するとすべて許可）。
       properties:
-        publish: { type: array, items: { type: string, enum: [audio, video] }, default: [audio, video], description: 送ってよいトラックの種類 }
-        subscribe: { type: boolean, default: true, description: 他の参加者のトラックを受けてよいか }
-        data: { type: array, items: { type: string }, default: ['#*'], description: '使ってよい DataChannel のラベルの型（`#*` で全部）' }
+        publish: { type: array, items: { type: string, enum: [audio, video] }, default: [audio, video], description: 送信を許可するトラックの種類 }
+        subscribe: { type: boolean, default: true, description: 他の参加者のトラックを受信してよいか }
+        data: { type: array, items: { type: string }, default: ['#*'], description: '使用を許可する DataChannel のラベルのパターン（`#*` ですべて）' }
     RoomTokenRequest:
       type: object
       additionalProperties: false
       required: [role]
       properties:
-        role: { type: string, enum: [sendrecv, sendonly, recvonly], description: '許す役割の上限（`sendrecv` のトークンはどの役割でも参加できる）' }
-        client_id: { type: [string, 'null'], minLength: 1, maxLength: 255, description: 'あれば `connect.client_id` はこれと同じでなければならない（転送フィルターの条件になる）' }
-        bundle_id: { type: [string, 'null'], minLength: 1, maxLength: 255, description: 同じ値の接続どうしは互いのトラックを受けない }
-        metadata: { $ref: '#/components/schemas/RoomMetadata', description: '参加者の metadata（他の参加者に見える）' }
+        role: { type: string, enum: [sendrecv, sendonly, recvonly], description: '許可する役割の上限（`sendrecv` のトークンではどの役割でも参加できます）' }
+        client_id: { type: [string, 'null'], minLength: 1, maxLength: 255, description: '指定すると、`connect.client_id` はこれと同じ値でなければなりません（転送フィルターの条件に使われます）' }
+        bundle_id: { type: [string, 'null'], minLength: 1, maxLength: 255, description: 同じ値を持つ接続どうしは、互いのトラックを受信しません }
+        metadata: { $ref: '#/components/schemas/RoomMetadata', description: '参加者の metadata（他の参加者にも見えます）' }
         permissions:
           oneOf:
             - { $ref: '#/components/schemas/RoomPermissions' }
@@ -3986,8 +4018,8 @@ components:
       additionalProperties: false
       required: [token, room_id, expires_at, signaling_url]
       properties:
-        token: { type: [string, 'null'], description: '参加トークン（JWT）。Idempotency-Key の再送では null' }
-        token_redacted: { type: boolean, const: true, description: Idempotency-Key の再送で値を伏せたとき }
+        token: { type: [string, 'null'], description: '参加トークン（JWT）。Idempotency-Key による再送では null' }
+        token_redacted: { type: boolean, const: true, description: Idempotency-Key による再送で値を伏せたとき }
         room_id: { $ref: '#/components/schemas/RoomId' }
         expires_at: { $ref: '#/components/schemas/Timestamp' }
         signaling_url: { type: [string, 'null'], pattern: '^wss?://.*/signaling$', description: '`Room.signaling_url` と同じ' }
@@ -3997,18 +4029,18 @@ components:
       required: [track_id, connection_id, kind]
       properties:
         track_id: { type: string }
-        connection_id: { type: string, description: 送り手の接続 }
+        connection_id: { type: string, description: 配信者の接続 }
         kind: { type: string, enum: [audio, video] }
-        rids: { type: array, items: { type: string }, description: サイマルキャストの層（低い順）。サイマルキャストでなければ省く }
+        rids: { type: array, items: { type: string }, description: サイマルキャストの層（低い順）。サイマルキャストでなければ省きます }
     RoomSlot:
       type: object
       additionalProperties: false
       required: [mid, kind, state]
-      description: 受信の枠（クライアントの受ける m 行 1 つ）と、そこに今流しているトラック。
+      description: 受信の枠（クライアントが受信する m 行 1 つ）と、そこに現在流しているトラックです。
       properties:
         mid: { type: string }
         kind: { type: string, enum: [audio, video] }
-        state: { type: string, enum: [empty, active, paused], description: 'active = 配っている、paused = 割り当てているが配っていない、empty = 空き' }
+        state: { type: string, enum: [empty, active, paused], description: 'active = 配信中、paused = 割り当て済みだが配信していない、empty = 空き' }
         track_id: { type: string }
         connection_id: { type: string }
         client_id: { type: string }
@@ -4018,14 +4050,14 @@ components:
       required: [connection_id, bundle_id, role, metadata, tracks, peer_connected, signaling, subscriptions]
       properties:
         connection_id: { type: string }
-        client_id: { type: string, description: 無ければ省く }
+        client_id: { type: string, description: 無ければ省きます }
         bundle_id: { type: string }
         role: { type: string, enum: [sendrecv, sendonly, recvonly] }
         metadata: { $ref: '#/components/schemas/RoomMetadata' }
-        tracks: { type: array, items: { $ref: '#/components/schemas/RoomTrack' }, description: 送っているトラック }
-        node: { type: string, description: 他のノードにいる参加者（カスケード）のノード }
+        tracks: { type: array, items: { $ref: '#/components/schemas/RoomTrack' }, description: 送信しているトラック }
+        node: { type: string, description: 他のノードにいる参加者（カスケード）の場合、そのノード }
         joined_at: { $ref: '#/components/schemas/Timestamp' }
-        peer_connected: { type: boolean, description: 'WebRTC（ICE・DTLS）がつながっているか（他のノードの参加者は true）' }
+        peer_connected: { type: boolean, description: 'WebRTC（ICE・DTLS）が接続済みかどうか（他のノードの参加者は true）' }
         signaling: { type: string, enum: [websocket, datachannel, remote], description: 'シグナリングの経路（remote は他のノードの参加者）' }
         subscriptions: { type: array, items: { $ref: '#/components/schemas/RoomSlot' }, description: 受信の枠（他のノードの参加者は空） }
     ParticipantList:
@@ -4034,7 +4066,7 @@ components:
       required: [items]
       properties:
         items: { type: array, items: { $ref: '#/components/schemas/Participant' } }
-        next_cursor: { type: [string, 'null'], description: '続きを読む `cursor`（続きがあるときだけ値、無ければ null）' }
+        next_cursor: { type: [string, 'null'], description: '続きを取得するための `cursor`（続きがあるときだけ値が入り、無ければ null）' }
     ParticipantPatch:
       type: object
       additionalProperties: false
@@ -4046,15 +4078,15 @@ components:
       additionalProperties: false
       required: [data]
       properties:
-        to: { type: array, items: { type: string }, default: [], description: 送る相手の connection_id（空なら全員） }
-        label: { type: [string, 'null'], pattern: '^#', description: 'DataChannel のラベル（`#` で始まる）。無ければシグナリングの `push`' }
-        data: { description: '送るもの（JSON で 64 KiB まで）。`label` があれば文字列' }
+        to: { type: array, items: { type: string }, default: [], description: 送信先の connection_id（空なら全員） }
+        label: { type: [string, 'null'], pattern: '^#', description: 'DataChannel のラベル（`#` で始まります）。無ければシグナリングの `push` で送ります' }
+        data: { description: '送信する内容（JSON で 64 KiB まで）。`label` がある場合は文字列' }
     RoomMessageResult:
       type: object
       additionalProperties: false
       required: [delivered]
       properties:
-        delivered: { type: integer, minimum: 0, description: 送った相手の数 }
+        delivered: { type: integer, minimum: 0, description: 送信した相手の数 }
     RoomLayerStats:
       type: object
       additionalProperties: false
@@ -4069,8 +4101,8 @@ components:
       properties:
         connection_id: { type: string }
         rtt_ms: { type: integer, minimum: 0 }
-        bandwidth_bps: { type: integer, minimum: 0, description: 受け手への推定帯域 }
-        send_bitrate_bps: { type: integer, minimum: 0, description: この参加者へ送っている量 }
+        bandwidth_bps: { type: integer, minimum: 0, description: 受信者への推定帯域 }
+        send_bitrate_bps: { type: integer, minimum: 0, description: この参加者へ送信している量 }
         retransmitted_packets: { type: integer, minimum: 0 }
         nack_requested: { type: integer, minimum: 0 }
         received_bytes: { type: integer, minimum: 0 }
@@ -4096,8 +4128,8 @@ components:
               mid: { type: string }
               track_id: { type: [string, 'null'] }
               state: { type: string, enum: [empty, active, paused] }
-              rid: { type: [string, 'null'], description: '今配っている層（層の無いトラック・まだなら null）' }
-        client: { type: object, description: クライアントが送った getStats の要約（無ければ省く） }
+              rid: { type: [string, 'null'], description: '現在配信している層（層の無いトラックや、まだ配信していない場合は null）' }
+        client: { type: object, description: クライアントが送信した getStats の要約（無ければ省きます） }
     RoomStats:
       type: object
       additionalProperties: false
@@ -4105,29 +4137,29 @@ components:
       properties:
         room_id: { $ref: '#/components/schemas/RoomId' }
         at: { $ref: '#/components/schemas/Timestamp' }
-        participants: { type: array, items: { $ref: '#/components/schemas/RoomParticipantStats' }, description: '部屋を置いたノードにつないだ参加者' }
+        participants: { type: array, items: { $ref: '#/components/schemas/RoomParticipantStats' }, description: '部屋を配置したノードに接続した参加者' }
     MediaPipelineName:
       type: string
       minLength: 1
       maxLength: 40
       pattern: '^[A-Za-z0-9_-][A-Za-z0-9_.-]*$'
-      description: 'テナント内で一意（作成のとき）。1〜40 文字の英数字と `-_.`（`.` で始まらない）。子の stream・パイプラインの名前の頭に使う'
+      description: 'テナント内で一意（作成時）。1〜40 文字の英数字と `-_.`（`.` で始まらないこと）。子の stream・パイプラインの名前の先頭に使われます'
     MediaPipelineState:
       type: string
       enum: [running, stopped]
-      description: running = 部屋を置いたノードの係が動かす、stopped = 止める（子の合成・送り出しを消す。書き出した stream・録画は残る）
+      description: running = 部屋を配置したノードが実行する、stopped = 停止する（子の合成・外部配信を削除します。書き出した stream と録画は残ります）
     MediaPipelineParticipants:
       type: array
       maxItems: 100
       items: { type: string, minLength: 1, maxLength: 255 }
-      description: '書き出す参加者の `client_id`（参加トークンの `client_id`）。空なら全員（`client_id` の無い参加者は `connection_id` で区別する）'
+      description: '書き出す参加者の `client_id`（参加トークンの `client_id`）。空なら全員（`client_id` の無い参加者は `connection_id` で区別します）'
     MediaPipelineComposite:
       type: object
       additionalProperties: false
       description: |
-        合成（会議の 1 本の映像・音声）。書かなかったフィールドは既定値（応答ではすべて入る）。映像のある参加者を並べ、音声はすべて混ぜて Opus 96 kbit/s にする。
-        `grid` は格子（列数は人数の平方根の切り上げ）、`speaker` は最初に書き出した参加者を上に大きく、残りを下の 1/4 の帯に並べる（話者の検出はまだ合成に届かない）。
-        H.264・H.265 は GPU が要る。GOP は `fps` の 2 倍。
+        合成の設定です（会議全体を 1 本の映像・音声にします）。指定しなかったフィールドは既定値になります（応答ではすべて含まれます）。映像のある参加者を並べ、音声はすべてミックスして Opus 96 kbit/s にします。
+        `grid` は格子状（列数は人数の平方根の切り上げ）、`speaker` は最初に書き出した参加者を上に大きく表示し、残りを下の 1/4 の帯に並べます（話者の検出結果は、まだ合成に使っていません）。
+        H.264・H.265 には GPU が必要です。GOP は `fps` の 2 倍です。
       properties:
         layout: { type: string, enum: [grid, speaker], default: grid }
         width: { type: integer, minimum: 64, maximum: 3840, multipleOf: 2, default: 1280 }
@@ -4139,24 +4171,24 @@ components:
       type: object
       additionalProperties: false
       description: |
-        録画（AWS の media capture pipeline 相当）。書き出した stream の自動録画（`RecordingPolicy`）を有効にする。録画は普通の録画の API（`GET /recordings?stream=...`）で読む。
-        録画の設定は stream を作るときに決まる（後から `recording` を変えても、作った stream には効かない）。
+        録画の設定です（AWS の media capture pipeline に相当）。書き出した stream の自動録画（`RecordingPolicy`）を有効にします。録画は通常の録画の API（`GET /recordings?stream=...`）で取得します。
+        録画の設定は stream の作成時に決まります（後から `recording` を変更しても、作成済みの stream には反映されません）。
       properties:
-        participants: { type: boolean, default: true, description: '参加者ごとの stream を録る（`export_participants: true` が要る）' }
-        composite: { type: boolean, default: true, description: '合成の stream を録る（`composite` が要る）' }
-        retention_days: { type: [integer, 'null'], minimum: 1, maximum: 36500, description: 保持日数（省けば録画の既定。応答では省いたとき欄が無い） }
+        participants: { type: boolean, default: true, description: '参加者ごとの stream を録画します（`export_participants: true` が必要）' }
+        composite: { type: boolean, default: true, description: '合成の stream を録画します（`composite` が必要）' }
+        retention_days: { type: [integer, 'null'], minimum: 1, maximum: 36500, description: 保持日数（省略すると録画の既定値。省略した場合は応答にも項目がありません） }
     MediaPipelineEgress:
       type: object
       additionalProperties: false
       required: [protocol]
       description: |
-        送り出し（AWS の media live connector pipeline 相当）。合成の stream の出力（`Output`）として作る。形と検査は `OutputCreate` と同じ
-        （`paas` には `credential_ref` が要る）。応答では null・空のフィールドは欄が無い。
+        外部への配信の設定です（AWS の media live connector pipeline に相当）。合成の stream の出力（`Output`）として作成します。形式と検査は `OutputCreate` と同じです
+        （`paas` には `credential_ref` が必要です）。応答では、null や空のフィールドは省かれます。
       properties:
         protocol: { type: string, enum: [rtmp_push, srt_push, paas] }
         url:
           type: [string, 'null']
-          description: '`paas` 以外で必須。rtmp_push: `rtmp`・`rtmps`、srt_push: `srt`。資格情報は入れられない。'
+          description: '`paas` 以外で必須。rtmp_push: `rtmp`・`rtmps`、srt_push: `srt`。資格情報は含められません。'
         credential_ref: { $ref: '#/components/schemas/CredentialRef' }
         provider:
           type: [string, 'null']
@@ -4174,14 +4206,14 @@ components:
         export_participants:
           type: [boolean, 'null']
           default: true
-          description: '参加者ごとの stream を残す（AWS の media stream pipeline 相当）。false でも合成のために書き出す（`recording.participants`・`captions` は使えない）'
+          description: '参加者ごとの stream を成果物として残します（AWS の media stream pipeline に相当）。false の場合も合成のために書き出しますが、`recording.participants`・`captions` は使えません'
         composite:
-          description: 合成（省略・null は合成しない）
+          description: 合成（省略または null の場合は合成しません）
           oneOf:
             - { $ref: '#/components/schemas/MediaPipelineComposite' }
             - { type: 'null' }
         recording:
-          description: 録画（省略・null は録らない）
+          description: 録画（省略または null の場合は録画しません）
           oneOf:
             - { $ref: '#/components/schemas/MediaPipelineRecording' }
             - { type: 'null' }
@@ -4190,9 +4222,9 @@ components:
           maxItems: 8
           default: []
           items: { $ref: '#/components/schemas/MediaPipelineEgress' }
-          description: 送り出し（`composite` が要る）
+          description: 外部への配信（`composite` が必要）
         captions:
-          description: '文字起こし・翻訳（AWS の media insights pipeline 相当）。参加者ごとの stream の `captions` になる（省略・null は付けない）'
+          description: '文字起こし・翻訳（AWS の media insights pipeline に相当）。参加者ごとの stream の `captions` として設定されます（省略または null の場合は設定しません）'
           oneOf:
             - { $ref: '#/components/schemas/CaptionSettings' }
             - { type: 'null' }
@@ -4200,11 +4232,11 @@ components:
           oneOf:
             - { $ref: '#/components/schemas/MediaPipelineState' }
             - { type: 'null' }
-          description: 省略・null は running
+          description: 省略または null の場合は running
     MediaPipelinePatch:
       type: object
       additionalProperties: false
-      description: '書いたフィールドだけ置き換える。`composite`・`recording`・`captions` の null は外す、他の null は「変えない」。`egress` は列ごと置き換える。'
+      description: '指定したフィールドだけを置き換えます。`composite`・`recording`・`captions` の null は設定の削除、他のフィールドの null は「変更しない」の意味です。`egress` は配列全体を置き換えます。'
       properties:
         name:
           oneOf:
@@ -4241,16 +4273,16 @@ components:
       required: [stream, name]
       properties:
         stream: { type: string, description: stream の ID }
-        name: { type: string, description: 'stream の名前（`{name}-{参加者}-{ID の頭 6 文字}`）' }
+        name: { type: string, description: 'stream の名前（`{name}-{参加者}-{ID の先頭 6 文字}`）' }
     MediaPipelineCompositeArtifacts:
       type: object
       additionalProperties: false
       required: [stream, pipeline, outputs]
-      description: 合成の子の資源の ID（メディアパイプラインの ID から決まる。まだ作っていなくても ID は出る）
+      description: 合成の子の資源の ID（メディアパイプラインの ID から決まります。まだ作成していなくても ID は表示されます）
       properties:
         stream: { type: string, description: '合成の stream の ID（`GET /streams/{id}`）' }
-        pipeline: { type: string, description: '合成のパイプラインの ID（`GET /pipelines/{id}`。映像のある参加者が流れ始めるまでは無いことがある）' }
-        outputs: { type: array, items: { type: string }, description: '`egress` の順の送り出しの出力の ID（`GET /outputs/{id}`）' }
+        pipeline: { type: string, description: '合成のパイプラインの ID（`GET /pipelines/{id}`。映像のある参加者が流れ始めるまでは存在しないことがあります）' }
+        outputs: { type: array, items: { type: string }, description: '`egress` の順に並んだ外部配信の出力の ID（`GET /outputs/{id}`）' }
     MediaPipelineArtifacts:
       type: object
       additionalProperties: false
@@ -4260,7 +4292,7 @@ components:
         participant_streams:
           type: array
           items: { $ref: '#/components/schemas/MediaPipelineParticipantStream' }
-          description: '書き出した参加者ごとの stream（`metadata.media_pipeline` がこの ID の stream。今いない参加者のものも残る）。ID の昇順'
+          description: '書き出した参加者ごとの stream（`metadata.media_pipeline` がこの ID の stream。現在いない参加者のものも残ります）。ID の昇順'
         composite:
           description: '`composite` が無ければ null'
           oneOf:
@@ -4270,11 +4302,11 @@ components:
       type: object
       additionalProperties: false
       required: [participants, composite_members]
-      description: このノードでの実行の様子（制御状態には保存しない）。
+      description: このノードでの実行の状態です（制御状態には保存されません）。
       properties:
         participants:
           type: array
-          description: 今書き出している参加者
+          description: 現在書き出している参加者
           items:
             type: object
             additionalProperties: false
@@ -4282,8 +4314,8 @@ components:
             properties:
               participant: { type: string, description: '`client_id`（無ければ `connection_id`）' }
               stream: { type: string, description: 書き出し先の stream の ID }
-              video: { type: boolean, description: 映像を送っているか }
-        composite_members: { type: [integer, 'null'], minimum: 0, description: '合成の図に入っている参加者の数（`composite` が無い、または映像のある参加者が流れ始めていなければ null）' }
+              video: { type: boolean, description: 映像を送信しているかどうか }
+        composite_members: { type: [integer, 'null'], minimum: 0, description: '合成のグラフに入っている参加者の数（`composite` が無い場合、または映像のある参加者がまだ流れ始めていない場合は null）' }
     MediaPipeline:
       type: object
       additionalProperties: false
@@ -4306,7 +4338,7 @@ components:
             - { type: 'null' }
         egress: { type: array, items: { $ref: '#/components/schemas/MediaPipelineEgress' } }
         captions:
-          description: 資格情報は `secret:{name}` の参照で、値は返さない
+          description: 資格情報は `secret:{name}` で参照し、値は返しません
           oneOf:
             - { $ref: '#/components/schemas/CaptionSettings' }
             - { type: 'null' }
@@ -4316,8 +4348,8 @@ components:
         artifacts: { $ref: '#/components/schemas/MediaPipelineArtifacts' }
         status:
           description: |
-            このノードでの実行の様子。部屋をこのノードに置いていない・`stopped`・係がまだ見回っていない（作った直後）なら null
-            （分散のときは部屋を置いたノードに問い合わせる）。止めた・消した直後の 1 秒ほどは前の様子が残ることがある。
+            このノードでの実行の状態。部屋がこのノードに配置されていない場合、`stopped` の場合、作成直後でまだ確認が行われていない場合は null です
+            （クラスターでは、部屋を配置したノードに問い合わせてください）。停止・削除の直後の 1 秒ほどは、以前の状態が残ることがあります。
           oneOf:
             - { $ref: '#/components/schemas/MediaPipelineStatus' }
             - { type: 'null' }
@@ -4343,11 +4375,11 @@ components:
                  node.down, node.up, device.down, device.up, device.disabled, device.enabled, grid.decisions,
                  room.started, room.stopped, room.connection.created, room.connection.updated, room.connection.destroyed,
                  room.track.published, room.track.unpublished, room.spotlight.changed]
-        resource_id: { type: string, description: '資源の ID（部屋の出来事は部屋の ID、`grid.decisions` は空）' }
-        event_id: { type: string, description: '部屋の核の出来事の ID（部屋の核の出来事だけ。SSE の `id` は無い）' }
-        node: { type: string, description: '出来事を出したノードの ID（部屋の核の出来事だけ）' }
+        resource_id: { type: string, description: '資源の ID（部屋のイベントは部屋の ID、`grid.decisions` は空）' }
+        event_id: { type: string, description: '部屋のイベントの ID（部屋のイベントだけ。SSE の `id` はありません）' }
+        node: { type: string, description: 'イベントを発生させたノードの ID（部屋のイベントだけ）' }
         occurred_at: { $ref: '#/components/schemas/Timestamp' }
-        data: { type: object, description: '種類ごとの中身（秘密は含まない）。部屋の核の出来事は `{type, data}`' }
+        data: { type: object, description: '種類ごとの内容（秘密は含みません）。部屋のイベントは `{type, data}`' }
     ProblemCode:
       type: string
       enum: [INVALID_CONFIG, INVALID_REQUEST, UNSUPPORTED_PROTOCOL_VERSION, UNSUPPORTED_CODEC, UNSUPPORTED_MEDIA_TYPE,
@@ -4356,7 +4388,7 @@ components:
              PAYLOAD_TOO_LARGE, INTERNAL_ERROR]
     Problem:
       type: object
-      description: RFC 9457 の problem details（仕様 10.4）。内部の詳細や秘密は入れない。
+      description: RFC 9457 の problem details です。内部の詳細や秘密は含めません。
       additionalProperties: false
       required: [type, title, status, code, retryable]
       properties:
@@ -4366,6 +4398,6 @@ components:
         code: { $ref: '#/components/schemas/ProblemCode' }
         request_id:
           type: string
-          description: '`X-Request-Id` と同じ（Idempotency-Key の再送では、再送の要求の ID）。'
+          description: '`X-Request-Id` と同じ値（Idempotency-Key による再送では、再送した要求の ID）。'
         retryable: { type: boolean }
-        details: { description: 'code ごとの補足（例: 本文の解析エラーは `{reason}`、予約の衝突は `{limit, overlaps}`）' }
+        details: { description: 'code ごとの補足情報（例: 本文の解析エラーは `{reason}`、予約の衝突は `{limit, overlaps}`）' }

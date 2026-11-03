@@ -5,7 +5,7 @@
 このページでは、配信者（エンコーダー・カメラ・ブラウザー）からストリームに映像・音声を取り込む方法と、視聴者へ配信する方法を説明します。
 
 - 設計の背景: [ADR-0006 stream タスク](../../dev/adr/0006-stream-hub.md)、[ADR-0012 WebRTC](../../dev/adr/0012-webrtc.md)、[ADR-0014 中継](../../dev/adr/0014-relay.md)、[ADR-0004 コーデックと特許](../../dev/adr/0004-codecs-patents.md)
-- 関連するページ: [3. 設定](03-configuration.md)、[5. 録画](05-recording.md)、[6. 入力と出力](06-inputs-outputs.md)、[8. 字幕](08-captions.md)、[9. クラスタとグリッド](09-cluster-grid.md)、[12. セキュリティ](12-security.md)、[14. コーデックと特許](14-codecs-and-patents.md)、[15. API と SDK](15-api-and-sdks.md)
+- 関連するページ: [3. 設定](03-configuration.md)、[5. 録画](05-recording.md)、[6. 入力と出力](06-inputs-outputs.md)、[8. 字幕](08-captions.md)、[9. クラスターとグリッド](09-cluster-grid.md)、[12. セキュリティ](12-security.md)、[14. コーデックと特許](14-codecs-and-patents.md)、[15. API と SDK](15-api-and-sdks.md)
 
 ## 4.1 全体の流れ
 
@@ -222,7 +222,7 @@ curl -s -X POST "$API/streams/$SID/inputs" "${H[@]}" -d '{
 | `options.audio_codec` | `opus` | |
 
 options の値はすべて文字列で指定します。ストリームが `royalty_free` の場合は、取り込みの worker もその方針に従ってエンコード形式を選びます。
-キャプチャの入力は、そのデバイスを持つノードに配置されます（グリッドのワークロード。[9. クラスタとグリッド](09-cluster-grid.md)）。
+キャプチャの入力は、そのデバイスを持つノードに配置されます（グリッドのワークロード。[9. クラスターとグリッド](09-cluster-grid.md)）。
 入力の状態と再接続の動作は、[6. 入力と出力](06-inputs-outputs.md) と同じです。`--capture-synthetic` を指定すると、
 テスト用の合成デバイス（`device:synthetic:0`）を使えます。
 
@@ -463,7 +463,7 @@ curl -s -X PATCH "$API/streams/$SID" "${H[@]}" -H "If-Match: $ETAG" -d '{"snapsh
 （HLS・RTMP/SRT/RTSP play・WHEP）が届くと、そのノードは所有者から中継で AU を受け取ってローカルにミラーを作り、そこから配信します。
 同じストリームの視聴者が何人いても、上流からの転送は 1 本です。最初の HLS のリクエストでは、ミラーの最初のプレイリストができるまで
 最長 6 秒待ちます。使われなくなったミラーは 30 秒後に削除されます。ミラーでは録画と字幕は行いません（これらは所有者のノードが行います）。
-中継が使えない場合は、所有者のノード（`media_addr`）へ 307 でリダイレクトします。詳しくは [9. クラスタとグリッド](09-cluster-grid.md) を参照してください。
+中継が使えない場合は、所有者のノード（`media_addr`）へ 307 でリダイレクトします。詳しくは [9. クラスターとグリッド](09-cluster-grid.md) を参照してください。
 
 ## 4.19 よくあるトラブル
 

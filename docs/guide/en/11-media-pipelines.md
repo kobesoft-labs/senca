@@ -4,11 +4,10 @@
 
 A media pipeline takes the participants of a room ([10-rooms.md](10-rooms.md)), exports them as SENCA streams, and lets you
 specify recording, compositing, live egress and transcription in a single resource. It is the SENCA equivalent of
-AWS Chime SDK Media Pipelines. For the design rationale see [ADR-0016](../../dev/adr/0016-media-pipelines.md).
+AWS Chime SDK Media Pipelines.
 
-- API: `/api/v1/media-pipelines` (`crates/senca-node/src/api/media_pipelines.rs`)
-- Runtime: `crates/senca-node/src/mediapipes.rs`
-- End-to-end test: `tools/interop/node_media_pipelines.sh` (two Chrome pages)
+- Design rationale: [ADR-0016](../../dev/adr/0016-media-pipelines.md)
+- API: `/api/v1/media-pipelines`
 
 ## 1. Mapping
 
@@ -42,7 +41,8 @@ AWS Chime SDK Media Pipelines. For the design rationale see [ADR-0016](../../dev
   midway can start quickly. If the export falls behind and drops data, it also requests a keyframe and resumes from the next one.
 - A participant with neither video nor audio is not exported. Only the first video track and the first audio track are used.
 - When a participant's tracks or layers change, its export is rebuilt. When the participant leaves, the export stops (the stream remains).
-- Participants on another node through cascading are not exported (cascading is not enabled in the node; see [10-rooms.md](10-rooms.md)).
+- In a cascaded room ([10-rooms.md](10-rooms.md)), only participants connected to the room's host node (home) are exported.
+  Participants connected to another node are not exported.
 
 Stream attributes:
 
@@ -308,13 +308,9 @@ Other shapes:
  "egress":[{"protocol":"paas","provider":"cloudflare_stream","credential_ref":"secret:cf-token"}]}
 ```
 
-`tools/interop/node_media_pipelines.sh` runs a two-person Chrome room and checks that the per-participant streams decode over HLS
-without re-encoding, that the composite is AV1 640×360, that per-participant and composite recordings (three in total) are made and
-export to MP4, that RTMP egress arrives, and that deletion removes the composite pipeline while keeping the streams.
-
 ## 7. Grid resource estimates
 
-A media pipeline is not itself a grid workload. It is accounted for as follows (`crates/senca-control/src/workloads.rs`):
+A media pipeline is not itself a grid workload. The grid accounts for it as follows:
 
 - **Participant export** runs on the same node as the room, so it is added to the room workload's estimate. For each running
   media pipeline, with m = the room's `max_participants` (default 50): CPU `20 × m` millicores and memory `8 × m` MB.
@@ -335,8 +331,9 @@ CPU 200 + 400 × 4 + 300 + 50 + 1500 + 50 = 3700 millicores and memory 128 + 128
 
 ## 8. Caveats
 
-- The runtime only sees participants on the node that hosts the room. A room lives on one node (cascading is disabled).
+- A media pipeline only exports participants connected to the node that hosts the room. In a cascaded room, participants
+  connected to another node are not exported.
 - `status` has a value only on the room's host node. Behind a load balancer another node may answer and return `null`.
 - When an automatically created room is deleted for being empty, its media pipelines are deleted, but the composite pipeline
   (stopped) and the egress output resources remain. Find them with `GET /pipelines` and `GET /outputs` and delete them.
-- Recordings are stored in the node's data directory. The S3-compatible storage and WHIP egress mentioned in ADR-0016 are not in the node yet.
+- Recordings are stored in the node's data directory. Storing to S3-compatible storage and WHIP egress are not supported.
