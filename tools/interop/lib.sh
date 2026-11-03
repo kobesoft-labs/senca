@@ -25,8 +25,10 @@ import os, random, socket, sys
 used_file = sys.argv[1]
 used = set(open(used_file).read().split()) if os.path.exists(used_file) else set()
 lo, hi = (int(x) for x in open("/proc/sys/net/ipv4/ip_local_port_range").read().split())
-a = int(os.environ.get("SENCA_PORT_LO", "10000")); b = min(int(os.environ.get("SENCA_PORT_HI", str(lo - 1))), lo - 1)
-pool = [p for p in range(a, b + 1) if not 30010 <= p <= 30019 and str(p) not in used]
+# SENCA_PORT_MIN・SENCA_PORT_MAX（別名 SENCA_PORT_LO・SENCA_PORT_HI）で範囲を狭められる（同じ機械で並べて試験するとき）
+pmin = int(os.environ.get("SENCA_PORT_MIN", os.environ.get("SENCA_PORT_LO", "10000")))
+pmax = min(lo - 1, int(os.environ.get("SENCA_PORT_MAX", os.environ.get("SENCA_PORT_HI", str(lo - 1)))))
+pool = [p for p in range(pmin, pmax + 1) if not 30010 <= p <= 30019 and str(p) not in used]
 for _ in range(200):
     p = random.choice(pool)
     try:

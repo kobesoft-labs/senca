@@ -171,6 +171,13 @@ pub struct RoomSettings {
     /// 誰もいなくなってから消すまでの秒数（参加で自動に作った部屋だけ）。
     #[serde(default = "default_empty_timeout")]
     pub empty_timeout_secs: u32,
+    /// カスケード: 部屋を置いたノード（home）以外のノードにつないだ参加者を、そのノード（edge）で受ける
+    /// （ノード間の中継で home とつなぐ）。偽なら部屋を置いたノードへ案内（redirect）する。
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub cascade: bool,
+    /// この部屋の認証 Webhook（http/https）。ノードの設定より優先する。署名の秘密はノードの設定のもの。
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub auth_webhook_url: Option<String>,
 }
 
 fn default_max_participants() -> u32 {
@@ -198,6 +205,8 @@ impl Default for RoomSettings {
             forwarding_filter: None,
             data_labels: default_labels(),
             empty_timeout_secs: default_empty_timeout(),
+            cascade: false,
+            auth_webhook_url: None,
         }
     }
 }
@@ -230,6 +239,15 @@ pub fn valid_room_id(id: &str) -> bool {
         && id
             .bytes()
             .all(|b| b.is_ascii_alphanumeric() || matches!(b, b'-' | b'_' | b'.' | b':' | b'@'))
+}
+
+/// Webhook の URL の形（宛先の検査はノードの egress の方針で、送る時に行う）。
+pub fn valid_webhook_url(u: &str) -> bool {
+    let Some(rest) = u.strip_prefix("https://").or_else(|| u.strip_prefix("http://")) else {
+        return false;
+    };
+    let host = rest.split(['/', '?', '#']).next().unwrap_or("");
+    u.len() <= 2048 && !host.is_empty() && !host.contains('@') && u.bytes().all(|b| b.is_ascii_graphic())
 }
 
 /// DataChannel のラベルの型に一致するか（`#*` は `#` で始まるすべて）。
@@ -280,6 +298,12 @@ impl RoomSettings {
         if self.max_video_bitrate_kbps.is_some_and(|b| !(50..=50_000).contains(&b)) {
             e.push(FieldError::new("max_video_bitrate_kbps", "50〜50000"));
         }
+        if self.auth_webhook_url.as_deref().is_some_and(|u| !valid_webhook_url(u)) {
+            e.push(FieldError::new(
+                "auth_webhook_url",
+                "http:// か https:// で始まる 2048 byte までの URL（利用者情報・空白なし）",
+            ));
+        }
         if e.is_empty() { Ok(()) } else { Err(e) }
     }
 
@@ -320,6 +344,18 @@ mod tests {
         .unwrap();
         let fields: Vec<String> = bad.validate().unwrap_err().into_iter().map(|e| e.field).collect();
         assert_eq!(fields, vec!["max_participants", "spotlight.number", "recording", "data_labels"]);
+        // カスケード・認証 Webhook（既定は出さない: 前と同じ JSON）
+        assert_eq!(serde_json::to_value(RoomSettings::default()).unwrap().get("cascade"), None);
+        let c: RoomSettings =
+            serde_json::from_str(r#"{"cascade":true,"auth_webhook_url":"https://auth.example/hook"}"#).unwrap();
+        assert!(c.cascade && c.validate().is_ok());
+        for u in ["ftp://x/", "https://", "https://u:p@x/", "https://x/ a", "javascript:alert(1)"] {
+            let s = RoomSettings {
+                auth_webhook_url: Some(u.into()),
+                ..Default::default()
+            };
+            assert_eq!(s.validate().unwrap_err()[0].field, "auth_webhook_url", "{u}");
+        }
         let e2ee = RoomSettings {
             e2ee: true,
             ..Default::default()

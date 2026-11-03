@@ -764,6 +764,14 @@ impl App {
         })
     }
 
+    /// 部屋の係の状態（カスケード・イベント Webhook）。WebRTC が無い・応えなければ None。
+    fn rooms_status(&self) -> Option<Value> {
+        let rtc = self.rtc.get()?;
+        let (tx, rx) = std::sync::mpsc::channel();
+        rtc.room_cmd(crate::rooms::RoomCmd::Status(tx));
+        rx.recv_timeout(std::time::Duration::from_secs(1)).ok()
+    }
+
     pub fn render_node(&self, n: &NodeInfo) -> Value {
         let mine = n.id == self.node_id;
         let streams = if mine { self.hubs.lock().unwrap().values().filter(|h| h.is_live()).count() } else { 0 };
@@ -776,6 +784,7 @@ impl App {
             "live_streams": streams,
             "self": mine,
             "relay": if mine { self.relay.get().map(|r| r.status()) } else { None },
+            "rooms": if mine { self.rooms_status() } else { None },
         })
     }
 

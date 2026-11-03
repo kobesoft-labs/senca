@@ -147,6 +147,8 @@ pub enum ConnEvent {
     KeyframeRequest { id: DownstreamId, track: TrackId },
     /// 相手が退く（新しい購読は受けない。今の購読は続く）。
     GoAway { code: ErrorCode, reason: String },
+    /// 相手の統合側からの message（[`Connection::send_app`]）。
+    App { topic: String, payload: Bytes },
     /// 接続が終わった。以後は何も起きない。
     Closed(ConnError),
 }
@@ -353,6 +355,28 @@ impl Connection {
             return;
         }
         self.ctrl.push_back(f);
+    }
+
+    /// 統合側の message を送る（チャネルに属さない。制御の枠と同じく、メディアより先に出る）。
+    /// 相手が [`caps::APP`] を載せていない・閉じた・大きすぎる・制御のキューが半分を超えて詰まっているときは
+    /// 送らずに false（呼び手は捨てるか、後で送り直す）。
+    pub fn send_app(&mut self, topic: &str, payload: Bytes) -> bool {
+        let Some(p) = &self.peer else { return false };
+        let room = (p.max_frame as usize).saturating_sub(16 + wire::MAX_TOPIC);
+        if self.closed.is_some()
+            || p.capabilities & caps::APP == 0
+            || topic.is_empty()
+            || topic.len() > wire::MAX_TOPIC
+            || payload.len() > wire::MAX_APP_PAYLOAD.min(room)
+            || self.ctrl.len() >= self.cfg.max_control_queue / 2
+        {
+            return false;
+        }
+        self.ctrl.push_back(Frame::App {
+            topic: topic.to_string(),
+            payload,
+        });
+        true
     }
 
     // -----------------------------------------------------------------------------------------
@@ -1085,6 +1109,9 @@ impl Connection {
                 }
             }
             Frame::Stats(s) => self.stats.peer_stats = s,
+            Frame::App { topic, payload } => {
+                self.events.push_back(ConnEvent::App { topic, payload });
+            }
             Frame::Unknown(_) => {}
         }
         Ok(())
@@ -1307,6 +1334,43 @@ mod tests {
         assert!(
             matches!(&ev[1], ConnEvent::Stream(_, StreamEvent::Au(x)) if x.sequence == 2 && x.keyframe && x.discontinuity)
         );
+    }
+
+    #[test]
+    fn app_messages() {
+        let now = Instant::now();
+        let (mut a, mut b) = pair(now);
+        // Hello の前は送れない
+        assert!(!a.send_app("senca.rooms/1", Bytes::from_static(b"early")));
+        exchange(&mut a, &mut b, now);
+        events(&mut a);
+        events(&mut b);
+        assert!(a.send_app("senca.rooms/1", Bytes::from_static(b"{\"v\":1}")));
+        assert!(!a.send_app("", Bytes::new()));
+        assert!(!a.send_app(&"t".repeat(wire::MAX_TOPIC + 1), Bytes::new()));
+        assert!(!a.send_app("t", Bytes::from(vec![0u8; wire::MAX_APP_PAYLOAD + 1])));
+        exchange(&mut a, &mut b, now);
+        let got: Vec<(String, Bytes)> = events(&mut b)
+            .into_iter()
+            .filter_map(|e| match e {
+                ConnEvent::App { topic, payload } => Some((topic, payload)),
+                _ => None,
+            })
+            .collect();
+        assert_eq!(got, vec![("senca.rooms/1".to_string(), Bytes::from_static(b"{\"v\":1}"))]);
+        // App を載せない古い相手には送らない
+        let (_, mut d) = pair(now);
+        let mut c = Connection::new(
+            ConnConfig {
+                node_id: 1,
+                capabilities: caps::BATCH | caps::STATS,
+                ..Default::default()
+            },
+            now,
+        );
+        exchange(&mut c, &mut d, now);
+        assert!(!d.send_app("t", Bytes::from_static(b"x")));
+        assert!(c.send_app("t", Bytes::from_static(b"x")));
     }
 
     #[test]

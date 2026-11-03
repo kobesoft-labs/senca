@@ -730,6 +730,24 @@ impl RoomService {
         }
     }
 
+    /// この接続には認証 Webhook が無かった（部屋にもノードにも URL が無い）: トークンだけで決める
+    /// （[`AuthWebhookMode::Off`] と同じ扱い。名乗った client_id・bundle_id はトークンに無ければ拒む）。
+    pub fn on_auth_webhook_skipped(&mut self, now: Instant, key: ConnKey, request_id: &str) {
+        let Some(c) = self.conns.get_mut(&key) else { return };
+        let Phase::Authenticating { request_id: rid, .. } = &c.phase else { return };
+        if rid != request_id {
+            return;
+        }
+        let Phase::Authenticating { pending, .. } = std::mem::replace(&mut c.phase, Phase::AwaitConnect) else {
+            return;
+        };
+        let (cm, claims) = *pending;
+        if claims.is_none() && !self.cfg.allow_anonymous {
+            return self.auth_fail(now, key, "token required");
+        }
+        self.admit(now, key, cm, claims, None);
+    }
+
     fn auth_fail(&mut self, now: Instant, key: ConnKey, msg: &str) {
         self.disconnect(now, key, DisconnectReason::Error, Some((ErrorCode::AuthFailed, msg.to_string())));
     }
@@ -1623,6 +1641,32 @@ impl RoomService {
             self.redirect(now, *k, location.clone());
         }
         members.len()
+    }
+
+    /// 部屋があるか。
+    pub fn has_room(&self, room_id: &str) -> bool {
+        self.rooms.contains_key(room_id)
+    }
+
+    /// このノードの参加者（公開したトラックつき、`node` はこのノード）。カスケードの在室の同期に使う。
+    pub fn local_participants(&self, room_id: &str) -> Option<Vec<ParticipantInfo>> {
+        let room = self.rooms.get(room_id)?;
+        Some(
+            room.members
+                .iter()
+                .filter_map(|k| self.conns.get(k))
+                .map(|c| {
+                    let mut p = participant_info(room, c);
+                    p.node = Some(self.cfg.node_id.clone());
+                    p
+                })
+                .collect(),
+        )
+    }
+
+    /// 別のノードの参加者（足したトラックつき）。
+    pub fn remote_participants(&self, room_id: &str) -> Option<Vec<ParticipantInfo>> {
+        Some(self.rooms.get(room_id)?.remote.values().cloned().collect())
     }
 
     /// 別のノードの参加者を足す（グリッドの中継で知った）。

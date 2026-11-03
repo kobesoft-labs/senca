@@ -19,6 +19,7 @@ E2EE pass-through and statistics. The server is an SFU: it forwards what it rece
   room's `placement_status`.
 - **Clients may connect to any node.** Signaling (`GET /signaling`) looks at the `room_id` of the first `connect` message; if the room is hosted elsewhere,
   the node replies with `redirect {location}` and closes. For participants, messages and stats, the REST API forwards the request to the hosting node.
+  Rooms with `cascade: true` are not redirected; the node the client connected to serves it (cascading, §10).
 - **When a room moves** (drain, node stop), the old node — if it is still running — sends `redirect` to the current participants so they rejoin on the new node.
 - **Join tokens** can be issued and verified by any node: the signing key is derived from the control-state key, so it is the same on every node.
 
@@ -92,6 +93,8 @@ with the offending fields in `details.errors`).
 | `forwarding_filter` | none | Room-wide forwarding filter (§6) |
 | `data_labels` | `["#*"]` | DataChannel label patterns allowed in the room. Each starts with `#`, up to 64 bytes, at most 32 patterns. A trailing `*` is a prefix match |
 | `empty_timeout_secs` | 60 | For auto-created rooms (`auto: true`): seconds a room may stay empty before it is deleted |
+| `cascade` | false | If true, participants who connect to a node other than the room's node are served on that node (cascading, §10). If false they are redirected to the room's node |
+| `auth_webhook_url` | none | Auth webhook URL for this room (`http://` or `https://`). Takes precedence over the node's `--rooms-auth-webhook` (§4) |
 
 ### Update
 
@@ -178,14 +181,27 @@ Response (201):
 
 The room core checks the token at `connect`.
 
-- **A token is required.** The node runs without an auth webhook and without anonymous access, so a `connect` without a token fails with `auth_failed` (§12).
+- **A token is required** (by default). A `connect` without a token fails with `auth_failed` (§12). Only with `--rooms-auth-mode only`
+  can the auth webhook admit participants instead of a token.
 - `exp` is required; clock skew of up to 30 seconds is tolerated. Tokens whose remaining lifetime (now to `exp`) exceeds 24 hours are rejected, as are tokens whose `iat` is too far in the future.
 - If the token's `room` differs from `connect.room_id`, the result is `forbidden`. If `connect.role` exceeds the token's `role`, the result is `forbidden`.
 - **Self-asserted `client_id` and `bundle_id` are not trusted** (they are used as forwarding-filter conditions):
   - If the token has a `client_id`, it is used. A `connect.client_id`, if given, must be identical or the result is `forbidden`.
   - If the token has no `client_id` but `connect.client_id` is given, the result is `forbidden` (`client_id must be issued in the token`).
   - The same applies to `bundle_id`. If neither provides one, `bundle_id` equals the `connection_id`.
-- The participant's visible metadata is the token's `metadata`. `connect.metadata` is never shown to other participants (it exists for the auth webhook, which the node does not use).
+- The participant's visible metadata is the token's `metadata`. `connect.metadata` is never shown to other participants (it is passed to the auth webhook).
+
+### Auth webhook
+
+If the room setting `auth_webhook_url`, or otherwise the node's `--rooms-auth-webhook`, is set, the node verifies the token and then
+asks that URL with a signed `POST` (request and response formats: [Signaling v1](../../realtime/signaling.en.md) §9).
+
+- A response with `allowed: false` fails the join with `auth_failed` (the `reason` reaches the client). The response may override
+  `role`, `client_id`, `metadata` and `permissions`. No answer within 5 seconds, or a non-2xx status, is also a rejection.
+- The signing secret is passed with `--rooms-webhook-secret-file` (`Senca-Signature` header). On a node without a secret, joins to
+  rooms that have a webhook URL are rejected.
+- Destinations are checked against the `--egress-allow` policy; allow internal addresses explicitly.
+- Rooms without either URL are admitted by token alone, as before.
 
 ## 5. Signaling
 
@@ -281,6 +297,22 @@ Stats (`GET …/stats`): `{room_id, at, participants[]}`. Per participant: `conn
   see [09](09-cluster-grid.md).
 - Room state from before the move (participants, tracks, spotlight) is not carried over; the room starts empty on the new node.
 
+### Cascading (spanning a room across nodes)
+
+With the room setting `cascade: true` (or the node flag `--rooms-cascade`), participants stay on the node they connected to
+(for example the nearest one) and still join the same room. This needs a cluster (the inter-node relay).
+
+- The node the room is placed on is the **home**; other nodes that serve participants are **edges**. An edge is created when a
+  participant arrives and closes 20 seconds after its last participant leaves. Draining nodes do not create edges and redirect to the home.
+- Participants on other nodes appear with the `node` field; their video, audio and DataChannel messages arrive over the relay.
+  In the REST participant list (forwarded to the home) they are shown with `signaling: "remote"`.
+- `max_participants` counts participants on all nodes. Simultaneous joins on different nodes may exceed it for a short time.
+- **When the home dies**, the grid moves the room to another node. If that node is an edge, its participants continue without
+  interruption. Participants of the dead node rejoin by connecting to another node (list several nodes in the SDK's `url`).
+- Call the REST endpoints that disconnect or update a participant on the node where that participant is.
+  Media pipelines can export tracks of participants on the home node.
+- The cascade state is shown in `rooms` of this node in `GET /api/v1/nodes`.
+
 ## 11. E2EE (pass-through)
 
 In a room with `settings.e2ee: true`, the SFU forwards media that clients have encrypted (for example with SFrame) without looking at its content.
@@ -302,7 +334,8 @@ Control events (in the consensus log; they carry an SSE `id` and can be resumed 
 | `room.updated` | Room created, auto-created or updated | `{auto}` |
 | `room.deleted` | Room deleted (including auto-room cleanup) | `{}` |
 
-Room-core events (**delivered only to subscribers on the hosting node**; they have no SSE `id`, cannot be resumed with `Last-Event-ID`, and are skipped if the subscriber lags):
+Room-core events (**delivered only to subscribers on the node where the participant is**; with cascading, events of an edge's participants
+go to the edge node and `room.started`/`room.stopped` come only from the home; they have no SSE `id`, cannot be resumed with `Last-Event-ID`, and are skipped if the subscriber lags):
 
 | `event` | When |
 |---|---|
@@ -323,6 +356,17 @@ Shape of a room-core event's `data`:
 ```
 
 To receive all room-core events, subscribe to the SSE stream of the hosting node (`placement_status.node`). Events are filtered by tenant, so other tenants' room events are never delivered.
+
+### Event webhook
+
+With `--rooms-event-webhook URL` and `--rooms-webhook-secret-file FILE`, each node signs and `POST`s its room-core events to the URL
+(body format: [Signaling v1](../../realtime/signaling.en.md) §10; `type` uses the room-core names such as `connection.created`).
+
+- Delivery is at least once. Receivers deduplicate by the body's `id` (same as the `Senca-Webhook-Id` header).
+- A 2xx completes delivery. 408, 429, 5xx, connection failures and a 10-second timeout are retried after 1, 2, 4, … seconds,
+  giving up after 10 attempts. Other 4xx give up immediately.
+- The number of abandoned events and recent IDs are shown in `rooms.event_webhook` of this node in `GET /api/v1/nodes`.
+- Destinations are checked against the `--egress-allow` policy. Events are still streamed to SSE.
 
 ## 13. Limits
 
@@ -345,12 +389,6 @@ To receive all room-core events, subscribe to the SSE stream of the hosting node
 
 Some features exist in the room core (`senca-rooms`) and the Signaling v1 document but are not yet usable in `senca-node`:
 
-- **Auth webhook**: the node runs the room core without `auth_webhook` (admission is by token only). Admission cannot be delegated to an external service.
-  (Even if the room core issued a webhook request, the node would treat it as unanswered and reject: see `drive()` in `crates/senca-node/src/rooms.rs`.)
-  Consequently `connect.metadata` is not used anywhere and joining without a token is impossible.
-- **Event webhooks**: the mechanism that POSTs room events to an external endpoint (`senca_rooms::webhook::Outbox`) is not wired into the node. Events are available via SSE only.
-- **Cascading (spanning a room across nodes)**: not enabled. A room stays on one node and participants who connect to other nodes are redirected.
-  The size of a room is therefore bounded by one node's capacity, and the participant `node` field (participants on other nodes) never appears.
 - **Node `overflow_redirect`**: cannot be configured (a full node answers `room_full`).
 - **`settings.recording`**: a policy value only; it does not start recording (use media pipelines, [11](11-media-pipelines.md)).
 - **A message for participants to change their own metadata**: Signaling v1 has none; change it from your application server with `PATCH /rooms/{id}/participants/{connection_id}`.

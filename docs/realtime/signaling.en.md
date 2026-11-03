@@ -217,6 +217,13 @@ Response (2xx; unknown fields are rejected):
 
 With `allowed: false`, `reason` is passed to the client (`auth_failed`). Non-2xx responses and unreadable bodies are also rejections.
 
+On senca-node, the webhook URL is the room setting `auth_webhook_url` (http/https) if present, otherwise `--rooms-auth-webhook`.
+`--rooms-auth-mode` selects the mode (default `after_token` = query after the token is verified; `only` = instead of tokens).
+Rooms without either URL are authorized by the token alone (a `client_id`/`bundle_id` not in the token cannot be claimed).
+The signing secret comes from `--rooms-webhook-secret-file`; joins to a room with a URL are rejected when no secret is configured.
+Destinations are checked against the `--egress-allow` policy (private addresses need to be allowed). Requests also carry
+`Senca-Webhook-Id` (the request_id).
+
 ### Signatures (common to webhooks)
 
 `Senca-Signature: t=<UNIX seconds>,v1=<hex(HMAC-SHA256(secret, "<t>.<body>"))>`. While rotating secrets, multiple `v1=` are attached.
@@ -237,7 +244,10 @@ The same envelope is emitted to SSE (`/api/v1/events`) and webhooks.
 
 On senca-node's SSE the names are `room.started` (= `room.created`), `room.stopped` (= `room.destroyed`), `room.connection.*`,
 `room.track.*` and `room.spotlight.changed`, with the payload in `data` (`room.updated` comes from the control-plane change event).
-senca-node does not send webhooks yet (SSE only) and does not use the auth webhook (joins are authorized by tokens).
+With `--rooms-event-webhook URL`, senca-node signs and POSTs the same envelope (with the room-core `type` names;
+`--rooms-webhook-secret-file` is required). Each node sends the events of its own participants (tell them apart by `node`).
+Cascade edge nodes do not send `room.created`, `room.updated` or `room.destroyed` (only the home node does).
+The number and IDs of abandoned events are shown in `rooms.event_webhook` of `GET /api/v1/nodes`.
 
 Webhooks are delivered **at least once** (receivers deduplicate by `id`). A 2xx completes delivery. 408, 429, 5xx, connection failures and a 10-second timeout
 are retried after 1, 2, 4, … seconds (±20 %, up to 1 hour), giving up after 10 attempts (dead letter). Other 4xx give up immediately.
@@ -287,7 +297,21 @@ When a room cannot be served by this node (grid placement, limits), the client i
 
 On senca-node, a redirect before the first `connect` (the room lives on another node) is a `redirect` message followed by
 close 4300 (no `disconnect`). If no `connect` arrives within 10 s, the socket is closed with 4408.
-senca-node does not enable cross-node cascading yet: a room lives on one node and participants are redirected there.
+
+Cascading on senca-node:
+
+- The node the room is placed on (the grid assignment) is the **home**. If the room setting `cascade: true` (or the node flag
+  `--rooms-cascade`) is set, a participant who connects to another node is not redirected but served by an **edge** instance
+  of the room on that node. Rooms with `cascade` false are redirected to the home as before. Draining nodes do not create new edges.
+- Presence and published tracks are synchronized as a full per-room snapshot over the inter-node relay (ADR-0014) using App
+  frames (topic `senca.rooms/1`, versioned, up to 1 MiB): immediately on change and every 2 seconds otherwise. Edges send
+  their own participants to the home; the home sends everyone except the destination's participants to each edge.
+  Participants of a node whose snapshots stop arriving for 7 seconds are removed.
+- Media is subscribed directly from the node where the participant is, as `@room/<room>/<track>` (layer selection and keyframe
+  requests use the same subscription). Application messages also go directly to the nodes of the recipients.
+- `max_participants` counts participants across nodes (simultaneous joins on different nodes may briefly exceed it).
+- When the home dies, the grid moves the room to another node. If that node has an edge, it becomes the home with its participants.
+  Participants of the dead node rejoin by connecting to another node. Edges without participants close after 20 seconds.
 
 ## 14. Example
 

@@ -98,6 +98,18 @@ API の応答（`ingest`）と再生 URL に入れる、外から見た URL。�
 | `--cluster-config` | FILE | なし | クラスタの設定（JSON、[3.4](#34-クラスタの設定)）。無ければ単一ノード |
 | `--egress-allow` | CIDR | なし | 外へつなぐ（pull 入力・push 出力・字幕・PaaS・HLS pull）宛先として許す私設アドレスの範囲。何度でも書ける。[12. セキュリティ](12-security.md) |
 
+### 部屋（リアルタイム）
+
+| オプション | 値 | 既定 | 意味 |
+|---|---|---|---|
+| `--rooms-cascade` | — | 無効 | すべての部屋でカスケードを使います（部屋の設定 `cascade` が false でも、別のノードの部屋の参加者をこのノードで受けます）。[10. リアルタイムの部屋](10-rooms.md) |
+| `--rooms-auth-webhook` | URL | なし | 部屋の認証 Webhook（部屋の設定 `auth_webhook_url` が優先）。`--rooms-webhook-secret-file` が必要です |
+| `--rooms-auth-mode` | `after_token`・`only` | `after_token` | `after_token` はトークンを検証した後に問い合わせます。`only` はトークンの代わりに Webhook で認めます |
+| `--rooms-event-webhook` | URL | なし | 部屋の出来事を送る Webhook（署名つき、送り直しあり）。`--rooms-webhook-secret-file` が必要です |
+| `--rooms-webhook-secret-file` | FILE | なし | Webhook の署名（HMAC-SHA256）の秘密のファイル。前後の空白を除いて 16 byte 以上 |
+
+Webhook の宛先は `--egress-allow` の方針で検査します（私設アドレスへ送るには許可が要ります）。
+
 ### その他
 
 | オプション | 値 | 既定 | 意味 |
@@ -114,6 +126,8 @@ API の応答（`ingest`）と再生 URL に入れる、外から見た URL。�
 - `--https`・`--rtmps`・`--quic` があるのに `--tls-cert` か `--tls-key` が無い。
 - `--record-queue` が 16〜1048576 の外。`--max-playback-ttl` が 0。
 - `--egress-allow` が CIDR として読めない。
+- `--rooms-auth-webhook`・`--rooms-event-webhook` が http/https の URL でない、または `--rooms-webhook-secret-file` が無い。
+  秘密のファイルが読めない・16 byte 未満。
 - クラスタの設定の `node_id` が 0、`peers` に自分が無い、`peers` が 1〜7 台の外。
 
 ファイルが読めない・待ち受けを開けない・クラスタの合言葉が 16 文字未満などは、起動の途中で `fatal: ...` として
@@ -147,6 +161,10 @@ API の応答（`ingest`）と再生 URL に入れる、外から見た URL。�
 | `net_mbps` | `--net-mbps` | 数 |
 | `labels` | `--label` | 文字列 → 文字列のオブジェクト |
 | `capacity_cpu_millis`・`capacity_memory_mb` | 同名 | 数か `null` |
+| `rooms_cascade` | `--rooms-cascade` | 真偽 |
+| `rooms_auth_webhook`・`rooms_event_webhook` | 同名 | 文字列か `null` |
+| `rooms_auth_mode` | `--rooms-auth-mode` | `"after_token"` か `"only"` |
+| `rooms_webhook_secret_file` | 同名 | 文字列か `null` |
 
 注意:
 
