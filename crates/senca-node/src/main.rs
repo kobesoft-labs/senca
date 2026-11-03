@@ -43,6 +43,7 @@ mod store;
 mod thumbnail;
 mod tls_io;
 mod util;
+mod viewers;
 mod webrtc;
 
 use app::App;

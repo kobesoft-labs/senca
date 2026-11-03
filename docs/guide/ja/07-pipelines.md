@@ -195,8 +195,17 @@ AAC はデコードできません（`UNSUPPORTED_CODEC`）。
 
 ### `snapshot_on_change`（板書の変化を静止画に保存）
 
-`{input, params}`。生の映像を解析し、内容が変わってから落ち着いた時点で JPEG を保存します。保存先は**最初の `sink` のストリーム**の静止画です
-（`GET /streams/{id}/snapshots`、`reason: board_change`、`changed_fraction` 付き）。この方法で保存した静止画は、枚数の上限による削除の対象になりません。
+`{input, params}`。生の映像を解析し、内容が変わってから落ち着いた時点で JPEG を保存します。保存先は**パイプラインごとの場所**
+（`{data-dir}/pipeline-snapshots/{pipeline_id}/`）で、`sink` の無いグラフでも使えます。処理ノードごとに `params.keep` 枚まで残し、
+超えた分は古いものから削除します。パイプラインを削除すると、静止画も削除します（パイプラインを動かしていたノードの分）。
+
+| 操作 | API | 権限 | 結果 |
+|---|---|---|---|
+| 一覧 | `GET /pipelines/{id}/snapshots` | `stream:read` | `{"items":[{id, taken_at, reason: "board_change", node, width, height, bytes, changed_fraction}]}`（古い順。`node` は処理ノードの ID） |
+| 1 枚の取得 | `GET /pipelines/{id}/snapshots/{snapshot_id}` | `stream:read` | JPEG |
+| 削除 | `DELETE /pipelines/{id}/snapshots/{snapshot_id}` | `stream:write` | 204 |
+
+静止画は、パイプラインを動かしているノードのディスクに保存します。クラスターでは、そのノード（`placement_status.node_name`）の API で取得してください。
 
 | `params` の項目 | 既定 | 範囲 |
 |---|---|---|
@@ -206,6 +215,7 @@ AAC はデコードできません（`UNSUPPORTED_CODEC`）。
 | `stable_frames` | 3 | 1〜10000 |
 | `change_fraction` | 0.004 | 0 より大きく 1 より小さい値 |
 | `jpeg_quality` | 85 | 1〜100 |
+| `keep` | 1000 | 1〜10000（残す枚数） |
 
 ### `sink`（出力）
 

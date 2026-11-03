@@ -142,6 +142,9 @@ worker は、適用した制限を起動時のログに出力します（例: `s
 - パイプラインでは、`source`・`sink` のストリームのどれかが `royalty_free` なら、H.264・H.265・AAC の使用（パススルーを含む）は `POLICY_REJECTED` になります。
 - 静止画・サムネイル・キャプチャのエンコードも、この方針に従ってプロバイダーを選びます。
 - 配信者には、AV1・VP9・VP8 と Opus で送信してもらってください（WHIP・Enhanced RTMP。[4. 取り込みと再生](04-ingest-playback.md)）。
+- ストリームの処理では再エンコードしないため、配信計画（`POST /streams/{id}/plan`）に変換は出ません。`royalty_free` のストリームに届いた
+  H.264・H.265・AAC のトラックは、計画ではすべての出力で `unsupported`（理由付き）になります。AV1 などへ変換したい場合は、
+  パイプライン（[7. パイプライン](07-pipelines.md)）の `decode`・`encode` で別のストリームに出力してください（H.264・H.265 のデコードには GPU が必要です。§14.3）。
 
 ```sh
 curl -s -X POST "$API/streams" "${H[@]}" -d '{"name":"rf1","codec_profile":"royalty_free","hls":{"container":"fmp4"}}'

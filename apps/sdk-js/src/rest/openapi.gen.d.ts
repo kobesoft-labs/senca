@@ -290,7 +290,7 @@ export type InputList = {
   next_cursor: string | null;
 };
 
-/** プロトコルごとの設定（例: RTSP の `transport: tcp|udp`、device の `width`・`height`・`fps`・`codec`・`bitrate_bps`・`audio_device`・`audio_codec`）。16 個まで、キーは 64 文字・値は 256 文字までです。 */
+/** プロトコルごとの設定（例: rtsp_pull の `allow_basic: "true"`・`tls_spki_sha256`（rtsps で証明書の公開鍵を固定します。SHA-256 の base64 か 16 進）、device の `width`・`height`・`fps`・`codec`・`bitrate_bps`・`audio_device`・`audio_codec`）。16 個まで、キーは 64 文字・値は 256 文字までです。RTSP は TCP interleaved で接続します。 */
 export type IoOptions = { [key: string]: string };
 
 /** 指定したフィールドだけを置き換えます。`credential_ref: null` で参照を、`placement: null` で配置の指定を削除します（スケジューラーに任せます）。他のフィールドの null は「変更しない」の意味です。 */
@@ -331,11 +331,13 @@ export type LabelSelector = {
   values: string[];
 };
 
-/** standard = HLS、low = LL-HLS、interactive = WebRTC・MoQ */
+/** standard = HLS、low = LL-HLS（part は min(500 ms, segment_ms / 4)）、interactive = WebRTC・MoQ 向け（LL-HLS の part は 200 ms、出だしの待ちと送りの溜まりを小さくする） */
 export type LatencyProfile = "standard" | "low" | "interactive";
 
 export type Limits = {
+  /** 入力のビットレートの上限（直近 3 秒の平均）。5 秒続けて超えたら送り手を切り、10 秒は新しい送り手を断る */
   max_ingress_bps?: number | null;
+  /** ノードごとの同時の視聴者の上限（最近プレイリストを取得した HLS のクライアントと、RTMP・SRT・RTSP・WHEP・MoQ の接続の合計）。超える新しい視聴は断る（HLS・WHEP・RTSP は 503） */
   max_viewers?: number | null;
 };
 
@@ -347,6 +349,17 @@ export type LiveInfo = {
   tracks: Array<Record<string, unknown>>;
   /** rtmp・srt など */
   transport: string;
+  /** このノードの視聴者の数（`limits.max_viewers` で数えるもの）。`hls` は最近プレイリストを取得した別々の HLS のクライアント */
+  viewers?: {
+    hls?: number;
+    moq?: number;
+    rtmp?: number;
+    rtsp?: number;
+    srt?: number;
+    total?: number;
+    webrtc?: number;
+  };
+  /** hub の購読の数（中継・録画以外の内部の購読も含む目安） */
   viewers_hint: number;
 };
 
@@ -1451,8 +1464,12 @@ export type SnapshotList = {
   items: Array<{
     /** JPEG のサイズ */
     bytes: number;
+    /** 前回の保存からの変化の割合（パイプラインの静止画のみ） */
+    changed_fraction?: number;
     height: number;
     id: string;
+    /** `snapshot_on_change` の処理ノードの ID（パイプラインの静止画のみ） */
+    node?: string;
     /** 撮影した理由 */
     reason: "interval" | "schedule" | "board_change";
     taken_at: Timestamp;

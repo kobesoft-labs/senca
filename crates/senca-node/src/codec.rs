@@ -100,10 +100,6 @@ impl CodecService {
         self.rt.block_on(self.pool.probe()).ok()
     }
 
-    pub fn can_transcode_hw(&self) -> bool {
-        self.caps().iter().any(|c| c.hardware && c.direction == Direction::Encode)
-    }
-
     pub fn can_decode(&self, codec: Codec) -> bool {
         self.caps().iter().any(|c| c.codec == codec && c.direction == Direction::Decode)
     }

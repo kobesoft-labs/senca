@@ -680,6 +680,9 @@ fn check_params(v: &mut V<'_>, node: &Node) {
             if !(1..=100).contains(&p.jpeg_quality) {
                 v.push(IssueCode::InvalidParam, id, "jpeg_quality must be 1..=100");
             }
+            if !(1..=10_000).contains(&p.keep) {
+                v.push(IssueCode::InvalidParam, id, "keep must be 1..=10000");
+            }
         }
         Node::Sink(s) => {
             if s.stream.is_empty() || s.stream.len() > 256 {

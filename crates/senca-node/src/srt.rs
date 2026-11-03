@@ -22,6 +22,8 @@ use tokio::sync::mpsc;
 
 /// publish の 1 接続から hub へのキュー（TS のメッセージ数）。あふれたら落とす（受け口全体を止めない）。
 const PUBLISH_QUEUE: usize = 4096;
+/// `latency_profile: interactive` の stream で申告する受信遅延（ms。既定は 200）。
+const INTERACTIVE_LATENCY_MS: u16 = 80;
 
 enum Mode {
     Publish(String),
@@ -59,18 +61,30 @@ fn decide(app: &App, req: &senca_srt::AcceptRequest) -> AcceptDecision {
             let core = app.control.lock().unwrap();
             core.state.streams.values().find(|s| s.key_hash == h).map(|s| s.tenant.clone())
         }
-        Some(Mode::Play(q)) => {
-            if app.subscribe_rtmp_play(&q).is_none() {
-                None
-            } else {
-                let id = q.split('?').next().unwrap_or("");
-                app.control.lock().unwrap().state.streams.get(id).map(|s| s.tenant.clone())
-            }
-        }
+        Some(Mode::Play(q)) => match app.verify_play_key(&q) {
+            Err(_) => None,
+            // 視聴者が上限（SRT_REJX_OVERLOAD）。数えるのは接続ができてから
+            Ok(id) if !app.viewer_room(&id) => return AcceptDecision::Reject(RejectReason::X_OVERLOAD),
+            Ok(id) => app.control.lock().unwrap().state.streams.get(&id).map(|s| s.tenant.clone()),
+        },
         None => None,
     };
     let Some(tenant) = tenant else { return AcceptDecision::Reject(RejectReason::X_FORBIDDEN) };
-    AcceptDecision::Accept(AcceptParams { passphrase: tenant_passphrase(app, &tenant), ..Default::default() })
+    // interactive の stream は受信遅延を小さく申告する（実際の遅延は両端の大きい方）
+    let interactive = match parse_mode(raw) {
+        Some(Mode::Play(q)) => app.interactive(q.split('?').next().unwrap_or("")),
+        Some(Mode::Publish(key)) => {
+            let h = senca_control::secret::hash(&key);
+            let core = app.control.lock().unwrap();
+            core.state.streams.values().any(|s| s.key_hash == h && s.latency_profile == senca_control::model::LatencyProfile::Interactive)
+        }
+        None => false,
+    };
+    AcceptDecision::Accept(AcceptParams {
+        passphrase: tenant_passphrase(app, &tenant),
+        latency_ms: interactive.then_some(INTERACTIVE_LATENCY_MS),
+        ..Default::default()
+    })
 }
 
 pub async fn serve(app: Arc<App>, addr: SocketAddr) -> Result<(), String> {
@@ -118,14 +132,18 @@ pub async fn serve(app: Arc<App>, addr: SocketAddr) -> Result<(), String> {
                         let peer = info.peer.to_string();
                         tokio::spawn(async move { publish_task(app, key, peer, rx).await });
                     }
-                    Some(Mode::Play(q)) => {
-                        if let Some(sub) = app.subscribe_rtmp_play(&q) {
+                    Some(Mode::Play(q)) => match app.subscribe_play(&q, "srt") {
+                        Ok(sub) => {
                             let tx = play_tx.clone();
                             players.insert(id, tokio::spawn(play_task(sub, id, tx)));
-                        } else {
+                        }
+                        Err(e) => {
+                            if e == crate::app::PlayError::TooManyViewers {
+                                app.log(&format!("srt play from {} closed: too many viewers", info.peer));
+                            }
                             l.close(id, now_us());
                         }
-                    }
+                    },
                     None => l.close(id, now_us()),
                 },
                 Event::Data { payload, .. } => {

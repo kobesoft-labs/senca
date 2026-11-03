@@ -43,7 +43,10 @@ Paths that neither encode nor decode need no GPU and no codec library.
 | Captions | AAC or Opus audio, repackaged and sent ([8. Captions](08-captions.md)) |
 
 `POST /streams/{id}/plan` reports how each track of the current input is handled by each output (`remux`, `repacketize`,
-`passthrough`, `unsupported`, with reasons).
+`passthrough`, `unsupported`, with reasons). Stream processing never re-encodes, so the plan never shows a conversion. H.264, H.265
+and AAC tracks arriving on a `royalty_free` stream are dropped and shown as `unsupported` (with the reason) for every output. To
+convert to AV1 or similar, use a pipeline ([7. Pipelines](07-pipelines.md)) with `decode` and `encode` into another stream (decoding
+H.264 and H.265 needs a GPU; §14.3).
 
 ## 14.3 Operations that need encoding or decoding
 

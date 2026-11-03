@@ -183,16 +183,14 @@ async fn run_once(app: &Arc<App>, p: &Pipeline, rt: &Mutex<PipelineRuntime>, con
                         if pb.access_unit(a).await.is_err() { break; }
                     }
                 }
-                Some(SessionOutputItem::Snapshot { width, height, changed_fraction, jpeg, .. }) => {
-                    // 出力先の stream の静止画として保存（板書の変化）
-                    if let Some(stream) = sink_streams(&graph).first().cloned() {
-                        let d = app.cfg.data_dir.join("snapshots").join(&stream);
-                        let _ = std::fs::create_dir_all(&d);
-                        if let Ok(id) = senca_core::Id128::random().map(|i| i.to_string()) {
-                            let _ = crate::store::write_atomic(&d.join(format!("{id}.jpg")), &jpeg);
-                            let meta = json!({ "taken_at": crate::util::rfc3339(crate::util::now_ms()), "reason": "board_change", "width": width, "height": height, "bytes": jpeg.len(), "changed_fraction": changed_fraction });
-                            let _ = crate::store::write_atomic(&d.join(format!("{id}.json")), meta.to_string().as_bytes());
-                        }
+                Some(SessionOutputItem::Snapshot { node, width, height, changed_fraction, jpeg, .. }) => {
+                    // パイプラインの静止画として保存（板書の変化）。部品ごとに params.keep 枚まで残す
+                    let keep = snapshot_keep(&graph, &node);
+                    let meta = json!({ "taken_at": crate::util::rfc3339(crate::util::now_ms()), "reason": "board_change", "node": node, "width": width, "height": height, "bytes": jpeg.len(), "changed_fraction": changed_fraction });
+                    let d = crate::snapshot::pipeline_dir(app, &p.id);
+                    let r = tokio::task::spawn_blocking(move || crate::snapshot::store_jpeg(&d, &jpeg, meta, Some(&node), keep)).await;
+                    if let Ok(Err(e)) = r {
+                        app.log(&format!("pipeline {}: snapshot store: {e}", p.id));
                     }
                 }
                 None => break Err("出力が止まりました".into()),
@@ -244,6 +242,17 @@ fn source_nodes(g: &Graph) -> Vec<(String, String)> {
 
 pub fn graph_sources(g: &Graph) -> Vec<String> {
     source_nodes(g).into_iter().map(|(_, s)| s).collect()
+}
+
+/// `snapshot_on_change` の部品の `params.keep`。
+fn snapshot_keep(g: &Graph, node: &str) -> u32 {
+    g.nodes
+        .iter()
+        .find_map(|n| match n {
+            senca_pipeline::model::Node::SnapshotOnChange(s) if s.id == node => Some(s.params.keep),
+            _ => None,
+        })
+        .unwrap_or(1000)
 }
 
 pub fn sink_streams(g: &Graph) -> Vec<String> {

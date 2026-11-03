@@ -42,7 +42,7 @@
 | protocol | `url` のスキーム |
 |---|---|
 | `rtmp_pull`・`rtmp_push` | `rtmp`・`rtmps` |
-| `rtsp_pull` | `rtsp`（`rtsps` も受け付けますが、現在は TLS を使わずに接続します） |
+| `rtsp_pull` | `rtsp`・`rtsps`（`rtsps` は TLS で接続します） |
 | `srt_pull`・`srt_push` | `srt` |
 | `hls_pull` | `http`・`https` |
 | `device` | `device:{デバイス ID}`（[4.7](04-ingest-playback.md)） |
@@ -78,6 +78,17 @@ curl -s -X POST "$API/streams/$SID/inputs" "${H[@]}" -d '{"protocol":"rtsp_pull"
 - 転送方式は **TCP interleaved のみ**です（NAT やファイアウォールを越えやすい方式です）。ポートの既定は 554 です。
 - 資格情報は `user:password` の形式でシークレットに保存します。Basic 認証はパスワードを平文で送るため、
   `options.allow_basic: "true"` を指定したときだけ使います。
+- `rtsps://` は TLS で接続し、サーバー証明書を OS の認証局で検証します（環境変数 `SSL_CERT_FILE` で認証局のファイルを指定することもできます）。
+  自己署名の証明書を使うカメラでは、`options.tls_spki_sha256` に証明書の公開鍵（SPKI）の SHA-256 を base64 か 16 進で指定して固定します
+  （`,` で区切って複数指定できます）。固定した場合は、認証局・有効期限・ホスト名を検証しません。値が一致しなければ TLS の接続に失敗し、
+  平文に切り替えることはありません。値の形式が正しくなければ 400 になります。
+
+```sh
+# カメラの証明書から固定する値を作る
+openssl x509 -in cam.crt -pubkey -noout | openssl pkey -pubin -outform der | openssl dgst -sha256 -binary | base64
+curl -s -X POST "$API/streams/$SID/inputs" "${H[@]}" \
+  -d '{"protocol":"rtsp_pull","url":"rtsps://192.0.2.10:322/stream1","credential_ref":"secret:cam-login","options":{"tls_spki_sha256":"<上の値>"}}'
+```
 - 社内のカメラなどプライベートアドレスへ接続するには、`--egress-allow` での許可が必要です（§6.7）。
 
 ### srt_pull

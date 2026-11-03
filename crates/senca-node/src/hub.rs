@@ -17,6 +17,16 @@ const FANOUT: usize = 2048;
 /// GOP キャッシュの上限（AU 数・バイト）。
 const GOP_MAX_AUS: usize = 2000;
 const GOP_MAX_BYTES: usize = 64 << 20;
+/// 入力のビットレートの上限（`limits.max_ingress_bps`）: 直近の何秒の平均で比べるか。
+const INGRESS_WINDOW_SECS: u64 = 3;
+/// 上限を超えた状態がこの秒数続いたら送り手を切る。
+pub const INGRESS_OVER_SECS: u32 = 5;
+/// 上限で切った後、新しい送り手を断る長さ。
+const INGRESS_COOLDOWN: Duration = Duration::from_secs(10);
+
+/// 送り手を切った理由（[`Publisher::access_unit`] の誤りになる）。
+const EVICT_MOVED: u8 = 1;
+const EVICT_INGRESS: u8 = 2;
 
 /// 購読者に配るもの。
 #[derive(Debug, Clone)]
@@ -51,7 +61,8 @@ enum Msg {
     UpdateStream(Box<Stream>),
     /// 所有権が別のノードへ移った（fencing）。送り手を切る。
     Evict,
-    StartRecording { rec: String, not_before_ms: Option<i64>, reply: oneshot::Sender<Result<(), String>> },
+    /// `keep_across_end`: 配信が終わっても（猶予が切れても）録画を閉じない（予約の録画。窓の終わりで止める）。
+    StartRecording { rec: String, not_before_ms: Option<i64>, keep_across_end: bool, reply: oneshot::Sender<Result<(), String>> },
     StopRecording { rec: String, end_at_ms: Option<i64>, reply: Option<oneshot::Sender<()>> },
     Shutdown { reply: oneshot::Sender<()> },
 }
@@ -75,6 +86,10 @@ pub struct HubShared {
     pub fanout: broadcast::Sender<HubEvent>,
     /// 切られた送り手の ID（送り手はこれを見て接続を閉じる）。
     pub evicted: std::sync::atomic::AtomicU64,
+    /// 切った理由（`EVICT_*`）。
+    pub evicted_why: std::sync::atomic::AtomicU8,
+    /// `royalty_free` で捨てたトラックのコーデック（計画 `POST /streams/{id}/plan` で理由を示す）。
+    pub rejected: Mutex<BTreeMap<TrackId, Codec>>,
 }
 
 #[derive(Clone)]
@@ -105,7 +120,10 @@ impl Publisher {
     }
     pub async fn access_unit(&self, au: AccessUnit) -> Result<(), &'static str> {
         if self.hub.shared.evicted.load(std::sync::atomic::Ordering::Relaxed) == self.id {
-            return Err("所有権が別のノードへ移りました");
+            return Err(match self.hub.shared.evicted_why.load(std::sync::atomic::Ordering::Relaxed) {
+                EVICT_INGRESS => "入力のビットレートが stream の上限（limits.max_ingress_bps）を超え続けました",
+                _ => "所有権が別のノードへ移りました",
+            });
         }
         self.hub.tx.send(Msg::Au { id: self.id, au }).await.map_err(|_| "stream closed")
     }
@@ -135,9 +153,19 @@ pub struct Subscription {
     waiting_key: bool,
     flv: senca_flv::build::FlvMuxer,
     base_ms: Option<i64>,
+    /// 視聴者として数えている印（購読を手放すと数が減る）。
+    _viewer: Option<crate::viewers::ViewerGuard>,
+    /// stream が `latency_profile: interactive`（送りの溜まりを小さく保つ）。
+    pub interactive: bool,
 }
 
 impl Subscription {
+    /// 視聴者の印を持たせる（購読の間だけ数える）。
+    pub fn with_viewer(mut self, g: crate::viewers::ViewerGuard) -> Self {
+        self._viewer = Some(g);
+        self
+    }
+
     pub fn initial(&mut self) -> Vec<HubEvent> {
         std::mem::take(&mut self.initial)
     }
@@ -218,6 +246,8 @@ pub fn spawn(stream: Stream, deps: HubDeps) -> HubHandle {
         cache: Arc::new(LiveCache::new()),
         fanout,
         evicted: std::sync::atomic::AtomicU64::new(0),
+        evicted_why: std::sync::atomic::AtomicU8::new(0),
+        rejected: Mutex::new(BTreeMap::new()),
     });
     let handle = HubHandle {
         tx,
@@ -262,7 +292,7 @@ impl HubHandle {
             })
             .collect();
         let dup_budget = if dup.is_empty() { 0 } else { FANOUT.min(dup.len() * 2 + 64) };
-        Subscription { rx, initial, dup, dup_budget, waiting_key: false, flv: senca_flv::build::FlvMuxer::new(), base_ms: None }
+        Subscription { rx, initial, dup, dup_budget, waiting_key: false, flv: senca_flv::build::FlvMuxer::new(), base_ms: None, _viewer: None, interactive: false }
     }
 
     pub fn is_live(&self) -> bool {
@@ -277,10 +307,10 @@ impl HubHandle {
         let _ = self.tx.try_send(Msg::UpdateStream(Box::new(s.clone())));
     }
 
-    pub async fn start_recording(&self, rec: &str, not_before_ms: Option<i64>) -> Result<(), String> {
+    pub async fn start_recording(&self, rec: &str, not_before_ms: Option<i64>, keep_across_end: bool) -> Result<(), String> {
         let (reply, rx) = oneshot::channel();
         self.tx
-            .send(Msg::StartRecording { rec: rec.into(), not_before_ms, reply })
+            .send(Msg::StartRecording { rec: rec.into(), not_before_ms, keep_across_end, reply })
             .await
             .map_err(|_| "stream closed".to_string())?;
         rx.await.map_err(|_| "stream closed".to_string())?
@@ -308,7 +338,64 @@ struct State {
     packager: Packager,
     pending_stops: Vec<(String, i64)>,
     recordings: Vec<String>,
+    /// 配信の終わりでも閉じない録画（予約の録画）。
+    persistent: Vec<String>,
+    /// 今の録画が始まってから入力が来たことがあるか（予約の録画で、配信が終わった後の再開を欠落として記録する）。
+    rec_had_input: bool,
     bytes_window: (u64, u64),
+    ingress: IngressMeter,
+    /// 入力のビットレートの上限で切った後、新しい送り手を断る期限。
+    ingress_cooldown: Option<tokio::time::Instant>,
+}
+
+/// 入力のビットレートを 1 秒ごとの箱で数える（`limits.max_ingress_bps`）。
+#[derive(Default)]
+struct IngressMeter {
+    /// (秒, その秒のバイト数)。直近の完成した箱と、今の箱。
+    buckets: std::collections::VecDeque<(u64, u64)>,
+    /// 上限を超えた状態が続いている秒数。
+    over_secs: u32,
+}
+
+impl IngressMeter {
+    fn reset(&mut self) {
+        self.buckets.clear();
+        self.over_secs = 0;
+    }
+
+    /// AU の大きさを足す。秒が変わったら、直近 INGRESS_WINDOW_SECS 秒（完成した箱）の平均と上限を比べる。
+    /// 超えた状態が続いた秒数を返す。
+    fn push(&mut self, now_ms: u64, bytes: u64, max_bps: Option<u64>) -> u32 {
+        let sec = now_ms / 1000;
+        if let Some((s, b)) = self.buckets.back_mut()
+            && *s == sec
+        {
+            *b += bytes;
+            return self.over_secs;
+        }
+        let last = self.buckets.back().map(|(s, _)| *s);
+        match (max_bps, last) {
+            // AU が 1 秒以上途切れた: 超えていない
+            (Some(_), Some(l)) if sec > l + 1 => self.over_secs = 0,
+            (Some(max), Some(_)) => {
+                let total: u64 = self.buckets.iter().filter(|(s, _)| *s + INGRESS_WINDOW_SECS >= sec).map(|(_, b)| *b).sum();
+                let first = self.buckets.front().map(|(s, _)| *s).unwrap_or(sec);
+                let span = (sec - first).clamp(1, INGRESS_WINDOW_SECS);
+                // 箱が窓の分そろうまでは判断しない（始まりの一瞬の束で切らない）
+                if span >= INGRESS_WINDOW_SECS && total * 8 / span > max {
+                    self.over_secs += 1;
+                } else {
+                    self.over_secs = 0;
+                }
+            }
+            _ => self.over_secs = 0,
+        }
+        self.buckets.push_back((sec, bytes));
+        while self.buckets.front().is_some_and(|(s, _)| *s + INGRESS_WINDOW_SECS < sec) {
+            self.buckets.pop_front();
+        }
+        self.over_secs
+    }
 }
 
 async fn run(stream: Stream, mut rx: mpsc::Receiver<Msg>, shared: Arc<HubShared>, recorder: RecorderTx, deps: HubDeps) {
@@ -321,7 +408,11 @@ async fn run(stream: Stream, mut rx: mpsc::Receiver<Msg>, shared: Arc<HubShared>
         configs: BTreeMap::new(),
         pending_stops: Vec::new(),
         recordings: Vec::new(),
+        persistent: Vec::new(),
+        rec_had_input: false,
         bytes_window: (crate::util::mono_ms(), 0),
+        ingress: IngressMeter::default(),
+        ingress_cooldown: None,
     };
     let mut grace_deadline: Option<tokio::time::Instant> = None;
     loop {
@@ -348,15 +439,23 @@ async fn run(stream: Stream, mut rx: mpsc::Receiver<Msg>, shared: Arc<HubShared>
                     let _ = reply.send(Err(PublishError::Stopped));
                     continue;
                 }
+                if st.ingress_cooldown.is_some_and(|t| tokio::time::Instant::now() < t) {
+                    let _ = reply.send(Err(PublishError::Rejected("ingress bitrate limit exceeded; retry later".into())));
+                    continue;
+                }
                 grace_deadline = None;
                 if st.ever_published {
                     st.epoch += 1;
                     let _ = shared.fanout.send(HubEvent::Discontinuity);
                     st.packager.discontinuity();
-                    if !st.recordings.is_empty() {
-                        recorder.control(RecMsg::Gap { at_ms: crate::util::now_ms(), reason: "publisher_reconnect".into() }).await;
-                    }
                 }
+                // 録画中に入力が途切れていた（猶予内の再接続、または予約の録画で配信が終わった後の再開）
+                if (st.ever_published || st.rec_had_input) && !st.recordings.is_empty() {
+                    // 配信が終わった後（予約の録画）は、パッケージャーが新しい区切りで始めるので印を書き手に頼む
+                    let mark_next = !st.ever_published;
+                    recorder.control(RecMsg::Gap { at_ms: crate::util::now_ms(), reason: "publisher_reconnect".into(), mark_next }).await;
+                }
+                st.ingress.reset();
                 st.publisher = Some((id, transport));
                 *shared.live.lock().unwrap() = Some(LiveInfo {
                     transport: transport.into(),
@@ -384,8 +483,10 @@ async fn run(stream: Stream, mut rx: mpsc::Receiver<Msg>, shared: Arc<HubShared>
                         "stream {}: {} rejected by royalty_free profile; dropping track",
                         st.stream.id, config.codec
                     ));
+                    shared.rejected.lock().unwrap().insert(track, config.codec);
                     continue;
                 }
+                shared.rejected.lock().unwrap().remove(&track);
                 st.configs.insert(track, config.clone());
                 shared.configs.lock().unwrap().insert(track, config.clone());
                 update_tracks(&st, &shared);
@@ -415,8 +516,26 @@ async fn run(stream: Stream, mut rx: mpsc::Receiver<Msg>, shared: Arc<HubShared>
                     emit(&mut st, &shared, &recorder, outs);
                 }
                 st.ever_published = true;
+                if !st.recordings.is_empty() {
+                    st.rec_had_input = true;
+                }
                 st.bytes_window.1 += au.payload.len() as u64;
                 let now = crate::util::mono_ms();
+                let over = st.ingress.push(now, au.payload.len() as u64, st.stream.limits.max_ingress_bps);
+                if over >= INGRESS_OVER_SECS {
+                    let max = st.stream.limits.max_ingress_bps.unwrap_or(0);
+                    (deps.log)(&format!(
+                        "stream {}: publisher disconnected: ingress bitrate exceeded limits.max_ingress_bps={max} for {over} s",
+                        st.stream.id
+                    ));
+                    shared.evicted_why.store(EVICT_INGRESS, std::sync::atomic::Ordering::Relaxed);
+                    shared.evicted.store(id, std::sync::atomic::Ordering::Relaxed);
+                    st.publisher = None;
+                    st.ingress.reset();
+                    st.ingress_cooldown = Some(tokio::time::Instant::now() + INGRESS_COOLDOWN);
+                    grace_deadline = Some(tokio::time::Instant::now() + deps.reconnect_grace);
+                    continue;
+                }
                 if now - st.bytes_window.0 >= 2000 {
                     let bps = st.bytes_window.1 * 8 * 1000 / (now - st.bytes_window.0).max(1);
                     if let Some(l) = shared.live.lock().unwrap().as_mut() {
@@ -441,13 +560,17 @@ async fn run(stream: Stream, mut rx: mpsc::Receiver<Msg>, shared: Arc<HubShared>
             }
             Msg::Evict => {
                 if let Some((id, _)) = st.publisher.take() {
+                    shared.evicted_why.store(EVICT_MOVED, std::sync::atomic::Ordering::Relaxed);
                     shared.evicted.store(id, std::sync::atomic::Ordering::Relaxed);
                     (deps.log)(&format!("stream {}: publisher evicted (ownership moved to another node)", st.stream.id));
                     grace_deadline = Some(tokio::time::Instant::now());
                 }
             }
-            Msg::StartRecording { rec, not_before_ms, reply } => {
+            Msg::StartRecording { rec, not_before_ms, keep_across_end, reply } => {
                 let res = start_rec(&mut st, &recorder, &rec, not_before_ms).await;
+                if res.is_ok() && keep_across_end && !st.persistent.contains(&rec) {
+                    st.persistent.push(rec.clone());
+                }
                 let _ = reply.send(res);
             }
             Msg::StopRecording { rec, end_at_ms, reply } => {
@@ -500,6 +623,10 @@ async fn start_rec(st: &mut State, recorder: &RecorderTx, rec: &str, not_before_
 
 async fn stop_rec(st: &mut State, recorder: &RecorderTx, rec: &str, not_after_ms: Option<i64>) {
     st.recordings.retain(|r| r != rec);
+    st.persistent.retain(|r| r != rec);
+    if st.recordings.is_empty() {
+        st.rec_had_input = false;
+    }
     let (reply, rx) = oneshot::channel();
     recorder
         .control(RecMsg::Stop {
@@ -523,12 +650,13 @@ async fn end_of_stream(st: &mut State, shared: &HubShared, recorder: &RecorderTx
     shared.cache.end();
     st.ever_published = false;
     st.epoch += 1;
-    let recs = std::mem::take(&mut st.recordings);
+    // 予約の録画は窓の終わりまで続ける（窓の中で送り手が戻れば、欠落を挟んで同じ録画に続ける）
+    let recs: Vec<String> = st.recordings.iter().filter(|r| !st.persistent.contains(r)).cloned().collect();
     for r in recs {
         stop_rec(st, recorder, &r, None).await;
     }
-    for (r, _) in std::mem::take(&mut st.pending_stops) {
-        stop_rec(st, recorder, &r, None).await;
+    for (r, t) in std::mem::take(&mut st.pending_stops) {
+        stop_rec(st, recorder, &r, Some(t)).await;
     }
     (deps.on_idle)(&st.stream.id);
 }
@@ -561,6 +689,10 @@ fn emit(st: &mut State, shared: &HubShared, recorder: &RecorderTx, outs: Vec<Pac
                 st.pending_stops = keep;
                 for (r, t) in due {
                     st.recordings.retain(|x| *x != r);
+                    st.persistent.retain(|x| *x != r);
+                    if st.recordings.is_empty() {
+                        st.rec_had_input = false;
+                    }
                     recorder.try_control(RecMsg::Stop {
                         id: r,
                         ended_at_ms: crate::util::now_ms(),
@@ -627,3 +759,31 @@ fn update_tracks(st: &State, shared: &HubShared) {
     }
 }
 
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn ingress_meter_trips_after_sustained_excess() {
+        // 上限 100 kbps に 400 kbps を送る: 窓（3 秒）がそろってから数え始め、5 秒続いたら切る
+        let mut m = IngressMeter::default();
+        let mut over = Vec::new();
+        for s in 0..8u64 {
+            over.push(m.push(s * 1000 + 10, 50_000, Some(100_000)));
+            assert_eq!(m.push(s * 1000 + 500, 0, Some(100_000)), *over.last().unwrap());
+        }
+        assert_eq!(over, vec![0, 0, 0, 1, 2, 3, 4, 5]);
+        // AU が 1 秒以上途切れたら数え直す
+        assert_eq!(m.push(9_010, 50_000, Some(100_000)), 0);
+        // 上限より下なら数えない。上限が無ければ数えない
+        let mut m = IngressMeter::default();
+        for s in 0..10u64 {
+            assert_eq!(m.push(s * 1000, 10_000, Some(100_000)), 0);
+        }
+        let mut m = IngressMeter::default();
+        for s in 0..10u64 {
+            assert_eq!(m.push(s * 1000, 1_000_000, None), 0);
+        }
+    }
+}

@@ -74,9 +74,13 @@ Response (excerpt):
 
 ```json
 "live": {"transport": "rtmp", "epoch": 0, "started_at": "2026-11-03T01:15:53.255Z", "bitrate_bps": 956271, "viewers_hint": 0,
+         "viewers": {"total": 3, "hls": 2, "rtmp": 1, "srt": 0, "rtsp": 0, "webrtc": 0, "moq": 0},
          "tracks": [{"track": 0, "codec": "h264", "width": 640, "height": 360},
                     {"track": 1, "codec": "aac", "sample_rate": 48000, "channels": 1}]}
 ```
+
+- `viewers` is the number of viewers watching on this node (see "Viewer and ingest limits" in §4.3 for how they are counted).
+  `viewers_hint` is a rough figure that also includes internal subscriptions.
 
 `epoch` increases each time a sender reconnects to the same stream (§4.17).
 
@@ -87,7 +91,7 @@ Used by creation (`POST /streams`) and update (`PATCH /streams/{id}`, `If-Match`
 | Field | Default | Validation | Meaning |
 |---|---|---|---|
 | `name` | (required) | 1–64 characters of letters, digits, `-`, `_`, `.`; must not start with `.`; unique within the tenant (409 on duplicates) | Display name |
-| `latency_profile` | `standard` | `standard`, `low`, `interactive` | `low` emits LL-HLS parts (§4.9). `interactive` currently behaves like `standard` |
+| `latency_profile` | `standard` | `standard`, `low`, `interactive` | `low` emits LL-HLS parts. `interactive` assumes WebRTC or MoQ viewers and lowers latency further (§4.9) |
 | `codec_profile` | `any` | `any`, `royalty_free` | `royalty_free` drops tracks in patent-pooled codecs (H.264, H.265, AAC) and requires `hls.container: fmp4` ([14. Codecs and patents](14-codecs-and-patents.md)) |
 | `hls.segment_ms` | `2000` | 500–10000 | Target segment duration in ms. Actual cuts happen at keyframes |
 | `hls.window` | `6` | 3–60 | Number of segments in the live playlist |
@@ -95,8 +99,8 @@ Used by creation (`POST /streams`) and update (`PATCH /streams/{id}`, `If-Match`
 | `recording.enabled` | `false` | | Record automatically when publishing starts ([5. Recording](05-recording.md)) |
 | `recording.retention_days` | `null` | 1–36500 | Retention for automatic recordings (`null` = forever) |
 | `snapshots` | `null` | `interval_secs` 1–86400, `keep` 1–10000 | Save a still image at a fixed interval (§4.16) |
-| `limits.max_viewers` | `null` | | Stored, but not enforced by the current node |
-| `limits.max_ingress_bps` | `null` | | Same as above |
+| `limits.max_viewers` | `null` | 0 or more | Maximum number of concurrent viewers (per node). See "Viewer and ingest limits" below |
+| `limits.max_ingress_bps` | `null` | 0 or more | Maximum bitrate accepted from the sender (bps). See "Viewer and ingest limits" below |
 | `metadata` | `{}` | Up to 32 entries; keys 1–64 characters; values up to 1024 characters | Free-form string tags |
 | `desired_state` | `running` | `running`, `stopped` | While `stopped`, publishing is refused. Switching a live stream to `stopped` stops accepting the sender and ends the broadcast immediately |
 | `captions` | `null` | [8. Captions](08-captions.md) | Speech recognition and translation |
@@ -110,7 +114,29 @@ curl -s -X PATCH "$API/streams/$SID" "${H[@]}" -H "If-Match: $ETAG" \
   -d '{"latency_profile":"low","hls":{"segment_ms":2000,"window":6,"container":"fmp4"}}'
 ```
 
-Changes to `hls` and `latency_profile` take effect from the next publish (the running packager is not rebuilt).
+Changes to `hls` and `latency_profile` take effect from the next publish (the running packager is not rebuilt). Changes to `limits` take effect immediately.
+
+### Viewer and ingest limits (`limits`)
+
+**`limits.max_viewers`**: once the number of viewers reaches the limit, new viewers are refused (people already watching keep watching).
+
+- Viewers are HLS viewers plus RTMP, SRT and RTSP play, WHEP and MoQ connections. Recording, captions, outputs, pipelines and the
+  cluster relay are not counted.
+- HLS has no connection, so a client that fetches a playlist (`index.m3u8`, `master.m3u8`) is identified by its source IP address and
+  User-Agent. It counts as watching for three times `segment_ms` (at least 10 seconds) after its last fetch. The same browser behind
+  the same NAT counts as one viewer.
+- The count is per node. In a cluster, each node that receives viewers accepts up to the limit.
+- A refused viewer gets 503 (`Retry-After: 5`) for HLS and WHEP, 503 for RTSP, `NetStream.Play.Failed` (too many viewers) for RTMP play,
+  a connection rejection (`SRT_REJX_OVERLOAD`) for SRT play, and `REQUEST_ERROR` (`EXCESSIVE_LOAD`) for MoQ.
+- The current numbers are in the stream's `live.viewers`.
+
+**`limits.max_ingress_bps`**: the bitrate received from the sender is measured as the average over the last 3 seconds. When it stays
+above the limit for 5 seconds, the sender is disconnected and the log says
+`publisher disconnected: ingress bitrate exceeded limits.max_ingress_bps=…`.
+
+- For 10 seconds after the disconnect, new senders are refused (RTMP: `NetStream.Publish.Rejected`, ingress bitrate limit exceeded).
+  A sender that reconnects after that, within the reconnect grace (§4.17), continues the same broadcast.
+- Only the encoded data (video and audio access units) is counted, not protocol headers.
 
 ## 4.4 Sending with RTMP / RTMPS
 
@@ -119,7 +145,8 @@ Changes to `hls` and `latency_profile` take effect from the next publish (the ru
 - Anything after `?` in the stream key is ignored.
 - If a second sender publishes while one is active, it is refused with `NetStream.Publish.BadName` (already publishing).
 - A wrong key or a `stopped` stream is refused with `NetStream.Publish.BadName`; publishing outside a `live` schedule window
-  ([5. Recording](05-recording.md)) is refused with `NetStream.Publish.Rejected`.
+  ([5. Recording](05-recording.md)) and publishing right after a disconnect for the ingest bitrate limit (§4.3) are refused with
+  `NetStream.Publish.Rejected`.
 - A publishing connection that receives nothing for 30 seconds is closed.
 
 ```sh
@@ -267,9 +294,24 @@ curl -s -X POST "$API/streams/$SID/playback-url" "${H[@]}" -d '{"ttl_secs":600}'
 - When the broadcast ends (the reconnect grace expires), `#EXT-X-ENDLIST` is appended to the playlist.
 - Codecs that do not fit the container are not included in HLS. TS: H.264, H.265, AAC, Opus. fMP4: H.264, H.265, AV1, VP9, AAC, Opus.
   `POST /streams/{id}/plan` shows how the current input is handled for each output (remux, unsupported, with reasons).
+  The stream task never re-encodes, so the plan never says `transcode`. Tracks dropped by `royalty_free` are `unsupported` for every
+  output, with the reason. To convert codecs, use a pipeline ([7. Pipelines](07-pipelines.md)).
 
 **LL-HLS** (`latency_profile: "low"`): the part target is `min(500 ms, segment_ms / 4)` and at least 200 ms. The playlist carries
 `EXT-X-SERVER-CONTROL:CAN-BLOCK-RELOAD=YES,CAN-SKIP-UNTIL=…,PART-HOLD-BACK=…`, `EXT-X-PART-INF`, `EXT-X-PART` and `EXT-X-PRELOAD-HINT`.
+
+**`latency_profile: "interactive"`**: assumes viewers on WebRTC (WHEP) or MoQ and shortens the waits along the way. `standard` and
+`low` behave as before.
+
+| Item | `low` | `interactive` |
+|---|---|---|
+| LL-HLS part target | `min(500 ms, segment_ms / 4)` | 200 ms (`PART-HOLD-BACK` 0.6 s) |
+| Wait before HLS output starts when only one of video/audio has arrived | 1 s | 0.25 s |
+| Pending RTMP play output before skipping to the next keyframe | 8 MiB | 1 MiB |
+| Receive latency the node announces for SRT (publish and play) | 200 ms | 80 ms (the actual latency is the larger of the two ends) |
+
+The segment length (`hls.segment_ms`) is not changed. The relay between nodes sends immediately without buffering, so it does not
+depend on the profile.
 
 | Query | Behavior |
 |---|---|
@@ -431,9 +473,9 @@ PUBLISH_NAMESPACE). The node subscribes to `catalog.json`, then to the catalog's
 - Still images are made by **decoding** the latest GOP in the codec worker. H.264 and H.265 need a GPU decoder; without one the answer
   is 503 `CAPACITY_UNAVAILABLE` (`retryable: false`). AV1 (dav1d) and VP8/VP9 (libvpx) can be decoded in software
   ([14. Codecs and patents](14-codecs-and-patents.md)). If the stream is not live, or no keyframe has arrived yet, the answer is 409.
-- Images are saved for three reasons (`reason`): `interval` (the stream's `snapshots` policy; the oldest are deleted beyond `keep`),
-  `schedule` (a `snapshot` schedule, see [5. Recording](05-recording.md)), and `board_change` (a pipeline's `snapshot_on_change`,
-  see [7. Pipelines](07-pipelines.md)).
+- Images are saved for two reasons (`reason`): `interval` (the stream's `snapshots` policy; the oldest are deleted beyond `keep`) and
+  `schedule` (a `snapshot` schedule, see [5. Recording](05-recording.md)). Images from a pipeline's `snapshot_on_change`
+  (`board_change`) are stored per pipeline, not per stream (`GET /pipelines/{id}/snapshots`, see [7. Pipelines](07-pipelines.md)).
 - They are stored in `{data-dir}/snapshots/{stream_id}/` and deleted together with the stream.
 - Recording thumbnails are covered in [5. Recording](05-recording.md).
 
@@ -456,15 +498,19 @@ curl -s -X PATCH "$API/streams/$SID" "${H[@]}" -H "If-Match: $ETAG" -d '{"snapsh
 In a cluster, the node that receives the sender becomes the stream's owner. When playback (HLS, RTMP/SRT/RTSP play, WHEP) reaches a
 node that is not the owner, that node receives the access units from the owner over the relay, builds a local "mirror", and serves
 viewers from it. There is a single upstream per stream regardless of the number of viewers. On the first HLS request the node waits up
-to 6 seconds for the mirror's first playlist; unused mirrors are removed after 30 seconds. Mirrors do not record or caption (that is
-the owner's job). If the relay is unavailable, the request is redirected with 307 to the owner node (`media_addr`).
+to 6 seconds for the mirror's first playlist; unused mirrors are removed after 30 seconds. Mirrors do not record or produce captions
+(that is the owner's job). The caption files (`master.m3u8`, `sub_{lang}.m3u8`, `sub_{lang}_{n}.vtt`) are fetched from the owner
+node by the mirror's node, so captions work with a playback URL on any node (the mirror's node reuses playlists for 1 second and
+caption segments for 30 seconds). If the relay is unavailable, the request is redirected with 307 to the owner node (`media_addr`).
 See [9. Cluster and grid](09-cluster-grid.md).
 
 ## 4.19 Troubleshooting
 
 | Symptom | Cause |
 |---|---|
-| RTMP publish is refused | `BadName`: wrong key, another sender is already active, `stopped`. `Rejected`: outside a `live` schedule window |
+| RTMP publish is refused | `BadName`: wrong key, another sender is already active, `stopped`. `Rejected`: outside a `live` schedule window, or right after a disconnect for the ingest bitrate limit |
+| The broadcast is cut off after a few seconds | The ingest bitrate stayed above `limits.max_ingress_bps` (`ingress bitrate exceeded` in the log) |
+| Playback returns 503, or RTMP play gets `NetStream.Play.Failed` | The number of viewers reached `limits.max_viewers` (see `live.viewers`) |
 | SRT connection is rejected immediately | Wrong Stream ID format, wrong key, or the tenant has `srt-passphrase` and no passphrase was given (`unsecure` in the log) |
 | SRT play is rejected | The `streamid` value was not percent-encoded |
 | HLS returns 404 | No segment yet (long keyframe interval), or the URL points to the wrong host (`--public-http-url`) |
