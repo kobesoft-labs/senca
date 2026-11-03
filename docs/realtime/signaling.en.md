@@ -270,7 +270,9 @@ are retried after 1, 2, 4, … seconds (±20 %, up to 1 hour), giving up after 1
 ## 11. REST
 
 Follows the common `/api/v1` contract (Bearer, problem+json, `Idempotency-Key`, `If-Match`/`ETag`, `limit`/`cursor`, timestamps in RFC 3339).
-Participants, messages and stats are answered by the node hosting the room (whichever node you send to, it relays to that node). Signaling may also connect to any node (if the room is on another node, `redirect`).
+Participants, messages and stats are answered by the node hosting the room (whichever node you send to, it relays to that node).
+Updating or disconnecting a participant is relayed further to the node the participant is connected to (including a cascade edge).
+Room `settings` updates change only the fields sent (JSON Merge Patch). Signaling may also connect to any node (if the room is on another node, `redirect`).
 
 | Operation | Path |
 |---|---|

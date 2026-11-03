@@ -5,6 +5,9 @@
 //!   （同じ認証のまま。利用者は案内を意識しない）。
 //! - 参加トークンはどのノードでも発行できる（鍵は制御状態から導く）。無い部屋のトークンを頼むと、部屋を
 //!   自動で作る（空いてしばらくすると消える）。
+//! - `PATCH /rooms/{id}` の `settings` は JSON Merge Patch（RFC 7396）: 書いた項目だけを変え、`null` で既定に戻す。
+//! - 参加者の変更・切断は、参加者のつないだノード（カスケードの edge）で行う: home は edge へ同じ要求を送る。
+//! - E2EE の部屋では、サーバーで中身を見る処理（合成・合成の録画・文字起こし）を 422（`details.reason: "e2ee"`）で断る。
 
 use super::{ApiResponse, ApiResult, Ctx, etag, paginate};
 use crate::rooms::{AUDIENCE, ISSUER, Location, RoomCmd, locate, signaling_url};
@@ -46,12 +49,42 @@ fn from_api_error(e: ApiError) -> Problem {
 
 fn check_settings(v: &Value) -> Result<RoomSettings, Problem> {
     let s: RoomSettings = serde_json::from_value(v.clone()).map_err(|e| bad(format!("settings: {e}")))?;
+    // E2EE の部屋はサーバーで中身を見られない: 合成の録画は 422（メディアパイプラインの合成・文字起こしと同じ）
+    if s.e2ee && s.recording == senca_rooms::model::RecordingMode::Composite {
+        return Err(e2ee_refused("合成の録画（settings.recording: composite）"));
+    }
     // 部屋の核と同じ検査（ここで通したものは、置いたノードで必ず開ける）
     if let Err(errs) = s.validate() {
         let fields: Vec<String> = errs.iter().map(|e| format!("settings.{}", e.field)).collect();
         return Err(bad(format!("settings が不正です: {}", fields.join("、"))).with_details(json!({ "errors": errs })));
     }
     Ok(s)
+}
+
+/// E2EE の部屋で、サーバーで中身を見る処理を頼まれた（422、`details.reason: "e2ee"`）。
+pub fn e2ee_refused(what: &str) -> Problem {
+    Problem::new(ProblemCode::UnsupportedCodec, format!("E2EE の部屋では{what}はできません（中身はサーバーから見えない）"))
+        .with_status(422)
+        .with_details(json!({ "reason": "e2ee" }))
+}
+
+/// JSON Merge Patch（RFC 7396）: `patch` のオブジェクトの項目で置き換え、`null` の項目は消す（既定に戻る）。
+pub fn merge_patch(target: &mut Value, patch: &Value) {
+    let Value::Object(p) = patch else {
+        *target = patch.clone();
+        return;
+    };
+    if !target.is_object() {
+        *target = Value::Object(Default::default());
+    }
+    let Value::Object(t) = target else { return };
+    for (k, v) in p {
+        if v.is_null() {
+            t.remove(k);
+        } else {
+            merge_patch(t.entry(k.clone()).or_insert(Value::Null), v);
+        }
+    }
 }
 
 fn check_metadata(v: &Value) -> Result<(), Problem> {
@@ -179,10 +212,24 @@ pub fn patch(ctx: &Ctx, id: &str) -> ApiResult {
     if r.generation != expect {
         return Err(Problem::new(ProblemCode::PreconditionFailed, "資源が更新されています（If-Match が古い）"));
     }
-    if let Some(s) = b.settings {
-        let new = check_settings(&s)?;
+    if let Some(patch) = b.settings {
+        // 書いた項目だけを変える（JSON Merge Patch。null で既定に戻す）
+        if !patch.is_object() {
+            return Err(bad("settings はオブジェクト（変える項目だけを書く。null で既定に戻す）"));
+        }
+        let mut merged = r.settings.clone();
+        merge_patch(&mut merged, &patch);
+        let new = check_settings(&merged)?;
+        let old = serde_json::from_value::<RoomSettings>(r.settings.clone()).ok();
+        // E2EE にする部屋に、中身を見るメディアパイプライン（合成・文字起こし）があれば 422
+        if new.e2ee && !old.as_ref().is_some_and(|o| o.e2ee) {
+            let core = ctx.control();
+            if let Some(m) = core.state.media_pipelines.values().find(|m| m.room == id && !m.managed && (m.composite.is_some() || m.captions.is_some())) {
+                return Err(e2ee_refused(&format!("合成・文字起こしのあるメディアパイプライン（{}）", m.id)));
+            }
+        }
         // 部屋の核の規則（参加者がいる間の e2ee・コーデックの変更）は置いたノードで確かめる
-        if let Ok(old) = serde_json::from_value::<RoomSettings>(r.settings.clone())
+        if let Some(old) = &old
             && (old.e2ee != new.e2ee || old.video_codec != new.video_codec || old.audio_codec != new.audio_codec)
             && let rid = id.to_string()
             && let Ok(v) = live(ctx, id, move |svc, _| svc.api_get_room(&rid))
@@ -190,7 +237,7 @@ pub fn patch(ctx: &Ctx, id: &str) -> ApiResult {
         {
             return Err(Problem::new(ProblemCode::Conflict, "参加者がいる間は e2ee・コーデックを変えられません"));
         }
-        r.settings = serde_json::to_value(&new).unwrap_or(s);
+        r.settings = serde_json::to_value(&new).unwrap_or(merged);
     }
     if let Some(m) = b.metadata {
         check_metadata(&m)?;
@@ -200,7 +247,17 @@ pub fn patch(ctx: &Ctx, id: &str) -> ApiResult {
         r.placement = super::placement::check(ctx, p, None)?;
     }
     r.updated_at_ms = ctx.now_ms;
+    // 部屋の設定 recording から作ったメディアパイプライン（設定を変えると作り直す・消える）
+    let mid = senca_control::state::room_recording_pipeline_id(id);
+    let managed_before = ctx.control().state.media_pipelines.get(&mid).filter(|m| m.managed).cloned();
     ctx.app.propose(Command::PutRoom { room: r, expect_generation: Some(expect) })?;
+    if let Some(m) = managed_before {
+        let now = ctx.control().state.media_pipelines.get(&mid).cloned();
+        // 消えた・合成をやめた: 合成のパイプラインを片付ける（書き出した stream・録画は残す）
+        if now.as_ref().is_none_or(|n| n.composite.is_none() && m.composite.is_some()) {
+            crate::mediapipes::remove_children(ctx.app, &m);
+        }
+    }
     ctx.app.audit(ctx, "room.update", id);
     let r = tenant_room(ctx, id)?;
     Ok(ApiResponse::json(200, &render(ctx, &r)).with_header("ETag", etag(r.generation)))
@@ -341,14 +398,33 @@ where
                 Err(_) => Err(Problem::new(ProblemCode::CapacityUnavailable, "部屋の係が応えません").with_retryable(true)),
             }
         }
-        Location::Elsewhere { api, .. } => forward(ctx, &api).map(Err),
+        Location::Elsewhere { api, .. } => {
+            let home = home_node(ctx, room).unwrap_or_default();
+            forward_to(ctx, &api, &home).map(Err)
+        }
         Location::Pending => Err(Problem::new(ProblemCode::CapacityUnavailable, "部屋を置くノードが決まっていません").with_retryable(true)),
         Location::Unknown => Err(Problem::not_found()),
     }
 }
 
-/// 同じ要求を部屋を置いたノードへ送る（認証の見出しをそのまま。ノード間は同じ制御状態なので通る）。
-fn forward(ctx: &Ctx, api_base: &str) -> Result<ApiResponse, Problem> {
+/// 同じ要求を別のノード（部屋を置いたノード・参加者のノード）へ送る（認証の見出しをそのまま。ノード間は同じ
+/// 制御状態なので通る）。`X-Senca-Forwarded` に通ったノードを並べ、同じノードへ戻る・3 つ以上を通る中継はしない
+/// （置き場所の見え方がずれている間の往復を止める）。
+fn forward_to(ctx: &Ctx, api_base: &str, target: &str) -> Result<ApiResponse, Problem> {
+    let chain: Vec<String> = ctx
+        .req
+        .header("x-senca-forwarded")
+        .map(|v| v.split(',').map(|s| s.trim().to_string()).filter(|s| !s.is_empty()).collect())
+        .unwrap_or_default();
+    if chain.len() >= 2 || chain.iter().any(|n| n == target || n == &ctx.app.node_id) {
+        return Err(Problem::new(ProblemCode::CapacityUnavailable, "部屋の置き場所が移っています").with_retryable(true));
+    }
+    let mut via = chain;
+    via.push(ctx.app.node_id.clone());
+    forward(ctx, api_base, &via.join(","))
+}
+
+fn forward(ctx: &Ctx, api_base: &str, via: &str) -> Result<ApiResponse, Problem> {
     let rt = ctx.app.rt.get().ok_or_else(Problem::internal)?.clone();
     let u = crate::httpc::parse_url(api_base).ok_or_else(Problem::internal)?;
     // 宛先はクラスタのノード（制御状態に載っている）なので、その宛先の IP だけを許す
@@ -373,12 +449,8 @@ fn forward(ctx: &Ctx, api_base: &str) -> Result<ApiResponse, Problem> {
         .iter()
         .filter(|(k, _)| pass.contains(&k.to_ascii_lowercase().as_str()))
         .map(|(k, v)| (k.as_str(), v.clone()))
-        .chain(std::iter::once(("X-Senca-Forwarded", ctx.app.node_id.clone())))
+        .chain(std::iter::once(("X-Senca-Forwarded", via.to_string())))
         .collect();
-    if ctx.req.headers.iter().any(|(k, _)| k.eq_ignore_ascii_case("x-senca-forwarded")) {
-        // 中継の中継はしない（置き場所の見え方がずれている間の往復を止める）
-        return Err(Problem::new(ProblemCode::CapacityUnavailable, "部屋の置き場所が移っています").with_retryable(true));
-    }
     let method = senca_http::Method::parse(ctx.req.method.as_bytes()).map_err(|_| Problem::internal())?;
     let body = (!ctx.req.body.is_empty()).then(|| ctx.req.body.clone());
     let r = rt
@@ -438,7 +510,7 @@ pub fn update_participant(ctx: &Ctx, room: &str, cid: &str) -> ApiResult {
     let b: UpdateParticipant = ctx.body()?;
     check_metadata(&b.metadata)?;
     let (rid, c) = (room.to_string(), cid.to_string());
-    let r = live_or_forward(ctx, room, move |svc, now| svc.api_update_participant(now, &rid, &c, b))?;
+    let r = on_participant_node(ctx, room, cid, move |svc, now| svc.api_update_participant(now, &rid, &c, b))?;
     ctx.app.audit(ctx, "room.participant.update", &format!("{room}/{cid}"));
     reply(r, 200)
 }
@@ -446,12 +518,72 @@ pub fn update_participant(ctx: &Ctx, room: &str, cid: &str) -> ApiResult {
 pub fn disconnect_participant(ctx: &Ctx, room: &str, cid: &str) -> ApiResult {
     ctx.require(Scope::StreamWrite)?;
     let (rid, c) = (room.to_string(), cid.to_string());
-    let r = live_or_forward(ctx, room, move |svc, now| svc.api_disconnect_participant(now, &rid, &c))?;
+    let r = on_participant_node(ctx, room, cid, move |svc, now| svc.api_disconnect_participant(now, &rid, &c))?;
     ctx.app.audit(ctx, "room.participant.disconnect", &format!("{room}/{cid}"));
     Ok(match r {
         Ok(_) => ApiResponse::empty(204),
         Err(fwd) => fwd,
     })
+}
+
+/// 参加者の手元（その参加者のつないだノードの部屋の核）で `f` を動かす。カスケード: home に別のノードの参加者
+/// として載っていれば、そのノード（edge）へ同じ要求を送る。edge に送られてきた要求は、手元の参加者なら手元で。
+fn on_participant_node<T, F>(ctx: &Ctx, room: &str, cid: &str, f: F) -> Result<Result<Value, ApiResponse>, Problem>
+where
+    T: Serialize + 'static,
+    F: FnOnce(&mut RoomService, Instant) -> Result<T, ApiError> + Send + 'static,
+{
+    enum Found<T> {
+        Local(Result<T, ApiError>),
+        Remote(String),
+        Absent,
+    }
+    tenant_room(ctx, room)?;
+    let forwarded = ctx.req.headers.iter().any(|(k, _)| k.eq_ignore_ascii_case("x-senca-forwarded"));
+    let loc = locate(ctx.app, room);
+    // 手元の部屋の核（home でも edge でも）に聞く: 手元の参加者なら実行、別のノードの参加者ならそのノードへ
+    if let Some(rtc) = ctx.app.rtc.get() {
+        let (tx, rx) = std::sync::mpsc::channel();
+        let (rid, c) = (room.to_string(), cid.to_string());
+        rtc.room_cmd(RoomCmd::Call(Box::new(move |svc, now| {
+            let local = svc.local_participants(&rid).is_some_and(|v| v.iter().any(|p| p.connection_id == c));
+            let found = if local {
+                Found::Local(f(svc, now).map(|v| serde_json::to_value(v).unwrap_or(Value::Null)))
+            } else {
+                match svc.remote_participants(&rid).and_then(|v| v.into_iter().find(|p| p.connection_id == c)).and_then(|p| p.node) {
+                    Some(n) => Found::Remote(n),
+                    None => Found::Absent,
+                }
+            };
+            let _ = tx.send(found);
+        })));
+        match rx.recv_timeout(Duration::from_secs(5)) {
+            Ok(Found::Local(r)) => return r.map(Ok).map_err(from_api_error),
+            Ok(Found::Remote(node)) => {
+                let api = ctx.control().state.nodes.get(&node).and_then(|n| n.media_addr.clone());
+                let api = api.ok_or_else(|| Problem::new(ProblemCode::CapacityUnavailable, "参加者のノードの宛先が分かりません").with_retryable(true))?;
+                return forward_to(ctx, &api, &node).map(Err);
+            }
+            Ok(Found::Absent) => {}
+            Err(_) => return Err(Problem::new(ProblemCode::CapacityUnavailable, "部屋の係が応えません").with_retryable(true)),
+        }
+    }
+    match loc {
+        Location::Here => Err(Problem::not_found()),
+        Location::Elsewhere { api, .. } if !forwarded => {
+            let home = home_node(ctx, room).unwrap_or_default();
+            forward_to(ctx, &api, &home).map(Err)
+        }
+        Location::Elsewhere { .. } => Err(Problem::not_found()),
+        Location::Pending => Err(Problem::new(ProblemCode::CapacityUnavailable, "部屋を置くノードが決まっていません").with_retryable(true)),
+        Location::Unknown => Err(Problem::not_found()),
+    }
+}
+
+/// 部屋を置いたノードの ID。
+fn home_node(ctx: &Ctx, room: &str) -> Option<String> {
+    let wid = format!("{}{room}", senca_control::workloads::ROOM);
+    ctx.control().state.grid.assignments.get(&wid).map(|a| a.node.clone())
 }
 
 pub fn post_message(ctx: &Ctx, room: &str) -> ApiResult {
@@ -468,4 +600,28 @@ pub fn stats(ctx: &Ctx, room: &str) -> ApiResult {
     ctx.require(Scope::StreamRead)?;
     let rid = room.to_string();
     reply(live_or_forward(ctx, room, move |svc, now| svc.api_stats(now, &rid))?, 200)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn settings_merge_patch() {
+        let mut t = json!({ "max_participants": 10, "e2ee": false, "spotlight": { "number": 2, "unfocused": "off" }, "data_labels": ["#a"] });
+        merge_patch(&mut t, &json!({ "max_participants": 20, "spotlight": { "number": 3 }, "data_labels": null }));
+        assert_eq!(t, json!({ "max_participants": 20, "e2ee": false, "spotlight": { "number": 3, "unfocused": "off" } }));
+        merge_patch(&mut t, &json!({ "spotlight": null }));
+        assert!(t.get("spotlight").is_none());
+        // 消した項目は既定に戻る
+        let s: RoomSettings = serde_json::from_value(t).unwrap();
+        assert_eq!(s.data_labels, RoomSettings::default().data_labels);
+    }
+
+    #[test]
+    fn e2ee_composite_recording_is_422() {
+        let e = check_settings(&json!({ "e2ee": true, "recording": "composite" })).unwrap_err();
+        assert_eq!((e.status, e.details["reason"].as_str()), (422, Some("e2ee")));
+        assert!(check_settings(&json!({ "e2ee": true, "recording": "per_participant" })).is_ok());
+    }
 }

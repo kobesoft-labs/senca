@@ -80,7 +80,7 @@ senca-node --jwks /etc/senca/jwks.json --jwt-issuer https://idp.example/ --jwt-a
 | `recording:delete` | `DELETE /recordings/{id}` |
 | `tenant:admin` | トークン・秘密値（`/secrets`）の管理。**`node:admin` 以外のすべての権限を含みます** |
 | `node:admin` | テナントをまたぐ運用操作: `/nodes`・`/devices`・`/grid`・ドレイン・デバイスの停止と再開、SSE のテナントに属さないイベント |
-| `publish` | 定義されていますが、現在のノードの API でこの権限を必要とする操作はありません（配信は stream key で認証します） |
+| `publish` | WHIP での配信（`POST /whip/{stream_id}` で stream key の代わりに使えます。同じテナントの stream だけ） |
 
 - 操作ごとに必要な権限は、OpenAPI の拡張フィールド `x-senca-scope` に記載しています（`null` は認証だけが必要という意味で、`GET /capabilities` が該当します）。
   権限が足りなければ 403（`FORBIDDEN`。title に必要な権限の名前が入ります）です。
@@ -152,15 +152,18 @@ curl -s -H "Authorization: Bearer $TOKEN" 'http://127.0.0.1:8080/api/v1/streams?
 ```
 
 - `title` は日本語の説明です。プログラムでは `code` で判別してください。`details` はコードごとの補足情報です（無ければ省略します）。
-- `retryable` が true なら、同じリクエストを再送してかまいません。503・429 で `retryable` が true のときは `Retry-After: 1` が付きます。
+- `retryable` が true なら、同じリクエストを再送してかまいません。503・429・504 で `retryable` が true のときは `Retry-After` が付きます
+  （429 では次に通るまでの秒数、それ以外は 1）。
+- 量の上限（429）は、どの `/api/v1` の操作でも返ることがあります（[12. セキュリティ](12-security.md)）。
+- `/api/v1` 以外の版（`/api/v2/...` など）は 422 `UNSUPPORTED_PROTOCOL_VERSION`（`details.supported: ["v1"]`）です。
 - 問い合わせの際は `request_id`（= `X-Request-Id`）を添えてください。
 
 | `code` | ステータス | `retryable` | 主な場面 |
 |---|---|---|---|
 | `INVALID_CONFIG` | 400 | false | 値の検査エラー（範囲・組み合わせ・参照先） |
 | `INVALID_REQUEST` | 400 | false | 本文の解析エラー・未知のフィールド・未知のクエリ・`limit` の範囲外・Idempotency-Key の形式 |
-| `UNSUPPORTED_PROTOCOL_VERSION` | 422 | false | 定義のみ（現在のノードの API は返しません） |
-| `UNSUPPORTED_CODEC` | 422 | false | 静止画のデコード（`GET /streams/{id}/snapshot`）、部屋の処理からの 422 |
+| `UNSUPPORTED_PROTOCOL_VERSION` | 422 | false | `/api/v1` 以外の版のパス |
+| `UNSUPPORTED_CODEC` | 422 | false | 静止画のデコード（`GET /streams/{id}/snapshot`）、部屋の処理からの 422、E2EE の部屋と、そこから書き出した stream でのサーバーの処理（`details.reason: "e2ee"`） |
 | `UNSUPPORTED_MEDIA_TYPE` | 415 | false | `Content-Type` が `application/json` でない |
 | `AUTH_FAILED` | 401 | false | 認証の失敗 |
 | `FORBIDDEN` | 403 | false | 権限が足りない、持っていない権限をトークンに付与しようとした |
@@ -171,10 +174,10 @@ curl -s -H "Authorization: Bearer $TOKEN" 'http://127.0.0.1:8080/api/v1/streams?
 | `PRECONDITION_FAILED` | 412 | false | `If-Match` が古い、または形式が違う |
 | `PRECONDITION_REQUIRED` | 428 | false | PATCH に `If-Match` が無い |
 | `QUOTA_EXCEEDED` | 403 | false | 上限に達した（同じストリームで同時に録画できるのは 8 本まで、など） |
-| `RATE_LIMITED` | 429 | true | 定義のみ（レート制限には対応しておらず、現在は返しません） |
+| `RATE_LIMITED` | 429 | true | 要求の量の上限を超えた（`details.limit` は `ip`・`token`・`auth_failures`・`connect`） |
 | `CAPACITY_UNAVAILABLE` | 503 | 多くは true | クラスターが変更の提案を受け付けられない（リーダーの交代・混雑）、部屋が別のノードにある、`--webrtc-udp` が無い、codec worker が無い（このときは false） |
-| `INPUT_TIMEOUT` | 504 | true | 定義のみ（現在は返しません） |
-| `OWNERSHIP_LOST` | 409 | false | 定義のみ（現在の API は返しません） |
+| `INPUT_TIMEOUT` | 504 | true | 静止画を求めたが、配信のキーフレームが 5 秒以内に届かない |
+| `OWNERSHIP_LOST` | 409 | false | クラスターで、配信を別のノードが受信している stream の録画の開始・静止画（`details.owner_api` のノードに頼み直します） |
 | `PAYLOAD_TOO_LARGE` | 413 | false | 録画が大きすぎて MP4 に書き出せない、合意ログのコマンドが大きすぎる |
 | `INTERNAL_ERROR` | 500 | true | 制御状態の保存の失敗など |
 
@@ -225,11 +228,15 @@ data: {"type":"stream.created","resource_id":"...","occurred_at":"2026-11-03T01:
 
 ### 3.1 Last-Event-ID と resync
 
-ノードは過去のイベントを保持しません（再送のための保持はありません）。
+ノードは直近のイベントを残しています（既定 4096 件、`--events-retain`。単一ノードでは、再起動の後も制御ログの写しより後の分を読み直します）。
 
-- `Last-Event-ID` が現在の位置より前なら、最初に `event: resync`（`id` は現在の位置、`data: {}`）を送り、そのまま新しいイベントを送り続けます。
-  `Last-Event-ID` が現在の位置と同じなら resync は送りません。`Last-Event-ID` が無ければ、接続した後のイベントだけを送ります。
-- 読み取りが遅れてイベントを取りこぼしたときは、`event: resync`（`id` なし、`data: {}`）を送って**接続を閉じます**。
+- `id` は、適用したコマンドの数です。クラスターでは、同じイベントはどのノードでも同じ `id` になるため、別のノードへ再接続しても、
+  同じ `Last-Event-ID` で続きを受け取れます。
+- `Last-Event-ID` を付けて再接続すると、その位置より後のイベントのうちノードが残している分を先に送り、その後に新しいイベントを送ります。
+- 位置が残している範囲より古いときは、最初に `event: resync`（`id` は現在の位置、`data: {}`）を送り、そのまま新しいイベントを送り続けます。
+  `Last-Event-ID` が無ければ、接続した後のイベントだけを送ります。
+- クラスターで、接続したノードの適用が `Last-Event-ID` に追いついていなければ、3 秒まで待ちます。
+- 読み取りが遅れて通知があふれたときは、残している分から続きを送ります。それも無ければ `event: resync` を送って**接続を閉じます**。
 - `resync` を受け取ったら、一覧の API で状態を取得し直してから、受け取った `id` を `Last-Event-ID` にして再接続してください。
 
 ### 3.2 イベントの一覧

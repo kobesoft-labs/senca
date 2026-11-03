@@ -84,7 +84,7 @@
   uploaded once immutable; the stored index carries object keys; local copies are removed after `--recording-keep-local`
   (`--recording-storage`, `--s3-endpoint`, `--s3-region`, `--s3-addressing`, `--s3-credentials`, `--s3-part-size`)
   ／ 録画の保存先に S3 互換のオブジェクトストレージ（AWS S3・MinIO・Cloudflare R2）を使えます。録画はまず手元に書き、
-  変わらなくなったものから保存先へ上げます。保存先の索引にはオブジェクトのキーを記録し、`--recording-keep-local` の後に手元の写しを消します
+  変わらなくなったものから保存先へ上げます。保存先のインデックスにはオブジェクトのキーを記録し、`--recording-keep-local` の後にローカルのコピーを削除します
 - VOD (including `Range`), MP4 export and thumbnails are read from storage when the local copy is gone; the first whole-recording
   export is stored and reused (multipart upload for large objects; exports with `start`/`end` are not stored)
   ／ 手元に無い録画の VOD（`Range` を含む）・MP4 の書き出し・サムネイルを保存先から読みます。録画全体の最初の書き出しを保存先に
@@ -95,6 +95,45 @@
   ／ `senca-s3`: SigV4 の署名・リクエストの組み立て・上限付きの XML の読み取り（sans-io）。AWS の SigV4 のテストベクターで確認しています
 - `tools/interop/s3.sh`: end-to-end test against an S3-compatible server in Docker
   ／ `tools/interop/s3.sh`: Docker の S3 互換サーバーを相手にした通しのテスト
+- SSE replay: `GET /api/v1/events` with `Last-Event-ID` now sends the missed events from a bounded window the node keeps
+  (`--events-retain`, default 4096; a single node also reloads, after a restart, the events written since the last control-log
+  snapshot). `resync` is sent only when the position is older than the window. Event IDs are the number of applied commands, the
+  same on every node of a cluster (previously the Raft log index), so clients can reconnect to any node
+  ／ SSE の再送: `GET /api/v1/events` に `Last-Event-ID` を付けてつなぎ直すと、ノードが残している直近のイベント
+  （`--events-retain`、既定 4096 件。単一ノードでは再起動の後も、制御ログのスナップショットより後の分）から、取りこぼした分を送ります。
+  `resync` は、位置が残している範囲より古いときだけ送ります。イベントの `id` は適用したコマンドの数で、クラスターのどのノードでも
+  同じ値です（以前は Raft のログの位置）。どのノードにつなぎ直しても続きから受け取れます
+- Rate limits: 429 `RATE_LIMITED` with `Retry-After` and `details.limit` for `/api/v1` per client IP (`--rate-limit-ip`, 300/s)
+  and per token or JWT subject (`--rate-limit-token`, 200/s), failed authentications per IP (`--rate-limit-auth-failures`,
+  30/min; once used up, even valid credentials get 429), and new connections to `/signaling`, WHIP, WHEP and SSE per IP
+  (`--rate-limit-connect`, 30/s). `0` disables a limit
+  ／ 要求の量の上限: `/api/v1` の送信元の IP ごと（`--rate-limit-ip`、1 秒に 300）とトークン・JWT の subject ごと
+  （`--rate-limit-token`、1 秒に 200）、IP ごとの認証の失敗（`--rate-limit-auth-failures`、1 分に 30。使い切ると正しい資格情報でも
+  429）、IP ごとの `/signaling`・WHIP・WHEP・SSE の接続の開始（`--rate-limit-connect`、1 秒に 30）を数え、超えると 429
+  `RATE_LIMITED`（`Retry-After`・`details.limit` 付き）を返します。`0` で無効にできます
+- Problem codes now in use: `UNSUPPORTED_PROTOCOL_VERSION` (422) for `/api/v{N}` other than v1, `INPUT_TIMEOUT` (504) when a
+  current frame is requested but no keyframe arrives within 5 seconds, `OWNERSHIP_LOST` (409, with `details.owner_api`) for
+  starting a recording or taking a current frame of a stream that another cluster node is receiving
+  ／ 使われていなかった問題の型を返すようにしました: `/api/v1` 以外の版のパスは `UNSUPPORTED_PROTOCOL_VERSION`（422）、今の画を
+  頼んで 5 秒以内にキーフレームが届かなければ `INPUT_TIMEOUT`（504）、クラスターで別のノードが配信を受けている stream の録画の開始・
+  今の画は `OWNERSHIP_LOST`（409、`details.owner_api` 付き）
+- The `publish` scope is now meaningful: WHIP accepts an API token or JWT with `publish` of the same tenant instead of the stream key
+  ／ `publish` の権限を使えるようにしました: WHIP は、stream key の代わりに、同じテナントの `publish` を持つ API トークン・JWT を受け付けます
+- `--webrtc-public-ip IP[,IP]` sets the ICE candidate addresses; when `--webrtc-udp` is bound to `0.0.0.0`/`::` without it,
+  the node announces its interface addresses instead of the wildcard. Applies to WHIP, WHEP and rooms. The Docker image and
+  `compose.yaml` enable WebRTC on UDP 8443 by default (`SENCA_PUBLIC_IP` in compose)
+  ／ `--webrtc-public-ip IP[,IP]` で ICE の候補のアドレスを指定できます。指定せずに `--webrtc-udp` を `0.0.0.0`・`::` で待つと、
+  ワイルドカードの代わりにノードのインターフェースのアドレスを知らせます。WHIP・WHEP・部屋に共通です。Docker イメージと
+  `compose.yaml` は、既定で UDP 8443 の WebRTC を有効にしました（compose では `SENCA_PUBLIC_IP`）
+- Rooms: the media pipeline `speaker` layout follows the room's dominant speaker (hysteresis: no switch while the speaker is still
+  talking or within 2 s; switches the composite's scene and requests a keyframe; `status.active_speaker`); the room setting
+  `recording: per_participant|composite` creates and maintains a managed recording media pipeline (`room-rec.{room}`,
+  `managed: true`); media pipelines also export participants on cascade edges; updating or disconnecting a participant through
+  any node's REST API is forwarded to the participant's node
+  ／ 部屋: メディアパイプラインの `speaker` の並びが、部屋の主な話者に合わせて切り替わります（話している間と切り替えから 2 秒は
+  替えない。合成のシーンを切り替えてキーフレームを求める。`status.active_speaker`）。部屋の設定 `recording: per_participant|composite`
+  で、録画用のメディアパイプライン（`room-rec.{部屋}`、`managed: true`）を自動で作り、設定に合わせます。メディアパイプラインは
+  カスケードの edge にいる参加者も書き出します。参加者の変更・切断は、どのノードの REST API で呼んでも、参加者のいるノードへ転送します
 
 ### Security / セキュリティ
 
@@ -147,6 +186,19 @@
 
 ### Changed / 変更
 
+- `PATCH /rooms/{id}`: `settings` is now a JSON Merge Patch (only the fields sent change; `null` resets a field to its default)
+  instead of replacing the whole object
+  ／ `PATCH /rooms/{id}` の `settings` を、全体の置き換えから JSON Merge Patch に変えました（送った項目だけが変わり、`null` で既定に戻ります）
+- E2EE rooms: every server-side processing request answers 422 (`UNSUPPORTED_CODEC`, `details.reason: "e2ee"`), including
+  `recording: composite` (was 400), turning on `e2ee` with a composite or captions media pipeline, and, for streams exported from
+  E2EE rooms (marked `metadata.e2ee: "true"`), still images, captions, saved snapshots, snapshot schedules and pipeline sources;
+  their recordings get no thumbnail
+  ／ E2EE の部屋: サーバーで中身を処理する要求はすべて 422（`UNSUPPORTED_CODEC`、`details.reason: "e2ee"`）にしました。
+  `recording: composite`（以前は 400）、合成・文字起こしのメディアパイプラインがある部屋の `e2ee` を有効にすること、E2EE の部屋から
+  書き出した stream（`metadata.e2ee: "true"` の印）の静止画・字幕・静止画の保存・静止画の予約・パイプラインの入力が対象です。
+  その録画にはサムネイルを作りません
+- `GET /streams/{id}/snapshot` waits up to 5 seconds for a keyframe (was an immediate 409)
+  ／ `GET /streams/{id}/snapshot` は、キーフレームを 5 秒まで待つようにしました（以前はすぐに 409）
 - A scheduled recording lasts until the end of its window: if the sender returns after the broadcast ended mid-window, the same
   recording continues with a `publisher_reconnect` gap and a discontinuity.
   ／ 予約による録画は時間帯の終わりまで続きます。時間帯の途中で配信が終了した後に配信者が戻ると、`publisher_reconnect` の欠落と

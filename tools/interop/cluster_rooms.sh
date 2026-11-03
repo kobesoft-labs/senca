@@ -4,6 +4,9 @@
 # 部屋を置いたノード（home）を落とすと、残りの参加者はそのまま、落ちたノードの参加者は別のノードへ入り直し、
 # 全員がまた互いを復号する。認証 Webhook（許可・拒否・役割の上書き・部屋ごとの URL）とイベント Webhook
 # （署名、500 での送り直し）は Python の受け手（webhook_mock.py）で確かめる。
+# ほかに: SSE のイベントの id がどのノードでも同じで、別のノードへ Last-Event-ID でつなぎ直すと続きが届くこと、edge の参加者を
+# どのノードの REST からでも変更・切断できること、メディアパイプラインが edge の参加者も書き出すこと、配信を受けていない
+# ノードでの録画の開始が 409 OWNERSHIP_LOST になることを確かめる。
 #
 # 使い方: tools/interop/cluster_rooms.sh（KEEP=1 で作業場所を残す。SENCA_PORT_MIN/MAX で番号の範囲を狭める）
 set -euo pipefail
@@ -87,6 +90,50 @@ PH=$(placed plain); PE=$(( ${PH#n} % 3 + 1 ))
 r=$(probe $PE plain "$(tok plain recvonly probe)")
 echo "$r" | grep -q '"type": *"redirect"' && pass "non-cascade room still redirects to its home" || fail "plain redirect: $r"
 [ "$(mj "d['bad_signature']")" = 0 ] && [ "$(mj "d['auth']")" -ge 3 ] && pass "auth webhook requests are signed (HMAC verified by the receiver)" || fail "auth stats $(mock)"
+
+# ---- SSE: イベントの id はどのノードでも同じ。別のノードへつなぎ直しても Last-Event-ID の続きから ----
+sse() { local n=$1 last=$2 secs=$3
+  if [ -n "$last" ]; then curl -sN --max-time "$secs" -H "Authorization: Bearer $TOKEN" -H "Last-Event-ID: $last" "http://127.0.0.1:${HTTP[$n]}/api/v1/events" || true
+  else curl -sN --max-time "$secs" -H "Authorization: Bearer $TOKEN" "http://127.0.0.1:${HTTP[$n]}/api/v1/events" || true; fi; }
+# イベントの種類と資源 ID → id（空なら無い）
+evid() { python3 - "$1" "$2" "$3" <<'PY'
+import json, sys
+f, ty, rid = sys.argv[1:4]
+for blk in open(f).read().split("\n\n"):
+    kv = {}
+    for line in blk.splitlines():
+        k, _, v = line.partition(": ")
+        kv[k] = v
+    if kv.get("event") == ty and json.loads(kv.get("data") or "{}").get("resource_id") == rid:
+        print(kv.get("id", "")); break
+PY
+}
+sse 1 "" 4 > "$W/sse1.txt" & S1=$!; sse 2 "" 4 > "$W/sse2.txt" & S2=$!; sleep 0.6
+api 3 POST /rooms -d '{"id":"sse-a","settings":{"max_participants":2}}' >/dev/null
+wait $S1 $S2
+I1=$(evid "$W/sse1.txt" room.updated sse-a); I2=$(evid "$W/sse2.txt" room.updated sse-a)
+[ -n "$I1" ] && [ "$I1" = "$I2" ] && pass "SSE: the same event has the same id on every node ($I1)" || fail "SSE ids n1='$I1' n2='$I2'"
+for r in sse-b sse-c; do api 1 POST /rooms -d "{\"id\":\"$r\",\"settings\":{\"max_participants\":2}}" >/dev/null; done
+sse 3 "$I1" 3 > "$W/sse3.txt"
+[ -n "$(evid "$W/sse3.txt" room.updated sse-b)" ] && [ -n "$(evid "$W/sse3.txt" room.updated sse-c)" ] && ! grep -q '^event: resync' "$W/sse3.txt" \
+  && pass "SSE: reconnecting to another node with Last-Event-ID $I1 replays the missed events" || fail "SSE replay on n3: $(head -c 600 "$W/sse3.txt")"
+for r in sse-a sse-b sse-c; do code 1 DELETE "/rooms/$r" >/dev/null; done
+
+# ---- edge の参加者を、どのノードの REST からでも変更・切断できる（参加者のいるノードへ送る）----
+python3 "$ROOT/tools/interop/ws_probe.py" "ws://127.0.0.1:${HTTP[$E]}/signaling" conf "$(tok conf recvonly holder)" 25 > "$W/hold.txt" & HOLD=$!
+for _ in $(seq 50); do grep -qs '"type": *"connected"' "$W/hold.txt" && break; sleep 0.2; done
+HCID=$(head -1 "$W/hold.txt" | json "['connection_id']" 2>/dev/null || true)
+X=$(( 6 - H - E ))   # home でも edge でもないノード
+c=$(api $X PATCH "/rooms/conf/participants/$HCID" -d '{"metadata":{"badge":"speaker"}}' -o "$W/upd.json" -w '%{http_code}')
+[ "$c" = 200 ] && [ "$(json "['metadata']['badge']" < "$W/upd.json" 2>/dev/null)" = speaker ] \
+  && pass "PATCH participant on edge n$E through n$X (→ home → edge) is 200" || fail "patch edge participant via n$X: $c $(cat "$W/upd.json")"
+ok=0; for _ in $(seq 30); do b=$(api $H GET "/rooms/conf/participants/$HCID" | json "['metadata'].get('badge')" 2>/dev/null || true); [ "$b" = speaker ] && { ok=1; break; }; sleep 0.2; done
+[ $ok = 1 ] && pass "the home sees the edge participant's new metadata" || fail "home metadata $(api $H GET "/rooms/conf/participants/$HCID")"
+c=$(code $H DELETE "/rooms/conf/participants/$HCID")
+for _ in $(seq 25); do grep -q '"type": *"close"\|"disconnected"' "$W/hold.txt" && break; sleep 0.2; done
+[ "$c" = 204 ] && grep -q '"type": *"close"' "$W/hold.txt" && pass "DELETE participant on edge n$E through the home disconnects it" || fail "disconnect edge participant: $c $(tail -3 "$W/hold.txt")"
+kill $HOLD 2>/dev/null || true
+c=$(code $X DELETE "/rooms/conf/participants/$HCID"); [ "$c" = 404 ] && pass "the disconnected participant is gone (404)" || fail "after disconnect $c"
 
 # ---- Chrome: 3 人が別々のノードに（1 人は home、2 人は edge）----
 python3 - "$W/www/index.html" <<'PY'
@@ -295,6 +342,27 @@ st=$(api $H GET /nodes | python3 -c "import json,sys; print([x['rooms'] for x in
 echo "$st" | grep -q "'role': 'home'" && pass "GET /nodes shows the cascade state on the home node" || fail "node status $st"
 lc=$(mj "len([x for x in d.get('lifecycle', []) if x[0]=='room.created' and x[1]=='conf'])")
 [ "$lc" = 1 ] && pass "edges do not emit room.created again (once for conf)" || fail "room.created for conf: $lc $(mj "d.get('lifecycle')")"
+# メディアパイプライン: edge の参加者も書き出す（参加者のいるノードから中継で受ける）
+api $E POST /media-pipelines -d '{"name":"conf-export","room":"conf"}' > "$W/mpc.json"; MPC=$(json "['id']" < "$W/mpc.json")
+partstreams() { api $H GET "/media-pipelines/$MPC" | python3 -c "import json,sys; print(' '.join(p['participant']+'='+p['stream'] for p in json.load(sys.stdin)['artifacts']['participant_streams']))"; }
+nlive=0
+for _ in $(seq 60); do
+  nlive=0
+  for ps in $(partstreams); do [ "$(api $H GET "/streams/${ps#*=}" | json "['observed_state']" 2>/dev/null)" = live ] && nlive=$((nlive+1)); done
+  [ "$nlive" -ge 3 ] && break; sleep 0.5
+done
+[ "$nlive" -ge 3 ] && pass "media pipeline exports all 3 participants, 2 of them on edge nodes ($(partstreams | wc -w) streams live)" || fail "exported live $nlive: $(partstreams)"
+EN=${NAMES[$E]}; ESID=$(for ps in $(partstreams); do [ "${ps%%=*}" = "$EN" ] && echo "${ps#*=}"; done; true)
+U=$(api $H POST "/streams/$ESID/playback-url" | json "['playback']['hls']" 2>/dev/null || true)
+# 最初のセグメントができるまで待つ（書き出しを始めたばかり）
+for _ in $(seq 40); do curl -sf "$U" 2>/dev/null | grep -q '#EXTINF' && break; sleep 0.5; done
+nf=$({ "$FFMPEG" -v error -t 4 -i "$U" -map 0:v -f framemd5 - 2>/dev/null || true; } | grep -vc "^#" || true)
+[ "${nf:-0}" -ge 30 ] && pass "the exported stream of $EN (edge n$E) decodes over HLS ($nf frames)" || fail "edge export frames ${nf:-0} ($U) $(api $H GET "/streams/$ESID" | head -c 800) $(curl -s "$U" | head -c 400)"
+# 書き出した stream の配信は home が受けている: 別のノードで録画を頼むと 409 OWNERSHIP_LOST（持ち主の案内つき）
+c=$(api $E POST "/streams/$ESID/recordings" -o "$W/own.json" -w '%{http_code}')
+[ "$c" = 409 ] && [ "$(json "['code']" < "$W/own.json")" = OWNERSHIP_LOST ] && [ -n "$(json "['details']['owner_api']" < "$W/own.json")" ] \
+  && pass "recording on a non-owner node is 409 OWNERSHIP_LOST with the owner's API" || fail "ownership lost $c $(cat "$W/own.json")"
+code $E DELETE "/media-pipelines/$MPC" >/dev/null
 # home を落とす
 kill -9 "${PIDS[$H]}"; wait "${PIDS[$H]}" 2>/dev/null || true; PIDS[$H]=""; QN=$E
 touch "$W/go"

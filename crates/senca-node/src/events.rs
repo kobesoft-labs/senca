@@ -1,6 +1,9 @@
 //! `GET /api/v1/events`（SSE、仕様 10.5）。適用されたコマンドをイベントにして、権限で絞って流す。
-//! event_id は制御ログの位置（applied_index）。`Last-Event-ID` より後のものだけを流す。
-//! 保持は直近のメモリ分（broadcast の長さ）で、取りこぼしたら `resync` を送って閉じる。
+//! event_id は制御ログの位置（applied_index。単一ノードでもクラスタでも同じ数え方で、クラスタのどのノードでも同じ）。
+//! `Last-Event-ID` で再接続すると、ノードが残している直近のイベント（[`crate::control::EventLog`]、既定 4096 件、
+//! 単一ノードでは再起動をまたいで直近の写しの後ろの分も）から続きを送る。残している範囲より古い位置なら
+//! `resync`（id は今の位置）を送ってから今のイベントを流す。送るのが追いつかず通知の列からあふれたときも、
+//! 環に残っていれば続きを送り、無ければ `resync` を送って閉じる。
 
 use crate::app::App;
 use senca_control::auth::{self, Scope};
@@ -13,18 +16,20 @@ use std::sync::Arc;
 use std::time::Duration;
 use tokio::io::{AsyncWrite, AsyncWriteExt};
 
-pub async fn serve_sse<S: AsyncWrite + Unpin>(app: &Arc<App>, sock: &mut S, h: &RequestHead) {
+pub async fn serve_sse<S: AsyncWrite + Unpin>(app: &Arc<App>, sock: &mut S, h: &RequestHead, peer: &str) {
     let now = crate::util::now_ms();
-    let principal = {
-        let core = app.control.lock().unwrap();
-        auth::authenticate(h.headers.get_str("authorization"), &core.state, core.jwt.as_ref(), now)
-    };
     let rid = crate::util::request_id(h.headers.get_str("x-request-id"));
-    let deny = |status: u16, code: ProblemCode, title: &str| {
-        let mut p = Problem::new(code, title);
+    let principal = crate::api::authenticate(app, h.headers.get_str("authorization"), crate::ratelimit::peer_ip(peer), &rid, now);
+    let deny_p = |p: Problem| {
+        let mut p = p;
         p.request_id = Some(rid.clone());
+        let status = p.status;
         let body = serde_json::to_vec(&p).unwrap_or_default();
-        let extra = if status == 401 { "WWW-Authenticate: Bearer\r\n" } else { "" };
+        let extra = match status {
+            401 => "WWW-Authenticate: Bearer\r\n".to_string(),
+            429 => format!("Retry-After: {}\r\n", p.retry_after_secs()),
+            _ => String::new(),
+        };
         let mut v = format!(
             "HTTP/1.1 {status} {}\r\nContent-Type: application/problem+json\r\nX-Request-Id: {rid}\r\n{extra}Content-Length: {}\r\nConnection: close\r\n\r\n",
             senca_http::response::reason_phrase(status),
@@ -34,18 +39,28 @@ pub async fn serve_sse<S: AsyncWrite + Unpin>(app: &Arc<App>, sock: &mut S, h: &
         v.extend_from_slice(&body);
         v
     };
-    let Ok(p) = principal else {
-        let _ = sock.write_all(&deny(401, ProblemCode::AuthFailed, "認証に失敗しました")).await;
-        return;
+    let p = match principal {
+        Ok(p) => p,
+        Err(e) => {
+            let _ = sock.write_all(&deny_p(e)).await;
+            return;
+        }
     };
     if !p.has(Scope::StreamRead) {
-        let _ = sock.write_all(&deny(403, ProblemCode::Forbidden, "権限 stream:read が必要です")).await;
+        let _ = sock.write_all(&deny_p(Problem::new(ProblemCode::Forbidden, "権限 stream:read が必要です"))).await;
         return;
     }
-    let last: u64 = h.headers.get_str("last-event-id").and_then(|v| v.parse().ok()).unwrap_or(0);
-    let (mut rx, current) = {
+    let last: u64 = h.headers.get_str("last-event-id").and_then(|v| v.trim().parse().ok()).unwrap_or(0);
+    // クラスタ: 先に進んだノードで受けた位置なら、このノードの適用が追いつくまで少し待つ
+    let deadline = tokio::time::Instant::now() + Duration::from_secs(3);
+    while last > app.control.lock().unwrap().state.applied_index && tokio::time::Instant::now() < deadline {
+        tokio::time::sleep(Duration::from_millis(50)).await;
+    }
+    // 購読と取りこぼしの読み出しを同じロックの中で（間に適用されたものを落とさない・二重に出さない）
+    let (mut rx, current, backlog) = {
         let core = app.control.lock().unwrap();
-        (core.applied_tx.subscribe(), core.state.applied_index)
+        let backlog = if last > 0 && last <= core.state.applied_index { core.events.since(last) } else { Some(Vec::new()) };
+        (core.applied_tx.subscribe(), core.state.applied_index, backlog)
     };
     // 部屋の出来事（合意ログに載らない。event_id を持たないので Last-Event-ID の再開の対象外）
     let mut room_rx = app.room_events.subscribe();
@@ -53,33 +68,61 @@ pub async fn serve_sse<S: AsyncWrite + Unpin>(app: &Arc<App>, sock: &mut S, h: &
     if sock.write_all(head.as_bytes()).await.is_err() {
         return;
     }
-    if last > 0 && last < current {
-        // 古い位置からは再同期を求める（ログの中身をここでは保持しない）
-        let ev = SseEvent { event: Some("resync"), id: Some(&current.to_string()), retry: None, data: "{}" };
-        if let Ok(b) = ev.encode() {
-            let _ = sock.write_all(&b).await;
+    // 最後に送った位置（これ以下は送らない）
+    let mut sent = last.min(current);
+    match backlog {
+        // 残している範囲より古い（または知らない先の）位置: 再同期を求める（id は今の位置。続きはここから）
+        None => {
+            if write_resync(sock, current).await.is_err() {
+                return;
+            }
+            sent = current;
+        }
+        Some(v) => {
+            for a in v {
+                if write_applied(sock, &p, &a).await.is_err() {
+                    return;
+                }
+                sent = a.index;
+            }
+        }
+    }
+    if last > current {
+        // 別のクラスタ・作り直したノードの位置: 再同期
+        if write_resync(sock, current).await.is_err() {
+            return;
         }
     }
     loop {
         tokio::select! {
             r = rx.recv() => match r {
                 Ok(a) => {
-                    let Some((ty, tenant, id, data)) = describe(&a.cmd) else { continue };
-                    if tenant.as_deref().is_some_and(|t| t != p.tenant) || (tenant.is_none() && !p.has(Scope::NodeAdmin)) {
+                    if a.index <= sent {
                         continue;
                     }
-                    let data = json!({ "type": ty, "resource_id": id, "occurred_at": crate::util::rfc3339(crate::util::now_ms()), "data": data }).to_string();
-                    let idx = a.index.to_string();
-                    let ev = SseEvent { event: Some(ty), id: Some(&idx), retry: None, data: &data };
-                    match ev.encode() {
-                        Ok(b) => if sock.write_all(&b).await.is_err() { return },
-                        Err(_) => continue,
+                    sent = a.index;
+                    if write_applied(sock, &p, &a).await.is_err() {
+                        return;
                     }
                 }
                 Err(tokio::sync::broadcast::error::RecvError::Lagged(_)) => {
-                    let ev = SseEvent { event: Some("resync"), id: None, retry: None, data: "{}" };
-                    if let Ok(b) = ev.encode() { let _ = sock.write_all(&b).await; }
-                    return;
+                    // 通知の列からあふれた: 環に残っていればそこから続ける。無ければ再同期を求めて閉じる
+                    let more = app.control.lock().unwrap().events.since(sent);
+                    match more {
+                        Some(v) => {
+                            for a in v {
+                                if write_applied(sock, &p, &a).await.is_err() {
+                                    return;
+                                }
+                                sent = a.index;
+                            }
+                        }
+                        None => {
+                            let cur = app.control.lock().unwrap().state.applied_index;
+                            let _ = write_resync(sock, cur).await;
+                            return;
+                        }
+                    }
                 }
                 Err(_) => return,
             },
@@ -110,6 +153,31 @@ pub async fn serve_sse<S: AsyncWrite + Unpin>(app: &Arc<App>, sock: &mut S, h: &
                 if sock.write_all(&senca_http::sse::keepalive()).await.is_err() { return }
             }
         }
+    }
+}
+
+/// 制御のイベントを 1 つ書く（権限・テナントで見せないものは書かない）。
+async fn write_applied<S: AsyncWrite + Unpin>(sock: &mut S, p: &auth::Principal, a: &crate::control::Applied) -> std::io::Result<()> {
+    let Some((ty, tenant, id, data)) = describe(&a.cmd) else { return Ok(()) };
+    if tenant.as_deref().is_some_and(|t| t != p.tenant) || (tenant.is_none() && !p.has(Scope::NodeAdmin)) {
+        return Ok(());
+    }
+    let data = json!({ "type": ty, "resource_id": id, "occurred_at": crate::util::rfc3339(a.at_ms), "data": data }).to_string();
+    let idx = a.index.to_string();
+    let ev = SseEvent { event: Some(ty), id: Some(&idx), retry: None, data: &data };
+    match ev.encode() {
+        Ok(b) => sock.write_all(&b).await,
+        Err(_) => Ok(()),
+    }
+}
+
+/// 再同期を求める（`id` は今の位置: 状態を読み直した後、この位置から続きを受けられる）。
+async fn write_resync<S: AsyncWrite + Unpin>(sock: &mut S, current: u64) -> std::io::Result<()> {
+    let id = current.to_string();
+    let ev = SseEvent { event: Some("resync"), id: Some(&id), retry: None, data: "{}" };
+    match ev.encode() {
+        Ok(b) => sock.write_all(&b).await,
+        Err(_) => Ok(()),
     }
 }
 

@@ -41,8 +41,10 @@ AWS Chime SDK Media Pipelines.
   midway can start quickly. If the export falls behind and drops data, it also requests a keyframe and resumes from the next one.
 - A participant with neither video nor audio is not exported. Only the first video track and the first audio track are used.
 - When a participant's tracks or layers change, its export is rebuilt. When the participant leaves, the export stops (the stream remains).
-- In a cascaded room ([10-rooms.md](10-rooms.md)), only participants connected to the room's host node (home) are exported.
-  Participants connected to another node are not exported.
+- In a cascaded room ([10-rooms.md](10-rooms.md)), participants connected to another node (an edge) are exported too; their
+  tracks are received from that node over the inter-node relay.
+- Streams exported from an E2EE room carry `metadata.e2ee: "true"`. Their content stays encrypted, so still images, captions,
+  pipeline sources and the like are refused (422; see [10.11](10-rooms.md#1011-e2ee-pass-through)).
 
 Stream attributes:
 
@@ -76,7 +78,16 @@ Layouts:
 | `layout` | Arrangement |
 |---|---|
 | `grid` | With n video participants: columns = ⌈√n⌉, rows = ⌈n / columns⌉. Ordered by participant key |
-| `speaker` | The first participant (by participant key) is shown large on top (3/4 of the height); the rest share the bottom strip (1/4 of the height) equally. With one video participant it is the same as `grid`. Active speaker detection is not used by the composite yet |
+| `speaker` | The person speaking now (the dominant speaker) is shown large on top (3/4 of the height); the rest share the bottom strip (1/4 of the height) equally. With one video participant it is the same as `grid` |
+
+How `speaker` picks the speaker:
+
+- It uses the room's speaker detection (audio level, the same one spotlight uses) to pick one of the video participants in the composite.
+- If nobody is speaking, the previous speaker stays (initially the first participant by participant key).
+- To avoid flicker, the speaker does not change while they are still speaking, nor within 2 seconds of the last switch. A voice
+  lasting 0.2 seconds counts as speaking; 1.5 seconds of silence counts as stopped.
+- Switching changes the composite's scene (the composite pipeline is not rebuilt), and the new picture starts at a keyframe.
+- The current speaker is shown in `status.active_speaker`.
 
 Encoding:
 
@@ -185,8 +196,10 @@ Unknown fields are rejected with 400 (`INVALID_REQUEST`). A `Content-Type` other
   },
   "status": {
     "participants": [{"participant":"alice","stream":"…","video":true}],
-    "composite_members": 2
-  }
+    "composite_members": 2,
+    "active_speaker": "alice"
+  },
+  "managed": false
 }
 ```
 
@@ -195,6 +208,9 @@ Unknown fields are rejected with 400 (`INVALID_REQUEST`). A `Content-Type` other
 - `artifacts.composite`: present only when `composite` is set. The IDs of the composite stream and pipeline, and the output IDs in `egress` order.
 - `status`: **what is running on the node that answered**. It is `null` on nodes other than the room's host, and while stopped.
   `composite_members` is the number of inputs in the current composite graph (audio-only participants included), or `null` if there is no graph.
+  `active_speaker` is the participant key shown large in the `speaker` layout (`null` for `grid` or before one is chosen).
+- `managed`: `true` if it was created from the room setting `recording` (ID `room-rec.{room ID}`). It cannot be changed or deleted
+  through the API (409); it follows the room setting and is deleted when the setting goes back to `none` ([10. Realtime rooms](10-rooms.md)).
 - Egress secrets are never returned (only the `credential_ref` name).
 
 ### 3.3 API
@@ -331,8 +347,8 @@ CPU 200 + 400 × 4 + 300 + 50 + 1500 + 50 = 3700 millicores and memory 128 + 128
 
 ## 8. Caveats
 
-- A media pipeline only exports participants connected to the node that hosts the room. In a cascaded room, participants
-  connected to another node are not exported.
+- A media pipeline runs on the node that hosts the room (the home). In a cascaded room, participants connected to another
+  node (an edge) are received by the home from that edge and exported there.
 - `status` has a value only on the room's host node. Behind a load balancer another node may answer and return `null`.
 - When an automatically created room is deleted for being empty, its media pipelines are deleted, but the composite pipeline
   (stopped) and the egress output resources remain. Find them with `GET /pipelines` and `GET /outputs` and delete them.

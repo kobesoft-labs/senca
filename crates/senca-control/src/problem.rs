@@ -113,6 +113,17 @@ impl Problem {
         }
     }
 
+    /// `Retry-After`（秒）: `details.retry_after_secs`、無ければ 1。
+    pub fn retry_after_secs(&self) -> u64 {
+        self.details.get("retry_after_secs").and_then(|v| v.as_u64()).unwrap_or(1)
+    }
+
+    /// 量の上限を超えた（429、`Retry-After`）。`limit` はどの上限か（`ip`・`token`・`auth_failures`・`connect`）。
+    pub fn rate_limited(limit: &str, retry_after_secs: u64) -> Self {
+        Problem::new(ProblemCode::RateLimited, "要求が多すぎます。しばらく待ってから送り直してください")
+            .with_details(serde_json::json!({ "limit": limit, "retry_after_secs": retry_after_secs }))
+    }
+
     pub fn with_status(mut self, status: u16) -> Self {
         self.status = status;
         self

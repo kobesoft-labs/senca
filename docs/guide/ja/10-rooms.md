@@ -27,13 +27,14 @@ DataChannel のメッセージ、転送フィルター、metadata・client_id・
 
 | フラグ | 要否 | 意味 |
 |---|---|---|
-| `--webrtc-udp ADDR` | 必須 | WebRTC の UDP ソケット（WHIP・WHEP と共用）。ICE の候補には**この待ち受けアドレスがそのまま載る**ので、`0.0.0.0` ではなく、クライアントから到達できる IP アドレスを書いてください |
+| `--webrtc-udp ADDR` | 必須 | WebRTC の UDP ソケット（WHIP・WHEP と共用）。`0.0.0.0:ポート` で待つと、ICE の候補にはノードのネットワークインターフェースのアドレスが載ります |
+| `--webrtc-public-ip IP` | NAT・Docker の内側では必須 | クライアントから見えるノードの IP アドレス。ICE の候補にはこのアドレスが載ります（カンマ区切り・繰り返しで複数） |
 | `--public-http-url URL` | 推奨 | 部屋・トークンの応答に含まれる `signaling_url` の元になります（`http://` は `ws://`、`https://` は `wss://` に変え、`/signaling` を付けます）。指定しないと、自ノードに配置された部屋の `signaling_url` は `null` になります |
 | `--https ADDR` + `--tls-cert`・`--tls-key` | 任意 | `wss://` で受け付けます（`/signaling` は HTTP と HTTPS の両方の待ち受けで動作します） |
 
 ```sh
 senca-node --data-dir /var/lib/senca --http 0.0.0.0:8080 \
-  --webrtc-udp 203.0.113.10:20000 --public-http-url https://media.example.com
+  --webrtc-udp 0.0.0.0:20000 --webrtc-public-ip 203.0.113.10 --public-http-url https://media.example.com
 ```
 
 `--webrtc-udp` を指定していないノードでは、次のようになります。
@@ -63,6 +64,8 @@ senca-node --data-dir /var/lib/senca --http 0.0.0.0:8080 \
 | 参加者の取得 | `GET /rooms/{id}/participants/{connection_id}` | `stream:read` | 200 |
 | 参加者の metadata の変更 | `PATCH /rooms/{id}/participants/{connection_id}` `{metadata}` | `stream:write` | 200。全員に `connection.updated` が通知されます |
 | 参加者の切断 | `DELETE /rooms/{id}/participants/{connection_id}` | `stream:write` | 204。理由は `kicked` |
+
+参加者の変更・切断は、どのノードに送っても、参加者が接続しているノード（カスケードの edge を含む）に転送されて実行されます。
 | メッセージの送信 | `POST /rooms/{id}/messages` `{to?, label?, data}` | `stream:write` | 200 `{delivered}`（10.8） |
 | 統計 | `GET /rooms/{id}/stats` | `stream:read` | 200（10.9） |
 
@@ -88,7 +91,7 @@ senca-node --data-dir /var/lib/senca --http 0.0.0.0:8080 \
 | `audio_codec` | `opus` | `opus` のみ |
 | `max_video_bitrate_kbps` | なし | 50〜50000。`connected` で配信者に推奨する映像のビットレートの上限 |
 | `spotlight` | なし | `{number, unfocused?, focus_rid?}`。`number` は 1〜16、`unfocused` は `lowest`（既定）か `off`、`focus_rid` は 1〜16 文字の英数字（10.7） |
-| `recording` | `none` | `none`・`per_participant`・`composite`。**方針を示す値で、この値によってノードが録画を始めることはありません**。録画にはメディアパイプライン（[11](11-media-pipelines.md)）を使います。`e2ee: true` と `composite` は併用できません（400） |
+| `recording` | `none` | `none`・`per_participant`・`composite`。`per_participant`（参加者ごと）か `composite`（全員を並べた 1 本）にすると、録画用のメディアパイプラインが自動で作られます（10.3 の「部屋の録画」）。`e2ee: true` と `composite` は併用できません（422） |
 | `forwarding_filter` | なし | 部屋全体の転送フィルター（10.6） |
 | `data_labels` | `["#*"]` | 使用を許可する DataChannel のラベルのパターン。`#` で始まる 64 バイトまでの文字列を 32 個まで。末尾の `*` は前方一致 |
 | `empty_timeout_secs` | 60 | 自動で作成された部屋（`auto: true`）が空になってから削除されるまでの秒数 |
@@ -97,9 +100,20 @@ senca-node --data-dir /var/lib/senca --http 0.0.0.0:8080 \
 
 ### 更新
 
-- `settings` を送ると、**設定全体を置き換えます**（送らなかったフィールドは既定値に戻ります）。変えたいフィールドだけでなく、現在の設定を読み込んで全体を送ってください。
+- `settings` には、**変えたいフィールドだけ**を書きます（JSON Merge Patch、RFC 7396）。書かなかったフィールドはそのまま残り、
+  値を `null` にしたフィールドは既定値に戻ります（`spotlight` のような入れ子のオブジェクトも同じ規則です）。合わせた結果を、作成時と同じ規則で検査します。
 - 参加者がいる間は、`e2ee`・`video_codec`・`audio_codec` を変更できません（409）。
 - `placement: null` で配置の指定を解除できます。
+
+### 部屋の録画
+
+`settings.recording` を `per_participant` か `composite` にすると、その部屋の録画用のメディアパイプライン（ID は `room-rec.{部屋の ID}`、
+`managed: true`）が自動で作られ、設定に合わせて更新されます（[11. メディアパイプライン](11-media-pipelines.md)）。
+
+- `per_participant`: 参加者ごとのストリームを書き出して、それぞれを録画します（E2EE の部屋でも、暗号化されたまま録画できます）。
+- `composite`: 映像のある参加者を格子に並べた 1 本のストリーム（AV1、1280x720）を作り、それを録画します。
+- `none` に戻すと、メディアパイプラインは削除されます。書き出したストリームと録画は残ります。
+- このメディアパイプラインは API から直接変更・削除できません（409）。変えるときは部屋の設定を変更してください。
 - 部屋を配置したノードは、制御状態の世代が変わったことを検知して設定を反映します。部屋の転送フィルターやスポットライトを変更すると、その場で受信スロットを割り当て直します。
 
 ### 部屋の表示
@@ -307,8 +321,8 @@ senca-node --data-dir /var/lib/senca --http 0.0.0.0:8080 \
 - `max_participants` は、ノードをまたいで合計した人数で判定します。別々のノードで同時に参加すると、短い間だけ上限を超えることがあります。
 - **home が停止したとき**: グリッドが部屋を別のノードへ移します。移動先が edge だった場合、そこにいた参加者は切断されずにそのまま続けられます。
   停止したノードにいた参加者は、別のノードへ接続し直せば入り直せます（SDK の `url` に複数のノードを書いておきます）。
-- 別のノードにいる参加者を切断・更新する REST API は、その参加者がいるノードで呼んでください。
-  メディアパイプラインで書き出せるのは、home のノードにいる参加者のトラックです。
+- 別のノードにいる参加者を切断・更新する REST API は、どのノードで呼んでも、参加者がいるノードへ転送されます。
+- メディアパイプラインは、edge のノードにいる参加者のトラックも、そのノードから中継で受けて書き出します。
 - カスケードの状態は、`GET /api/v1/nodes` の自ノードの `rooms` で確認できます。
 
 ## 10.11 E2EE（パススルー）
@@ -317,9 +331,12 @@ senca-node --data-dir /var/lib/senca --http 0.0.0.0:8080 \
 
 - 参加者は `connect.e2ee` を部屋の `e2ee` と同じ値にします（違うと `e2ee_mismatch`）。参加者がいる間は `e2ee` を変更できません。
 - 暗号化・復号と鍵の配布は、アプリケーション側で行います。ブラウザー SDK は部屋の設定との照合だけを行い、暗号化の機能（Encoded Transform）は持ちません。
-- サーバーは中身を見られないため、合成・合成した録画・文字起こしはできません。`recording: "composite"` との併用は 400 です。
-  E2EE の部屋に、合成（`composite`）か文字起こし（`captions`）を含むメディアパイプラインを作成・変更しようとすると、422（`details.reason: "e2ee"`）になります。
-  E2EE の部屋で使えるのは、参加者ごとの書き出しと録画（暗号化されたまま）だけです。
+- サーバーは中身を見られないため、サーバーで中身を処理する操作はすべて 422（`UNSUPPORTED_CODEC`、`details.reason: "e2ee"`）になります。
+  - 部屋: `recording: "composite"`。合成（`composite`）か文字起こし（`captions`）を含むメディアパイプラインの作成・変更。
+    合成・文字起こしのメディアパイプラインがある部屋を `e2ee: true` に変えること。
+  - E2EE の部屋から書き出したストリーム（`metadata.e2ee: "true"` が付きます）: 静止画（`GET /streams/{id}/snapshot`）、
+    字幕（`captions`）、静止画の保存（`snapshots`）、静止画の予約、パイプラインの入力（`source`）。録画のサムネイルも作りません。
+- E2EE の部屋で使えるのは、参加者ごとの書き出しと録画（暗号化されたまま）だけです。
 
 ## 10.12 イベント（SSE）
 
@@ -421,9 +438,9 @@ curl -s -H "$H" "$API/rooms/demo/stats"
 curl -s -X POST -H "$H" -H 'Content-Type: application/json' "$API/rooms/demo/messages" -d '{"data":{"notice":"5 分後に終わります"}}'
 curl -s -X POST -H "$H" -H 'Content-Type: application/json' "$API/rooms/demo/messages" -d '{"label":"#chat","data":"hello"}'
 
-# 設定を変更する（全体を置き換える。If-Match に現在の ETag）
+# 設定を変更する（書いた項目だけが変わる。If-Match に現在の ETag）
 curl -s -X PATCH -H "$H" -H 'Content-Type: application/json' -H 'If-Match: "1"' "$API/rooms/demo" \
-  -d '{"settings":{"max_participants":20,"video_codec":"vp8","spotlight":{"number":2}}}'
+  -d '{"settings":{"max_participants":20,"spotlight":{"number":2}}}'
 
 # 1 人を切断する / 部屋を削除する
 curl -s -X DELETE -H "$H" "$API/rooms/demo/participants/$CONNECTION_ID"

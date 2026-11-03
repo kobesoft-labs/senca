@@ -88,7 +88,7 @@ senca-node --jwks /etc/senca/jwks.json --jwt-issuer https://idp.example/ --jwt-a
 | `recording:delete` | `DELETE /recordings/{id}` |
 | `tenant:admin` | Tokens and secrets (`/secrets`). **Implies every scope except `node:admin`** |
 | `node:admin` | Operations outside any tenant: `/nodes`, `/devices`, `/grid`, drain, device disable/enable, and tenant-less SSE events |
-| `publish` | Defined, but no node API operation currently requires it (ingest is authorized by the stream key) |
+| `publish` | Publishing with WHIP (usable instead of the stream key for `POST /whip/{stream_id}`; same-tenant streams only) |
 
 - The scope required by each operation is in the OpenAPI extension `x-senca-scope` (`null` means "authenticated only", as for
   `GET /capabilities`). Missing scopes return 403 (`FORBIDDEN`, with the scope name in the title).
@@ -168,15 +168,18 @@ Errors are returned as `Content-Type: application/problem+json` in the RFC 9457 
 
 - `title` is a human-readable message in Japanese; branch on `code` in programs. `details` holds code-specific extra information and is
   omitted when empty.
-- `retryable: true` means the same request may be sent again. A retryable 503 or 429 also carries `Retry-After: 1`.
+- `retryable: true` means the same request may be sent again. A retryable 503, 429 or 504 also carries `Retry-After`
+  (for 429, the seconds until a request will pass; otherwise 1).
+- Any `/api/v1` operation may answer 429 when a rate limit is hit ([12. Security](12-security.md)).
+- API versions other than `/api/v1` (such as `/api/v2/...`) get 422 `UNSUPPORTED_PROTOCOL_VERSION` (`details.supported: ["v1"]`).
 - Quote `request_id` (the same value as `X-Request-Id`) when reporting problems.
 
 | `code` | Status | `retryable` | Typical cause |
 |---|---|---|---|
 | `INVALID_CONFIG` | 400 | no | Semantic validation (ranges, combinations, references) |
 | `INVALID_REQUEST` | 400 | no | Unparseable body, unknown fields, unknown query parameters, `limit` out of range, malformed Idempotency-Key |
-| `UNSUPPORTED_PROTOCOL_VERSION` | 422 | no | Defined only; not returned by the node API today |
-| `UNSUPPORTED_CODEC` | 422 | no | Snapshot decoding (`GET /streams/{id}/snapshot`), 422 from room processing |
+| `UNSUPPORTED_PROTOCOL_VERSION` | 422 | no | A path under an API version other than `/api/v1` |
+| `UNSUPPORTED_CODEC` | 422 | no | Snapshot decoding (`GET /streams/{id}/snapshot`), 422 from room processing, server-side processing for E2EE rooms and the streams exported from them (`details.reason: "e2ee"`) |
 | `UNSUPPORTED_MEDIA_TYPE` | 415 | no | `Content-Type` is not `application/json` |
 | `AUTH_FAILED` | 401 | no | Authentication failed |
 | `FORBIDDEN` | 403 | no | Missing scope, or trying to grant a scope you do not hold |
@@ -187,10 +190,10 @@ Errors are returned as `Content-Type: application/problem+json` in the RFC 9457 
 | `PRECONDITION_FAILED` | 412 | no | Stale or malformed `If-Match` |
 | `PRECONDITION_REQUIRED` | 428 | no | PATCH without `If-Match` |
 | `QUOTA_EXCEEDED` | 403 | no | A limit was hit (for example, at most 8 concurrent recordings per stream) |
-| `RATE_LIMITED` | 429 | yes | Defined only; rate limiting is not supported and this is not returned today |
+| `RATE_LIMITED` | 429 | yes | A rate limit was hit (`details.limit` is `ip`, `token`, `auth_failures` or `connect`) |
 | `CAPACITY_UNAVAILABLE` | 503 | usually yes | The cluster cannot accept the proposal (leader change, congestion), the room lives on another node, `--webrtc-udp` is not enabled, no codec worker (this one is not retryable) |
-| `INPUT_TIMEOUT` | 504 | yes | Defined only; not returned today |
-| `OWNERSHIP_LOST` | 409 | no | Defined only; not returned by the API today |
+| `INPUT_TIMEOUT` | 504 | yes | A current frame was requested but no keyframe of the stream arrived within 5 seconds |
+| `OWNERSHIP_LOST` | 409 | no | In a cluster, starting a recording or taking a current frame of a stream that another node is receiving (ask the node in `details.owner_api`) |
 | `PAYLOAD_TOO_LARGE` | 413 | no | Recording too large to export as MP4, consensus command too large |
 | `INTERNAL_ERROR` | 500 | yes | Failure to persist control state, and similar |
 
@@ -243,12 +246,17 @@ data: {"type":"stream.created","resource_id":"...","occurred_at":"2026-11-03T01:
 
 ### 3.1 Last-Event-ID and resync
 
-The node keeps no event history for replay.
+The node keeps the most recent events (4096 by default, `--events-retain`; a single node also reloads, after a restart, the events
+written since the last control-log snapshot).
 
-- If `Last-Event-ID` is behind the current position, the node first sends `event: resync` (`id` = current position, `data: {}`) and then
-  keeps streaming new events. If `Last-Event-ID` equals the current position, no resync is sent. Without the header you get only events
-  that happen after you connect.
-- If a subscriber falls behind and events are dropped, the node sends `event: resync` (no `id`, `data: {}`) and **closes the connection**.
+- `id` is the number of applied commands. In a cluster the same event has the same `id` on every node, so you can reconnect to
+  another node with the same `Last-Event-ID` and continue.
+- When you reconnect with `Last-Event-ID`, the node first sends the retained events after that position, then streams new events.
+- If the position is older than the retained window, the node first sends `event: resync` (`id` = current position, `data: {}`) and
+  then keeps streaming new events. Without the header you get only events that happen after you connect.
+- In a cluster, if the node you connect to has not yet applied up to `Last-Event-ID`, it waits up to 3 seconds.
+- If you read too slowly and the notifications overflow, the node continues from the retained events; if they are gone too, it sends
+  `event: resync` and **closes the connection**.
 - On `resync`, reload the state you care about through the list endpoints, then reconnect with the last received `id` as `Last-Event-ID`.
 
 ### 3.2 Event catalog

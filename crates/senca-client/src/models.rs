@@ -13,6 +13,8 @@ use std::collections::BTreeMap;
 
 pub type Timestamp = String;
 
+/// `publish` は送信の権限です。`POST /whip/{stream}` の `Authorization: Bearer` に、publish 鍵の代わりに `publish` を持つ同じテナントの API トークン・JWT を使えます。
+/// `subscribe` は `POST /streams/{id}/playback-url` に使います。
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
 pub enum Scope {
     #[serde(rename = "stream:read")]
@@ -2695,7 +2697,7 @@ pub struct RoomSettings {
     /// 配信者に推奨する映像のビットレートの上限（kbit/s）
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub max_video_bitrate_kbps: Option<u64>,
-    /// 録画の方針（`composite` は `e2ee` と併用できません）
+    /// 録画の方針。`per_participant`・`composite` にすると、部屋の録画のメディアパイプライン（`managed: true`）を作ります。`composite` は `e2ee` と併用できません（422）
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub recording: Option<RoomSettingsRecording>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -2724,7 +2726,7 @@ impl RoomSettingsAudioCodec {
     }
 }
 
-/// 録画の方針（`composite` は `e2ee` と併用できません）
+/// 録画の方針。`per_participant`・`composite` にすると、部屋の録画のメディアパイプライン（`managed: true`）を作ります。`composite` は `e2ee` と併用できません（422）
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
 pub enum RoomSettingsRecording {
     #[serde(rename = "none")]
@@ -2794,7 +2796,7 @@ pub struct RoomCreate {
     pub settings: Option<RoomSettings>,
 }
 
-/// 指定したフィールドだけを変更します。`settings` は全体を置き換えます。`settings`・`metadata` の null は「変更しない」の意味で、`placement: null` は配置の指定を削除します。
+/// 指定したフィールドだけを変更します。`settings` は JSON Merge Patch です（項目の値の null で既定値に戻ります）。`settings`・`metadata` の null は「変更しない」の意味で、`placement: null` は配置の指定を削除します。
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize, Default)]
 pub struct RoomPatch {
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -2802,6 +2804,7 @@ pub struct RoomPatch {
     /// 配置の指定の全体を置き換えます（`degrade` は使えません）。null で削除します
     #[serde(default, skip_serializing_if = "Option::is_none", with = "crate::double_option")]
     pub placement: Option<Option<PlacementSpec>>,
+    /// 変更する設定の項目だけを書きます（JSON Merge Patch。書かない項目はそのまま残り、項目の値の null はその項目を既定値に戻します）
     #[serde(default, skip_serializing_if = "Option::is_none", with = "crate::double_option")]
     pub settings: Option<Option<RoomSettings>>,
 }
@@ -3330,6 +3333,9 @@ pub struct MediaPipelineArtifacts {
 /// このノードでの実行の状態です（制御状態には保存されません）。
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize, Default)]
 pub struct MediaPipelineStatus {
+    /// `speaker` の並びで現在大きく表示している参加者（`client_id`、無ければ `connection_id`）。決まる前と `grid` では null
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub active_speaker: Option<String>,
     /// 合成のグラフに入っている参加者の数（`composite` が無い場合、または映像のある参加者がまだ流れ始めていない場合は null）
     #[serde(default)]
     pub composite_members: Option<u64>,
@@ -3361,6 +3367,9 @@ pub struct MediaPipeline {
     pub export_participants: bool,
     pub generation: u64,
     pub id: String,
+    /// 部屋の設定 `recording` から作られたものかどうか（ID は `room-rec.{部屋の ID}`。API から変更・削除はできません）
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub managed: Option<bool>,
     pub name: MediaPipelineName,
     pub participants: MediaPipelineParticipants,
     #[serde(default)]

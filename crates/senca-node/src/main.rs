@@ -31,6 +31,7 @@ mod recorder;
 mod recovery;
 mod relay;
 mod grid;
+mod ratelimit;
 mod rooms;
 mod mediapipes;
 mod rtmp;
@@ -125,7 +126,12 @@ async fn run(cfg: Config) -> Result<(), String> {
     let _ = &mut state;
     let clustered = cfg.cluster.is_some();
     // 分散では制御状態の永続化は Raft のログ（単一ノードのログは使わない）
-    let mut core = if clustered { ControlCore::new(ControlState::default(), None, jwt) } else { ControlCore::new(state, Some(store), jwt) };
+    let retain = cfg.events_retain;
+    let mut core = if clustered {
+        ControlCore::with_event_log(ControlState::default(), None, jwt, retain)
+    } else {
+        ControlCore::with_event_log(state, Some(store), jwt, retain)
+    };
     if !clustered {
         bootstrap(&cfg, &mut core, &node_id)?;
     }

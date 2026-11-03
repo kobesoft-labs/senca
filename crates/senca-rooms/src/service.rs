@@ -1212,7 +1212,8 @@ impl RoomService {
                 if let Some(c) = conns.get_mut(&key) {
                     c.stats.received_bytes += au.payload.len() as u64;
                 }
-                if au.codec.kind() == MediaKind::Audio && room.settings.spotlight.is_some() {
+                // 話者の検出（スポットライトと、合成の話者の大写し）。音量の拡張が無ければ大きさから見積もる
+                if au.codec.kind() == MediaKind::Audio {
                     let ms = (au.duration as f64 * 1000.0 * au.timebase.num as f64 / au.timebase.den.max(1) as f64) as u32;
                     let level = level_from_opus_size(au.payload.len(), if ms == 0 { 20 } else { ms });
                     if let Some(c) = conns.get(&key) {
@@ -1791,6 +1792,29 @@ impl RoomService {
         drain_sfu(room, conns, out);
     }
 
+    /// 主な話者の connection_id（[`SpeakerDetector::dominant`](crate::spotlight::SpeakerDetector::dominant)）。
+    /// `candidates` が無ければ映像の送り手（参加の順）から選ぶ。
+    pub fn dominant_speaker(&mut self, now: Instant, room_id: &str, candidates: Option<&[String]>) -> Option<String> {
+        let room = self.rooms.get_mut(room_id)?;
+        let cands = match candidates {
+            Some(c) => c.to_vec(),
+            None => spotlight_candidates(room, &self.conns),
+        };
+        room.detector.dominant(now, &cands)
+    }
+
+    /// 部屋の外で受けたトラックの音声（別のノードの参加者の書き出しなど）を話者の検出に入れる。
+    pub fn observe_track_audio(&mut self, now: Instant, room_id: &str, track_id: &str, au: &AccessUnit) {
+        if au.codec.kind() != MediaKind::Audio {
+            return;
+        }
+        let Some(room) = self.rooms.get_mut(room_id) else { return };
+        let Some(id) = room.tracks.get(track_id).map(|t| t.info.connection_id.clone()) else { return };
+        let ms = (au.duration as f64 * 1000.0 * au.timebase.num as f64 / au.timebase.den.max(1) as f64) as u32;
+        let level = level_from_opus_size(au.payload.len(), if ms == 0 { 20 } else { ms });
+        room.detector.observe(&id, level, now);
+    }
+
     /// 別のノードから届いた AU。
     pub fn on_remote_access_unit(&mut self, now: Instant, room_id: &str, track_id: &str, rid: Option<&str>, au: &AccessUnit, config: Option<&CodecConfig>) {
         let RoomService { rooms, conns, out, .. } = self;
@@ -1801,6 +1825,11 @@ impl RoomService {
         }
         let Some(&(_, lt)) = t.layers.iter().find(|l| l.0.as_deref() == rid) else { return };
         let peer = t.sfu_peer;
+        if au.codec.kind() == MediaKind::Audio {
+            let ms = (au.duration as f64 * 1000.0 * au.timebase.num as f64 / au.timebase.den.max(1) as f64) as u32;
+            let id = t.info.connection_id.clone();
+            room.detector.observe(&id, level_from_opus_size(au.payload.len(), if ms == 0 { 20 } else { ms }), now);
+        }
         room.sfu.on_access_unit(now, peer, lt, au, config);
         drain_sfu(room, conns, out);
     }

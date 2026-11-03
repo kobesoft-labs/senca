@@ -124,6 +124,16 @@ fn stale() -> Problem {
     Problem::new(ProblemCode::PreconditionFailed, "資源が更新されています（If-Match が古い）")
 }
 
+/// 部屋の設定 `recording` から導くメディアパイプラインの ID。
+pub fn room_recording_pipeline_id(room: &str) -> String {
+    format!("room-rec.{room}")
+}
+
+/// FNV-1a（64 bit。名前の短い印。暗号には使わない）。
+fn fnv1a(b: &[u8]) -> u64 {
+    b.iter().fold(0xcbf2_9ce4_8422_2325u64, |h, x| (h ^ *x as u64).wrapping_mul(0x0100_0000_01b3))
+}
+
 pub fn idem_key(tenant: &str, key: &str) -> String {
     format!("{tenant}\u{0}{key}")
 }
@@ -155,6 +165,73 @@ impl ControlState {
             self.sync_workloads();
         }
         Ok(())
+    }
+
+    /// 部屋の設定 `recording`（`per_participant`・`composite`）から、録画のメディアパイプラインを導く（作る・合わせる・消す）。
+    /// ID は部屋から決まる（[`room_recording_pipeline_id`]）。全ノードで同じ結果になる（時刻は部屋の更新時刻）。
+    fn sync_room_recording(&mut self, room_id: &str) {
+        let Some(room) = self.rooms.get(room_id).cloned() else { return };
+        let mode = room.settings.get("recording").and_then(|v| v.as_str()).unwrap_or("none").to_string();
+        let id = room_recording_pipeline_id(room_id);
+        let cur = self.media_pipelines.get(&id).cloned();
+        if cur.as_ref().is_some_and(|m| !m.managed || m.tenant != room.tenant) {
+            return;
+        }
+        let (participants, composite) = match mode.as_str() {
+            "per_participant" => (true, false),
+            "composite" => (false, true),
+            _ => {
+                self.media_pipelines.remove(&id);
+                return;
+            }
+        };
+        let name = match &cur {
+            Some(m) => m.name.clone(),
+            None => {
+                let base = format!("room-rec-{:08x}", fnv1a(room_id.as_bytes()) as u32);
+                let taken = |n: &str| self.media_pipelines.values().any(|m| m.tenant == room.tenant && m.name == n);
+                let mut n = base.clone();
+                let mut i = 2;
+                while taken(&n) {
+                    n = format!("{base}-{i}");
+                    i += 1;
+                }
+                n
+            }
+        };
+        let mut want = MediaPipeline {
+            id: id.clone(),
+            tenant: room.tenant.clone(),
+            generation: 1,
+            name,
+            room: room_id.to_string(),
+            participants: Vec::new(),
+            export_participants: participants,
+            composite: composite.then(|| serde_json::from_value(serde_json::json!({})).expect("composite defaults")),
+            recording: Some(MediaPipelineRecording { participants, composite, retention_days: None }),
+            egress: Vec::new(),
+            captions: None,
+            desired_state: "running".into(),
+            created_at_ms: room.updated_at_ms,
+            updated_at_ms: room.updated_at_ms,
+            managed: true,
+        };
+        match cur {
+            Some(c) => {
+                let same = c.export_participants == want.export_participants && c.composite == want.composite && c.recording == want.recording;
+                if same {
+                    return;
+                }
+                want.generation = c.generation + 1;
+                want.created_at_ms = c.created_at_ms;
+            }
+            None => {
+                if self.media_pipelines.values().filter(|m| m.room == room_id).count() >= 8 {
+                    return;
+                }
+            }
+        }
+        self.media_pipelines.insert(id, want);
     }
 
     /// 資源から導いた仕事を `grid.workloads` に反映する（差だけ。決定的）。
@@ -468,7 +545,9 @@ impl ControlState {
                         room.generation = 1;
                     }
                 }
-                self.rooms.insert(room.id.clone(), room);
+                let id = room.id.clone();
+                self.rooms.insert(id.clone(), room);
+                self.sync_room_recording(&id);
             }
             Command::DeleteRoom { tenant, id } => {
                 self.rooms.get(&id).filter(|r| r.tenant == tenant).ok_or_else(Problem::not_found)?;
@@ -698,5 +777,39 @@ mod tests {
         let c = Command::NextFencingToken;
         let j = serde_json::to_string(&c).unwrap();
         assert_eq!(j, r#"{"op":"next_fencing_token"}"#);
+    }
+
+    #[test]
+    fn room_recording_setting_derives_a_media_pipeline() {
+        let mut st = ControlState::default();
+        let room = |rec: &str, at: i64| Room {
+            id: "r1".into(),
+            tenant: "t".into(),
+            generation: 0,
+            settings: serde_json::json!({ "recording": rec }),
+            metadata: serde_json::Value::Null,
+            placement: None,
+            auto: false,
+            created_at_ms: 1,
+            updated_at_ms: at,
+        };
+        let id = room_recording_pipeline_id("r1");
+        st.apply(Command::PutRoom { room: room("none", 1), expect_generation: None }).unwrap();
+        assert!(!st.media_pipelines.contains_key(&id));
+        st.apply(Command::PutRoom { room: room("per_participant", 2), expect_generation: None }).unwrap();
+        let m = st.media_pipelines[&id].clone();
+        assert!(m.managed && m.export_participants && m.composite.is_none());
+        assert_eq!(m.recording.as_ref().map(|r| (r.participants, r.composite)), Some((true, false)));
+        // 同じ設定なら変えない（世代も）
+        st.apply(Command::PutRoom { room: room("per_participant", 3), expect_generation: None }).unwrap();
+        assert_eq!(st.media_pipelines[&id].generation, 1);
+        st.apply(Command::PutRoom { room: room("composite", 4), expect_generation: None }).unwrap();
+        let m2 = &st.media_pipelines[&id];
+        assert_eq!((m2.generation, m2.name.clone(), m2.composite.as_ref().map(|c| c.layout.clone())), (2, m.name.clone(), Some("grid".into())));
+        st.apply(Command::PutRoom { room: room("none", 5), expect_generation: None }).unwrap();
+        assert!(!st.media_pipelines.contains_key(&id));
+        st.apply(Command::PutRoom { room: room("composite", 6), expect_generation: None }).unwrap();
+        st.apply(Command::DeleteRoom { tenant: "t".into(), id: "r1".into() }).unwrap();
+        assert!(st.media_pipelines.is_empty());
     }
 }

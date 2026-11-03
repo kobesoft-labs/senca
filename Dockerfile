@@ -32,4 +32,6 @@ VOLUME ["/var/lib/senca"]
 HEALTHCHECK --interval=10s --timeout=3s CMD ["/opt/senca/bin/senca-node", "--healthcheck", "http://127.0.0.1:8080/readyz"]
 ENTRYPOINT ["/opt/senca/bin/senca-node", "--data-dir", "/var/lib/senca", "--console-dir", "/opt/senca/console", "--sender-dir", "/opt/senca/sender", \
             "--codec-lib-dir", "/usr/lib/x86_64-linux-gnu"]
-CMD ["--http", "0.0.0.0:8080", "--rtmp", "0.0.0.0:1935", "--srt", "0.0.0.0:9000"]
+# WebRTC は UDP 8443。ICE の候補には --webrtc-public-ip の IP を載せる（無ければコンテナのインターフェースのアドレス。
+# ブリッジのネットワークでは外から届かないので、docker run の引数か compose の SENCA_PUBLIC_IP で渡す）
+CMD ["--http", "0.0.0.0:8080", "--rtmp", "0.0.0.0:1935", "--srt", "0.0.0.0:9000", "--webrtc-udp", "0.0.0.0:8443"]

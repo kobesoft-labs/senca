@@ -29,7 +29,8 @@
 | `--rtmps` | ADDR\|`off` | 無効 | RTMPS。`--tls-cert`・`--tls-key` が必要です |
 | `--srt` | ADDR\|`off` | 無効 | SRT（UDP） |
 | `--rtsp` | ADDR\|`off` | 無効 | RTSP の play（TCP） |
-| `--webrtc-udp` | ADDR\|`off` | 無効 | WebRTC の UDP ソケット（WHIP・WHEP・部屋で共用）。このアドレスがそのまま ICE の候補になるため、相手から到達できる IP アドレスを指定してください（`0.0.0.0` は使えません） |
+| `--webrtc-udp` | ADDR\|`off` | 無効 | WebRTC の UDP ソケット（WHIP・WHEP・部屋で共用）。`0.0.0.0:ポート` で待つと、ICE の候補にはノードのネットワークインターフェースのアドレス（ループバックを除く）を載せます。決まったアドレスで待つと、そのアドレスを載せます |
+| `--webrtc-public-ip` | IP[,IP…] | なし | ICE の候補に載せる IP アドレス（ポートは `--webrtc-udp` のもの。8 個まで、繰り返し指定できます）。NAT・Docker のように、相手から見えるアドレスが待ち受けのアドレスと違うときに指定します |
 | `--quic` | ADDR\|`off` | 無効 | QUIC v1 の UDP ポートです。HTTP/3（ALPN `h3`。SSE と `/signaling` を除き HTTP と同じ内容）、WebTransport、MoQ draft-22（ALPN `moqt-22`。WebTransport では `/moq`）を 1 つのポートで受け付けます。`--tls-cert`・`--tls-key` が必要です。有効にすると、HTTP・HTTPS の応答に `Alt-Svc: h3=":ポート"` が付きます（[4. 取り込みと再生](04-ingest-playback.md#415-moq-と-http3)） |
 | `--tls-cert` | FILE | なし | `--https`・`--rtmps`・`--quic` で使う証明書チェーン（PEM。先頭がサーバー証明書） |
 | `--tls-key` | FILE | なし | 上記の証明書の秘密鍵（PEM。サーバー証明書の公開鍵と一致しない場合は起動しません） |
@@ -127,6 +128,17 @@ API の応答（`ingest`）や再生 URL に含める、外部から見た URL �
 
 Webhook の宛先は、`--egress-allow` のポリシーで検査します（プライベートアドレスへ送るには許可が必要です）。
 
+### 要求の量の上限
+
+上限を超えた要求は 429（`RATE_LIMITED`、`Retry-After` 付き）になります（[12. セキュリティ](12-security.md)）。どれも `0` で無効です。
+
+| オプション | 値 | 既定 | 説明 |
+|---|---|---|---|
+| `--rate-limit-ip` | N | `300` | 管理 API（`/api/v1`）の、送信元の IP アドレスごとの 1 秒あたりの要求数（一時的には 2 倍まで）。認証の前に数えます |
+| `--rate-limit-token` | N | `200` | 管理 API の、API トークン（JWT は subject）ごとの 1 秒あたりの要求数（一時的には 2 倍まで） |
+| `--rate-limit-auth-failures` | N | `30` | 認証に失敗してよい回数（送信元の IP アドレスごと、1 分あたり）。使い切ると、正しいトークンでも 429 になります |
+| `--rate-limit-connect` | N | `30` | 接続の開始（`/signaling`・WHIP・WHEP・SSE）の、送信元の IP アドレスごとの 1 秒あたりの数（一時的には 2 倍まで） |
+
 ### その他
 
 | オプション | 値 | 既定 | 説明 |
@@ -134,6 +146,7 @@ Webhook の宛先は、`--egress-allow` のポリシーで検査します（プ�
 | `--config` | FILE | なし | 設定ファイル（JSON、[3.3](#33-設定ファイルjson)） |
 | `--data-dir` | DIR | `out`（カレントディレクトリからの相対パス） | データディレクトリ（[3.6](#36-データディレクトリ)）。必ず指定してください |
 | `--log-json` | — | 無効 | ノードのログを 1 行 1 JSON の形式で標準出力に出力します（[13. 運用](13-operations.md)） |
+| `--events-retain` | N | `4096` | SSE（`GET /api/v1/events`）でつなぎ直したときに再送するため、ノードが残しておく直近のイベントの数（0〜1000000）。[15. API と SDK](15-api-and-sdks.md) を参照 |
 
 ### 起動時の検査
 
@@ -145,6 +158,7 @@ Webhook の宛先は、`--egress-allow` のポリシーで検査します（プ�
 - `--egress-allow` を CIDR として解釈できない。
 - `--recording-storage` が `local` でも `s3://BUCKET[/PREFIX]` でもない、`--s3-endpoint`・`--s3-region`・`--s3-addressing` の形式が誤っている、
   `--s3-part-size` が 5 MiB〜5 GiB の範囲外。
+- `--webrtc-public-ip` が IP アドレスではない、`0.0.0.0`・`::`・マルチキャストのアドレス、または 9 個以上。`--events-retain` が 1000000 を超える。
 - `--rooms-auth-webhook`・`--rooms-event-webhook` が http/https の URL ではない、または `--rooms-webhook-secret-file` がない。
   秘密のファイルを読み込めない、または 16 バイト未満。
 - クラスターの設定の `node_id` が 0、`peers` に自分が含まれていない、`peers` が 1〜7 台の範囲外。
@@ -287,7 +301,7 @@ Webhook の宛先は、`--egress-allow` のポリシーで検査します（プ�
 - codec worker は環境変数を空にした状態で起動し、上記の 3 つ（`SENCA_CODEC_LIB_DIR`・`SENCA_CODEC_DISABLE`・`LD_LIBRARY_PATH`）
   だけを親プロセスから引き継ぎます。
 - capture worker は、親プロセスの環境変数をすべて引き継ぎます。
-- `compose.yaml` の `SENCA_PUBLIC_HTTP`・`SENCA_PUBLIC_RTMP` は compose の変数で、`--public-*-url` の値として展開されます。
+- `compose.yaml` の `SENCA_PUBLIC_HTTP`・`SENCA_PUBLIC_RTMP`・`SENCA_PUBLIC_IP` は compose の変数で、`--public-*-url`・`--webrtc-public-ip` の値として展開されます。
   ノード自身はこれらを読みません。
 
 ## 3.6 データディレクトリ

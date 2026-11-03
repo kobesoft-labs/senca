@@ -241,9 +241,10 @@ docker compose exec senca cat /var/lib/senca/control/bootstrap-admin-token
 
 - イメージの `ENTRYPOINT` は `--data-dir`・`--console-dir`・`--sender-dir`・`--codec-lib-dir` を固定しており、待ち受けアドレスは
   `CMD`（compose の `command`）で渡します。`command` を書き換える場合は、`--http` などをすべて書いてください。
-- WebRTC（WHIP・WHEP・部屋）は、既定の `command` では有効になっていません（8443/udp を公開しているだけです）。
-  使う場合は、`command` に `--webrtc-udp <ホストの IP>:8443` を、`ports` に `"8443:8443/udp"` を追加してください。
-  `--webrtc-udp` のアドレスはそのまま ICE の候補として相手に伝わるため、`0.0.0.0` ではなく、相手から到達できる IP アドレスを指定してください。
+- WebRTC（WHIP・WHEP・部屋）は、既定で UDP 8443（`--webrtc-udp 0.0.0.0:8443`）で有効です。ブラウザーなどの相手に知らせる
+  IP アドレス（ICE の候補）は、compose の変数 `SENCA_PUBLIC_IP` で指定します（既定は `127.0.0.1` で、同じマシンのブラウザーからだけつながります）。
+  例: `SENCA_PUBLIC_IP=203.0.113.10 docker compose up -d`。`docker run` で起動する場合は、`--webrtc-public-ip <ホストの IP>` を引数に加えてください
+  （指定しないと、コンテナー内のアドレスが知らされ、ホストの外からはつながりません）。
 - `compose.yaml` は作業ツリーからビルドします。配布するイメージは、コミット済みのソースから作成してください
   （`git archive HEAD | docker build -t senca/node:local -`、ADR-0008）。
 - GPU をコンテナに渡す例は、`compose.yaml` のコメントにあります（NVIDIA は NVIDIA Container Toolkit、Intel/AMD は `/dev/dri`）。

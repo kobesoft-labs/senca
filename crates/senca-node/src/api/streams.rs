@@ -212,6 +212,7 @@ pub fn create(ctx: &Ctx) -> ApiResult {
         captions: b.captions,
     };
     validate(&s)?;
+    check_e2ee(ctx, &s)?;
     ctx.app.propose(Command::CreateStream { stream: s.clone() })?;
     ctx.app.audit(ctx, "stream.create", &s.id);
     Ok(ApiResponse::json(201, &render(ctx, &s, Some(key.expose())))
@@ -267,7 +268,12 @@ pub fn patch(ctx: &Ctx, id: &str) -> ApiResult {
         s.limits = v;
     }
     if let Some(v) = p.metadata {
+        // E2EE の印は消せない（書き出した stream の中身は暗号のまま）
+        let e2ee = s.metadata.get("e2ee").is_some_and(|x| x == "true");
         s.metadata = v;
+        if e2ee {
+            s.metadata.insert("e2ee".into(), "true".into());
+        }
     }
     if let Some(v) = p.desired_state {
         s.desired_state = v;
@@ -278,6 +284,7 @@ pub fn patch(ctx: &Ctx, id: &str) -> ApiResult {
     }
     s.updated_at_ms = ctx.now_ms;
     validate(&s)?;
+    check_e2ee(ctx, &s)?;
     ctx.app.propose(Command::UpdateStream { stream: s, expect_generation: expect })?;
     let s = ctx.control().state.tenant_stream(ctx.tenant(), id)?.clone();
     ctx.app.on_stream_changed(&s);
@@ -338,6 +345,9 @@ pub fn snapshot(ctx: &Ctx, id: &str) -> ApiResult {
     ctx.require(Scope::StreamRead)?;
     let s = ctx.control().state.tenant_stream(ctx.tenant(), id)?.clone();
     let fmt = image_format(ctx)?;
+    if stream_is_e2ee(&ctx.control().state, &s) {
+        return Err(e2ee_refused("静止画"));
+    }
     let img = ctx.app.snapshot_now(&s, fmt)?;
     Ok(ApiResponse::bytes(200, fmt.mime(), img))
 }
@@ -397,4 +407,37 @@ pub fn snapshot_delete(ctx: &Ctx, id: &str, sid: &str) -> ApiResult {
         return Err(Problem::not_found());
     }
     Ok(ApiResponse::empty(204))
+}
+
+/// E2EE の stream に、復号の要る方針（字幕・静止画の保存）を付けない。
+fn check_e2ee(ctx: &Ctx, s: &Stream) -> Result<(), Problem> {
+    if !stream_is_e2ee(&ctx.control().state, s) {
+        return Ok(());
+    }
+    if s.captions.is_some() {
+        return Err(e2ee_refused("字幕"));
+    }
+    if s.snapshots.is_some() {
+        return Err(e2ee_refused("静止画の保存"));
+    }
+    Ok(())
+}
+
+/// 部屋が E2EE か（設定 `e2ee`）。
+pub fn room_is_e2ee(r: &senca_control::model::Room) -> bool {
+    r.settings.get("e2ee").and_then(|v| v.as_bool()).unwrap_or(false)
+}
+
+/// E2EE の部屋から書き出した stream か（中身は暗号のまま。サーバーで復号する処理はできない）。メディアパイプラインが付ける
+/// metadata `e2ee: "true"`、または書き出し元の部屋が今 E2EE であること。
+pub fn stream_is_e2ee(st: &senca_control::state::ControlState, s: &Stream) -> bool {
+    s.metadata.get("e2ee").is_some_and(|v| v == "true")
+        || (s.metadata.contains_key("media_pipeline") && s.metadata.get("room").and_then(|r| st.rooms.get(r)).is_some_and(room_is_e2ee))
+}
+
+/// E2EE の stream に、サーバーで復号する処理を頼まれた（422、`details.reason: "e2ee"`）。
+pub fn e2ee_refused(what: &str) -> Problem {
+    Problem::new(ProblemCode::UnsupportedCodec, format!("E2EE の部屋から書き出した stream では{what}はできません（中身はサーバーから見えない）"))
+        .with_status(422)
+        .with_details(serde_json::json!({ "reason": "e2ee" }))
 }

@@ -39,6 +39,8 @@ struct Hosted {
 pub struct PeerHost {
     base: PeerConfig,
     addr: SocketAddr,
+    /// ICE の候補に載せる追加のアドレス（同じソケットに届くもの。公開 IP・複数のインターフェース）。
+    extra: Vec<SocketAddr>,
     peers: BTreeMap<ConnKey, Hosted>,
     by_remote: HashMap<SocketAddr, ConnKey>,
     tx: VecDeque<Transmit>,
@@ -74,11 +76,22 @@ impl PeerHost {
         PeerHost {
             base,
             addr,
+            extra: Vec::new(),
             peers: BTreeMap::new(),
             by_remote: HashMap::new(),
             tx: VecDeque::new(),
             stats_interval: Duration::from_secs(1),
             next_stats: None,
+        }
+    }
+
+    /// ICE の候補に載せるアドレスを置き換える（最初のものが受けたソケットのアドレスとして扱われる）。
+    /// 空なら `new` のアドレスのまま。これから作るピア接続から使う。
+    pub fn set_addresses(&mut self, addrs: Vec<SocketAddr>) {
+        let mut it = addrs.into_iter();
+        if let Some(first) = it.next() {
+            self.addr = first;
+            self.extra = it.take(15).collect();
         }
     }
 
@@ -125,6 +138,9 @@ impl PeerHost {
         cfg.datachannel = spec.datachannel;
         let mut pc = PeerConnection::new(cfg, now).map_err(|e| format!("{e:?}"))?;
         pc.add_host_address(now, self.addr).map_err(|e| format!("{e:?}"))?;
+        for a in &self.extra {
+            pc.add_host_address(now, *a).map_err(|e| format!("{e:?}"))?;
+        }
         Ok(pc)
     }
 

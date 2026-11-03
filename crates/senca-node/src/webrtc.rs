@@ -82,11 +82,13 @@ pub async fn start(app: Arc<App>, udp: SocketAddr) -> Result<Arc<Rtc>, String> {
     let cert = DtlsCertificate::generate_self_signed("senca").map_err(|e| format!("{e:?}"))?;
     let (tx, rx) = mpsc::channel(256);
     let (down_tx, down_rx) = mpsc::channel(8192);
-    // 公開する候補のアドレス（0.0.0.0 で待つときは、ノードの公開 URL のホストに置き換えるべきだが、ここでは待ち受けのアドレス）
+    // ICE の候補に載せるアドレス（--webrtc-public-ip、無ければ 0.0.0.0・:: で待つときはインターフェースのアドレス）
+    let advertise = advertised_addrs(udp, &app.cfg.webrtc_public_ips);
     let (rooms_tx, rooms_rx) = mpsc::unbounded_channel();
-    let rooms = crate::rooms::RoomsHost::new(app.clone(), cert.clone(), udp, rooms_tx.clone());
-    tokio::spawn(drive(app.clone(), sock, cert, rx, down_rx, udp, rooms, rooms_rx));
-    app.log(&format!("webrtc listening on udp {udp}"));
+    let rooms = crate::rooms::RoomsHost::new(app.clone(), cert.clone(), udp, advertise.clone(), rooms_tx.clone());
+    let list: Vec<String> = advertise.iter().map(|a| a.to_string()).collect();
+    app.log(&format!("webrtc listening on udp {udp}; ICE candidates: {}", list.join(", ")));
+    tokio::spawn(drive(app.clone(), sock, cert, rx, down_rx, advertise, rooms, rooms_rx));
     Ok(Arc::new(Rtc { tx, down_tx, rooms_tx }))
 }
 
@@ -113,7 +115,7 @@ async fn drive(
     cert: DtlsCertificate,
     mut rx: mpsc::Receiver<Cmd>,
     mut down_rx: mpsc::Receiver<(u64, Down)>,
-    local: SocketAddr,
+    local: Vec<SocketAddr>,
     mut rooms: crate::rooms::RoomsHost,
     mut rooms_rx: mpsc::UnboundedReceiver<crate::rooms::RoomCmd>,
 ) {
@@ -150,7 +152,7 @@ async fn drive(
                 let Some(c) = c else { return };
                 match c {
                     Cmd::Whip { offer, reply } => {
-                        let r = new_pc(&cert, local, now).and_then(|mut pc| {
+                        let r = new_pc(&cert, &local, now).and_then(|mut pc| {
                             let ans = pc.accept_offer(now, &offer).map_err(|e| format!("{e:?}"))?;
                             Ok((pc, ans))
                         });
@@ -165,7 +167,7 @@ async fn drive(
                         }
                     }
                     Cmd::Whep { offer, kinds, reply } => {
-                        let r = new_pc_for(&cert, local, now, &kinds).and_then(|mut pc| {
+                        let r = new_pc_for(&cert, &local, now, &kinds).and_then(|mut pc| {
                             let ans = pc.accept_offer(now, &offer).map_err(|e| format!("{e:?}"))?;
                             Ok((pc, ans))
                         });
@@ -302,15 +304,96 @@ async fn drive(
     }
 }
 
-fn new_pc(cert: &DtlsCertificate, local: SocketAddr, now: Instant) -> Result<PeerConnection, String> {
+fn new_pc(cert: &DtlsCertificate, local: &[SocketAddr], now: Instant) -> Result<PeerConnection, String> {
     let cfg = PeerConfig { certificate: Some(cert.clone()), unix_time_ns_at_start: epoch_ns(), ..Default::default() };
     let mut pc = PeerConnection::new(cfg, now).map_err(|e| format!("{e:?}"))?;
-    pc.add_host_address(now, local).map_err(|e| format!("{e:?}"))?;
+    for a in local {
+        pc.add_host_address(now, *a).map_err(|e| format!("{e:?}"))?;
+    }
     Ok(pc)
 }
 
+/// ICE の候補に載せるアドレス。`public` があればその IP（番号は待ち受けのもの）。無く、待ち受けが 0.0.0.0・:: なら
+/// ノードのインターフェースのアドレス（ループバックを除く。見つからなければループバック）。それ以外は待ち受けのアドレス。
+pub fn advertised_addrs(bind: SocketAddr, public: &[std::net::IpAddr]) -> Vec<SocketAddr> {
+    let port = bind.port();
+    if !public.is_empty() {
+        return public.iter().map(|ip| SocketAddr::new(*ip, port)).collect();
+    }
+    if !bind.ip().is_unspecified() {
+        return vec![bind];
+    }
+    let v6 = bind.is_ipv6();
+    let mut ips = Vec::new();
+    // 既定の経路のアドレスを先頭に（どこへも送らない。経路を選ぶだけ）
+    let probe = if v6 { "[2001:db8::1]:9" } else { "192.0.2.1:9" };
+    if let Ok(s) = std::net::UdpSocket::bind(if v6 { "[::]:0" } else { "0.0.0.0:0" })
+        && s.connect(probe).is_ok()
+        && let Ok(a) = s.local_addr()
+        && !a.ip().is_loopback()
+        && !a.ip().is_unspecified()
+    {
+        ips.push(a.ip());
+    }
+    let more = if v6 {
+        std::fs::read_to_string("/proc/net/if_inet6").map(|t| parse_if_inet6(&t)).unwrap_or_default()
+    } else {
+        std::fs::read_to_string("/proc/net/fib_trie").map(|t| parse_fib_trie(&t)).unwrap_or_default()
+    };
+    for ip in more {
+        if !ips.contains(&ip) {
+            ips.push(ip);
+        }
+    }
+    ips.truncate(8);
+    if ips.is_empty() {
+        ips.push(if v6 { std::net::Ipv6Addr::LOCALHOST.into() } else { std::net::Ipv4Addr::LOCALHOST.into() });
+    }
+    ips.into_iter().map(|ip| SocketAddr::new(ip, port)).collect()
+}
+
+/// `/proc/net/fib_trie` の自分のアドレス（`/32 host LOCAL` の直前の行。ループバックを除く）。
+fn parse_fib_trie(t: &str) -> Vec<std::net::IpAddr> {
+    let mut out = Vec::new();
+    let mut last: Option<std::net::Ipv4Addr> = None;
+    for line in t.lines() {
+        let l = line.trim();
+        if let Some(a) = l.strip_prefix("|-- ") {
+            last = a.trim().parse().ok();
+        } else if l.starts_with("/32 host LOCAL")
+            && let Some(ip) = last
+            && !ip.is_loopback()
+            && !ip.is_link_local()
+            && !out.contains(&std::net::IpAddr::V4(ip))
+        {
+            out.push(ip.into());
+        }
+    }
+    out
+}
+
+/// `/proc/net/if_inet6` の大域のアドレス（scope 00）。
+fn parse_if_inet6(t: &str) -> Vec<std::net::IpAddr> {
+    let mut out = Vec::new();
+    for line in t.lines() {
+        let f: Vec<&str> = line.split_whitespace().collect();
+        if f.len() < 4 || f[0].len() != 32 || f[3] != "00" {
+            continue;
+        }
+        let mut b = [0u8; 16];
+        if (0..16).any(|i| u8::from_str_radix(&f[0][2 * i..2 * i + 2], 16).map(|x| b[i] = x).is_err()) {
+            continue;
+        }
+        let ip = std::net::Ipv6Addr::from(b);
+        if !ip.is_loopback() && !out.contains(&std::net::IpAddr::V6(ip)) {
+            out.push(ip.into());
+        }
+    }
+    out
+}
+
 /// WHEP: 配る stream のコーデックだけを申し出る。
-fn new_pc_for(cert: &DtlsCertificate, local: SocketAddr, now: Instant, kinds: &[(MediaKind, Codec)]) -> Result<PeerConnection, String> {
+fn new_pc_for(cert: &DtlsCertificate, local: &[SocketAddr], now: Instant, kinds: &[(MediaKind, Codec)]) -> Result<PeerConnection, String> {
     let mut cfg = PeerConfig { certificate: Some(cert.clone()), unix_time_ns_at_start: epoch_ns(), ..Default::default() };
     let want: Vec<String> = kinds.iter().map(|(_, c)| c.as_str().to_string()).collect();
     cfg.capabilities.codecs.retain(|c| {
@@ -319,7 +402,9 @@ fn new_pc_for(cert: &DtlsCertificate, local: SocketAddr, now: Instant, kinds: &[
         want.contains(&e) || e == "rtx"
     });
     let mut pc = PeerConnection::new(cfg, now).map_err(|e| format!("{e:?}"))?;
-    pc.add_host_address(now, local).map_err(|e| format!("{e:?}"))?;
+    for a in local {
+        pc.add_host_address(now, *a).map_err(|e| format!("{e:?}"))?;
+    }
     Ok(pc)
 }
 
@@ -351,14 +436,10 @@ pub async fn http(app: &Arc<App>, rtc: &Rtc, h: &senca_http::RequestHead, body: 
                 return plain(415, "Content-Type は application/sdp");
             }
             let key = senca_http::auth::bearer_token(&h.headers).ok().flatten().unwrap_or("").to_string();
-            // 鍵が stream のものか（publish 鍵で受ける）
-            let ok = {
-                let core = app.control.lock().unwrap();
-                core.state.streams.get(*stream).is_some_and(|s| senca_control::secret::verify(&key, &s.key_hash))
-            };
-            if !ok {
+            // publish 鍵（`sk_`）か、同じテナントの `publish` の権限を持つ API トークン・JWT で受ける
+            let Some(target) = whip_authorize(app, stream, &key, h.headers.get_str("authorization"), peer) else {
                 return plain(401, "unauthorized");
-            }
+            };
             // 排出中のノードは新しい送り手を受けない: 排出中でない別のノードへ 307 で案内する（WHIP の
             // クライアントは同じ要求を案内先へ送り直す）。案内先が無ければ 503
             if app.draining() {
@@ -387,7 +468,7 @@ pub async fn http(app: &Arc<App>, rtc: &Rtc, h: &senca_http::RequestHead, body: 
                 Ok(Ok((id, ans, urx))) => {
                     let app2 = app.clone();
                     let peer = peer.to_string();
-                    tokio::spawn(async move { forward_up(app2, key, peer, urx).await });
+                    tokio::spawn(async move { forward_up(app2, target, peer, urx).await });
                     sdp_reply(201, ans, format!("/whip/{stream}/{id}"))
                 }
                 Ok(Err(e)) => plain(400, &e),
@@ -506,9 +587,27 @@ impl ToHub {
     }
 }
 
+/// WHIP の送り手を認める: publish 鍵（その stream の鍵）か、`publish` の権限を持つ同じテナントの API トークン・JWT。
+/// 認めた stream を返す。失敗は認証の失敗の上限に数える。
+fn whip_authorize(app: &App, stream: &str, key: &str, header: Option<&str>, peer: &str) -> Option<senca_control::model::Stream> {
+    let s = app.control.lock().unwrap().state.streams.get(stream).cloned();
+    let ip = crate::ratelimit::peer_ip(peer);
+    if key.starts_with(crate::api::streams::KEY_PREFIX) {
+        let ok = s.as_ref().is_some_and(|s| senca_control::secret::verify(key, &s.key_hash));
+        if !ok {
+            let _ = app.limits.auth_failures.take(ip, std::time::Instant::now());
+        }
+        return s.filter(|_| ok);
+    }
+    let rid = crate::util::request_id(None);
+    let p = crate::api::authenticate(app, header, ip, &rid, crate::util::now_ms()).ok()?;
+    let s = s?;
+    (p.tenant == s.tenant && p.has(senca_control::auth::Scope::Publish)).then_some(s)
+}
+
 /// WHIP の受信を hub の送り手として流す。
-async fn forward_up(app: Arc<App>, key: String, peer: String, mut rx: mpsc::Receiver<Up>) {
-    let p = match app.attach_publisher(&key, "webrtc", &peer).await {
+async fn forward_up(app: Arc<App>, stream: senca_control::model::Stream, peer: String, mut rx: mpsc::Receiver<Up>) {
+    let p = match app.attach_checked(&stream, "webrtc", &peer).await {
         Ok(p) => p,
         Err(e) => {
             app.log(&format!("whip publish rejected: {e:?}"));
@@ -585,5 +684,30 @@ async fn forward_down(mut sub: crate::hub::Subscription, init: Vec<HubEvent>, id
             }
             Err(tokio::sync::broadcast::error::RecvError::Lagged(n)) => sub.lagged(n),
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn advertised_addresses() {
+        let bind: SocketAddr = "0.0.0.0:20000".parse().unwrap();
+        let pubs = ["203.0.113.5".parse().unwrap(), "2001:db8::5".parse().unwrap()];
+        let a = advertised_addrs(bind, &pubs);
+        assert_eq!(a, vec!["203.0.113.5:20000".parse().unwrap(), "[2001:db8::5]:20000".parse().unwrap()]);
+        let fixed: SocketAddr = "192.0.2.7:30000".parse().unwrap();
+        assert_eq!(advertised_addrs(fixed, &[]), vec![fixed]);
+        // 0.0.0.0 は載せない（インターフェースのアドレスか、無ければループバック）
+        assert!(advertised_addrs(bind, &[]).iter().all(|a| !a.ip().is_unspecified() && a.port() == 20000));
+    }
+
+    #[test]
+    fn proc_parsers() {
+        let fib = "Main:\n  +-- 0.0.0.0/0 3 0 5\n     |-- 0.0.0.0\n        /0 universe UNICAST\n     +-- 127.0.0.0/8 2 0 2\n        |-- 127.0.0.1\n           /32 host LOCAL\n     |-- 192.168.1.10\n        /32 host LOCAL\n     |-- 192.168.1.255\n        /32 link BROADCAST\n";
+        assert_eq!(parse_fib_trie(fib), vec![std::net::IpAddr::from([192, 168, 1, 10])]);
+        let v6 = "fe800000000000000000000000000001 02 40 20 80 eth0\n20010db8000000000000000000000005 02 40 00 80 eth0\n00000000000000000000000000000001 01 80 10 80 lo\n";
+        assert_eq!(parse_if_inet6(v6), vec!["2001:db8::5".parse::<std::net::IpAddr>().unwrap()]);
     }
 }

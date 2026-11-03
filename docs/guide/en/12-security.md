@@ -34,7 +34,7 @@ The management API (`/api/v1/...`) and SSE (`/api/v1/events`) use `Authorization
 |---|---|
 | `stream:read` | Reading streams, schedules, inputs, outputs, pipelines, rooms and media pipelines; snapshots; subscribing to SSE |
 | `stream:write` | Creating, changing and deleting streams and rotating their keys; starting, stopping and changing recordings (retention, legal hold); changing schedules, inputs, outputs, pipelines, rooms and media pipelines; issuing room join tokens |
-| `publish` | Reserved; no current API operation requires it |
+| `publish` | Publishing with WHIP (usable instead of the stream key in `Authorization: Bearer` of `POST /whip/{stream_id}`; streams of the same tenant only) |
 | `subscribe` | Issuing live playback URLs |
 | `recording:read` | Reading recordings; recording playback URLs, thumbnails and MP4 export |
 | `recording:delete` | Deleting recordings |
@@ -60,6 +60,40 @@ Before going live:
 2. Create a new admin token, then delete the bootstrap one with `DELETE /api/v1/tokens/{id}` (the last
    `tenant:admin` token cannot be deleted, so create the replacement first).
 3. Delete the `bootstrap-admin-token` file or move it somewhere safe; the node never reads it again.
+
+### Request rate limits
+
+To stop brute force and overuse, the node counts requests and answers 429 (`RATE_LIMITED`) above a limit. The response carries
+the seconds to wait in `Retry-After` and the limit that was hit in `details.limit`. Limits are counted per node (not summed over a cluster).
+
+| `details.limit` | Counted per | Applies to | Default (option) |
+|---|---|---|---|
+| `ip` | client IP address | management API (`/api/v1`), counted before authentication | 300 per second (`--rate-limit-ip`) |
+| `token` | API token (subject for JWTs) | management API | 200 per second (`--rate-limit-token`) |
+| `auth_failures` | client IP address | failed authentication (management API, SSE, wrong WHIP tokens and stream keys) | 30 per minute (`--rate-limit-auth-failures`) |
+| `connect` | client IP address | new connections (`/signaling`, WHIP, WHEP, SSE) | 30 per second (`--rate-limit-connect`) |
+
+- Per-second limits allow short bursts of up to twice the rate.
+- An IP address that has used up its authentication failures gets 429 even with a valid token until it recovers.
+- The client IP address is the peer of the TCP connection the node accepted. Behind a reverse proxy, also limit requests at the proxy.
+- Each limit can be disabled with `0` ([3. Configuration](03-configuration.md)).
+
+### Request rate limits
+
+To stop brute force and overuse, the node counts requests and answers 429 (`RATE_LIMITED`) above a limit. The response carries
+the seconds to wait in `Retry-After` and the limit that was hit in `details.limit`. Limits are counted per node (not summed over a cluster).
+
+| `details.limit` | Counted per | Applies to | Default (option) |
+|---|---|---|---|
+| `ip` | client IP address | management API (`/api/v1`), counted before authentication | 300 per second (`--rate-limit-ip`) |
+| `token` | API token (subject for JWTs) | management API | 200 per second (`--rate-limit-token`) |
+| `auth_failures` | client IP address | failed authentication (management API, SSE, wrong WHIP tokens and stream keys) | 30 per minute (`--rate-limit-auth-failures`) |
+| `connect` | client IP address | new connections (`/signaling`, WHIP, WHEP, SSE) | 30 per second (`--rate-limit-connect`) |
+
+- Per-second limits allow short bursts of up to twice the rate.
+- An IP address that has used up its authentication failures gets 429 even with a valid token until it recovers.
+- The client IP address is the peer of the TCP connection the node accepted. Behind a reverse proxy, also limit requests at the proxy.
+- Each limit can be disabled with `0` ([3. Configuration](03-configuration.md)).
 
 ## 12.2 JWT
 
@@ -100,6 +134,10 @@ streams it creates are not visible from the `default` tenant.
   `POST /api/v1/streams/{id}/keys` (rotation); rotating invalidates the old key.
 - RTMP takes the key as the last path segment (`rtmp://host:1935/live/<key>`), SRT as streamid `publish:<key>`, and
   WHIP as `Authorization: Bearer <key>`.
+- WHIP also accepts an API token (or JWT) with the `publish` scope instead of the stream key (for streams of the same tenant).
+  You can hand the sending equipment a token with an expiry instead of the stream key, and delete it afterwards.
+- WHIP also accepts an API token (or JWT) with the `publish` scope instead of the stream key (for streams of the same tenant).
+  You can hand the sending equipment a token with an expiry instead of the stream key, and delete it afterwards.
 - Stream keys and tokens are kept out of logs, errors and debug output.
 - If a stream has a `live` schedule, publishing is accepted only while that schedule is running
   ([5. Recording](05-recording.md)).

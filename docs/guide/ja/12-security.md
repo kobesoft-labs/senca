@@ -31,7 +31,7 @@
 |---|---|
 | `stream:read` | ストリーム・予約・入力・出力・パイプライン・部屋・メディアパイプラインの参照、静止画、SSE の購読 |
 | `stream:write` | ストリームの作成・変更・削除・鍵の再発行、録画の開始・停止・変更（保持期間・リーガルホールド）、予約・入力・出力・パイプライン・部屋・メディアパイプラインの変更、部屋の参加トークンの発行 |
-| `publish` | （予約済み。現在の API でこの権限を必要とする操作はありません） |
+| `publish` | WHIP での配信（`POST /whip/{stream_id}` の `Authorization: Bearer` に、stream key の代わりに使えます。同じテナントの stream だけが対象です） |
 | `subscribe` | ライブの再生 URL の発行 |
 | `recording:read` | 録画の参照、録画の再生 URL・サムネイル・MP4 の書き出し |
 | `recording:delete` | 録画の削除 |
@@ -55,6 +55,23 @@ API トークンは作成者と同じテナントにしか作れないため、*
 2. 新しい管理者トークンを作ってから、最初のトークンを `DELETE /api/v1/tokens/{id}` で削除します
    （最後の `tenant:admin` トークンは削除できないため、先に新しいものを作ります）。
 3. `bootstrap-admin-token` ファイルを削除するか、安全な場所へ移します（ノードはこのファイルを再び読みません）。
+
+### 要求の量の上限
+
+総当たりや使いすぎを防ぐため、ノードは要求の数を数え、上限を超えると 429（`RATE_LIMITED`）を返します。応答の `Retry-After` には次に
+送ってよいまでの秒数が、`details.limit` にはどの上限かが入ります。上限はノードごとに数えます（クラスター全体の合計ではありません）。
+
+| `details.limit` | 数える単位 | 対象 | 既定（オプション） |
+|---|---|---|---|
+| `ip` | 送信元の IP アドレス | 管理 API（`/api/v1`）。認証の前に数えます | 1 秒に 300（`--rate-limit-ip`） |
+| `token` | API トークン（JWT は subject） | 管理 API | 1 秒に 200（`--rate-limit-token`） |
+| `auth_failures` | 送信元の IP アドレス | 認証の失敗（管理 API・SSE・WHIP の誤ったトークンや stream key） | 1 分に 30（`--rate-limit-auth-failures`） |
+| `connect` | 送信元の IP アドレス | 接続の開始（`/signaling`・WHIP・WHEP・SSE） | 1 秒に 30（`--rate-limit-connect`） |
+
+- 1 秒あたりの上限は、短い間なら 2 倍まで受け付けます。
+- 認証の失敗の回数を使い切った IP アドレスは、回復するまで、正しいトークンを送っても 429 になります。
+- 送信元の IP アドレスは、ノードが受けた TCP 接続の相手です。リバースプロキシの背後に置く場合は、プロキシ側でも上限を設けてください。
+- どの上限も `0` で無効にできます（[3. 設定](03-configuration.md)）。
 
 ## 12.2 JWT
 
@@ -95,6 +112,8 @@ senca-node ... --jwks /etc/senca/jwks.json \
   再発行すると古い鍵は使えなくなります。
 - stream key の渡し方: RTMP では URL の最後の部分（`rtmp://host:1935/live/<key>`）、SRT では streamid `publish:<key>`、
   WHIP では `Authorization: Bearer <key>` です。
+- WHIP では、stream key の代わりに `publish` の権限を持つ API トークン（または JWT）も使えます（同じテナントの stream だけ）。
+  配信の機材に stream key を渡さずに期限付きのトークンを渡し、終わったら削除できます。
 - stream key とトークンは、ログ・エラー・デバッグ表示に出力しません。
 - 予約に `live` があるストリームは、その時間帯の間だけ配信を受け付けます（[5. 録画](05-recording.md)）。
 

@@ -390,6 +390,8 @@ export type MediaPipeline = {
   export_participants: boolean;
   generation: number;
   id: string;
+  /** 部屋の設定 `recording` から作られたものかどうか（ID は `room-rec.{部屋の ID}`。API から変更・削除はできません） */
+  managed?: boolean;
   name: MediaPipelineName;
   participants: MediaPipelineParticipants;
   recording: MediaPipelineRecording | null;
@@ -515,6 +517,8 @@ export type MediaPipelineState = "running" | "stopped";
 
 /** このノードでの実行の状態です（制御状態には保存されません）。 */
 export type MediaPipelineStatus = {
+  /** `speaker` の並びで現在大きく表示している参加者（`client_id`、無ければ `connection_id`）。決まる前と `grid` では null */
+  active_speaker?: string | null;
   /** 合成のグラフに入っている参加者の数（`composite` が無い場合、または映像のある参加者がまだ流れ始めていない場合は null） */
   composite_members: number | null;
   /** 現在書き出している参加者 */
@@ -1253,11 +1257,12 @@ export type RoomParticipantStats = {
   }>;
 };
 
-/** 指定したフィールドだけを変更します。`settings` は全体を置き換えます。`settings`・`metadata` の null は「変更しない」の意味で、`placement: null` は配置の指定を削除します。 */
+/** 指定したフィールドだけを変更します。`settings` は JSON Merge Patch です（項目の値の null で既定値に戻ります）。`settings`・`metadata` の null は「変更しない」の意味で、`placement: null` は配置の指定を削除します。 */
 export type RoomPatch = {
   metadata?: RoomMetadata;
   /** 配置の指定の全体を置き換えます（`degrade` は使えません）。null で削除します */
   placement?: PlacementSpec | null;
+  /** 変更する設定の項目だけを書きます（JSON Merge Patch。書かない項目はそのまま残り、項目の値の null はその項目を既定値に戻します） */
   settings?: RoomSettings | null;
 };
 
@@ -1289,7 +1294,7 @@ export type RoomSettings = {
   max_participants?: number;
   /** 配信者に推奨する映像のビットレートの上限（kbit/s） */
   max_video_bitrate_kbps?: number | null;
-  /** 録画の方針（`composite` は `e2ee` と併用できません） */
+  /** 録画の方針。`per_participant`・`composite` にすると、部屋の録画のメディアパイプライン（`managed: true`）を作ります。`composite` は `e2ee` と併用できません（422） */
   recording?: "none" | "per_participant" | "composite";
   spotlight?: RoomSpotlight | null;
   /** 部屋の映像のコーデック（SFU は変換しないため、全員が同じコーデックを使います） */
@@ -1444,6 +1449,10 @@ export type ScheduleRunList = {
 
 export type ScheduleState = "pending" | "running" | "completed" | "missed" | "canceled" | "failed";
 
+/**
+ * `publish` は送信の権限です。`POST /whip/{stream}` の `Authorization: Bearer` に、publish 鍵の代わりに `publish` を持つ同じテナントの API トークン・JWT を使えます。
+ * `subscribe` は `POST /streams/{id}/playback-url` に使います。
+ */
 export type Scope = "stream:read" | "stream:write" | "publish" | "subscribe" | "recording:read" | "recording:delete" | "tenant:admin" | "node:admin";
 
 export type Secret = {
