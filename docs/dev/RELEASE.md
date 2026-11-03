@@ -110,8 +110,15 @@ REPRO_CHECK=1 SIGNING_KEY=/secure/senca-release.key tools/release/build.sh
   イメージの中の実行ファイルは build 段で作り直されるので、ホストの build と同じ toolchain の版に固定したうえで、
   イメージから取り出した実行ファイルのハッシュを `SHA256SUMS` の行と比べる（今の Dockerfile は toolchain の版を固定していない）。
 - **Cargo.lock は commit されたものと一致していること（`--locked`）。** 一致しなければ build は止まる。
-  `ALLOW_UNLOCKED=1` は開発中の試しだけ（`BUILDINFO` に `locked=no`。公開しない）。Dockerfile の build 段も
-  release では `--locked` を付ける（Dockerfile のコメントのとおり）。
+  `ALLOW_UNLOCKED=1` は開発中の試しだけ（`BUILDINFO` に `locked=no`。公開しない）。Dockerfile の build 段も `--locked` で作る。
+
+### 公開イメージ（ghcr.io）
+
+`v*` のタグを push すると、`.github/workflows/docker.yml` が `ghcr.io/kobesoft-labs/senca` に standard・slim（amd64・arm64）と
+gpu（amd64）を作って push し、`<版>`・`<版>-slim`・`<版>-gpu` と `latest`・`slim`・`gpu`（`-rc1` などの pre-release では付けない）を
+付け替える。`main` への push は `edge`・`edge-slim`・`edge-gpu`。arm64 は GitHub の arm64 ランナーでそのまま作る（QEMU は使わない）。
+タグを push したら Actions の `docker` が緑になったことと、`docker buildx imagetools inspect ghcr.io/kobesoft-labs/senca:<版>` に
+2 つの platform があることを確かめる。
 
 ### 署名の鍵
 

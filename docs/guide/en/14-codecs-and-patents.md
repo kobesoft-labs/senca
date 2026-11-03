@@ -96,7 +96,7 @@ To use a GPU in a container, pass the device and the driver libraries into the c
 
 ### Installing
 
-Install your distribution's packages. The official container image (`Dockerfile`) uses Ubuntu 26.04 and installs:
+Install your distribution's packages. The official container images (`Dockerfile`) use Ubuntu 26.04; standard and gpu install the following (`libvpl2` on amd64 only):
 
 ```sh
 apt-get install -y --no-install-recommends libdav1d7 libvpx12 libopus0 libsvtav1enc2 libva2 libva-drm2 libvpl2
@@ -107,7 +107,7 @@ Versions with a different soname (for example only `libvpx.so.9`) are not loaded
 Search order:
 
 1. `--codec-lib-dir DIR` (the node passes it to the worker as `SENCA_CODEC_LIB_DIR`; several directories may be separated with `:`).
-   The official image starts with `--codec-lib-dir /usr/lib/x86_64-linux-gnu`.
+   The official images set it to `/opt/senca/lib`, the place for libraries you add ([16. Container images](16-containers.md)).
 2. Otherwise the system's default dlopen search order (including `LD_LIBRARY_PATH`).
 
 Only the fixed sonames of each provider are loaded; the API cannot make SENCA load an arbitrary path.

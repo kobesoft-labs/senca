@@ -212,43 +212,30 @@ curl -s -H "Authorization: Bearer $TOKEN" http://127.0.0.1:8080/api/v1/recording
 
 ## 2.11 Docker
 
-リポジトリの `Dockerfile` と `compose.yaml` を使って、単一ノードを起動できます。
+公開しているコンテナイメージ（`ghcr.io/kobesoft-labs/senca`）で、単一ノードを起動できます。リポジトリの `compose.yaml` を使う場合は次のとおりです。
 
 ```sh
-docker compose up -d --build
+docker compose up -d
 docker compose exec senca cat /var/lib/senca/control/bootstrap-admin-token
 ```
 
 - 管理 API・HLS・管理画面: `http://localhost:8080`（管理画面は `/console/`）
-- RTMP: `rtmp://localhost:1935/live`、SRT: `localhost:9000/udp`
-- 公開 URL は、compose の変数 `SENCA_PUBLIC_HTTP`（既定 `http://localhost:8080`）・`SENCA_PUBLIC_RTMP`
-  （既定 `rtmp://localhost:1935`）で変更できます。例: `SENCA_PUBLIC_HTTP=https://media.example.com docker compose up -d`
+- RTMP: `rtmp://localhost:1935/live`、SRT: `localhost:9000/udp`、WebRTC: `8443/udp`
+- compose の変数:
 
-イメージの内容は次のとおりです。
+  | 変数 | 既定 | 意味 |
+  |---|---|---|
+  | `SENCA_IMAGE` | `ghcr.io/kobesoft-labs/senca:latest` | 使うイメージ（`:slim`・`:gpu` など） |
+  | `SENCA_PUBLIC_IP` | `127.0.0.1` | WebRTC の相手に知らせる IP アドレス（ICE の候補）。既定では同じマシンのブラウザーからだけつながります |
+  | `SENCA_PUBLIC_HTTP` | `http://localhost:8080` | 再生 URL などに使う HTTP の公開 URL |
+  | `SENCA_PUBLIC_RTMP` | `rtmp://localhost:1935` | RTMP の公開 URL |
 
-| 項目 | 値 |
-|---|---|
-| ベースイメージ | Ubuntu 26.04（libvpx 1.16 = `libvpx.so.12` を含むため） |
-| 実行ファイル | `/opt/senca/bin/senca-node`・`senca-codec-worker`・`senca-capture-worker` |
-| コーデックのライブラリ | `libdav1d7`・`libvpx12`・`libopus0`・`libsvtav1enc2`（と GPU 用の `libva2`・`libva-drm2`・`libvpl2`）。`--codec-lib-dir /usr/lib/x86_64-linux-gnu` |
-| 実行ユーザー | `senca`（uid 10001）。compose では、ルートファイルシステムを読み取り専用にし、`/tmp` を tmpfs にし、`no-new-privileges` を指定しています |
-| データ | ボリューム `/var/lib/senca`（`--data-dir`） |
-| 管理画面・配信ページ | `/opt/senca/console`（`/console/`）・`/opt/senca/sender`（`/sender/`） |
-| ヘルスチェック | `senca-node --healthcheck http://127.0.0.1:8080/readyz`（10 秒ごと） |
-| 公開するポート | 8080/tcp・1935/tcp・9000/udp・8443/udp |
+  例: `SENCA_PUBLIC_IP=203.0.113.10 SENCA_PUBLIC_HTTP=http://203.0.113.10:8080 docker compose up -d`
+- 手元のソースからイメージを作る場合は `docker compose up -d --build` です（`Dockerfile` の standard を作ります）。
+- compose では、ルートファイルシステムを読み取り専用にし、`/tmp` を tmpfs にし、`no-new-privileges` を指定しています。
+  GPU を渡す例は `compose.yaml` のコメントにあります。
 
-注意点:
-
-- イメージの `ENTRYPOINT` は `--data-dir`・`--console-dir`・`--sender-dir`・`--codec-lib-dir` を固定しており、待ち受けアドレスは
-  `CMD`（compose の `command`）で渡します。`command` を書き換える場合は、`--http` などをすべて書いてください。
-- WebRTC（WHIP・WHEP・部屋）は、既定で UDP 8443（`--webrtc-udp 0.0.0.0:8443`）で有効です。ブラウザーなどの相手に知らせる
-  IP アドレス（ICE の候補）は、compose の変数 `SENCA_PUBLIC_IP` で指定します（既定は `127.0.0.1` で、同じマシンのブラウザーからだけつながります）。
-  例: `SENCA_PUBLIC_IP=203.0.113.10 docker compose up -d`。`docker run` で起動する場合は、`--webrtc-public-ip <ホストの IP>` を引数に加えてください
-  （指定しないと、コンテナー内のアドレスが知らされ、ホストの外からはつながりません）。
-- `compose.yaml` は作業ツリーからビルドします。配布するイメージは、コミット済みのソースから作成してください
-  （`git archive HEAD | docker build -t senca/node:local -`、ADR-0008）。
-- GPU をコンテナに渡す例は、`compose.yaml` のコメントにあります（NVIDIA は NVIDIA Container Toolkit、Intel/AMD は `/dev/dri`）。
-- イメージ内のライブラリの配置先は、x86_64 のパス（`/usr/lib/x86_64-linux-gnu`）に固定しています。
+イメージの種類（standard・slim・gpu）、Raspberry Pi での使い方、GPU やライブラリの足し方は [16. コンテナイメージ](16-containers.md) を参照してください。
 
 ## 2.12 次に読むページ
 

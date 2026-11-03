@@ -48,7 +48,8 @@ cargo build --release -p senca-node -p senca-codec-worker
 cat ./data/control/bootstrap-admin-token   # token for the management API
 ```
 
-- Containers: `Dockerfile`, `compose.yaml`
+- Containers: `docker run -p 8080:8080 -p 1935:1935 ghcr.io/kobesoft-labs/senca` (amd64 and arm64; variants `latest`,
+  `slim`, `gpu`; see [Container images](docs/guide/en/16-containers.md)), or `docker compose up -d`
 - Clustering: `--cluster-config`
 
 ## Documentation

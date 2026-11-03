@@ -218,46 +218,30 @@ After a hard stop (SIGKILL, power loss), the next start closes unfinished record
 
 ## 2.11 Docker
 
-The repository's `Dockerfile` and `compose.yaml` run a single node.
+The published container image (`ghcr.io/kobesoft-labs/senca`) runs a single node. With the repository's `compose.yaml`:
 
 ```sh
-docker compose up -d --build
+docker compose up -d
 docker compose exec senca cat /var/lib/senca/control/bootstrap-admin-token
 ```
 
 - Management API, HLS and console: `http://localhost:8080` (console at `/console/`)
-- RTMP: `rtmp://localhost:1935/live`; SRT: `localhost:9000/udp`
-- The public URLs come from the compose variables `SENCA_PUBLIC_HTTP` (default `http://localhost:8080`) and
-  `SENCA_PUBLIC_RTMP` (default `rtmp://localhost:1935`), e.g.
-  `SENCA_PUBLIC_HTTP=https://media.example.com docker compose up -d`.
+- RTMP: `rtmp://localhost:1935/live`; SRT: `localhost:9000/udp`; WebRTC: `8443/udp`
+- Compose variables:
 
-What is in the image:
+  | Variable | Default | Meaning |
+  |---|---|---|
+  | `SENCA_IMAGE` | `ghcr.io/kobesoft-labs/senca:latest` | Image to run (`:slim`, `:gpu` and so on) |
+  | `SENCA_PUBLIC_IP` | `127.0.0.1` | IP address announced to WebRTC peers (ICE candidate). The default only works for a browser on the same machine |
+  | `SENCA_PUBLIC_HTTP` | `http://localhost:8080` | Public HTTP URL used in playback URLs and similar |
+  | `SENCA_PUBLIC_RTMP` | `rtmp://localhost:1935` | Public RTMP URL |
 
-| Item | Value |
-|---|---|
-| Base | Ubuntu 26.04 (it ships libvpx 1.16, i.e. `libvpx.so.12`) |
-| Executables | `/opt/senca/bin/senca-node`, `senca-codec-worker`, `senca-capture-worker` |
-| Codec libraries | `libdav1d7`, `libvpx12`, `libopus0`, `libsvtav1enc2` (plus `libva2`, `libva-drm2`, `libvpl2` for GPUs), with `--codec-lib-dir /usr/lib/x86_64-linux-gnu` |
-| User | `senca` (uid 10001). Compose runs it with a read-only root, tmpfs `/tmp` and `no-new-privileges` |
-| Data | volume at `/var/lib/senca` (`--data-dir`) |
-| Console and sender page | `/opt/senca/console` (`/console/`), `/opt/senca/sender` (`/sender/`) |
-| Health check | `senca-node --healthcheck http://127.0.0.1:8080/readyz` every 10 s |
-| Exposed ports | 8080/tcp, 1935/tcp, 9000/udp, 8443/udp |
+  For example: `SENCA_PUBLIC_IP=203.0.113.10 SENCA_PUBLIC_HTTP=http://203.0.113.10:8080 docker compose up -d`
+- To build the image from your checkout, use `docker compose up -d --build` (it builds the standard variant of the `Dockerfile`).
+- Compose runs the node with a read-only root, tmpfs `/tmp` and `no-new-privileges`. `compose.yaml` has commented
+  examples for passing GPUs.
 
-Notes:
-
-- The image's `ENTRYPOINT` fixes `--data-dir`, `--console-dir`, `--sender-dir` and `--codec-lib-dir`; listeners are
-  passed through `CMD` (compose's `command`). If you override `command`, repeat `--http` and the other listeners.
-- WebRTC (WHIP, WHEP, rooms) is enabled by default on UDP 8443 (`--webrtc-udp 0.0.0.0:8443`). The IP address announced to
-  peers such as browsers (the ICE candidate) comes from the compose variable `SENCA_PUBLIC_IP` (default `127.0.0.1`, which only
-  works for a browser on the same machine). For example: `SENCA_PUBLIC_IP=203.0.113.10 docker compose up -d`. With `docker run`,
-  add `--webrtc-public-ip <host IP>` to the arguments; without it the container's internal address is announced and peers
-  outside the host cannot connect.
-- `compose.yaml` builds from your working tree. Images you distribute should be built from committed source
-  (`git archive HEAD | docker build -t senca/node:local -`, per ADR-0008).
-- `compose.yaml` contains commented examples for passing GPUs (NVIDIA Container Toolkit for NVIDIA, `/dev/dri` for
-  Intel and AMD).
-- The library path inside the image is the x86_64 one (`/usr/lib/x86_64-linux-gnu`).
+For the image variants (standard, slim, gpu), Raspberry Pi, GPUs and adding libraries, see [16. Container images](16-containers.md).
 
 ## 2.12 Next steps
 

@@ -3,7 +3,7 @@
 English | [日本語](../ja/README.md)
 
 How to run, use and operate SENCA, a media server for live streaming, recording and real-time communication.
-This guide covers version v0.0.0.
+This guide covers version v0.0.1.
 
 If you are new to SENCA, start with [1. Overview](01-overview.md) for the overall architecture, then try it out with
 [2. Quickstart](02-quickstart.md).
@@ -27,6 +27,7 @@ If you are new to SENCA, start with [1. Overview](01-overview.md) for the overal
 | 13 | [Operations](13-operations.md) | Health checks, logging, monitoring, events, recovery, backups, upgrades, draining, shutdown, capacity |
 | 14 | [Codecs and patents](14-codecs-and-patents.md) | Hardware and royalty-free codecs, patent policy |
 | 15 | [Management API and SDKs](15-api-and-sdks.md) | REST conventions, OpenAPI, SSE, TypeScript and Rust clients |
+| 16 | [Container images](16-containers.md) | Published image variants (standard, slim, gpu), amd64 and arm64, Raspberry Pi, GPUs, adding drivers and libraries |
 
 ## Related documents
 

@@ -1,5 +1,31 @@
 # Changelog / 変更履歴
 
+## Unreleased / 未リリース
+
+### Added / 追加
+
+- Container images on GitHub Container Registry, `ghcr.io/kobesoft-labs/senca`, for linux/amd64 and linux/arm64 (Raspberry Pi 4/5
+  with a 64-bit OS): `latest` (standard: royalty-free codecs and the VA-API runtime), `slim` (no codec libraries; pass-through
+  only) and `gpu` (amd64; Intel and AMD GPU drivers). Built natively per architecture by `.github/workflows/docker.yml`
+  ／ GitHub Container Registry でコンテナイメージ `ghcr.io/kobesoft-labs/senca` を公開します。linux/amd64 と linux/arm64
+  （64 bit の OS の Raspberry Pi 4・5）に対応し、種類は `latest`（standard: ロイヤリティフリーのコーデックと VA-API の実行時）、
+  `slim`（コーデックのライブラリなし。そのままの配信・録画・中継）、`gpu`（amd64。Intel・AMD の GPU のドライバー）です。
+  `.github/workflows/docker.yml` で、アーキテクチャーごとにその機械でビルドします
+- Adding drivers and libraries to the image: mount shared libraries at `/opt/senca/lib` (searched first by the codec and capture
+  workers), derive from the published image, or build with `--build-arg EXTRA_PACKAGES=...` / `INTEL_VA_DRIVER=...`
+  ／ イメージへのドライバー・ライブラリの追加: 共有ライブラリを `/opt/senca/lib` にマウントする（codec worker とキャプチャーの worker が
+  最初に探します）、公開イメージから派生させる、`--build-arg EXTRA_PACKAGES=...`・`INTEL_VA_DRIVER=...` でビルドする、のいずれかでできます
+- Guide page 16, Container images ／ ガイドに「16. コンテナイメージ」を追加しました
+
+### Changed / 変更
+
+- The image no longer passes `--codec-lib-dir /usr/lib/x86_64-linux-gnu` (it broke on arm64); libraries are found in
+  `/opt/senca/lib` and then the system's default locations. `compose.yaml` runs the published image (`SENCA_IMAGE`) and builds the
+  standard target with `--build`
+  ／ イメージは `--codec-lib-dir /usr/lib/x86_64-linux-gnu` を指定しなくなりました（arm64 で合わないため）。ライブラリは
+  `/opt/senca/lib`、次にシステムの既定の場所から探します。`compose.yaml` は公開イメージ（`SENCA_IMAGE`）で起動し、`--build` では
+  standard を作ります
+
 ## v0.0.1 — 2026-11-03
 
 ### Added / 追加

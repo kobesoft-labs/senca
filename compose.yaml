@@ -1,12 +1,15 @@
 # 単一ノード（REQ-003）: docker compose up -d
+# イメージ: SENCA_IMAGE（既定 ghcr.io/kobesoft-labs/senca:latest。:slim・:gpu も）。手元のソースから作るなら docker compose up -d --build
 # 最初の管理者トークン: docker compose exec senca cat /var/lib/senca/control/bootstrap-admin-token
 # 管理画面: http://localhost:8080/console/
 # WebRTC（WHIP・WHEP・部屋）は UDP 8443。相手から届く IP を SENCA_PUBLIC_IP に（既定 127.0.0.1 は同じ機械のブラウザーだけ）:
 #   SENCA_PUBLIC_IP=203.0.113.10 docker compose up -d
 services:
   senca:
-    build: .
-    image: senca/node:local
+    image: ${SENCA_IMAGE:-ghcr.io/kobesoft-labs/senca:latest}
+    build:
+      context: .
+      target: standard
     restart: unless-stopped
     command:
       - --http
@@ -35,7 +38,9 @@ services:
     #   resources:
     #     reservations:
     #       devices: [{ driver: nvidia, count: all, capabilities: [video, compute, utility] }]
-    # Intel / AMD（VA-API・oneVPL・AMF）: devices: ["/dev/dri:/dev/dri"]
+    # Intel / AMD（VA-API・oneVPL・AMF。イメージは :gpu）: devices: ["/dev/dri:/dev/dri"]、group_add: ["<ホストの render グループの GID>"]
+    # 足したいライブラリ（.so）があれば /opt/senca/lib にマウントする:
+    #   volumes: [senca-data:/var/lib/senca, /path/to/libs:/opt/senca/lib:ro]
     read_only: true
     tmpfs: [/tmp]
     security_opt: ["no-new-privileges:true"]

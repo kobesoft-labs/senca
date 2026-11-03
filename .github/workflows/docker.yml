@@ -1,0 +1,120 @@
+# Container images: ghcr.io/kobesoft-labs/senca
+#
+# Variants (Dockerfile targets) and platforms:
+#   standard  linux/amd64, linux/arm64   tags: <version>, latest   (edge on main)
+#   slim      linux/amd64, linux/arm64   tags: <version>-slim, slim (edge-slim on main)
+#   gpu       linux/amd64                tags: <version>-gpu, gpu   (edge-gpu on main)
+#
+# Each architecture is built natively on its own runner (no emulation); the per-variant manifest lists are
+# assembled at the end. Pull requests build without pushing.
+name: docker
+
+on:
+  push:
+    branches: [main]
+    tags: ['v*']
+  pull_request:
+    paths: [Dockerfile, .dockerignore, .github/workflows/docker.yml, Cargo.lock]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+  packages: write
+
+env:
+  IMAGE: ghcr.io/${{ github.repository_owner }}/senca
+
+concurrency:
+  group: docker-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  build:
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - arch: amd64
+            runner: ubuntu-24.04
+            variants: slim standard gpu
+          - arch: arm64
+            runner: ubuntu-24.04-arm
+            variants: slim standard
+    runs-on: ${{ matrix.runner }}
+    timeout-minutes: 120
+    steps:
+      - uses: actions/checkout@v4
+      - uses: docker/setup-buildx-action@v3
+      - if: github.event_name != 'pull_request'
+        uses: docker/login-action@v3
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+      - name: Build and push by digest
+        env:
+          PUSH: ${{ github.event_name != 'pull_request' }}
+          VARIANTS: ${{ matrix.variants }}
+          ARCH: ${{ matrix.arch }}
+        run: |
+          set -euo pipefail
+          mkdir -p digests
+          # The Rust build stage is shared: the first variant compiles it, the rest reuse the builder's cache.
+          for v in $VARIANTS; do
+            if [ "$PUSH" = true ]; then
+              out="type=image,name=$IMAGE,push-by-digest=true,name-canonical=true,push=true"
+            else
+              out="type=cacheonly"
+            fi
+            docker buildx build --platform "linux/$ARCH" --target "$v" \
+              --cache-from "type=gha,scope=$ARCH" --cache-to "type=gha,scope=$ARCH,mode=max" \
+              --label "org.opencontainers.image.revision=$GITHUB_SHA" \
+              --label "org.opencontainers.image.version=${GITHUB_REF_NAME}" \
+              --metadata-file "meta-$v.json" --output "$out" .
+            if [ "$PUSH" = true ]; then
+              jq -r '."containerimage.digest"' "meta-$v.json" > "digests/$v-$ARCH"
+            fi
+          done
+      - if: github.event_name != 'pull_request'
+        uses: actions/upload-artifact@v4
+        with:
+          name: digests-${{ matrix.arch }}
+          path: digests/*
+          retention-days: 1
+
+  publish:
+    if: github.event_name != 'pull_request'
+    needs: build
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          pattern: digests-*
+          path: digests
+          merge-multiple: true
+      - uses: docker/setup-buildx-action@v3
+      - uses: docker/login-action@v3
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+      - name: Create multi-arch tags
+        run: |
+          set -euo pipefail
+          # Tag names: v1.2.3 -> 1.2.3 (+ latest unless it is a pre-release such as v1.2.3-rc1); main -> edge
+          case "$GITHUB_REF" in
+            refs/tags/v*) ver=${GITHUB_REF_NAME#v}; bases="$ver"; case "$ver" in *-*) ;; *) bases="$bases latest";; esac ;;
+            refs/heads/main) bases="edge" ;;
+            *) bases="dev-${GITHUB_SHA::7}" ;;
+          esac
+          for v in slim standard gpu; do
+            srcs=(); for f in digests/"$v"-*; do srcs+=("$IMAGE@$(cat "$f")"); done
+            tags=()
+            for b in $bases; do
+              if [ "$v" = standard ]; then t=$b; elif [ "$b" = latest ]; then t=$v; else t=$b-$v; fi
+              tags+=(-t "$IMAGE:$t")
+            done
+            echo "$v: ${tags[*]}"
+            docker buildx imagetools create "${tags[@]}" "${srcs[@]}"
+          done
+          for b in $bases; do docker buildx imagetools inspect "$IMAGE:$b"; break; done

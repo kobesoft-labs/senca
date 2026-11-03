@@ -48,7 +48,8 @@ cargo build --release -p senca-node -p senca-codec-worker
 cat ./data/control/bootstrap-admin-token   # 管理 API のトークン
 ```
 
-- コンテナで動かす: `Dockerfile`・`compose.yaml`（[ADR-0008](docs/dev/adr/0008-container-deployment.md)）
+- コンテナで動かす: `docker run -p 8080:8080 -p 1935:1935 ghcr.io/kobesoft-labs/senca`（amd64・arm64。種類は `latest`・`slim`・`gpu`。
+  [コンテナイメージ](docs/guide/ja/16-containers.md)）、または `docker compose up -d`
 - クラスターで動かす: `--cluster-config`（[ADR-0009](docs/dev/adr/0009-cluster.md)・[ADR-0013](docs/dev/adr/0013-grid.md)）
 
 ## ドキュメント

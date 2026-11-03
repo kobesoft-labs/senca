@@ -92,7 +92,7 @@ VP9 のストリームなら、同じノードでも libvpx でデコードで�
 
 ### インストール
 
-ディストリビューションのパッケージをインストールします。公式のコンテナイメージ（`Dockerfile`）は Ubuntu 26.04 で、次のパッケージを入れています。
+ディストリビューションのパッケージをインストールします。公式のコンテナイメージ（`Dockerfile`）は Ubuntu 26.04 で、standard と gpu には次のパッケージを入れています（`libvpl2` は amd64 だけ）。
 
 ```sh
 apt-get install -y --no-install-recommends libdav1d7 libvpx12 libopus0 libsvtav1enc2 libva2 libva-drm2 libvpl2
@@ -103,7 +103,7 @@ soname が合わないバージョン（例: `libvpx.so.9` しか無い）は読
 ライブラリを探す場所:
 
 1. `--codec-lib-dir DIR`（ノードが worker の環境変数 `SENCA_CODEC_LIB_DIR` に渡します。`:` 区切りで複数指定できます）。
-   公式のコンテナイメージは `--codec-lib-dir /usr/lib/x86_64-linux-gnu` で起動します。
+   公式のコンテナイメージでは `/opt/senca/lib`（利用者が足すライブラリの置き場所。[16. コンテナイメージ](16-containers.md)）を指定しています。
 2. 見つからなければ、システム既定の dlopen の検索順（`LD_LIBRARY_PATH` を含む）。
 
 読み込むのはプロバイダーごとに決まった soname だけで、API からライブラリのパスを指定することはできません。

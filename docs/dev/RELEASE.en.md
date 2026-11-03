@@ -112,7 +112,15 @@ Assumptions and limits:
   hashes of the executables extracted from the image with the lines in `SHA256SUMS` (the current Dockerfile does not pin the toolchain version).
 - **Cargo.lock must match the committed one (`--locked`).** If it does not, the build stops.
   `ALLOW_UNLOCKED=1` is only for trials during development (`BUILDINFO` records `locked=no`; never publish such a build). The build stage of the
-  Dockerfile also uses `--locked` for releases (as the comment in the Dockerfile says).
+  Dockerfile also uses `--locked`.
+
+### Published images (ghcr.io)
+
+Pushing a `v*` tag makes `.github/workflows/docker.yml` build standard and slim (amd64, arm64) and gpu (amd64), push them to
+`ghcr.io/kobesoft-labs/senca`, and move `<version>`, `<version>-slim`, `<version>-gpu` plus `latest`, `slim`, `gpu` (not for
+pre-releases such as `-rc1`). Pushes to `main` update `edge`, `edge-slim` and `edge-gpu`. arm64 is built natively on GitHub's
+arm64 runners (no QEMU). After pushing a tag, check that the `docker` workflow is green and that
+`docker buildx imagetools inspect ghcr.io/kobesoft-labs/senca:<version>` lists both platforms.
 
 ### Signing key
 
