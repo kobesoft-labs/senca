@@ -22,9 +22,14 @@
 //! | 0x0c | Control | channel op:u8 ...（1 = キーフレームの要求 track、2 = トラック（層）の変更 tracks） |
 //! | 0x0d | Event | channel kind:u8 ...（1 = 不連続、2 = 終わり、3 = セグメント） |
 //! | 0x0e | Stats | rx_bytes rx_aus rx_gaps |
+//! | 0x0f | App | topic payload（body の残り全部） |
 //!
 //! 数は全て LEB128 の可変長整数（符号つきは zigzag）。文字列は長さ＋UTF-8。知らない type は読み飛ばす
 //! （後方互換）。チャネル番号は購読する側が決める（向きごとに別の名前空間。使い回さない）。
+//!
+//! App はチャネルに属さない、統合側の小さな message（部屋のカスケードの在室・トラック・アプリの message など）。
+//! `topic` は統合側の規約の名前と版（例 `senca.rooms/1`、[`MAX_TOPIC`] バイトまで）、payload は [`MAX_APP_PAYLOAD`]
+//! バイトまで。相手が Hello の capabilities に [`caps::APP`] を載せたときだけ送る（載せない古い相手は読み飛ばす）。
 //!
 //! # AU の見出し
 //!
@@ -60,6 +65,10 @@ pub const MAX_REASON: usize = 1024;
 pub const MAX_BATCH_ITEMS: usize = 4096;
 /// 設定レコードの上限。
 pub const MAX_RECORD: usize = 1 << 20;
+/// App の topic の上限（バイト）。
+pub const MAX_TOPIC: usize = 64;
+/// App の payload の上限（バイト）。
+pub const MAX_APP_PAYLOAD: usize = 1 << 20;
 
 pub mod kind {
     pub const HELLO: u8 = 0x01;
@@ -76,6 +85,7 @@ pub mod kind {
     pub const CONTROL: u8 = 0x0c;
     pub const EVENT: u8 = 0x0d;
     pub const STATS: u8 = 0x0e;
+    pub const APP: u8 = 0x0f;
 }
 
 /// Hello の capabilities の bit。
@@ -84,7 +94,9 @@ pub mod caps {
     pub const BATCH: u64 = 1 << 0;
     /// Stats の枠を送る。
     pub const STATS: u64 = 1 << 1;
-    pub const ALL: u64 = BATCH | STATS;
+    /// App の枠を受けられる。
+    pub const APP: u64 = 1 << 2;
+    pub const ALL: u64 = BATCH | STATS | APP;
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -251,6 +263,11 @@ pub enum Frame {
         event: ChannelEvent,
     },
     Stats(PeerStats),
+    /// 統合側の message（チャネルに属さない）。payload は受信バッファの切り出し。
+    App {
+        topic: String,
+        payload: Bytes,
+    },
     /// 知らない type（読み飛ばした）。
     Unknown(u8),
 }
@@ -615,6 +632,19 @@ pub fn decode_body(t: u8, body: &Bytes) -> Result<Frame, WireError> {
             rx_aus: r.u()?,
             rx_gaps: r.u()?,
         }),
+        kind::APP => {
+            let topic = r.str(MAX_TOPIC)?;
+            if topic.is_empty() {
+                return Err(WireError::Malformed("empty topic"));
+            }
+            if r.remaining() > MAX_APP_PAYLOAD {
+                return Err(WireError::Malformed("app payload over limit"));
+            }
+            Frame::App {
+                topic,
+                payload: r.rest(),
+            }
+        }
         other => return Ok(Frame::Unknown(other)),
     };
     r.end()?;
@@ -976,6 +1006,11 @@ fn put_control_body(b: &mut Vec<u8>, f: &Frame) -> u8 {
             put_u(b, s.rx_aus);
             put_u(b, s.rx_gaps);
             kind::STATS
+        }
+        Frame::App { topic, payload } => {
+            put_str(b, topic, MAX_TOPIC);
+            b.put_slice(payload);
+            kind::APP
         }
         Frame::Media(m) => {
             put_u(b, m.channel as u64);
@@ -1345,7 +1380,50 @@ mod tests {
                 rx_aus: 5,
                 rx_gaps: 0,
             }),
+            Frame::App {
+                topic: "senca.rooms/1".into(),
+                payload: Bytes::from_static(br#"{"t":"sync"}"#),
+            },
+            Frame::App {
+                topic: "x".into(),
+                payload: Bytes::new(),
+            },
         ]
+    }
+
+    #[test]
+    fn app_frame_bounds() {
+        // topic は空でなく MAX_TOPIC まで、payload は MAX_APP_PAYLOAD まで
+        let mut body = Vec::new();
+        put_u(&mut body, 0);
+        assert!(decode_body(kind::APP, &Bytes::from(body)).is_err());
+        let mut body = Vec::new();
+        put_u(&mut body, (MAX_TOPIC + 1) as u64);
+        body.extend(std::iter::repeat_n(b'a', MAX_TOPIC + 1));
+        assert!(decode_body(kind::APP, &Bytes::from(body)).is_err());
+        let mut body = Vec::new();
+        put_u(&mut body, 1);
+        body.push(b'a');
+        body.extend(std::iter::repeat_n(0u8, MAX_APP_PAYLOAD + 1));
+        assert!(decode_body(kind::APP, &Bytes::from(body)).is_err());
+        // 壊れた UTF-8 の topic
+        assert!(decode_body(kind::APP, &Bytes::from_static(&[2, 0xff, 0xfe])).is_err());
+        // payload は body の切り出し（コピーしない）
+        let mut v = Vec::new();
+        encode_frame(
+            &Frame::App {
+                topic: "t".into(),
+                payload: Bytes::from_static(b"hello"),
+            },
+            &mut v,
+        );
+        let b = Bytes::from(v);
+        let (f, _) = decode_frame(&b, DEFAULT_MAX_FRAME).unwrap().unwrap();
+        let Frame::App { payload, .. } = f else {
+            panic!()
+        };
+        assert_eq!(&payload[..], b"hello");
+        assert!(b.as_ptr_range().contains(&payload.as_ptr()));
     }
 
     #[test]

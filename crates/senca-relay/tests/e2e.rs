@@ -522,3 +522,22 @@ async fn end_is_delivered_even_if_the_downstream_is_dropped_right_after() {
     }
     assert!(n > 100, "{n}");
 }
+
+/// App の message（部屋のカスケードの在室など）が TCP の接続の上を両向きに届く（FFmpeg は要らない）。
+#[tokio::test]
+async fn app_messages_over_tcp() {
+    let (a, _ia) = endpoint(1);
+    let (b, _ib) = endpoint(2);
+    let mut ra = a.take_app_messages().unwrap();
+    let mut rb = b.take_app_messages().unwrap();
+    assert!(a.take_app_messages().is_none());
+    link_tcp(&a, &b).await;
+    assert!(a.send_app(2, "senca.rooms/1", bytes::Bytes::from_static(b"to-b")).await);
+    assert!(b.send_app(1, "senca.rooms/1", bytes::Bytes::from_static(b"to-a")).await);
+    let m = tokio::time::timeout(Duration::from_secs(5), rb.recv()).await.unwrap().unwrap();
+    assert_eq!((m.peer, m.topic.as_str(), &m.payload[..]), (1, "senca.rooms/1", &b"to-b"[..]));
+    let m = tokio::time::timeout(Duration::from_secs(5), ra.recv()).await.unwrap().unwrap();
+    assert_eq!((m.peer, &m.payload[..]), (2, &b"to-a"[..]));
+    // つないでいない相手（Dialer も無い）には送れない
+    assert!(!a.send_app(9, "t", bytes::Bytes::new()).await);
+}

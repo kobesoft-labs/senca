@@ -3,7 +3,7 @@
 Build from source, run a single node, publish over RTMP and watch over HLS. Docker comes at the end.
 
 - Related pages: [1. Overview](01-overview.md), [3. Configuration](03-configuration.md), [4. Ingest and playback](04-ingest-playback.md), [12. Security](12-security.md), [14. Codecs and patents](14-codecs-and-patents.md)
-- Rationale: [ADR-0008 Container deployment](../../adr/0008-container-deployment.md)
+- Rationale: [ADR-0008 Container deployment](../../dev/adr/0008-container-deployment.md)
 
 Every command on this page was run on Linux x86_64 (Ubuntu 26.04).
 
@@ -195,7 +195,7 @@ ffprobe -v error -show_entries stream=codec_name,width,height -of compact "http:
 ```
 
 In a browser, use an HLS player such as hls.js (responses on signed URLs carry `Access-Control-Allow-Origin: *`).
-Playback in Safari and on iOS has not been verified yet ([1.5 Status](01-overview.md#15-status-what-has-been-verified)).
+Playback in Safari and on iOS is not verified at present ([1.5 Verification status](01-overview.md#15-verification-status)).
 The console is at `http://127.0.0.1:8080/console/` (log in with an API token). Its player handles fMP4 HLS and WHEP
 only, so it cannot play a stream that uses the default TS container; see `hls.container` in
 [4. Ingest and playback](04-ingest-playback.md).

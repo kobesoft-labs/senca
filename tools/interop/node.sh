@@ -1,5 +1,6 @@
 #!/usr/bin/env bash
 # M1〜M3: RTMP → ライブ HLS・録画・VOD・MP4 書き出し・回収・RTMP play・API の契約。
+# P〜X: 視聴者と入力の上限・録画中の欠落・予約・interactive・計画・RTSPS・書き出しの切り出し・パイプラインの静止画。
 # 使い方: tools/interop/node.sh（KEEP=1 で作業場所を残す、ONLY=ABC で場面を絞る）
 source "$(dirname "$0")/lib.sh"
 [ -n "${NODE_BIN_PREBUILT:-}" ] || (cd "$ROOT" && cargo build -q -p senca-node -p senca-codec-worker -p senca-capture -p senca-devtools && cargo build -q -p senca-rtmp -p senca-paas --examples)
@@ -8,7 +9,7 @@ CODEC_LIB_DIR=${CODEC_LIB_DIR:-$HOME/tools/codeclibs/usr/lib/x86_64-linux-gnu}
 W=$(mktemp -d); NODE_PID=
 cleanup() { [ -n "$NODE_PID" ] && kill "$NODE_PID" 2>/dev/null || true; wait 2>/dev/null || true; [ -n "${KEEP:-}" ] && echo "kept $W" || rm -rf "$W"; }
 trap cleanup EXIT
-ONLY=${ONLY:-ABCDEFGHIJKLMNO}
+ONLY=${ONLY:-ABCDEFGHIJKLMNOPQRSTUVWX}
 HTTP=$(port); RTMP=$(port); SRT=$(port); RTSP=$(port); API=http://127.0.0.1:$HTTP/api/v1
 start_node() {
   "$NODE_BIN" --data-dir "$W/data" --http 127.0.0.1:$HTTP --rtmp 127.0.0.1:$RTMP --srt 127.0.0.1:$SRT --capture-synthetic --rtsp 127.0.0.1:$RTSP --public-rtsp-url rtsp://127.0.0.1:$RTSP \
@@ -394,6 +395,207 @@ if [[ $ONLY == *O* ]]; then
   n=$({ timeout -k 2 10 "$FFMPEG" -v error -i "$URL" -t 4 -map 0:v -f framemd5 - 2>/dev/null || true; } | grep -vc '^#' || true)
   [ "$n" -ge 60 ] && pass "O device → VP9 → live HLS decodes ($n frames)" || fail "O frames $n; input: $(api GET /inputs/$(json "['id']" < "$W/oi.json") | head -c 300)"
   api DELETE /inputs/$(json "['id']" < "$W/oi.json") >/dev/null
+  fi
+fi
+etag() { curl -s -D - -o /dev/null "${H[@]}" "$API$1" | awk -F': ' 'tolower($1)=="etag"{print $2}' | tr -d '\r'; }
+# 今から $1 秒後の RFC 3339（秒まで）
+at() { python3 -c "import datetime,sys;print((datetime.datetime.now(datetime.timezone.utc)+datetime.timedelta(seconds=float(sys.argv[1]))).strftime('%Y-%m-%dT%H:%M:%SZ'))" "$1"; }
+sched_state() { api GET /schedules/$1 | json "['state']"; }
+wait_sched() { for _ in $(seq ${3:-100}); do [ "$(sched_state $1)" = "$2" ] && return 0; sleep 0.2; done; return 1; }
+if [[ $ONLY == *P* ]]; then
+  # P. 視聴者の上限（limits.max_viewers）: HLS の最近の客と RTMP play を合わせて数え、超える新しい視聴は断る。live.viewers に数が出る
+  api POST /streams -d '{"name":"p","limits":{"max_viewers":2}}' > "$W/p.json"
+  "$FFMPEG" -v error -re -stream_loop 1 -i "$W/src.flv" -c copy -f flv rtmp://127.0.0.1:$RTMP/live/$(key p) & PUB=$!
+  sleep 3
+  PB=$(api POST /streams/$(sid p)/playback-url -d '{"ttl_secs":600}')
+  URL=$(echo "$PB" | json "['playback']['hls']"); PR=$(echo "$PB" | json "['playback']['rtmp']")
+  r=""; for ua in viewer-1 viewer-2 viewer-1 viewer-3; do r="$r $(curl -s -o /dev/null -w '%{http_code}' -A $ua "$URL")"; done
+  [ "$r" = " 200 200 200 503" ] && pass "P HLS: 2 clients served, a 3rd new client gets 503 (max_viewers=2)" || fail "P HLS codes:$r"
+  { timeout -k 2 8 "$FFMPEG" -v error -i "$PR" -t 1 -f null - 2>/dev/null; } && fail "P RTMP play accepted over the limit" || pass "P RTMP play refused at the limit"
+  v=$(api GET /streams/$(sid p) | json "['live']['viewers']")
+  python3 -c "import sys;v=eval(sys.argv[1]);sys.exit(0 if v['total']==2 and v['hls']==2 and v['rtmp']==0 else 1)" "$v" && pass "P live.viewers counts the HLS clients ($v)" || fail "P live.viewers $v"
+  # 上限を上げると RTMP play が入り、数えられる。その間は新しい HLS の客を断る
+  api PATCH /streams/$(sid p) -H "If-Match: $(etag /streams/$(sid p))" -d '{"limits":{"max_viewers":3}}' >/dev/null
+  { timeout -k 2 12 "$FFMPEG" -v error -i "$PR" -t 4 -f null - 2>/dev/null; } & PL=$!
+  sleep 2
+  v=$(api GET /streams/$(sid p) | json "['live']['viewers']")
+  c=$(curl -s -o /dev/null -w '%{http_code}' -A viewer-4 "$URL")
+  python3 -c "import sys;v=eval(sys.argv[1]);sys.exit(0 if v['total']==3 and v['rtmp']==1 else 1)" "$v" && [ "$c" = 503 ] \
+    && pass "P RTMP play counted with HLS (total=3); a new HLS client is refused" || fail "P mixed count $v / $c"
+  wait $PL || true; sleep 0.5
+  v=$(api GET /streams/$(sid p) | json "['live']['viewers']['rtmp']")
+  [ "$v" = 0 ] && pass "P RTMP viewer released when the player leaves" || fail "P rtmp count after leave $v"
+  kill $PUB 2>/dev/null; wait $PUB 2>/dev/null || true
+fi
+if [[ $ONLY == *Q* ]]; then
+  # Q. 入力のビットレートの上限（limits.max_ingress_bps）: 超え続けた送り手を切り、しばらく新しい送り手を断る
+  api POST /streams -d '{"name":"q","recording":{"enabled":false},"limits":{"max_ingress_bps":100000}}' > "$W/q.json"
+  t0=$(date +%s)
+  rc=0; timeout -k 2 40 "$FFMPEG" -v error -re -stream_loop 2 -i "$W/src.flv" -c copy -f flv rtmp://127.0.0.1:$RTMP/live/$(key q) 2>/dev/null || rc=$?
+  el=$(( $(date +%s) - t0 ))
+  [ "$rc" != 0 ] && [ "$el" -lt 20 ] && grep -q "stream $(sid q): publisher disconnected: ingress bitrate exceeded" "$W/node.log" \
+    && pass "Q publisher over max_ingress_bps disconnected after ${el}s" || fail "Q not disconnected (rc=$rc ${el}s)"
+  timeout -k 2 10 "$FFMPEG" -v error -re -i "$W/src.flv" -t 2 -c copy -f flv rtmp://127.0.0.1:$RTMP/live/$(key q) 2>/dev/null && fail "Q reconnect accepted during the cooldown" \
+    || { grep -q "rtmp publish rejected .*ingress bitrate limit exceeded" "$W/node.log" && pass "Q reconnect refused during the cooldown (NetStream.Publish.Rejected)" || fail "Q no cooldown rejection logged"; }
+  # 上限を外せば受ける
+  sleep 10
+  api PATCH /streams/$(sid q) -H "If-Match: $(etag /streams/$(sid q))" -d '{"limits":{}}' >/dev/null
+  timeout -k 2 20 "$FFMPEG" -v error -re -i "$W/src.flv" -t 3 -c copy -f flv rtmp://127.0.0.1:$RTMP/live/$(key q) 2>/dev/null && pass "Q publish accepted once the limit is removed" || fail "Q publish after removing the limit"
+fi
+if [[ $ONLY == *R* ]]; then
+  # R. 録画中の gaps: 猶予内の再接続の欠落が、録画中の GET /recordings/{id} にすぐ出る（再起動を待たない）
+  new_stream r false
+  "$FFMPEG" -v error -re -i "$W/src.flv" -t 2 -c copy -f flv rtmp://127.0.0.1:$RTMP/live/$(key r) & PUB=$!
+  sleep 1
+  R=$(api POST /streams/$(sid r)/recordings -d '{}' | json "['id']")
+  wait $PUB || true
+  "$FFMPEG" -v error -re -i "$W/src.flv" -t 2 -c copy -f flv rtmp://127.0.0.1:$RTMP/live/$(key r) || true
+  g=$(api GET /recordings/$R); st=$(echo "$g" | json "['state']"); n=$(echo "$g" | json "['gaps'].__len__()"); why=$(echo "$g" | json "['gaps'][0]['reason']" 2>/dev/null || true)
+  [ "$st" = recording ] && [ "$n" = 1 ] && [ "$why" = publisher_reconnect ] && pass "R gap visible while recording (publisher_reconnect)" || fail "R state=$st gaps=$n ($why)"
+  api POST /recordings/$R/stop >/dev/null
+fi
+if [[ $ONLY == *S* ]]; then
+  # S. 予約: (a) 終わった live の予約は時間帯の外の配信を止めない (b) 実行中の予約の取り消しで録画が止まる
+  #    (c) 録画の予約は、窓の中で送り手が戻れば同じ録画に欠落を挟んで続ける
+  new_stream sa false
+  SA=$(api POST /schedules -d "{\"stream\":\"$(sid sa)\",\"action\":\"live\",\"start_at\":\"$(at 3)\",\"end_at\":\"$(at 5)\",\"grace_ms\":5000}" | json "['id']")
+  timeout -k 2 10 "$FFMPEG" -v error -re -i "$W/src.flv" -t 1 -c copy -f flv rtmp://127.0.0.1:$RTMP/live/$(key sa) 2>/dev/null && fail "S live schedule pending: publish accepted outside the window" || pass "S live schedule pending: publish refused outside the window"
+  wait_sched "$SA" completed 60 && pass "S live schedule completed" || fail "S live schedule state $(sched_state "$SA")"
+  timeout -k 2 15 "$FFMPEG" -v error -re -i "$W/src.flv" -t 2 -c copy -f flv rtmp://127.0.0.1:$RTMP/live/$(key sa) 2>/dev/null && pass "S finished live schedule no longer blocks publishing" || fail "S publish after a completed live schedule"
+  # (b)
+  new_stream sb false
+  SB=$(api POST /schedules -d "{\"stream\":\"$(sid sb)\",\"action\":\"record\",\"start_at\":\"$(at 1)\",\"end_at\":\"$(at 120)\"}" | json "['id']")
+  wait_sched "$SB" running 50 || fail "S record schedule not running"
+  sleep 0.5
+  RB=$(api GET /schedules/$SB | json "['last_run']['recording']")
+  api PATCH /schedules/$SB -H "If-Match: $(etag /schedules/$SB)" -d '{"state":"canceled"}' >/dev/null
+  wait_state "$RB" finalized && pass "S canceling a running schedule stops its recording" || fail "S recording after cancel: $(api GET /recordings/$RB | json "['state']")"
+  ok=0; for _ in $(seq 20); do [ "$(api GET /schedules/$SB | json "['last_run']['state']")" = canceled ] && { ok=1; break; }; sleep 0.25; done
+  [ $ok = 1 ] && [ "$(sched_state "$SB")" = canceled ] && pass "S canceled schedule and its run stay canceled" || fail "S run state $(api GET /schedules/$SB | json "['last_run']")"
+  # (c)
+  new_stream sc false
+  SC=$(api POST /schedules -d "{\"stream\":\"$(sid sc)\",\"action\":\"record\",\"start_at\":\"$(at 1)\",\"end_at\":\"$(at 20)\"}" | json "['id']")
+  wait_sched "$SC" running 50 || fail "S (c) schedule not running"
+  "$FFMPEG" -v error -re -i "$W/src.flv" -t 3 -c copy -f flv rtmp://127.0.0.1:$RTMP/live/$(key sc) || true
+  sleep $(( ${GRACE:-3000} / 1000 + 2 ))
+  RC=$(api GET /schedules/$SC | json "['last_run']['recording']")
+  [ "$(api GET /recordings/$RC | json "['state']")" = recording ] && pass "S scheduled recording keeps running after the input ended mid-window" || fail "S scheduled recording state $(api GET /recordings/$RC | json "['state']")"
+  "$FFMPEG" -v error -re -i "$W/src.flv" -t 3 -c copy -f flv rtmp://127.0.0.1:$RTMP/live/$(key sc) || true
+  wait_sched "$SC" completed 100 || fail "S (c) schedule not completed"
+  wait_state "$RC" finalized || fail "S (c) recording not finalized"
+  n=$(api GET "/recordings?stream=$(sid sc)" | json "['items'].__len__()"); g=$(api GET /recordings/$RC | json "['gaps'].__len__()")
+  V=$(api POST /recordings/$RC/playback-url | json "['playback']['hls']"); d=$(curl -s "$V" | grep -c EXT-X-DISCONTINUITY || true)
+  [ "$n" = 1 ] && [ "$g" -ge 1 ] && [ "$d" = 1 ] && pass "S reconnect within the window continues the same recording (gap + DISCONTINUITY)" || fail "S recordings=$n gaps=$g discontinuities=$d"
+  frames "$V" v > "$W/sc.v"; c=$(wc -l < "$W/sc.v")
+  [ "$c" -ge 150 ] && pass "S both parts of the scheduled recording decode ($c frames)" || fail "S scheduled recording frames $c"
+fi
+if [[ $ONLY == *T* ]]; then
+  # T. latency_profile: interactive は LL-HLS の part を 200 ms にする（low は 500 ms）
+  api POST /streams -d '{"name":"t","latency_profile":"interactive","hls":{"container":"fmp4","segment_ms":2000}}' > "$W/t.json"
+  "$FFMPEG" -v error -re -i "$W/src.flv" -t 5 -c copy -f flv rtmp://127.0.0.1:$RTMP/live/$(key t) & PUB=$!
+  sleep 4
+  URL=$(api POST /streams/$(sid t)/playback-url | json "['playback']['hls']")
+  curl -s "$URL" > "$W/t.m3u8"
+  grep -q 'PART-TARGET=0.200' "$W/t.m3u8" && grep -q 'PART-HOLD-BACK=0.600' "$W/t.m3u8" && grep -q 'EXT-X-PART:' "$W/t.m3u8" \
+    && pass "T interactive: LL-HLS parts of 200 ms (PART-HOLD-BACK 0.6 s)" || fail "T playlist: $(grep -E 'PART-INF|SERVER-CONTROL' "$W/t.m3u8")"
+  wait $PUB || true
+fi
+if [[ $ONLY == *U* ]]; then
+  # U. 計画は hub が実際にすることだけを言う: royalty_free の stream に H.264・AAC → 変換と言わず、破棄と理由
+  api POST /streams -d '{"name":"u","codec_profile":"royalty_free","hls":{"container":"fmp4"}}' > "$W/u.json"
+  "$FFMPEG" -v error -re -i "$W/src.flv" -t 4 -c copy -f flv rtmp://127.0.0.1:$RTMP/live/$(key u) & PUB=$!
+  sleep 2
+  api POST /streams/$(sid u)/plan > "$W/u.plan"
+  wait $PUB || true
+  python3 - "$W/u.plan" <<'PY' && pass "U royalty_free + H.264: plan reports dropped tracks, no transcode" || fail "U plan: $(head -c 400 "$W/u.plan")"
+import json,sys
+p=json.load(open(sys.argv[1])); o=p["outputs"]
+ok = p["state"]=="ready" and o and all(x["mode"]!="transcode" for x in o)
+v=[x for x in o if x["output"]=="hls" and x["track"]=="video"]
+ok = ok and v and v[0]["mode"]=="unsupported" and "破棄" in v[0]["reason"]
+sys.exit(0 if ok else 1)
+PY
+fi
+if [[ $ONLY == *V* ]]; then
+  # V. rtsps:// の RTSP pull は TLS でつなぐ（mediamtx の RTSPS、自己署名の証明書を公開鍵で固定）
+  if docker image inspect bluenviron/mediamtx >/dev/null 2>&1; then
+    mkdir -p "$W/mtx"
+    openssl req -x509 -newkey ec -pkeyopt ec_paramgen_curve:P-256 -nodes -keyout "$W/mtx/server.key" -out "$W/mtx/server.crt" -days 2 \
+      -subj "/CN=cam.local" -addext "subjectAltName=DNS:cam.local,IP:127.0.0.1" 2>/dev/null
+    chmod 644 "$W/mtx/server.key"
+    PIN=$(openssl x509 -in "$W/mtx/server.crt" -pubkey -noout | openssl pkey -pubin -outform der | openssl dgst -sha256 -binary | base64)
+    RP=$(port); RS=$(port)
+    CID=$(docker run -d --rm --network host -v "$W/mtx:/certs" -e MTX_RTSPADDRESS=127.0.0.1:$RP -e MTX_RTSPENCRYPTION=strict -e MTX_RTSPSADDRESS=127.0.0.1:$RS \
+      -e MTX_RTSPSERVERKEY=/certs/server.key -e MTX_RTSPSERVERCERT=/certs/server.crt -e MTX_RTMP=no -e MTX_HLS=no -e MTX_WEBRTC=no -e MTX_SRT=no -e MTX_MOQ=no bluenviron/mediamtx)
+    sleep 1
+    "$FFMPEG" -v error -re -stream_loop 1 -i "$W/src.flv" -c copy -f rtsp -rtsp_transport tcp "rtsps://127.0.0.1:$RS/cam" & SRC=$!
+    sleep 1
+    new_stream v false
+    c=$(api POST /streams/$(sid v)/inputs -d "{\"protocol\":\"rtsp_pull\",\"url\":\"rtsps://127.0.0.1:$RS/cam\",\"options\":{\"tls_spki_sha256\":\"short\"}}" -o /dev/null -w '%{http_code}')
+    [ "$c" = 400 ] && pass "V malformed tls_spki_sha256 rejected (400)" || fail "V bad pin accepted ($c)"
+    # 固定が違う → TLS で失敗（平文に落ちない）
+    new_stream vw false
+    IW=$(api POST /streams/$(sid vw)/inputs -d "{\"protocol\":\"rtsp_pull\",\"url\":\"rtsps://127.0.0.1:$RS/cam\",\"options\":{\"tls_spki_sha256\":\"$(printf '%064d' 0)\"}}" | json "['id']")
+    I=$(api POST /streams/$(sid v)/inputs -d "{\"protocol\":\"rtsp_pull\",\"url\":\"rtsps://127.0.0.1:$RS/cam\",\"options\":{\"tls_spki_sha256\":\"$PIN\"}}" | json "['id']")
+    sleep 10
+    URL=$(api POST /streams/$(sid v)/playback-url | json "['playback']['hls']")
+    s=$(api GET /inputs/$I | json "['status']['state']")
+    werr=$(api GET /inputs/$IW | json "['status']['last_error']" 2>/dev/null || true)
+    api DELETE /inputs/$I >/dev/null; api DELETE /inputs/$IW >/dev/null
+    kill $SRC 2>/dev/null; wait $SRC 2>/dev/null || true; docker stop "$CID" >/dev/null 2>&1 || true
+    sleep $(( ${GRACE:-3000} / 1000 + 2 ))
+    frames "$URL" v > "$W/v.v"
+    [ "$s" = active ] && python3 - "$W/src.v" "$W/v.v" <<'PY' && pass "V RTSPS pull (mediamtx, TLS, pinned key) frames from source ($(wc -l < "$W/v.v"))" || fail "V RTSPS pull state=$s frames=$(wc -l < "$W/v.v")"
+import sys
+s=set(open(sys.argv[1]).read().split()); p=open(sys.argv[2]).read().split()
+sys.exit(0 if len(p)>=100 and sum(x in s for x in p) >= 0.98*len(p) else 1)
+PY
+    echo "$werr" | grep -qi 'tls' && pass "V wrong pin fails in TLS ($werr)" || fail "V wrong pin: $werr"
+  else
+    echo "SKIP V (no mediamtx image)"
+  fi
+fi
+if [[ $ONLY == *W* ]]; then
+  # W. MP4 の書き出しの切り出し（start・end）: 範囲の分だけ、キーフレームから
+  new_stream w true; publish "$(key w)"
+  R=$(latest_rec "$(sid w)"); wait_state "$R" finalized || fail "W not finalized"
+  S0=$(api GET /recordings/$R | json "['started_at']")
+  read -r FROM TO < <(python3 -c "import datetime,sys;t=datetime.datetime.fromisoformat(sys.argv[1].replace('Z','+00:00'));f=lambda s:(t+datetime.timedelta(seconds=s)).strftime('%Y-%m-%dT%H:%M:%S.%f')[:-3]+'Z';print(f(4.2),f(8.2))" "$S0")
+  c=$(curl -s "${H[@]}" -o "$W/w.mp4" -w '%{http_code}' "$API/recordings/$R/export.mp4?start=$FROM&end=$TO")
+  d=$("$FFPROBE" -v error -show_entries format=duration -of csv=p=0 "$W/w.mp4" 2>/dev/null || echo 0)
+  frames "$W/w.mp4" v > "$W/w.v"; n=$(wc -l < "$W/w.v")
+  [ "$c" = 200 ] && python3 -c "import sys;sys.exit(0 if 3.5<=float(sys.argv[1])<=5.6 else 1)" "$d" && contiguous "$W/src.v" "$W/w.v" 100 \
+    && pass "W export trimmed to start/end (${d}s, $n frames, contiguous source run)" || fail "W trimmed export $c ${d}s $n frames"
+  c=$(curl -s "${H[@]}" -o /dev/null -w '%{http_code}' "$API/recordings/$R/export.mp4?start=$TO&end=$FROM"); [ "$c" = 400 ] && pass "W end before start is 400" || fail "W reversed range $c"
+fi
+if [[ $ONLY == *X* ]]; then
+  # X. snapshot_on_change: 静止画はパイプラインごとの場所（GET /pipelines/{id}/snapshots）に、部品の keep 枚まで
+  if [ ! -e "$CODEC_LIB_DIR/libvpx.so.12" ]; then echo "SKIP X (no libvpx)"; else
+  # 白板に 3 回、黒い枠（線）が増える（その間は止まっている。大きな塗りつぶしは人などの隠れと見なされる）
+  "$FFMPEG" -v error -f lavfi -i "color=white:s=640x360:r=30,drawbox=x=40:y=40:w=100:h=60:color=black:t=6:enable='gte(t,2)',drawbox=x=260:y=140:w=100:h=60:color=black:t=6:enable='gte(t,5)',drawbox=x=460:y=240:w=100:h=60:color=black:t=6:enable='gte(t,8)'" \
+    -t 11 -c:v libvpx-vp9 -deadline realtime -cpu-used 8 -g 30 -b:v 500k "$W/x.mp4"
+  api POST /streams -d '{"name":"xsrc","codec_profile":"royalty_free","hls":{"container":"fmp4"}}' > "$W/xsrc.json"
+  python3 -c "import json,sys;print(json.dumps({'name':'xsnap','desired_state':'running','graph':{'version':1,'nodes':[
+ {'type':'source','id':'cam','stream':sys.argv[1],'video':{'codec':'vp9'}},{'type':'decode','id':'dec','input':'cam.video'},
+ {'type':'snapshot_on_change','id':'snap','input':'dec','params':{'analysis_fps':0,'stable_frames':3,'keep':2}}]}}))" "$(sid xsrc)" > "$W/xp.json"
+  c=$(api POST /pipelines --data-binary @"$W/xp.json" -o "$W/xpipe.json" -w '%{http_code}')
+  XP=$(json "['id']" < "$W/xpipe.json" 2>/dev/null || true)
+  [ "$c" = 201 ] || fail "X create $c: $(head -c 300 "$W/xpipe.json")"
+  for _ in $(seq 50); do [ "$(api GET /pipelines/$XP | json "['observed_state']")" = running ] && break; sleep 0.2; done
+  "$FFMPEG" -v error -re -i "$W/x.mp4" -c copy -f flv rtmp://127.0.0.1:$RTMP/live/$(key xsrc) || true
+  sleep 2
+  api GET /pipelines/$XP/snapshots > "$W/xs.json"
+  python3 - "$W/xs.json" <<'PY' && pass "X board-change snapshots kept per pipeline (keep=2)" || fail "X snapshots: $(head -c 400 "$W/xs.json"); pipeline: $(api GET /pipelines/$XP | head -c 1500)"
+import json,sys
+i=json.load(open(sys.argv[1]))["items"]
+sys.exit(0 if len(i)==2 and all(x["reason"]=="board_change" and x["node"]=="snap" for x in i) else 1)
+PY
+  SID0=$(python3 -c "import json,sys;print(json.load(open(sys.argv[1]))['items'][0]['id'])" "$W/xs.json" 2>/dev/null || echo none)
+  c=$(curl -s "${H[@]}" -o "$W/xs.jpg" -w '%{http_code}' "$API/pipelines/$XP/snapshots/$SID0")
+  [ "$c" = 200 ] && "$FFPROBE" -v error -show_entries stream=width -of csv=p=0 "$W/xs.jpg" | grep -q 640 && pass "X snapshot JPEG served from the pipeline" || fail "X snapshot get $c"
+  [ "$(api GET /streams/$(sid xsrc)/snapshots | json "['items'].__len__()")" = 0 ] && pass "X nothing stored under a stream" || fail "X snapshots leaked into a stream"
+  api DELETE /pipelines/$XP >/dev/null
+  [ ! -e "$W/data/pipeline-snapshots/$XP" ] && pass "X pipeline delete removes its snapshots" || fail "X snapshots dir left"
   fi
 fi
 summary

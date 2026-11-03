@@ -5,9 +5,8 @@
 Send a live stream's audio to a speech recognition service, turn the result into captions, optionally translate them, and publish
 per-language WebVTT subtitles in HLS.
 
-- Rationale: [ADR-0011 captions and translation](../../adr/0011-captions.md), [ADR-0004 codecs and patents](../../adr/0004-codecs-patents.md) (audio is not decoded)
+- Rationale: [ADR-0011 captions and translation](../../dev/adr/0011-captions.md), [ADR-0004 codecs and patents](../../dev/adr/0004-codecs-patents.md) (audio is not decoded)
 - Related pages: [4. Ingest and playback](04-ingest-playback.md), [6. Inputs and outputs](06-inputs-outputs.md) (secrets, egress restrictions), [11. Media pipelines](11-media-pipelines.md) (captions for room participants), [12. Security](12-security.md)
-- Implementation: `crates/senca-node/src/captions.rs`, `crates/senca-caption` (`chunk.rs`, `asr.rs`, `merge.rs`, `translate.rs`, `hls.rs`, `vtt.rs`)
 
 `API`, `TOKEN` and `H` in the examples are the same as in [4. Ingest and playback](04-ingest-playback.md).
 
@@ -28,7 +27,9 @@ audio AUs ─▶ repackaged into 5 s windows (1 s overlap) ─▶ speech recogni
 - The captioning task starts when a sender connects and stops when the broadcast ends (the reconnect grace expires). Changes to
   `captions` during a broadcast take effect from the next broadcast.
 - In a cluster it runs on the node that received the sender (the owner). Relay mirrors do not produce captions. The caption files live
-  only in the owner node's memory, so on a non-owner node serving from a mirror, the caption files (`master.m3u8`, …) return 404.
+  in the owner node's memory; on a non-owner node serving from a mirror, that node fetches the caption files (`master.m3u8`,
+  `sub_{lang}.m3u8`, `sub_{lang}_{n}.vtt`) from the owner node and returns them (playlists are reused for 1 second, caption segments
+  for 30 seconds). Captions work with a playback URL on any node.
 
 ## 8.2 Settings (the stream's `captions`)
 
@@ -148,7 +149,7 @@ SENCA uses a **captions-may-lag** model; video is never delayed.
   usually takes a few seconds, so captions trail speech by several seconds up to a dozen or so.
 - If, when a caption arrives, the video segment for its time has already closed, the caption's start is moved to the time of the open
   segment (keeping its length or 0.5 seconds, whichever is longer), so players show it with the current segment.
-- A mode that delays video to align with captions exists only as an estimator (`latency` in `senca-caption`) and is not used by the node.
+- Delaying video to keep it in sync with captions is not supported yet.
 
 ## 8.7 Troubleshooting
 

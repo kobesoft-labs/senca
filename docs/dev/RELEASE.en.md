@@ -14,7 +14,7 @@ steps are kept as release evidence (spec 15.3).
 | # | Item | Tool / procedure | Pass condition |
 |---|---|---|---|
 | G1 | Unit and integration tests | `cargo test --workspace`, `cargo clippy --workspace --all-targets -- -D warnings` | Everything passes |
-| G2 | Interoperability | `tools/interop/*.sh` (each row of the conformance ledger `docs/conformance/ledger.md`) | No row of the ledger has regressed since the previous release |
+| G2 | Interoperability | `tools/interop/*.sh` (each row of the conformance ledger `docs/dev/conformance/ledger.md`) | No row of the ledger has regressed since the previous release |
 | G3 | Fuzzing (AC-01, 15.3) | `tools/fuzz/all.sh 86400` (24 hours or more per target) | No crash, timeout or OOM on any target. Record the corpus, edges reached, unreached areas, findings and fixes |
 | G4 | Sanitizers (FFI) | G3 with `FUZZ_SANITIZER=address` (the default). For codec workers that include FFI, see "Sanitizers" below | No AddressSanitizer reports |
 | G5 | Load (AC-12, R10-6) | `tools/loadgen/load.sh` (in the reference environment of spec 13.1, with senders and viewers on separate machines) | The capacity conditions of chapter 13. Report losses and delays |
@@ -24,7 +24,7 @@ steps are kept as release evidence (spec 15.3).
 | G9 | Reproducible build and signing | `REPRO_CHECK=1 SIGNING_KEY=… tools/release/build.sh` | Two builds are byte-identical, and the signature on SHA256SUMS verifies |
 | G10 | Vulnerability monitoring | RustSec (`cargo audit` and so on) against the SBOM | Handling of known vulnerabilities is recorded |
 
-The per-feature status in `docs/conformance/ledger.md` (experimental / preview / production, spec 15.4) is decided by the results of
+The per-feature status in `docs/dev/conformance/ledger.md` (experimental / preview / production, spec 15.4) is decided by the results of
 this gate. Performance figures that have not been met are not published as guarantees.
 
 ## Fuzzing (G3, G4)
@@ -150,5 +150,5 @@ PUBLISHERS=4 VIEWERS=100 CHURN=30 PUB_CHURN=45 tools/soak/soak.sh 259200   # 72 
 - `tools/soak/soak.sh`: starts a node and writes RSS, CPU, fds, sockets and threads before load (idle-before), under load (load) and after
   load (idle-after) to `samples.csv` every `INTERVAL` seconds. The verdict comes from `loadgen.py analyze` (RSS growth after warm-up, the
   regression slope, the fd and socket difference before and after load). RSS grows until the live windows and the recording queues fill up,
-  so make the warm-up longer than that (in a 3-minute test on a development machine it flattened after about 2 minutes: `docs/conformance/performance.md`).
+  so make the warm-up longer than that (in a 3-minute test on a development machine it flattened after about 2 minutes: `docs/dev/conformance/performance.md`).
 - AC-12 is judged in the reference environment of spec 13.1. Numbers from a development machine are only for checking that the tools work and for seeing trends.

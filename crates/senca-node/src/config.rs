@@ -17,6 +17,8 @@ pub struct Config {
     pub srt_listen: Option<SocketAddr>,
     pub rtsp_listen: Option<SocketAddr>,
     pub webrtc_udp: Option<SocketAddr>,
+    /// QUIC v1 の UDP の待ち受け（HTTP/3・WebTransport・MoQ draft-22）。既定は無効。TLS の証明書が要る。
+    pub quic_listen: Option<SocketAddr>,
     pub tls_cert: Option<PathBuf>,
     pub tls_key: Option<PathBuf>,
     pub public: PublicUrls,
@@ -48,8 +50,26 @@ pub struct Config {
     /// 仕事に貸す CPU（ミリコア）・メモリ（MB）の上書き。無ければ実機の 90%・85%。
     pub capacity_cpu_millis: Option<u64>,
     pub capacity_memory_mb: Option<u64>,
+    /// 部屋のカスケードをノードの既定にする（部屋の設定 `cascade` が偽でも、別のノードの部屋の参加者をこのノードで受ける）。
+    pub rooms_cascade: bool,
+    /// 部屋の認証 Webhook（部屋の設定 `auth_webhook_url` が優先）。
+    pub rooms_auth_webhook: Option<String>,
+    /// 認証 Webhook の使い方（`after_token` = トークンを検証した後に問い合わせる、`only` = トークンの代わり）。
+    pub rooms_auth_mode: RoomsAuthMode,
+    /// 部屋の出来事を送る Webhook（少なくとも 1 回、署名つき）。
+    pub rooms_event_webhook: Option<String>,
+    /// Webhook の署名（HMAC-SHA256）の秘密のファイル（16 byte 以上）。
+    pub rooms_webhook_secret_file: Option<PathBuf>,
     /// 録画の保存先（既定は手元のデータ置き場だけ）。
     pub recording_storage: RecordingStorageConfig,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Deserialize, Default)]
+#[serde(rename_all = "snake_case")]
+pub enum RoomsAuthMode {
+    #[default]
+    AfterToken,
+    Only,
 }
 
 /// 録画の保存先（ADR-0005）。録画はまず手元に書き、確定したら S3 互換の保存先へ上げる。
@@ -180,6 +200,7 @@ impl Default for Config {
             srt_listen: None,
             rtsp_listen: None,
             webrtc_udp: None,
+            quic_listen: None,
             tls_cert: None,
             tls_key: None,
             public: PublicUrls::default(),
@@ -207,12 +228,34 @@ impl Default for Config {
             capacity_cpu_millis: None,
             capacity_memory_mb: None,
             recording_storage: RecordingStorageConfig::default(),
+            rooms_cascade: false,
+            rooms_auth_webhook: None,
+            rooms_auth_mode: RoomsAuthMode::AfterToken,
+            rooms_event_webhook: None,
+            rooms_webhook_secret_file: None,
         }
     }
 }
 
+/// ノードのラベルの数の上限。
+pub const MAX_LABELS: usize = 64;
+
+/// ラベルの形: キーは 1〜128 文字、値は 0〜128 文字、どちらも制御文字を含まない。`senca.io/` で始まるキーは予約。
+pub fn check_label(k: &str, v: &str) -> Result<(), &'static str> {
+    if k.is_empty() || k.len() > 128 || v.len() > 128 {
+        return Err("の長さが違います（キーは 1〜128 文字、値は 128 文字まで）");
+    }
+    if k.chars().chain(v.chars()).any(char::is_control) {
+        return Err("に制御文字は使えません");
+    }
+    if k.starts_with("senca.io/") || k == "raft_id" {
+        return Err("のキーは予約です（senca.io/ で始まるもの・raft_id）");
+    }
+    Ok(())
+}
+
 pub const USAGE: &str = "senca-node [--config FILE] [--data-dir DIR] [--http ADDR] [--rtmp ADDR|off] [--rtmps ADDR] [--https ADDR]
-  [--srt ADDR] [--rtsp ADDR] [--webrtc-udp ADDR] [--tls-cert FILE --tls-key FILE]
+  [--srt ADDR] [--rtsp ADDR] [--webrtc-udp ADDR] [--quic ADDR] [--tls-cert FILE --tls-key FILE]
   [--public-rtmp-url URL] [--public-http-url URL] [--public-srt-url URL] [--public-rtsp-url URL] [--capture-synthetic]
   [--max-playback-ttl SECS] [--reconnect-grace MS] [--record-queue N] [--retention-sweep SECS]
   [--jwks FILE --jwt-issuer ISS --jwt-audience AUD [--jwt-tenant-claim NAME]]
@@ -220,10 +263,22 @@ pub const USAGE: &str = "senca-node [--config FILE] [--data-dir DIR] [--http ADD
   [--console-dir DIR] [--sender-dir DIR] [--verify-recordings] [--log-json] [--node-name NAME] [--egress-allow CIDR]...
   [--cluster-config FILE] [--net-mbps N] [--label KEY=VALUE]...
   [--capacity-cpu-millis N] [--capacity-memory-mb N]
+  [--rooms-cascade] [--rooms-auth-webhook URL] [--rooms-auth-mode after_token|only] [--rooms-event-webhook URL]
   [--recording-storage local|s3://BUCKET[/PREFIX] [--s3-endpoint URL] [--s3-region REGION] [--s3-addressing path|virtual]
    [--s3-credentials FILE] [--s3-part-size BYTES] [--recording-keep-local SECS]]";
 
 impl Config {
+    /// Webhook の署名の秘密（ファイルの中身、前後の空白を除く）。
+    pub fn webhook_secret(&self) -> Result<Option<Vec<u8>>, String> {
+        let Some(p) = &self.rooms_webhook_secret_file else { return Ok(None) };
+        let s = std::fs::read_to_string(p).map_err(|e| format!("--rooms-webhook-secret-file {}: {e}", p.display()))?;
+        let s = s.trim();
+        if s.len() < 16 {
+            return Err("--rooms-webhook-secret-file: 秘密は 16 byte 以上にしてください".into());
+        }
+        Ok(Some(s.as_bytes().to_vec()))
+    }
+
     pub fn from_args(args: &[String]) -> Result<Config, String> {
         let mut cfg = Config::default();
         // まず --config
@@ -262,6 +317,7 @@ impl Config {
                 _ if flag("--srt") => cfg.srt_listen = opt_addr(val()?)?,
                 _ if flag("--rtsp") => cfg.rtsp_listen = opt_addr(val()?)?,
                 _ if flag("--webrtc-udp") => cfg.webrtc_udp = opt_addr(val()?)?,
+                _ if flag("--quic") => cfg.quic_listen = opt_addr(val()?)?,
                 _ if flag("--tls-cert") => cfg.tls_cert = Some(PathBuf::from(val()?)),
                 _ if flag("--tls-key") => cfg.tls_key = Some(PathBuf::from(val()?)),
                 _ if flag("--public-rtmp-url") => cfg.public.rtmp = val()?,
@@ -296,12 +352,21 @@ impl Config {
                 _ if flag("--s3-credentials") => cfg.recording_storage.credentials_file = Some(PathBuf::from(val()?)),
                 _ if flag("--s3-part-size") => cfg.recording_storage.part_size = num(val()?)?,
                 _ if flag("--recording-keep-local") => cfg.recording_storage.keep_local_secs = num(val()?)?,
+                _ if flag("--rooms-cascade") => cfg.rooms_cascade = true,
+                _ if flag("--rooms-auth-webhook") => cfg.rooms_auth_webhook = Some(val()?),
+                _ if flag("--rooms-auth-mode") => {
+                    cfg.rooms_auth_mode = match val()?.as_str() {
+                        "after_token" | "after-token" => RoomsAuthMode::AfterToken,
+                        "only" => RoomsAuthMode::Only,
+                        v => return Err(format!("--rooms-auth-mode は after_token か only: {v}")),
+                    }
+                }
+                _ if flag("--rooms-event-webhook") => cfg.rooms_event_webhook = Some(val()?),
+                _ if flag("--rooms-webhook-secret-file") => cfg.rooms_webhook_secret_file = Some(PathBuf::from(val()?)),
                 _ if flag("--label") => {
                     let v = val()?;
                     let (k, x) = v.split_once('=').ok_or_else(|| format!("--label は key=value: {v}"))?;
-                    if k.is_empty() || k.len() > 128 || x.len() > 128 || k.starts_with("senca.io/") {
-                        return Err(format!("--label の形が違います（senca.io/ で始まるキーは予約）: {v}"));
-                    }
+                    check_label(k, x).map_err(|e| format!("--label {e}: {v}"))?;
                     cfg.labels.insert(k.to_string(), x.to_string());
                 }
                 _ if flag("--cluster-config") => {
@@ -318,11 +383,21 @@ impl Config {
     }
 
     fn validate(&self) -> Result<(), String> {
+        // 設定ファイルの labels も --label と同じ規則で確かめる
+        for (k, v) in &self.labels {
+            check_label(k, v).map_err(|e| format!("labels {e}: {k}={v}"))?;
+        }
+        if self.labels.len() > MAX_LABELS {
+            return Err(format!("labels は {MAX_LABELS} 個まで"));
+        }
         if self.jwks.is_some() && (self.jwt_issuer.is_none() || self.jwt_audience.is_none()) {
             return Err("--jwks needs --jwt-issuer and --jwt-audience".into());
         }
         if (self.rtmps_listen.is_some() || self.https_listen.is_some()) && (self.tls_cert.is_none() || self.tls_key.is_none()) {
             return Err("--rtmps/--https need --tls-cert and --tls-key".into());
+        }
+        if self.quic_listen.is_some() && (self.tls_cert.is_none() || self.tls_key.is_none()) {
+            return Err("--quic needs --tls-cert and --tls-key".into());
         }
         if !(16..=1 << 20).contains(&self.record_queue) {
             return Err("--record-queue must be 16..=1048576".into());
@@ -334,6 +409,11 @@ impl Config {
             if !(1..=7).contains(&c.peers.len()) {
                 return Err("cluster: 投票するノードは 1〜7 台".into());
             }
+            let mut ids = std::collections::HashSet::new();
+            if !c.peers.iter().all(|p| p.id != 0 && ids.insert(p.id)) {
+                return Err("cluster: peers の id は 1 以上で重ならないように".into());
+            }
+            crate::relay::check_addrs(c)?;
         }
         for c in &self.egress_allow {
             crate::egress::Cidr::parse(c).ok_or_else(|| format!("--egress-allow: bad CIDR {c}"))?;
@@ -342,9 +422,52 @@ impl Config {
         if !(senca_s3::responses::MIN_PART..=senca_s3::responses::MAX_PART).contains(&self.recording_storage.part_size) {
             return Err("--s3-part-size は 5 MiB〜5 GiB".into());
         }
+        for (name, u) in [("--rooms-auth-webhook", &self.rooms_auth_webhook), ("--rooms-event-webhook", &self.rooms_event_webhook)] {
+            if let Some(u) = u {
+                if !senca_rooms::model::valid_webhook_url(u) {
+                    return Err(format!("{name}: http:// か https:// の URL を渡してください: {u}"));
+                }
+                if self.rooms_webhook_secret_file.is_none() {
+                    return Err(format!("{name} には --rooms-webhook-secret-file（署名の秘密）が要ります"));
+                }
+            }
+        }
+        if self.rooms_webhook_secret_file.is_some() {
+            self.webhook_secret()?;
+        }
         if self.max_playback_ttl_secs == 0 {
             return Err("--max-playback-ttl must be > 0".into());
         }
         Ok(())
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn args(a: &[&str]) -> Vec<String> {
+        a.iter().map(|s| s.to_string()).collect()
+    }
+
+    #[test]
+    fn labels_from_the_file_are_validated_like_the_flag() {
+        let d = std::env::temp_dir().join(format!("senca-cfg-{}", std::process::id()));
+        std::fs::create_dir_all(&d).unwrap();
+        let f = d.join("c.json");
+        let file = f.to_str().unwrap();
+        std::fs::write(&f, r#"{"labels": {"senca.io/name": "x"}}"#).unwrap();
+        let e = Config::from_args(&args(&["--config", file])).unwrap_err();
+        assert!(e.contains("予約"), "{e}");
+        std::fs::write(&f, format!(r#"{{"labels": {{"{}": "x"}}}}"#, "k".repeat(129))).unwrap();
+        assert!(Config::from_args(&args(&["--config", file])).is_err());
+        std::fs::write(&f, "{\"labels\": {\"zone\": \"a\\u0007b\"}}").unwrap();
+        assert!(Config::from_args(&args(&["--config", file])).is_err());
+        std::fs::write(&f, r#"{"labels": {"zone": "a"}}"#).unwrap();
+        let c = Config::from_args(&args(&["--config", file])).unwrap();
+        assert_eq!(c.labels.get("zone").map(String::as_str), Some("a"));
+        assert!(Config::from_args(&args(&["--label", "senca.io/webrtc=true"])).is_err());
+        assert!(Config::from_args(&args(&["--label", "zone=b"])).is_ok());
+        std::fs::remove_dir_all(&d).unwrap();
     }
 }

@@ -3,13 +3,16 @@
 English | [日本語](../ja/README.md)
 
 How to run, use and operate SENCA, a media server for live streaming, recording and real-time communication.
-The current version is v0.0.0 (experimental); do not use it in production ([1. Overview](01-overview.md)).
+This guide covers version v0.0.0.
+
+If you are new to SENCA, start with [1. Overview](01-overview.md) for the overall architecture, then try it out with
+[2. Quickstart](02-quickstart.md).
 
 ## Contents
 
 | # | Page | What it covers |
 |---|---|---|
-| 1 | [Overview](01-overview.md) | What SENCA is; architecture (control plane, hubs, packager, recorder, codec workers, grid, relay, rooms, media pipelines); feature map; status |
+| 1 | [Overview](01-overview.md) | What SENCA is; architecture (control plane, hubs, packager, recorder, codec workers, grid, relay, rooms, media pipelines); feature map; what has been verified |
 | 2 | [Quickstart](02-quickstart.md) | Build from source, run a single node, create a stream, publish over RTMP, play over HLS, Docker |
 | 3 | [Configuration](03-configuration.md) | Every option, the JSON configuration file, cluster configuration, environment variables, data directory |
 | 4 | [Ingest and playback](04-ingest-playback.md) | Ingest over RTMP, SRT and WHIP; playback over HLS, LL-HLS, RTMP play, WHEP and RTSP |
@@ -27,11 +30,11 @@ The current version is v0.0.0 (experimental); do not use it in production ([1. O
 
 ## Related documents
 
-These are written in Japanese.
+Most of these are written in Japanese.
 
 | | |
 |---|---|
-| Design decisions | [docs/adr](../../adr) |
-| API definition | [docs/api/openapi.yaml](../../api/openapi.yaml); room signaling [docs/realtime/signaling.md](../../realtime/signaling.md) |
-| Progress | [docs/ROADMAP.md](../../ROADMAP.md); conformance ledger [docs/conformance/ledger.md](../../conformance/ledger.md) |
-| Development and releases | [docs/DEVELOPMENT.md](../../DEVELOPMENT.md), [docs/RELEASE.md](../../RELEASE.md) |
+| Design decisions | [docs/dev/adr](../../dev/adr) |
+| API definition | [docs/api/openapi.yaml](../../api/openapi.yaml); room signaling [docs/realtime/signaling.en.md](../../realtime/signaling.en.md) |
+| Progress | [docs/dev/ROADMAP.md](../../dev/ROADMAP.md); conformance ledger [docs/dev/conformance/ledger.md](../../dev/conformance/ledger.md) |
+| Development and releases | [docs/dev/DEVELOPMENT.en.md](../../dev/DEVELOPMENT.en.md), [docs/dev/RELEASE.en.md](../../dev/RELEASE.en.md) |

@@ -13,7 +13,7 @@
    （openh264・x264・x265・ffmpeg・fdk-aac・libav* など）。見つかれば FAIL（例外にできない）。
 3. --binary: 実行ファイルの NEEDED と、dlopen しうるライブラリ名の文字列に禁止部品がないこと。
 4. OS の部品のライセンスは Debian の copyright の欄（SPDX とは限らない）を一覧に出すだけ（別の著作物として配布。
-   GPL の部品はソースの入手先を release の記録に残す: docs/RELEASE.md）。
+   GPL の部品はソースの入手先を release の記録に残す: docs/dev/RELEASE.md）。
 
 例外ファイル（1 行 1 件、# はコメント）:
     <crate 名>[@<版>]  <ALLOW|REVIEWED>  <理由（誰がいつ確認したか）>

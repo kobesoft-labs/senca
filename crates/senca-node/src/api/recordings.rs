@@ -209,12 +209,31 @@ pub fn thumbnail(ctx: &Ctx, id: &str) -> ApiResult {
     Ok(ApiResponse::bytes(200, "image/jpeg", b))
 }
 
+/// `?start=&end=`（RFC 3339）で範囲を切り出せる。始まりは直前のキーフレームまで広がる。
 pub fn export_mp4(ctx: &Ctx, id: &str) -> ApiResult {
     ctx.require(Scope::RecordingRead)?;
+    let q = ctx.req.query_pairs();
+    if let Some((k, _)) = q.iter().find(|(k, _)| k != "start" && k != "end") {
+        return Err(Problem::invalid(format!("知らないクエリ: {k}")));
+    }
+    let when = |k: &str| -> Result<Option<i64>, Problem> {
+        match q.iter().find(|(a, _)| a == k) {
+            None => Ok(None),
+            Some((_, v)) => senca_core::rfc3339::parse_millis(v)
+                .map(Some)
+                .ok_or_else(|| Problem::new(ProblemCode::InvalidConfig, format!("{k} は RFC 3339 の時刻で書いてください"))),
+        }
+    };
+    let (start, end) = (when("start")?, when("end")?);
+    if let (Some(s), Some(e)) = (start, end)
+        && e <= s
+    {
+        return Err(Problem::new(ProblemCode::InvalidConfig, "end は start より後にしてください"));
+    }
     let r = visible(ctx, id)?;
     if r.state == RecordingState::Recording {
         return Err(Problem::new(ProblemCode::Conflict, "録画中は書き出せません"));
     }
-    let b = ctx.app.export_mp4(&r.id)?;
+    let b = ctx.app.export_mp4(&r.id, start, end)?;
     Ok(ApiResponse::bytes(200, "video/mp4", b).with_header("Content-Disposition", format!("attachment; filename=\"{}.mp4\"", r.id)))
 }

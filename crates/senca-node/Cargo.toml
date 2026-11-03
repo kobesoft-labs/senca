@@ -38,6 +38,9 @@ senca-grid = { path = "../senca-grid" }
 senca-rooms = { path = "../senca-rooms" }
 senca-ws = { path = "../senca-ws" }
 senca-s3 = { path = "../senca-s3" }
+senca-quic = { path = "../senca-quic" }
+senca-h3 = { path = "../senca-h3" }
+senca-moq = { path = "../senca-moq" }
 bytes.workspace = true
 tokio.workspace = true
 serde.workspace = true
@@ -48,6 +51,7 @@ subtle.workspace = true
 getrandom.workspace = true
 hmac = "0.12"
 aes-gcm = "0.10"
+hkdf = "0.12"
 
 [lints]
 workspace = true

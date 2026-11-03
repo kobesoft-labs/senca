@@ -361,6 +361,15 @@ export class Pipelines extends Collection {
   /** @internal @param {Http} http */
   constructor(http) {
     super(http, '/pipelines');
+    /** `snapshot_on_change`（板書の変化）で保存した静止画。 */
+    this.snapshots = {
+      /** @param {string} id @param {CallOptions} [o] @returns {Promise<import('./openapi.gen.js').SnapshotList['items']>} */
+      list: async (id, o = {}) => (await http.request('GET', `/pipelines/${enc(id)}/snapshots`, { signal: o.signal })).data.items,
+      /** @param {string} id @param {string} sid @param {CallOptions} [o] @returns {Promise<Blob>} */
+      get: async (id, sid, o = {}) => (await http.request('GET', `/pipelines/${enc(id)}/snapshots/${enc(sid)}`, { as: 'blob', signal: o.signal })).data,
+      /** @param {string} id @param {string} sid @param {CallOptions} [o] */
+      delete: async (id, sid, o = {}) => { await http.request('DELETE', `/pipelines/${enc(id)}/snapshots/${enc(sid)}`, { signal: o.signal }); },
+    };
   }
 
   /** グラフを検証する（保存前のグラフも）。 @param {string} id @param {import('./openapi.gen.js').PipelineGraph} graph @param {CallOptions} [o] @returns {Promise<import('./openapi.gen.js').PipelineValidation>} */

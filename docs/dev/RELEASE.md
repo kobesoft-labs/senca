@@ -14,7 +14,7 @@ release evidence として保管する（仕様 15.3）。
 | # | 項目 | 道具・手順 | 合格条件 |
 |---|---|---|---|
 | G1 | 単体・結合試験 | `cargo test --workspace`、`cargo clippy --workspace --all-targets -- -D warnings` | 全部通る |
-| G2 | 相互接続 | `tools/interop/*.sh`（適合台帳 `docs/conformance/ledger.md` の各行） | 台帳の状態が前の release から後退していない |
+| G2 | 相互接続 | `tools/interop/*.sh`（適合台帳 `docs/dev/conformance/ledger.md` の各行） | 台帳の状態が前の release から後退していない |
 | G3 | fuzz（AC-01、15.3） | `tools/fuzz/all.sh 86400`（target ごとに 24 時間以上） | 全 target で crash・timeout・OOM なし。corpus・到達 edge・未到達領域・見つけたものと修正を記録 |
 | G4 | sanitizer（FFI） | `FUZZ_SANITIZER=address`（既定）で G3。FFI を含む codec worker は下の「sanitizer」 | AddressSanitizer の報告なし |
 | G5 | 負荷（AC-12、R10-6） | `tools/loadgen/load.sh`（仕様 13.1 の基準環境で、送り手・視聴者は別の機械） | 第 13 章の容量条件。欠落・遅延を報告 |
@@ -24,7 +24,7 @@ release evidence として保管する（仕様 15.3）。
 | G9 | 再現可能な build と署名 | `REPRO_CHECK=1 SIGNING_KEY=… tools/release/build.sh` | 2 回の build がバイト一致、SHA256SUMS の署名を検証できる |
 | G10 | 脆弱性の監視 | RustSec（`cargo audit` など）を SBOM に対して | 既知の脆弱性の対応を記録 |
 
-`docs/conformance/ledger.md` の機能ごとの状態（experimental / preview / production、仕様 15.4）は、
+`docs/dev/conformance/ledger.md` の機能ごとの状態（experimental / preview / production、仕様 15.4）は、
 この gate の結果で決める。未達の性能値を保証値として公開しない。
 
 ## fuzz（G3・G4）
@@ -149,5 +149,5 @@ PUBLISHERS=4 VIEWERS=100 CHURN=30 PUB_CHURN=45 tools/soak/soak.sh 259200   # 72 
 - `tools/soak/soak.sh`: ノードを起動し、負荷の前（idle-before）・負荷中（load）・負荷の後（idle-after）の RSS・CPU・fd・
   socket・スレッドを `INTERVAL` 秒ごとに `samples.csv` へ。判定は `loadgen.py analyze`（warm-up 後の RSS 増分、
   回帰の傾き、負荷の前後の fd・socket の差）。ライブの窓・録画の待ち行列が埋まるまで RSS は増えるので、
-  warm-up はその時間より長くとる（開発機の 3 分の試験では約 2 分で平らになった: `docs/conformance/performance.md`）。
+  warm-up はその時間より長くとる（開発機の 3 分の試験では約 2 分で平らになった: `docs/dev/conformance/performance.md`）。
 - AC-12 の判定は仕様 13.1 の基準環境で行う。開発機の数字は道具の動作確認と傾向の把握のためのもの。

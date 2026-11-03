@@ -74,9 +74,17 @@ pub async fn serve(app: Arc<App>, mut sock: tokio::net::TcpStream, peer: String)
                 ServerEvent::Describe { id, uri, .. } => {
                     // /live/{id}?exp&sig
                     let tail = uri.split("/live/").nth(1).unwrap_or("").to_string();
-                    let Some(mut x) = app.subscribe_rtmp_play(&tail) else {
-                        let _ = s.reject(id, 404);
-                        continue;
+                    let mut x = match app.subscribe_play(&tail, "rtsp") {
+                        Ok(x) => x,
+                        // 視聴者が上限: 503 Service Unavailable
+                        Err(crate::app::PlayError::TooManyViewers) => {
+                            let _ = s.reject(id, 503);
+                            continue;
+                        }
+                        Err(_) => {
+                            let _ = s.reject(id, 404);
+                            continue;
+                        }
                     };
                     let init = x.initial();
                     let configs: BTreeMap<TrackId, CodecConfig> =

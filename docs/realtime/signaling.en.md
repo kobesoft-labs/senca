@@ -2,9 +2,16 @@
 
 # Realtime rooms: signaling v1
 
-- Related: ADR-0015 (realtime rooms), ADR-0012 (WebRTC), ADR-0013 (grid), ADR-0014 (relay)
-- Implementation: `crates/senca-rooms` (`signaling.rs` holds the types, `service.rs` the state machine), `crates/senca-ws` (WebSocket)
-- Interop tests: `tools/interop/rooms.sh` (three Chrome pages), `crates/senca-rooms/tests/e2e.rs` (senca-webrtc against itself)
+This document specifies the signaling protocol for client implementers who join SENCA realtime rooms.
+For server configuration and the REST API, see [10. Realtime rooms](../guide/en/10-rooms.md).
+
+- Background: [ADR-0015](../dev/adr/0015-realtime-rooms.md) (realtime rooms), [ADR-0012](../dev/adr/0012-webrtc.md) (WebRTC), [ADR-0013](../dev/adr/0013-grid.md) (grid), [ADR-0014](../dev/adr/0014-relay.md) (relay)
+
+Terms:
+
+- **Sender**: a participant that sends tracks. **Receiver**: a participant that receives other participants' tracks.
+- **Receive slot** (slot): one receiving m-line of the client (§3).
+- **Layer**: one of the simulcast encodings at a different resolution or bitrate (identified by its rid).
 
 ## 1. Transport and version
 
@@ -51,7 +58,7 @@ and forwards them by switching the source of the SFU's outgoing track (the recei
 - Assignment is stable: existing assignments are kept, and a new track goes into a free slot of the same kind. A slot whose sender left becomes free (`state: "empty"`)
   and is reused for the next sender (m-lines do not keep growing).
 - If there are not enough slots, the server sends `renegotiate {audio, video}` (the **total** number of slots per kind). The client adds `recvonly` transceivers and makes an offer.
-- The maximum is 32 slots per kind (`ServiceConfig::max_slots_per_kind`).
+- The maximum is 32 slots per kind.
 - Whose media a slot carries is given by `slots[].connection_id`, `client_id` and `track_id` (match them against the `mid` of the transceiver in `ontrack`).
 - `state`: `active` (being forwarded), `paused` (assigned but not forwarded; outside the spotlight with `unfocused: "off"`), `empty`.
 
@@ -106,7 +113,7 @@ or whose permissions have `subscribe: false`. A connection with `multistream: fa
 | `message` | `label`, `from?`, `data` or `data_base64` | Application message delivered over signaling |
 | `ping` | | Every 10 seconds. Without a `pong` within 10 seconds, disconnect with `ping_timeout` |
 | `switched` | | From now on, signaling uses the DataChannel `signaling` (§6) |
-| `redirect` | `location` | Reconnect to another node (followed by `disconnect {reason: "redirected"}` and close) |
+| `redirect` | `location` | Reconnect to another node (followed by `disconnect {reason: "redirected"}` and close; for the exception see §13) |
 | `error` | `code`, `message`, `fatal`, `request?` | §7 |
 | `disconnect` | `reason` | Disconnects (followed by close) |
 
@@ -152,9 +159,9 @@ rejects only that message and the connection continues (`bad_message` or `invali
 | `unsupported_version` | 4422 | `version` is not 1 |
 | `auth_failed` | 4401 | Token missing, invalid or expired; rejected by the auth webhook or it timed out (5 seconds) |
 | `forbidden` | 4403 | Token for another room, role or client_id does not match the token, sending a kind not permitted |
-| `room_not_found` | 4404 | The room does not exist and is not configured to be created automatically |
-| `room_full` | 4503 | Room or node limit (if the node has `overflow_redirect`, a `redirect` instead) |
-| `capacity_unavailable` | 4503 | No node can host the room right now (the grid cannot place it; senca-node) |
+| `room_not_found` | 4404 | The room does not exist (senca-node never creates rooms on join) |
+| `room_full` | 4503 | Room or node limit (a server configured with `overflow_redirect` sends a `redirect` instead; senca-node cannot be configured this way) |
+| `capacity_unavailable` | 4503 | No node can host the room right now (on senca-node, when the grid cannot place it) |
 | `role_violation` | 4403 | A `recvonly` connection offered a sending m-line |
 | `e2ee_mismatch` | 4422 | `connect.e2ee` differs from the room's `e2ee` |
 | `unsupported_codec` | 4422 | Differs from the room's codec |
@@ -185,7 +192,7 @@ Only what satisfies both the room settings' filter and the connection's filter i
 
 ### Join tokens (JWT-compatible)
 
-Signed with a SENCA signing key (Ed25519 = `EdDSA`, P-256 = `ES256`). Can be issued with `POST /rooms/{id}/tokens`.
+Signed with a SENCA signing key (Ed25519 = `EdDSA`, P-256 = `ES256`). Can be issued with `POST /rooms/{id}/tokens` (senca-node signs with Ed25519).
 `none`, the HS family (shared keys), the RS family and `crit` are rejected; the key determines the algorithm (a different `alg` in the header is rejected).
 
 ```json
@@ -199,8 +206,11 @@ The default `permissions` are "may send both, may receive, `#*`".
 
 ### Auth webhook
 
-When `ServiceConfig::auth_webhook` is `Only` (instead of tokens) or `AfterToken` (after tokens as well), the node
-queries with a `POST` (the body is signed, see below). Without an answer within 5 seconds, the join is rejected.
+When an auth webhook is configured, the server queries its URL with a `POST` on join (the body is signed, see below).
+Without an answer within 5 seconds, the join is rejected. There are two modes:
+
+- `after_token` (default): query after the token has been verified.
+- `only`: authorize by the webhook's answer alone, instead of a token.
 
 ```json
 {"version":1,"type":"connection.auth","request_id":"…","node":"node-a","room_id":"daily",
@@ -217,10 +227,19 @@ Response (2xx; unknown fields are rejected):
 
 With `allowed: false`, `reason` is passed to the client (`auth_failed`). Non-2xx responses and unreadable bodies are also rejections.
 
+On senca-node:
+
+- The webhook URL is the room setting `auth_webhook_url` (http/https) if present, otherwise `--rooms-auth-webhook`.
+- `--rooms-auth-mode` selects the mode (`after_token` or `only`).
+- Rooms without either URL are authorized by the token alone (a `client_id`/`bundle_id` not in the token cannot be claimed).
+- The signing secret comes from `--rooms-webhook-secret-file`; joins to a room with a URL are rejected when no secret is configured.
+- Destinations are checked against the `--egress-allow` policy (private addresses need to be allowed).
+- Requests also carry `Senca-Webhook-Id` (the request_id).
+
 ### Signatures (common to webhooks)
 
 `Senca-Signature: t=<UNIX seconds>,v1=<hex(HMAC-SHA256(secret, "<t>.<body>"))>`. While rotating secrets, multiple `v1=` are attached.
-The receiver checks `|now - t| <= 300` seconds and that one of the `v1` values matches (`senca_rooms::webhook::verify_signature`).
+The receiver checks `|now - t| <= 300` seconds and that one of the `v1` values matches.
 Event webhooks also carry `Senca-Webhook-Id` (event_id) and `Senca-Webhook-Attempt`.
 
 ## 10. Events (SSE and webhooks)
@@ -233,15 +252,20 @@ The same envelope is emitted to SSE (`/api/v1/events`) and webhooks.
 ```
 
 `type`: `room.created`, `room.updated`, `room.destroyed`, `connection.created`, `connection.updated`, `connection.destroyed`,
-`track.published`, `track.unpublished`, `spotlight.changed`. (names inside the room core).
+`track.published`, `track.unpublished`, `spotlight.changed`.
 
 On senca-node's SSE the names are `room.started` (= `room.created`), `room.stopped` (= `room.destroyed`), `room.connection.*`,
 `room.track.*` and `room.spotlight.changed`, with the payload in `data` (`room.updated` comes from the control-plane change event).
-senca-node does not send webhooks yet (SSE only) and does not use the auth webhook (joins are authorized by tokens).
+
+With `--rooms-event-webhook URL`, senca-node signs and POSTs the envelope above (with the webhook `type` names listed above;
+`--rooms-webhook-secret-file` is required).
+
+- Each node sends the events of its own participants (tell them apart by `node`).
+- Cascade edge nodes do not send `room.created`, `room.updated` or `room.destroyed` (only the home node does).
+- The number and IDs of abandoned events are shown in `rooms.event_webhook` of `GET /api/v1/nodes`.
 
 Webhooks are delivered **at least once** (receivers deduplicate by `id`). A 2xx completes delivery. 408, 429, 5xx, connection failures and a 10-second timeout
 are retried after 1, 2, 4, … seconds (±20 %, up to 1 hour), giving up after 10 attempts (dead letter). Other 4xx give up immediately.
-(`senca_rooms::webhook::{Outbox, retry_delay}`)
 
 ## 11. REST
 
@@ -252,7 +276,7 @@ Participants, messages and stats are answered by the node hosting the room (whic
 |---|---|
 | Create a room | `POST /rooms` `{id?, settings?, metadata?, placement?}` → 201 (a room is placed on one node as a grid workload; `placement` sets manual assignment and priority. ADR-0013) |
 | List, get | `GET /rooms?limit&cursor`, `GET /rooms/{id}` (`ETag: "{generation}"`) |
-| Update | `PATCH /rooms/{id}` `{settings?, metadata?}` (`If-Match` required. `e2ee` cannot be changed while there are participants, nor codecs while there are tracks: 409) |
+| Update | `PATCH /rooms/{id}` `{settings?, metadata?, placement?}` (`If-Match` required. `e2ee`, `video_codec` and `audio_codec` cannot be changed while there are participants: 409) |
 | Delete | `DELETE /rooms/{id}` (participants get `room_deleted`) |
 | Participants | `GET /rooms/{id}/participants`, `GET …/{connection_id}` (`subscriptions` are the slots) |
 | Participant metadata | `PATCH /rooms/{id}/participants/{connection_id}` `{metadata}` → `connection.updated` |
@@ -263,10 +287,11 @@ Participants, messages and stats are answered by the node hosting the room (whic
 
 Room settings (`settings`): `max_participants` (50), `e2ee`, `video_codec` (`vp8`, `vp9`, `h264`, `av1`), `audio_codec` (`opus`),
 `max_video_bitrate_kbps`, `spotlight {number, unfocused: "lowest"|"off", focus_rid?}`, `recording` (`none`, `per_participant`,
-`composite`; cannot be combined with E2EE), `forwarding_filter`, `data_labels` (`["#*"]`), `empty_timeout_secs` (60; for rooms created automatically on join).
+`composite`; cannot be combined with E2EE), `forwarding_filter`, `data_labels` (`["#*"]`), `empty_timeout_secs` (60; for rooms created automatically when a token is issued),
+`cascade`, `auth_webhook_url`. See [10.3](../guide/en/10-rooms.md) for details.
 
-In E2EE rooms (SFrame), the SFU forwards without looking at the content. Server-side compositing, composite recording and transcription return 422 with a reason at planning time
-(`RoomView.compositing`, `RoomService::api_plan_composite`).
+In E2EE rooms (SFrame and the like), the SFU forwards without looking at the content. Server-side compositing, composite recording and transcription are not possible:
+creating a media pipeline with a composite or transcription for an E2EE room is rejected with 422 (`details.reason: "e2ee"`).
 
 ## 12. Layer selection and spotlight
 
@@ -278,16 +303,23 @@ The spotlight detects speakers by audio level (RFC 6464 -dBov; if absent, an est
 speaking after 200 ms, not speaking after 1.5 seconds of silence, and a focus is not removed for 2 seconds after it is set (to prevent flapping). There is one focus set per room
 (`spotlight.changed`); each receiver gets `number` people, excluding itself.
 
-## 13. Cascade (grid)
+## 13. Cascade
 
 A room can span multiple nodes (ADR-0013, 0014). Participants on other nodes appear as participants with `node`,
-and their tracks are assigned to the same slots. Only the layers needed by subscribers on a node are carried between nodes (all layers if any subscriber uses automatic selection;
-only the fixed layer if all subscribers fixed one). Keyframe requests and application messages are relayed too.
+and their tracks are assigned to slots like any other participant's.
 When a room cannot be served by this node (grid placement, limits), the client is sent to another node with `redirect {location}`.
 
-On senca-node, a redirect before the first `connect` (the room lives on another node) is a `redirect` message followed by
-close 4300 (no `disconnect`). If no `connect` arrives within 10 s, the socket is closed with 4408.
-senca-node does not enable cross-node cascading yet: a room lives on one node and participants are redirected there.
+On senca-node:
+
+- A redirect before the first `connect` (the room lives on another node) is a `redirect` message followed by
+  close 4300 (no `disconnect`). If no `connect` arrives within 10 s, the socket is closed with 4408.
+- The node the room is placed on (the grid assignment) is the **home**. If the room setting `cascade: true` (or the node flag
+  `--rooms-cascade`) is set, a participant who connects to another node is not redirected but served by an **edge** instance
+  of the room on that node. Rooms with `cascade` false are redirected to the home as before. Draining nodes do not create new edges.
+- Participants of a node that has not synchronized with this node for 7 seconds are removed from the participant list.
+- `max_participants` counts participants across nodes (simultaneous joins on different nodes may briefly exceed it).
+- When the home dies, the grid moves the room to another node. If that node has an edge, it becomes the home with its participants.
+  Participants of the dead node rejoin by connecting to another node. Edges without participants close after 20 seconds.
 
 ## 14. Example
 

@@ -59,7 +59,8 @@ moq-dev の **hang**（draft-lcurley-moq-hang、moq-dev/moq の `drafts/` 2026-1
 - broadcast の namespace の下の `catalog.json` track: 更新ごとに一つの group、group の中は一つの object（UTF-8 JSON）。
   圧縮（moq-flate 拡張）は使わない。
 - `video`・`audio` の `renditions` の項目が track。SENCA が出すときの容器は
-  `{"kind": "cmaf", "init": base64(ftyp+moov)}`、object 一つが CMAF fragment 一つ（`moof`+`mdat`）、
+  `{"kind": "cmaf", "init": base64(ftyp+moov)}`。`description`（avcC・hvcC・AudioSpecificConfig などの 16 進）を
+  付ける（無いと moq-dev は H.264 の sample を Annex B として読む）。object 一つが CMAF fragment 一つ（`moof`+`mdat`）、
   group は keyframe の fragment から（GOP ごと）、subgroup 0、Object ID は group の中で 0 から。
 - moq-dev の `moq import fmp4` は `legacy` 容器（frame ごとに timestamp と codec の payload）を出す。
   relay は容器を読まずに転送するので、どちらの容器も中継できる。
@@ -82,7 +83,9 @@ track alias が分からない stream・datagram の一時保管（上限つき�
 - Range Filter（0x25〜0x29）: MAX_FILTER_RANGES を 0 として扱い、受けたら INVALID_FILTER。
 - 認可トークンの alias: MAX_AUTH_TOKEN_CACHE_SIZE を 0 とし、SETUP の外の REGISTER は
   AUTH_TOKEN_CACHE_OVERFLOW、未登録の alias の参照は UNAUTHORIZED。
-- FILL_PARAMETERS は読むが fill fetch stream は開かない（購読者は FETCH で埋める）。
+- FILL_PARAMETERS: relay は読むだけで fill fetch stream を開かない（購読者は FETCH で埋める）。出版者の側は
+  `Session::fill_object`・`fill_finish` で fill の stream（FETCH_HEADER に SUBSCRIBE の Request ID）を送れる
+  （senca-node が使う。moq-dev の `moq export` は current-group join で fill を待つ）。
 - RENDEZVOUS_TIMEOUT は使わない（出版者がいなければすぐ DOES_NOT_EXIST）。
 - RESET_STREAM_AT は使わない（QUIC 側に無い）。PUBLISH_STATE_NOTIFY は送らない。
 - relay は object を丸ごと受けてから転送する（途中の object の転送はしない）。

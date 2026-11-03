@@ -5,10 +5,9 @@
 Which codecs SENCA handles and how, what it deliberately does not ship, and what it loads at run time. This page covers what operators
 provide (GPU drivers, royalty-free codec libraries) and how SENCA behaves when they are missing.
 
-- Rationale: [ADR-0004 codec selection and patent policy](../../adr/0004-codecs-patents.md), [ADR-0003 internal media format](../../adr/0003-internal-media-format.md)
+- Rationale: [ADR-0004 codec selection and patent policy](../../dev/adr/0004-codecs-patents.md), [ADR-0003 internal media format](../../dev/adr/0003-internal-media-format.md)
 - Ledger: [license and patent ledger](../../licenses/README.md)
 - Related pages: [4. Ingest and playback](04-ingest-playback.md), [5. Recording](05-recording.md), [7. Pipelines](07-pipelines.md), [11. Media pipelines](11-media-pipelines.md), [13. Operations](13-operations.md)
-- Implementation: `crates/senca-codec` (providers, dlopen), `crates/senca-codec-worker` (worker, sandbox), `crates/senca-node/src/codec.rs`
 
 > **This is not legal advice.** This page and the ledger describe SENCA's implementation policy. Whether your content, service or region
 > needs a license (including patent pool royalties) is for you to determine.
@@ -44,7 +43,10 @@ Paths that neither encode nor decode need no GPU and no codec library.
 | Captions | AAC or Opus audio, repackaged and sent ([8. Captions](08-captions.md)) |
 
 `POST /streams/{id}/plan` reports how each track of the current input is handled by each output (`remux`, `repacketize`,
-`passthrough`, `unsupported`, with reasons).
+`passthrough`, `unsupported`, with reasons). Stream processing never re-encodes, so the plan never shows a conversion. H.264, H.265
+and AAC tracks arriving on a `royalty_free` stream are dropped and shown as `unsupported` (with the reason) for every output. To
+convert to AV1 or similar, use a pipeline ([7. Pipelines](07-pipelines.md)) with `decode` and `encode` into another stream (decoding
+H.264 and H.265 needs a GPU; §14.3).
 
 ## 14.3 Operations that need encoding or decoding
 
@@ -57,7 +59,7 @@ Paths that neither encode nor decode need no GPU and no codec library.
 | Composite of a room media pipeline | Decoding participant video and encoding the composite (AV1 by default) | See [11. Media pipelines](11-media-pipelines.md) |
 | Capture inputs | Encoding in the capture worker (VP9 by default) | The input goes to `error` / `backoff` |
 
-Example: requesting the current frame of an H.264 stream on a node without a GPU (verified by running it):
+Example: requesting the current frame of an H.264 stream on a node without a GPU:
 
 ```json
 {"type":"urn:senca:error:capacity-unavailable","title":"h264 を復号できる装置がありません（H.264/H.265 はハードウェアのデコーダーだけを使います）",
@@ -78,9 +80,8 @@ stream is decoded with libvpx and a JPEG or PNG is returned.
 
 - Only hardware implementations are selected (the software implementations of oneVPL and AMF are not used).
 - A missing library or device is normal; the provider is reported as unavailable with a reason in `GET /devices`.
-- Some hardware paths have not been verified on real hardware because the development machine has no GPU (see "verification status"
-  in each provider's source, and REQ-004). Validate with your own GPU and driver before relying on them.
-- The Apple VideoToolbox provider listed in ADR-0004 is not implemented at present.
+- Before relying on a hardware provider, check that it works with your own GPU and driver.
+- Apple VideoToolbox is not supported.
 
 To use a GPU in a container, pass the device and the driver libraries into the container ([13. Operations](13-operations.md), `compose.yaml`).
 
@@ -133,6 +134,8 @@ The worker logs the restrictions it applied at startup (e.g. `sandbox: core=0; n
 - A CPU-time limit per job (when exceeded, the worker exits and is replaced).
 - Because networking is denied, some driver helpers (such as connecting to NVIDIA's persistenced) are unavailable.
 
+See [12. Security](12-security.md) for details.
+
 ## 14.7 `codec_profile: royalty_free`
 
 A stream with `codec_profile: royalty_free` does not handle patent-pooled codecs (H.264, H.265, AAC).
@@ -167,7 +170,7 @@ curl -s -X POST "$API/streams" "${H[@]}" -d '{"name":"rf1","codec_profile":"roya
 }
 ```
 
-(Excerpt from a development machine without a GPU, with the royalty-free libraries installed.)
+(Excerpt from a machine without a GPU, with the royalty-free libraries installed.)
 
 - `codecs.transcode` lists the providers the codec worker can actually use (provider, codec, direction, hardware or not, maximum resolution, concurrent sessions, device name).
 - Other fields: `ingest`, `output`, `recordings`, `schedules`, `inputs`, `outputs`, `paas_providers`, `captions`, `rtsp_play`, `cluster` ([15. API and SDKs](15-api-and-sdks.md)).

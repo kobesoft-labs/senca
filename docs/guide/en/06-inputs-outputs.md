@@ -5,9 +5,8 @@
 **Inputs** are connections SENCA makes to fetch media (pull); **outputs** send a stream elsewhere (push and PaaS integration).
 Push ingest where the sender connects to SENCA (RTMP, SRT, WHIP) is authorized by the stream key and covered in [4. Ingest and playback](04-ingest-playback.md).
 
-- Rationale: [ADR-0007 inputs, outputs and egress](../../adr/0007-inputs-outputs-egress.md), [ADR-0010 PaaS integration](../../adr/0010-paas.md), [ADR-0013 grid](../../adr/0013-grid.md)
+- Rationale: [ADR-0007 inputs, outputs and egress](../../dev/adr/0007-inputs-outputs-egress.md), [ADR-0010 PaaS integration](../../dev/adr/0010-paas.md), [ADR-0013 grid](../../dev/adr/0013-grid.md)
 - Related pages: [4. Ingest and playback](04-ingest-playback.md), [9. Cluster and grid](09-cluster-grid.md), [12. Security](12-security.md), [15. API and SDKs](15-api-and-sdks.md)
-- Implementation: `crates/senca-node/src/io.rs`, `hls_pull.rs`, `rtsp_pull.rs`, `srt.rs`, `capture.rs`, `paas.rs`, `egress.rs`, `api/io.rs`, `crates/senca-paas`
 
 `API`, `TOKEN` and `H` in the examples are the same as in [4. Ingest and playback](04-ingest-playback.md).
 
@@ -38,7 +37,7 @@ Body:
 | protocol | `url` scheme |
 |---|---|
 | `rtmp_pull`, `rtmp_push` | `rtmp`, `rtmps` |
-| `rtsp_pull` | `rtsp` (`rtsps` is accepted, but the connection is currently made without TLS) |
+| `rtsp_pull` | `rtsp`, `rtsps` (over TLS) |
 | `srt_pull`, `srt_push` | `srt` |
 | `hls_pull` | `http`, `https` |
 | `device` | `device:{device id}` ([4.7](04-ingest-playback.md)) |
@@ -72,6 +71,18 @@ curl -s -X POST "$API/streams/$SID/inputs" "${H[@]}" -d '{"protocol":"rtsp_pull"
 
 - Transport is **TCP interleaved only** (works through NAT and firewalls). Default port 554.
 - Store credentials in the secret as `user:password`. Basic authentication is used only with `options.allow_basic: "true"` (it sends the password in clear text).
+- `rtsps://` connects over TLS (default port 322). The server certificate is verified against the certificate authorities the OS
+  trusts (the node's `SSL_CERT_FILE` environment variable can point to a CA file). For cameras with a self-signed certificate, pin the
+  certificate's public key: put the SHA-256 of its SPKI, in base64 or hex, in `options.tls_spki_sha256` (several values can be separated
+  with `,`). With a pin, the CA, validity period and host name are not checked. If the pin does not match, the TLS handshake fails;
+  there is no fallback to plain RTSP. A malformed value is rejected with 400.
+
+  ```sh
+  # Compute the pin from the camera's certificate
+  openssl x509 -in cam.crt -pubkey -noout | openssl pkey -pubin -outform der | openssl dgst -sha256 -binary | base64
+  curl -s -X POST "$API/streams/$SID/inputs" "${H[@]}" \
+    -d '{"protocol":"rtsp_pull","url":"rtsps://192.0.2.10:322/stream1","credential_ref":"secret:cam-login","options":{"tls_spki_sha256":"<value above>"}}'
+  ```
 - Connecting to private addresses such as on-premises cameras requires `--egress-allow` (§6.7).
 
 ### srt_pull
@@ -126,7 +137,7 @@ curl -s -X POST "$API/streams/$SID/outputs" "${H[@]}" -d '{"protocol":"srt_push"
 - Connects as the caller and sends MPEG-TS in 1316-byte chunks. `streamid` and `latency` (microseconds) work as for srt_pull; the passphrase is `credential_ref`.
 - Codecs that do not fit TS (AV1, VP8, VP9) cannot be sent.
 
-`whip_push` (sending to an external WHIP server) does not exist in the current node; `protocol: "whip_push"` is rejected with 400.
+Sending to an external WHIP server (`whip_push`) is not supported yet; `protocol: "whip_push"` is rejected with 400.
 
 ## 6.4 PaaS integration (`protocol: "paas"`)
 
@@ -201,7 +212,7 @@ curl -s -X POST "$API/secrets" "${H[@]}" -d '{"name":"cam-login","value":"viewer
 ```
 
 - `name` follows the stream name rules (1–64 letters, digits and `-_.`) and is unique within the tenant (409 on duplicates). `value` is 1–8192 bytes.
-- Values are encrypted with AES-256-GCM using the node key (`{data-dir}/control/secret-key`). **A value can never be read back through
+- Values are encrypted with AES-256-GCM (with the node key `{data-dir}/control/secret-key` on a single node, with a cluster-wide key in a cluster; see [12. Security](12-security.md)). **A value can never be read back through
   the API** (lists show only `id`, `name`, `ref`, `created_at`). To change a value, delete and recreate the secret.
 - A tenant can have up to 500 secrets.
 - Secrets referenced by inputs, outputs or stream captions cannot be deleted (409).

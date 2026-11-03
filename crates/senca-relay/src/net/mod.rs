@@ -78,6 +78,8 @@ pub struct EndpointConfig {
     pub handshake_timeout: Duration,
     /// まだ答えていない、相手からの購読の上限。
     pub incoming_queue: usize,
+    /// まだ読まれていない、相手からの App の message の上限（超えたら捨てる）。
+    pub app_queue: usize,
 }
 
 impl Default for EndpointConfig {
@@ -88,6 +90,7 @@ impl Default for EndpointConfig {
             subscribe_timeout: Duration::from_secs(5),
             handshake_timeout: Duration::from_secs(10),
             incoming_queue: 1024,
+            app_queue: 4096,
         }
     }
 }
@@ -119,6 +122,7 @@ struct ConnShared {
     downs: Mutex<HashMap<DownstreamId, mpsc::UnboundedSender<DownEvent>>>,
     closed: watch::Sender<bool>,
     incoming: Option<mpsc::Sender<IncomingSubscribe>>,
+    apps: Option<mpsc::Sender<AppMessage>>,
     dialed: bool,
     upstream_queue: usize,
 }
@@ -145,6 +149,8 @@ pub struct ConnOptions {
     pub handshake_timeout: Duration,
     /// 相手からの購読を渡す先（無ければ全部断る）。
     pub incoming: Option<mpsc::Sender<IncomingSubscribe>>,
+    /// 相手からの App の message を渡す先（無ければ捨てる。満杯でも捨てる）。
+    pub apps: Option<mpsc::Sender<AppMessage>>,
     /// 自分からつないだか（重複した接続のどちらを残すかに使う）。
     pub dialed: bool,
 }
@@ -168,6 +174,7 @@ impl RelayConnection {
             downs: Mutex::new(HashMap::new()),
             closed,
             incoming: opts.incoming,
+            apps: opts.apps,
             dialed: opts.dialed,
             upstream_queue: opts.upstream_queue,
         });
@@ -286,6 +293,11 @@ impl RelayConnection {
                 Err(RelayError::Timeout) // up の drop で購読をやめる
             }
         }
+    }
+
+    /// 統合側の message を送る（待たない）。送れなければ false（[`Connection::send_app`]）。
+    pub fn send_app(&self, topic: &str, payload: Bytes) -> bool {
+        self.with(|c| c.send_app(topic, payload))
     }
 
     /// 退く（新しい購読を断る。今の購読は続く）。
@@ -427,6 +439,16 @@ fn dispatch(sh: &Arc<ConnShared>, evs: Vec<ConnEvent>) {
                 }
             }
             ConnEvent::GoAway { .. } => {}
+            ConnEvent::App { topic, payload } => {
+                if let Some(q) = &sh.apps {
+                    let peer = sh.peer.get().map_or(0, |p| p.node_id);
+                    let _ = q.try_send(AppMessage {
+                        peer,
+                        topic,
+                        payload,
+                    });
+                }
+            }
             ConnEvent::Closed(e) => {
                 if let Some(tx) = sh.hello.lock().unwrap().take() {
                     let _ = tx.send(Err(e.clone()));
@@ -826,10 +848,20 @@ impl Drop for Downstream {
 
 // ---------------------------------------------------------------------------------------------
 
+/// 相手から届いた App の message。
+#[derive(Debug, Clone)]
+pub struct AppMessage {
+    pub peer: NodeId,
+    pub topic: String,
+    pub payload: Bytes,
+}
+
 struct EpInner {
     cfg: EndpointConfig,
     conns: Mutex<HashMap<NodeId, RelayConnection>>,
     incoming: mpsc::Sender<IncomingSubscribe>,
+    apps: mpsc::Sender<AppMessage>,
+    apps_rx: Mutex<Option<mpsc::Receiver<AppMessage>>>,
     dialer: Mutex<Option<Dialer>>,
     dialing: Mutex<HashMap<NodeId, Arc<tokio::sync::Mutex<()>>>>,
 }
@@ -853,10 +885,13 @@ impl RelayEndpoint {
     /// 作る。返り値の受け口に、相手からの購読（[`IncomingSubscribe`]）が届く。
     pub fn new(cfg: EndpointConfig) -> (RelayEndpoint, mpsc::Receiver<IncomingSubscribe>) {
         let (tx, rx) = mpsc::channel(cfg.incoming_queue.max(1));
+        let (atx, arx) = mpsc::channel(cfg.app_queue.max(1));
         let inner = Arc::new(EpInner {
             cfg,
             conns: Mutex::new(HashMap::new()),
             incoming: tx,
+            apps: atx,
+            apps_rx: Mutex::new(Some(arx)),
             dialer: Mutex::new(None),
             dialing: Mutex::new(HashMap::new()),
         });
@@ -869,6 +904,19 @@ impl RelayEndpoint {
 
     pub fn config(&self) -> &EndpointConfig {
         &self.inner.cfg
+    }
+
+    /// 相手からの App の message の受け口（最初の 1 回だけ返す。誰も受けなければ溜まった分から捨てる）。
+    pub fn take_app_messages(&self) -> Option<mpsc::Receiver<AppMessage>> {
+        self.inner.apps_rx.lock().unwrap().take()
+    }
+
+    /// `peer` へ App の message を送る（接続が無ければつなぐ）。送れなければ false。
+    pub async fn send_app(&self, peer: NodeId, topic: &str, payload: Bytes) -> bool {
+        match self.connection_or_dial(peer).await {
+            Ok(c) => c.send_app(topic, payload),
+            Err(_) => false,
+        }
     }
 
     /// 接続が無い相手へつなぐ関数を渡す。
@@ -899,6 +947,7 @@ impl RelayEndpoint {
                 upstream_queue: cfg.upstream_queue,
                 handshake_timeout: cfg.handshake_timeout,
                 incoming: Some(self.inner.incoming.clone()),
+                apps: Some(self.inner.apps.clone()),
                 dialed,
             },
         )

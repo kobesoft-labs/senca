@@ -1990,9 +1990,31 @@ impl Session {
         }
     }
 
+    /// SUBSCRIBE の FILL_PARAMETERS への応答（draft-22 3.5 の current-group join）: 購読の始まりより前の
+    /// object を fetch stream（FETCH_HEADER に SUBSCRIBE の Request ID）で送る。購読の応答（SUBSCRIBE_OK）の後に呼ぶ。
+    pub fn fill_object(&mut self, request_id: u64, o: &Object) {
+        if !self.reqs.get(&request_id).is_some_and(|r| r.kind == ReqKind::Subscribe && r.alias.is_some()) {
+            return;
+        }
+        self.fetch_object(request_id, o);
+    }
+
+    /// fill の fetch stream を閉じる（購読はそのまま続く）。
+    pub fn fill_finish(&mut self, request_id: u64) {
+        let h = self
+            .reqs
+            .get_mut(&request_id)
+            .filter(|r| r.kind == ReqKind::Subscribe)
+            .and_then(|r| r.sub.as_mut())
+            .and_then(|s| s.fetch_out.take());
+        if let Some(h) = h {
+            self.finish_out(h);
+        }
+    }
+
     fn fetch_stream(&mut self, request_id: u64) -> Option<Handle> {
         let r = self.reqs.get(&request_id)?;
-        if r.kind != ReqKind::Fetch || r.local {
+        if !matches!(r.kind, ReqKind::Fetch | ReqKind::Subscribe) || r.local {
             return None;
         }
         if let Some(h) = r.sub.as_ref().and_then(|s| s.fetch_out) {

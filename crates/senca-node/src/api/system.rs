@@ -12,7 +12,9 @@ pub fn capabilities(ctx: &Ctx) -> ApiResult {
 
 pub fn nodes(ctx: &Ctx) -> ApiResult {
     ctx.require(Scope::NodeAdmin)?;
-    let items: Vec<_> = ctx.control().state.nodes.values().map(|n| ctx.app.render_node(n)).collect();
+    // 制御状態の鍵を放してから描く（自分のノードは部屋の係にも問い合わせる）
+    let nodes: Vec<_> = ctx.control().state.nodes.values().cloned().collect();
+    let items: Vec<_> = nodes.iter().map(|n| ctx.app.render_node(n)).collect();
     Ok(ApiResponse::json(200, &json!({ "items": items })))
 }
 

@@ -1,14 +1,10 @@
 # 12. Security
 
 Authentication and scopes, credentials for publishers and viewers (stream keys, signed URLs, join tokens), secret
-storage, egress restrictions, cluster mTLS, the codec worker sandbox, and what has not been independently reviewed.
+storage, egress restrictions, cluster mTLS and the codec worker sandbox.
 
 - Related pages: [3. Configuration](03-configuration.md), [9. Cluster and grid](09-cluster-grid.md), [10. Realtime rooms](10-rooms.md), [13. Operations](13-operations.md), [15. Management API and SDKs](15-api-and-sdks.md)
-- Rationale: [ADR-0002 Dependencies and cryptography](../../adr/0002-dependencies-and-crypto.md), [ADR-0007 Inputs, outputs, secrets and egress](../../adr/0007-inputs-outputs-egress.md), [ADR-0009 Distributed control plane](../../adr/0009-cluster.md)
-
-> SENCA is v0.0.0 (experimental). Its TLS, DTLS, SRTP, SRT encryption and QUIC protocol code, and its authorization
-> and distributed-ownership code, have not yet been independently reviewed
-> ([12.13](#1213-what-has-not-been-independently-reviewed)).
+- Rationale: [ADR-0002 Dependencies and cryptography](../../dev/adr/0002-dependencies-and-crypto.md), [ADR-0007 Inputs, outputs, secrets and egress](../../dev/adr/0007-inputs-outputs-egress.md), [ADR-0009 Distributed control plane](../../dev/adr/0009-cluster.md)
 
 ## 12.1 Authenticating to the management API
 
@@ -94,8 +90,8 @@ Example payload:
  "scope": "stream:read stream:write", "exp": 1793669243}
 ```
 
-We verified this flow with an Ed25519 key: a JWT for tenant `acme` could create streams, got 403 on
-`tenant:admin` endpoints, and its streams were invisible to the `default` tenant.
+With this token you can create streams in tenant `acme`. APIs that need `tenant:admin` return 403, and the
+streams it creates are not visible from the `default` tenant.
 
 ## 12.3 Stream keys (publisher credentials)
 
@@ -140,18 +136,31 @@ curl -s -X POST http://127.0.0.1:8080/api/v1/secrets \
   caption setting still uses cannot be deleted (409).
 - Inputs and outputs reference it with `credential_ref: "secret:{name}"`; captions with `asr_credential_ref` and
   `translate_credential_ref`.
-- Values are sealed with AES-256-GCM using the node key `data_dir/control/secret-key` (32 bytes, mode 0600, created on
-  first start), and only the sealed form is kept in the control state. The tenant and secret ID are bound as
-  associated data, so a sealed value copied to another resource cannot be opened.
-- **In a cluster, every node must have the same `secret-key`.** Each node creates its own key and there is no
-  mechanism to distribute it yet. Sealed values are replicated, so an input or output placed on a node with a
-  different key fails with "秘密値を開けません" ("cannot open secret"). Before the first cluster start, copy
-  `control/secret-key` from one node to the same path on the others (keep mode 0600).
-- If `secret-key` is lost, stored secrets cannot be recovered; store them again.
+- Values are sealed with AES-256-GCM, and only the sealed form is kept in the control state. The tenant and secret
+  ID are bound as associated data, so a sealed value copied to another resource cannot be opened.
+- **Single node**: the key is the node key `data_dir/control/secret-key` (32 bytes, mode 0600, created on first start).
+- **Cluster**: the key is a cluster-wide **data key**. The data key is wrapped with AES-256-GCM under a key derived
+  from the cluster secret (`secret_file`) with HKDF-SHA256, and replicated to every node in the control state
+  (`secret_data_key`). If there is none yet, every node proposes its own `secret-key`, wrapped, and the first one
+  applied is used (it is never replaced). Each node unwraps it from the state, so a secret stored through any node
+  can be opened on every node. No key files need to be copied.
+  - The cluster secret must be the same on every node. A node with a different secret cannot unwrap the key, logs
+    `cannot open the cluster-wide secret key`, and cannot use secrets (storing one returns 503).
+  - Storing a secret on a node that has not received the data key yet returns 503 (`retryable: true`).
+  - A copy of the control state (a backup, the Raft log) alone does not reveal secrets without the cluster secret.
+    Use an unguessable cluster secret such as 32 random bytes (`openssl rand -hex 32`).
+  - **Migration from earlier versions**: earlier cluster versions sealed a secret with the `secret-key` of the node
+    that received it. The new version also tries the local `secret-key` after the data key when opening, and after
+    startup initialization it re-seals every secret that only the local key can open with the data key (log:
+    `re-sealed N secret(s)`). Once the node that sealed an old value has started the new version, every node can
+    open it.
+  - Changing the cluster secret makes the wrapped key unreadable (rotating the cluster secret is not supported yet).
+- If `secret-key` is lost on a single node, stored secrets cannot be recovered; store them again. In a cluster,
+  the cluster secret and the control state are enough to recover them.
 
 ## 12.6 Egress restrictions (SSRF protection)
 
-Pull inputs, push outputs, HLS pull, caption endpoints and PaaS APIs make the node connect to user-supplied
+Pull inputs, push outputs, HLS pull, caption endpoints, PaaS APIs and room webhooks make the node connect to user-supplied
 destinations. SENCA checks the **resolved IP address** and by default refuses:
 
 - loopback (`127.0.0.0/8`, `::1`), unspecified (`0.0.0.0`, `::`), `0.0.0.0/8`
@@ -193,21 +202,31 @@ openssl x509 -req -in n1.csr -CA cluster-ca.pem -CAkey cluster-ca.key -CAcreates
 - Install `cluster-ca.pem` plus the node's own `nN.pem` and `nN.key` on each node and reference them in its
   cluster configuration.
 - A node presenting a certificate from a different CA is rejected.
-- On Raft connections the cluster secret (`secret_file`) is additionally checked inside TLS.
+- On Raft and relay connections, a mutual challenge-response with the cluster secret (`secret_file`) also runs
+  inside TLS (see below).
 
-We verified that a two-node cluster forms over mTLS with exactly these commands (the same shape as
-`CLUSTER_TLS=1` in `tools/interop/cluster.sh`).
+### Node authentication with the cluster secret
+
+Every Raft and relay connection starts with a mutual challenge-response, with or without mTLS:
+
+1. The dialing node sends its node ID and a fresh 32-byte nonce.
+2. The accepting node answers with its node ID, its own fresh nonce, and `HMAC-SHA256(K, "server" ‖ purpose ‖ IDs ‖ both nonces)`.
+3. The dialing node checks that the peer is the node it dialed and that the MAC is correct, and only then sends
+   `HMAC-SHA256(K, "client" ‖ ...)`, which the accepting node checks.
+
+`K` is derived from the cluster secret with HKDF-SHA256, separately for Raft and for the relay. Neither the secret
+nor a fixed value crosses the network, every MAC covers nonces chosen by the other side (a recorded handshake
+cannot be replayed), and the client proves itself only after verifying the server. Messages have fixed lengths
+and the whole exchange must finish within 5 seconds.
 
 ### Plaintext (shared secret only)
 
-Without `tls_*`, nodes talk plain TCP and authenticate each other only with the shared secret.
+Without `tls_*`, nodes talk plain TCP and authenticate each other only with the challenge-response above.
 
-- Control-state replication (token and stream-key hashes, **the playback key**, sealed secrets, ...) and relayed
-  media cross the network unencrypted.
-- The secret is sent as a fixed hash every time (`SHA-256(secret)` for Raft,
-  `SHA-256("senca-relay/1:" + secret)` for the relay). Anyone who can observe the traffic can replay that hash and
-  connect as a node.
-- Use plaintext mode only for tests on an isolated network.
+- Control-state replication (token and stream-key hashes, **the playback key**, sealed secrets, the wrapped
+  secret key, ...) and relayed media cross the network unencrypted, and nothing protects a connection from being
+  modified after the handshake.
+- Use plaintext mode only on an isolated, trusted network.
 
 ## 12.8 Protecting the data directory
 
@@ -237,7 +256,7 @@ External codec libraries (GPU SDKs, dav1d, libvpx, ...) are never loaded into `s
 - If a worker crashes, hangs or returns malformed output, the job fails and the worker is replaced; the node keeps
   running.
 - No address-space limit (`RLIMIT_AS`) is set by default. Because sockets are denied, some GPU driver helpers (such
-  as connecting to NVIDIA's persistenced) are unavailable. Behavior on real GPUs has not been verified yet.
+  as connecting to NVIDIA's persistenced) are unavailable.
 
 ## 12.10 Room join tokens
 
@@ -248,13 +267,14 @@ External codec libraries (GPU SDKs, dav1d, libvpx, ...) are never loaded into `s
 - The signing key is an Ed25519 key derived from the playback key
   (`SHA-256("senca-rooms-join-token/1\0" || playback key)`), so every node can issue and verify tokens. A leaked
   playback key therefore also allows forging join tokens.
-- The node uses neither auth webhooks nor anonymous joins; a token is required. See [10. Realtime rooms](10-rooms.md).
+- By default a join token is required to join a room. With an auth webhook (`auth_webhook_url` or `--rooms-auth-webhook`),
+  the node also asks the webhook after verifying the token. With `--rooms-auth-mode only`, the webhook admits participants
+  instead of a token. See [10. Realtime rooms](10-rooms.md).
 
 ## 12.11 HTTPS and RTMPS
 
 `--https` and `--rtmps` with `--tls-cert` and `--tls-key` (PEM) accept TLS 1.3. Supported key types are ECDSA P-256,
-RSA and Ed25519. The TLS implementation is SENCA's own (the cryptographic primitives come from vetted libraries) and
-has not been independently reviewed yet. If you want TLS on the high-volume HLS and WHEP paths, you can also
+RSA and Ed25519. The TLS protocol handling is SENCA's own implementation; the cryptographic primitives come from vetted libraries. If you want TLS on the high-volume HLS and WHEP paths, you can also
 terminate it at a reverse proxy: signatures live in the path and query, so they still verify behind a proxy. Set
 `--public-http-url` to the proxy's URL.
 
@@ -269,16 +289,3 @@ Every state-changing management API call is appended to `data_dir/audit.log` as 
 `subject` is `token:{ID}` for API tokens and the `sub` claim for JWTs. Secrets and request bodies are never written.
 Responses remembered for Idempotency-Key replay have `stream_key`, `token` and `secret` removed before storage
 (a replayed response shows `null` plus `*_redacted: true`).
-
-## 12.13 What has not been independently reviewed
-
-Release gate G8 ([docs/RELEASE.md](../../RELEASE.md)) is still open: there is no review report, independent of the
-implementers, for:
-
-- cryptographic protocols: TLS 1.3 (HTTPS, RTMPS, cluster mTLS, outbound HTTPS), DTLS 1.2 and SRTP (WebRTC),
-  SRT encryption, QUIC;
-- authorization: JWT, signed URLs, API tokens;
-- distributed ownership: fencing, mTLS.
-
-The 24-hour fuzzing campaign (only a 60-second smoke run so far) and the 72-hour soak are also outstanding
-([conformance ledger](../../conformance/ledger.md)). Take this into account before putting a node on a public network.

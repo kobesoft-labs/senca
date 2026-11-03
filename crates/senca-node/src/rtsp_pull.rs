@@ -1,5 +1,8 @@
 //! RTSP pull の入力（仕様 6.6、REQ-006 のカメラ）。TCP interleaved で受ける（NAT・ファイアウォールを越えやすい）。
 //! 再接続は呼び出し側（io.rs）の指数バックオフ。Basic 認証は options の `allow_basic=true` のときだけ（仕様 6.6）。
+//! `rtsps://`（既定のポート 322）は TLS（senca-tls）を通す。サーバーの証明書は OS の信頼する認証局で検証する
+//! （`SSL_CERT_FILE` も読む）。自己署名のカメラは options の `tls_spki_sha256`（leaf の公開鍵の SHA-256。
+//! base64 か 16 進）で公開鍵を固定する。このときは認証局・期限・ホスト名を見ない。
 
 use crate::app::App;
 use crate::io::IoStatus;
@@ -13,6 +16,37 @@ use senca_sdp::{ParseOptions, SessionDescription};
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
+
+/// `tls_spki_sha256` の値（base64・base64url・16 進、`,` で複数）を読む。
+pub fn parse_spki_pins(v: &str) -> Result<Vec<[u8; 32]>, String> {
+    use base64::Engine;
+    let mut pins = Vec::new();
+    for p in v.split(',').map(str::trim).filter(|p| !p.is_empty()) {
+        let raw = if p.len() == 64 && p.bytes().all(|b| b.is_ascii_hexdigit()) {
+            (0..32).map(|i| u8::from_str_radix(&p[2 * i..2 * i + 2], 16).unwrap_or(0)).collect::<Vec<u8>>()
+        } else {
+            let t = p.trim_end_matches('=');
+            base64::engine::general_purpose::STANDARD_NO_PAD
+                .decode(t)
+                .or_else(|_| base64::engine::general_purpose::URL_SAFE_NO_PAD.decode(t))
+                .map_err(|_| "tls_spki_sha256 は SHA-256（32 バイト）の base64 か 16 進で書いてください".to_string())?
+        };
+        let pin: [u8; 32] = raw.try_into().map_err(|_| "tls_spki_sha256 は SHA-256（32 バイト）です".to_string())?;
+        pins.push(pin);
+    }
+    if pins.is_empty() {
+        return Err("tls_spki_sha256 が空です".into());
+    }
+    Ok(pins)
+}
+
+/// rtsps の TLS の設定（公開鍵の固定があればそれだけで照合、無ければ OS の認証局で検証）。
+fn tls_config(i: &Input) -> Result<Arc<senca_tls::ClientConfig>, String> {
+    match i.options.get("tls_spki_sha256") {
+        Some(v) => Ok(Arc::new(senca_tls::ClientConfig::new(senca_tls::ServerVerifier::PinnedSpkiOnly(parse_spki_pins(v)?)))),
+        None => crate::tls_io::client_config(&[]),
+    }
+}
 
 struct Track {
     pt: u8,
@@ -34,12 +68,18 @@ pub async fn run(app: &Arc<App>, i: &Input, st: &Mutex<IoStatus>) -> Result<(), 
     let hp = c.url().host_port();
     let (host, port) = hp.rsplit_once(':').map(|(h, p)| (h.trim_matches(['[', ']']).to_string(), p.parse().unwrap_or(554))).unwrap_or((hp.clone(), 554));
     st.lock().unwrap().state = "connecting".into();
+    let tls = c.url().scheme == senca_rtsp::url::Scheme::Rtsps;
+    let tls_cfg = if tls { Some(tls_config(i)?) } else { None };
     let addr = crate::egress::resolve(&host, port, &app.cfg.egress_allow).await?;
-    let mut sock = tokio::time::timeout(Duration::from_secs(10), tokio::net::TcpStream::connect(addr))
+    let tcp = tokio::time::timeout(Duration::from_secs(10), tokio::net::TcpStream::connect(addr))
         .await
         .map_err(|_| "connect timeout")?
         .map_err(|e| e.to_string())?;
-    let _ = sock.set_nodelay(true);
+    let _ = tcp.set_nodelay(true);
+    let mut sock: Box<dyn crate::io::IoStream> = match tls_cfg {
+        Some(cfg) => Box::new(crate::tls_io::connect(tcp, cfg, &host).await.map_err(|e| format!("rtsps: TLS: {e}"))?),
+        None => Box::new(tcp),
+    };
     let t0 = Instant::now();
     c.start(t0).map_err(|e| format!("{e:?}"))?;
     c.describe(t0).map_err(|e| format!("{e:?}"))?;

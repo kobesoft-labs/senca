@@ -1,5 +1,7 @@
 //! 録画の MP4 書き出し（REQ-006）。セグメントを分離して、先頭に moov を置いた MP4 にする。
-//! `not_before_ms`・`not_after_ms` で切り出す（キーフレームの境目まで広げる。再エンコードしない）。
+//! 予約の `not_before_ms`・`not_after_ms` と、要求の `start`・`end`（壁時計）の重なりで切り出す
+//! （始まりは直前のキーフレームまで広げる。再エンコードしない）。壁時計は、セグメントごとの開始時刻
+//! （program date time）からその区間の媒体時刻に直す（再接続で詰めた区間をまたいでもずれない）。
 
 use crate::app::App;
 use bytes::{Bytes, BytesMut};
@@ -10,7 +12,8 @@ use std::collections::BTreeMap;
 /// 書き出せる大きさの上限（メモリに組み立てるため）。
 const MAX_EXPORT: u64 = 4 << 30;
 
-pub fn mp4(app: &App, id: &str) -> Result<Bytes, Problem> {
+/// `start_ms`・`end_ms` は書き出す範囲（壁時計の ms。None なら録画の端まで）。
+pub fn mp4(app: &App, id: &str, start_ms: Option<i64>, end_ms: Option<i64>) -> Result<Bytes, Problem> {
     let idx = app.read_index(id).ok_or_else(Problem::not_found)?;
     if idx.bytes() > MAX_EXPORT {
         return Err(Problem::new(ProblemCode::PayloadTooLarge, "録画が大きすぎて書き出せません"));
@@ -27,6 +30,8 @@ pub fn mp4(app: &App, id: &str) -> Result<Bytes, Problem> {
     let read = |p: &str, k: Option<&str>| app.rec_object_blocking(id, p, k, crate::storage::MAX_OBJECT).ok_or(());
     let mut fmp4_reader = None;
     let mut tracks: BTreeMap<u32, (u32, CodecConfig)> = BTreeMap::new();
+    // セグメントの (壁時計の開始, 媒体時刻の開始 µs, 長さ µs)。壁時計 → 媒体時刻の対応に使う
+    let mut wall_map: Vec<(i64, i64, i64)> = Vec::new();
     if let Some((p, _)) = &idx.init {
         let b = read(p, idx.init_key.as_deref()).map_err(|_| Problem::internal())?;
         let (init, _) = senca_fmp4::read_file(&b).map_err(|_| Problem::internal())?;
@@ -81,8 +86,11 @@ pub fn mp4(app: &App, id: &str) -> Result<Bytes, Problem> {
             epoch_base = Some(start);
             offset_us = last_end_us.unwrap_or(0);
         }
+        let base = epoch_base.unwrap_or(0);
+        if let Some(m) = seg_aus.iter().map(|a| a.dts.rescale(a.timebase, Timebase::MICROS).unwrap_or(0) - base + offset_us).min() {
+            wall_map.push((seg.wall_ms, m, seg.duration_ms as i64 * 1000));
+        }
         for mut a in seg_aus {
-            let base = epoch_base.unwrap_or(0);
             let d = a.dts.rescale(a.timebase, Timebase::MICROS).unwrap_or(0) - base + offset_us;
             let p = a.pts.rescale(a.timebase, Timebase::MICROS).unwrap_or(0) - base + offset_us;
             a.dts = d;
@@ -97,11 +105,31 @@ pub fn mp4(app: &App, id: &str) -> Result<Bytes, Problem> {
     if aus.is_empty() {
         return Err(Problem::new(ProblemCode::Conflict, "録画が空です"));
     }
-    // 切り出し（壁時計 → 録画の先頭からの位置）
-    let wall0 = idx.segments.first().map(|s| s.wall_ms).unwrap_or(idx.started_at_ms);
+    // 切り出し（壁時計 → 媒体時刻）: 予約の範囲と要求の範囲の重なり
     let t0 = first_us.unwrap_or(0);
-    let cut_from = idx.not_before_ms.map(|w| (w - wall0).max(0) * 1000 + t0);
-    let cut_to = idx.end.as_ref().and_then(|e| e.2).map(|w| (w - wall0).max(0) * 1000 + t0);
+    let to_media = |w: i64| -> i64 {
+        match wall_map.iter().rev().find(|(sw, _, _)| *sw <= w) {
+            // その区間の中（区間の長さを超えた分は区間の終わりに寄せる。詰めた空白に入らない）
+            Some((sw, m, d)) => m + ((w - sw) * 1000).min(*d),
+            None => t0,
+        }
+    };
+    let from_wall = match (idx.not_before_ms, start_ms) {
+        (Some(a), Some(b)) => Some(a.max(b)),
+        (a, b) => a.or(b),
+    };
+    let to_wall = match (idx.end.as_ref().and_then(|e| e.2), end_ms) {
+        (Some(a), Some(b)) => Some(a.min(b)),
+        (a, b) => a.or(b),
+    };
+    // 範囲が録画の外（始まりが録画の終わりより後・終わりが録画の始まりより前）なら何も無い
+    let rec_from = idx.segments.first().map(|s| s.wall_ms).unwrap_or(idx.started_at_ms);
+    let rec_to = idx.segments.last().map(|s| s.wall_ms + s.duration_ms as i64).unwrap_or(rec_from);
+    if from_wall.is_some_and(|f| f >= rec_to) || to_wall.is_some_and(|t| t <= rec_from) || from_wall.zip(to_wall).is_some_and(|(f, t)| t <= f) {
+        return Err(Problem::new(ProblemCode::Conflict, "指定の範囲に映像・音声がありません"));
+    }
+    let cut_from = from_wall.map(to_media);
+    let cut_to = to_wall.map(to_media);
     let video = configs.iter().find(|(_, c)| c.codec.kind() == senca_core::MediaKind::Video).map(|(t, _)| *t);
     if let Some(from) = cut_from {
         // from 以前で最後のキーフレームから
@@ -115,6 +143,9 @@ pub fn mp4(app: &App, id: &str) -> Result<Bytes, Problem> {
     }
     if let Some(to) = cut_to {
         aus.retain(|a| a.pts <= to);
+    }
+    if aus.is_empty() {
+        return Err(Problem::new(ProblemCode::Conflict, "指定の範囲に映像・音声がありません"));
     }
     let mut specs = Vec::new();
     let mut ids = BTreeMap::new();

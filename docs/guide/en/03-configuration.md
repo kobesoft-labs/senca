@@ -5,12 +5,12 @@ This page lists every option, the JSON format, the cluster configuration, enviro
 the data directory.
 
 - Related pages: [2. Quickstart](02-quickstart.md), [9. Cluster and grid](09-cluster-grid.md), [12. Security](12-security.md), [13. Operations](13-operations.md)
-- Source of truth: `crates/senca-node/src/config.rs` (`senca-node --help` prints a summary)
+- `senca-node --help` also prints the list of options.
 
 ## 3.1 Rules
 
-- Options are written as `--name value`; the `--name=value` form is not accepted. Only `--capture-synthetic`,
-  `--verify-recordings` and `--log-json` take no value.
+- Options are written as `--name value`; the `--name=value` form is not accepted. The options that take no value
+  are `--capture-synthetic`, `--verify-recordings`, `--log-json` and `--rooms-cascade`.
 - An unknown option is an error (exit code 2, usage printed). An invalid configuration never starts the node;
   nothing is applied partially.
 - If `--config FILE` is present, that JSON is loaded first and the other command-line options are then applied on
@@ -33,7 +33,8 @@ the data directory.
 | `--srt` | ADDR\|`off` | off | SRT (UDP) |
 | `--rtsp` | ADDR\|`off` | off | RTSP play (TCP) |
 | `--webrtc-udp` | ADDR\|`off` | off | The WebRTC UDP socket shared by WHIP, WHEP and rooms. This address is advertised verbatim as the ICE candidate, so use an IP that clients can reach (not `0.0.0.0`) |
-| `--tls-cert` | FILE | none | Certificate chain for `--https` and `--rtmps` (PEM, leaf first) |
+| `--quic` | ADDR\|`off` | off | QUIC v1 over UDP: HTTP/3 (ALPN `h3`, the same content as HTTP except SSE and `/signaling`), WebTransport and MoQ draft-22 (ALPN `moqt-22`; `/moq` over WebTransport) on one port. Requires `--tls-cert` and `--tls-key`. When enabled, HTTP and HTTPS responses carry `Alt-Svc: h3=":PORT"` (see [4. Ingest and playback](04-ingest-playback.md#415-moq-and-http3)) |
+| `--tls-cert` | FILE | none | Certificate chain for `--https`, `--rtmps` and `--quic` (PEM, leaf first) |
 | `--tls-key` | FILE | none | Its private key (PEM). Startup fails if it does not match the leaf's public key |
 
 ### Public URLs
@@ -46,7 +47,7 @@ independently of the listen addresses.
 | `--public-http-url` | `http://127.0.0.1:8080` | `hls` and `whep` in playback URLs; `ingest.whip_url` |
 | `--public-rtmp-url` | `rtmp://127.0.0.1:1935` | `ingest.rtmp_url` (`{URL}/live`); `rtmp` in playback URLs (`{URL}/play/{id}?...`) |
 | `--public-srt-url` | none | `ingest.srt_url` (used verbatim). Omitted when unset |
-| `--public-rtsp-url` | none | `rtsp` in playback URLs (`{URL}/live/{id}?...`). Omitted when unset. Not listed by `--help` |
+| `--public-rtsp-url` | none | `rtsp` in playback URLs (`{URL}/live/{id}?...`). Omitted when unset |
 
 Set these whenever you change ports from the defaults, or when clients reach the node through a reverse proxy or
 from outside a container.
@@ -96,7 +97,7 @@ See [12. Security](12-security.md).
 | `--codec-workers` | N | `0` (= number of CPUs) | Number of codec worker processes for one-shot jobs (snapshots, thumbnails and the like) |
 | `--codec-worker-bin` | FILE | `senca-codec-worker` next to `senca-node` | The codec worker executable. If it cannot be found, transcoding returns 503 |
 | `--codec-lib-dir` | DIR | none | Directory searched first for codec shared libraries. Passed to the codec and capture workers as `SENCA_CODEC_LIB_DIR` (several directories may be joined with `:`). See [2.3](02-quickstart.md#23-codec-libraries) |
-| `--capture-synthetic` | — | off | Expose a synthetic test capture device (passes `--synthetic` to the capture worker). Not listed by `--help` |
+| `--capture-synthetic` | — | off | Expose a synthetic test capture device (passes `--synthetic` to the capture worker) |
 
 ### Web pages
 
@@ -112,12 +113,24 @@ See [12. Security](12-security.md).
 | Option | Value | Default | Meaning |
 |---|---|---|---|
 | `--node-name` | name | `node-1` | Display name of the node. Becomes the grid label `senca.io/name`; device endpoints accept it in place of the node ID |
-| `--label` | KEY=VALUE | none | Label used by placement constraints (`placement.labels`). Repeatable. Key 1–128 characters, value up to 128; keys starting with `senca.io/` are reserved |
+| `--label` | KEY=VALUE | none | Label used by placement constraints (`placement.labels`). Repeatable. Key 1–128 characters, value up to 128, no control characters; keys starting with `senca.io/` and `raft_id` are reserved; at most 64 labels |
 | `--net-mbps` | Mbit/s | `10000` | Bandwidth of this node, applied to both directions. Counted by grid placement |
 | `--capacity-cpu-millis` | millicores | CPUs × 1000 × 90% | CPU offered to workloads |
 | `--capacity-memory-mb` | MB | 85% of `MemTotal` | Memory offered to workloads |
 | `--cluster-config` | FILE | none | Cluster configuration (JSON, see [3.4](#34-cluster-configuration)). Without it the node runs alone |
 | `--egress-allow` | CIDR | none | Private address range that outbound connections (pull inputs, push outputs, captions, PaaS, HLS pull) may reach. Repeatable. See [12. Security](12-security.md) |
+
+### Rooms (realtime)
+
+| Option | Value | Default | Meaning |
+|---|---|---|---|
+| `--rooms-cascade` | — | off | Use cascading for every room (serve participants of rooms placed on other nodes here even if the room setting `cascade` is false). [10. Realtime rooms](10-rooms.md) |
+| `--rooms-auth-webhook` | URL | none | Auth webhook for rooms (the room setting `auth_webhook_url` takes precedence). Requires `--rooms-webhook-secret-file` |
+| `--rooms-auth-mode` | `after_token`, `only` | `after_token` | `after_token` asks the webhook after the token is verified; `only` admits by webhook instead of a token |
+| `--rooms-event-webhook` | URL | none | Webhook that receives room events (signed, retried). Requires `--rooms-webhook-secret-file` |
+| `--rooms-webhook-secret-file` | FILE | none | File with the webhook signing secret (HMAC-SHA256), at least 16 bytes after trimming whitespace |
+
+Webhook destinations are checked against the `--egress-allow` policy (private addresses must be allowed).
 
 ### Other
 
@@ -132,11 +145,13 @@ See [12. Security](12-security.md).
 The node refuses to start (exit code 2) when:
 
 - `--jwks` is given without `--jwt-issuer` or `--jwt-audience`;
-- `--https` or `--rtmps` is given without `--tls-cert` or `--tls-key`;
+- `--https`, `--rtmps` or `--quic` is given without `--tls-cert` or `--tls-key`;
 - `--record-queue` is outside 16–1048576, or `--max-playback-ttl` is 0;
 - an `--egress-allow` value is not a valid CIDR;
 - `--recording-storage` is neither `local` nor `s3://BUCKET[/PREFIX]`, `--s3-endpoint`, `--s3-region` or `--s3-addressing` is malformed,
   or `--s3-part-size` is outside 5 MiB–5 GiB;
+- `--rooms-auth-webhook` or `--rooms-event-webhook` is not an http/https URL, or is given without `--rooms-webhook-secret-file`;
+  the secret file cannot be read or is shorter than 16 bytes;
 - the cluster configuration has `node_id` 0, does not list itself in `peers`, or has fewer than 1 or more than 7 peers.
 
 Problems found later during startup (unreadable files, a listener that cannot be bound, a cluster secret shorter
@@ -152,7 +167,7 @@ The `--config FILE` JSON is an object with the keys below. Every key is optional
 | `data_dir` | `--data-dir` | string |
 | `node_name` | `--node-name` | string |
 | `http_listen` | `--http` | string (ADDR) |
-| `https_listen`, `rtmp_listen`, `rtmps_listen`, `srt_listen`, `rtsp_listen`, `webrtc_udp` | `--https` etc. | string (ADDR) or `null` (disabled) |
+| `https_listen`, `rtmp_listen`, `rtmps_listen`, `srt_listen`, `rtsp_listen`, `webrtc_udp`, `quic_listen` | `--https` etc. (`quic_listen` is `--quic`) | string (ADDR) or `null` (disabled) |
 | `tls_cert`, `tls_key` | `--tls-cert`, `--tls-key` | string |
 | `public` | `--public-*-url` | `{"rtmp": string, "http": string or null, "srt": string or null, "rtsp": string or null}` |
 | `max_playback_ttl_secs` | `--max-playback-ttl` | number |
@@ -171,6 +186,10 @@ The `--config FILE` JSON is an object with the keys below. Every key is optional
 | `labels` | `--label` | object mapping string to string |
 | `capacity_cpu_millis`, `capacity_memory_mb` | same names | number or `null` |
 | `recording_storage` | `--recording-storage`, `--s3-*`, `--recording-keep-local` | `{"uri", "endpoint", "region", "addressing", "credentials_file", "part_size", "keep_local_secs"}` (all optional) |
+| `rooms_cascade` | `--rooms-cascade` | boolean |
+| `rooms_auth_webhook`, `rooms_event_webhook` | same names | string or `null` |
+| `rooms_auth_mode` | `--rooms-auth-mode` | `"after_token"` or `"only"` |
+| `rooms_webhook_secret_file` | same names | string or `null` |
 
 Notes:
 
@@ -178,7 +197,7 @@ Notes:
 - Keys omitted inside `public` take their defaults (`rtmp` and `http` as in [Public URLs](#public-urls); `srt` and
   `rtsp` unset). An explicit `"http": null` makes the `hls` playback URL relative (starting with `/s/...`) and drops
   `ingest.whip_url`.
-- The label checks (length, reserved `senca.io/` prefix) are applied only to `--label` on the command line.
+- `labels` are checked with the same rules as `--label` (the node does not start otherwise; exit code 2).
 
 Example:
 
@@ -231,7 +250,9 @@ plaintext ([12. Security](12-security.md#127-cluster-mtls)).
 | `relay` | no | ADDR | The peer's relay address. Defaults to the `addr` port + 1 |
 
 Because the relay ports default to "Raft port + 1", make sure that port is free. When several nodes share one host
-(tests), set `relay_listen` and `peers[].relay` explicitly.
+(tests), set `relay_listen` and `peers[].relay` explicitly. A configuration where some node's relay address
+collides with another node's Raft or relay address (for example Raft on 7000 and 7001 on one host with default
+relay ports) is refused at startup (exit code 2, naming the colliding addresses).
 
 ```json
 {
@@ -283,10 +304,10 @@ Contents of `--data-dir`. The node creates what it needs.
 |---|---|
 | `node-id` | This node's ID (128-bit, hex). Created once and never changed |
 | `audit.log` | Audit log (one JSON object per line, append-only) |
-| `control/log` | Single-node control-state log (`len:u32be | crc32:u32be | JSON` records, each fsynced) |
+| `control/log` | Single-node control-state log (append-only, each record fsynced) |
 | `control/snapshot.json` | Single-node control-state snapshot. Rewritten when the log exceeds 1000 records, after which the log is emptied |
 | `control/raft/` | Raft storage in a cluster (`hardstate`, `snap-*.snap`, `log/*.seg`). `control/log` is not used in a cluster |
-| `control/secret-key` | Key that seals stored secrets (32 bytes, mode 0600). Created on first start if missing |
+| `control/secret-key` | Key that seals stored secrets (32 bytes, mode 0600). Created on first start if missing. In a cluster, one node's key becomes the cluster-wide key, wrapped with the cluster secret and replicated |
 | `control/bootstrap-admin-token` | Value of the first admin token (mode 0600). Written only on the very first start |
 | `recordings/{recording ID}/index.jsonl` | Recording index (append-only JSON Lines: `begin`, `init`, `segment`, `gap`, `end`) |
 | `recordings/{recording ID}/thumbnail.jpg`, `thumbnail.json` | Recording thumbnail and its metadata |

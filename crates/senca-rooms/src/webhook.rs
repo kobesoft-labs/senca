@@ -352,6 +352,11 @@ impl Outbox {
         self.dead.iter()
     }
 
+    /// 諦めたイベントの数（これまでの合計）。
+    pub fn dead_total(&self) -> u64 {
+        self.dead_total
+    }
+
     pub fn dropped(&self) -> u64 {
         self.dropped
     }

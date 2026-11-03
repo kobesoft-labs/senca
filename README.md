@@ -5,9 +5,8 @@ English | [日本語](README.ja.md)
 A media server for live streaming, recording and real-time communication, written in Rust.
 It runs on a single node or as a grid of many nodes that places work by resources and keeps running when nodes fail.
 
-> **Status: v0.0.0 (experimental).** The feature set is broad, but the release gate has not been passed yet
-> (24-hour fuzzing, 72-hour soak test, independent review of the cryptographic and authorization code, signed builds).
-> Do not use it in production. See [docs/RELEASE.md](docs/RELEASE.md) (Japanese).
+> **Version: v0.0.0.** The release process and the checks done before a release are described in
+> [docs/dev/RELEASE.en.md](docs/dev/RELEASE.en.md).
 
 ## Features
 
@@ -28,7 +27,8 @@ It runs on a single node or as a grid of many nodes that places work by resource
   inter-node relay (ADR-0014)
 - **Management**: REST API (OpenAPI: [docs/api/openapi.yaml](docs/api/openapi.yaml)), SSE, web console (`apps/console`),
   TypeScript and Rust API clients (`apps/sdk-js`, `crates/senca-client`)
-- **Building blocks**: QUIC v1, HTTP/3, WebTransport, MoQ (draft-22); not yet wired into the node
+- **QUIC** (`--quic`): HTTP/3 (management API, signed HLS), and MoQ (draft-22, native QUIC and WebTransport)
+  for live subscriptions (hang catalog + CMAF) and CMAF publishing
 
 ## Codecs and patents
 
@@ -37,7 +37,7 @@ VA-API), loaded at run time inside a sandboxed codec worker. No software H.264/H
 Without a GPU, those transcodes return `503 CAPACITY_UNAVAILABLE`; passing received H.264/AAC through
 (delivery and recording) always works. Royalty-free codecs (AV1: dav1d and SVT-AV1, VP8/VP9: libvpx, Opus: libopus)
 are handled in software. Licensing obligations for distributing content are yours to check.
-See [ADR-0004](docs/adr/0004-codecs-patents.md) (Japanese) and the guide page on codecs.
+See [ADR-0004](docs/dev/adr/0004-codecs-patents.md) (Japanese) and the guide page on codecs.
 
 ## Getting started
 
@@ -59,10 +59,10 @@ rooms, media pipelines, API and SDKs). The same guide in Japanese is in [docs/gu
 | | |
 |---|---|
 | API | [docs/api/openapi.yaml](docs/api/openapi.yaml), room signaling [docs/realtime/signaling.en.md](docs/realtime/signaling.en.md) |
-| SDKs | [apps/sdk-js](apps/sdk-js/README.md), [crates/senca-client](crates/senca-client/README.md) |
-| Design records, specification, requirements (Japanese) | [docs/adr](docs/adr), [docs/spec](docs/spec), [docs/requirements](docs/requirements) |
-| Progress (Japanese) | [docs/ROADMAP.md](docs/ROADMAP.md), conformance ledger [docs/conformance](docs/conformance) |
-| Development (Japanese) | [docs/DEVELOPMENT.md](docs/DEVELOPMENT.md), [docs/RELEASE.md](docs/RELEASE.md), dependency licenses [docs/licenses](docs/licenses) |
+| SDKs | [apps/sdk-js](apps/sdk-js/README.en.md), [crates/senca-client](crates/senca-client/README.en.md) |
+| Design records, specification, requirements (Japanese) | [docs/dev/adr](docs/dev/adr), [docs/dev/spec](docs/dev/spec), [docs/dev/requirements](docs/dev/requirements) |
+| Progress (Japanese) | [docs/dev/ROADMAP.md](docs/dev/ROADMAP.md), conformance ledger [docs/dev/conformance](docs/dev/conformance) |
+| Development | [docs/dev/DEVELOPMENT.en.md](docs/dev/DEVELOPMENT.en.md), [docs/dev/RELEASE.en.md](docs/dev/RELEASE.en.md), dependency licenses [docs/licenses](docs/licenses) |
 
 ## License
 

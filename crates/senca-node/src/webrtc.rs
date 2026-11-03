@@ -84,7 +84,7 @@ pub async fn start(app: Arc<App>, udp: SocketAddr) -> Result<Arc<Rtc>, String> {
     let (down_tx, down_rx) = mpsc::channel(8192);
     // 公開する候補のアドレス（0.0.0.0 で待つときは、ノードの公開 URL のホストに置き換えるべきだが、ここでは待ち受けのアドレス）
     let (rooms_tx, rooms_rx) = mpsc::unbounded_channel();
-    let rooms = crate::rooms::RoomsHost::new(app.clone(), cert.clone(), udp);
+    let rooms = crate::rooms::RoomsHost::new(app.clone(), cert.clone(), udp, rooms_tx.clone());
     tokio::spawn(drive(app.clone(), sock, cert, rx, down_rx, udp, rooms, rooms_rx));
     app.log(&format!("webrtc listening on udp {udp}"));
     Ok(Arc::new(Rtc { tx, down_tx, rooms_tx }))
@@ -359,6 +359,25 @@ pub async fn http(app: &Arc<App>, rtc: &Rtc, h: &senca_http::RequestHead, body: 
             if !ok {
                 return plain(401, "unauthorized");
             }
+            // 排出中のノードは新しい送り手を受けない: 排出中でない別のノードへ 307 で案内する（WHIP の
+            // クライアントは同じ要求を案内先へ送り直す）。案内先が無ければ 503
+            if app.draining() {
+                return match app.undrained_peer_api() {
+                    Some(api) => Reply {
+                        status: 307,
+                        headers: vec![
+                            ("Location".into(), format!("{}/whip/{stream}", api.trim_end_matches('/'))),
+                            ("Access-Control-Allow-Origin".into(), "*".into()),
+                        ],
+                        body: Bytes::new(),
+                    },
+                    None => {
+                        let mut r = plain(503, "this node is draining; publish to another node");
+                        r.headers.push(("Retry-After".into(), "10".into()));
+                        r
+                    }
+                };
+            }
             let offer = String::from_utf8_lossy(&body).to_string();
             let (reply, rx) = oneshot::channel();
             if rtc.tx.send(Cmd::Whip { offer, reply }).await.is_err() {
@@ -380,7 +399,15 @@ pub async fn http(app: &Arc<App>, rtc: &Rtc, h: &senca_http::RequestHead, body: 
                 return plain(415, "Content-Type は application/sdp");
             }
             let q = h.query().unwrap_or("");
-            let Some(mut sub) = app.subscribe_rtmp_play(&format!("{stream}?{q}")) else { return plain(403, "forbidden") };
+            let mut sub = match app.subscribe_play(&format!("{stream}?{q}"), "webrtc") {
+                Ok(s) => s,
+                Err(crate::app::PlayError::TooManyViewers) => {
+                    let mut r = plain(503, "too many viewers");
+                    r.headers.push(("Retry-After".into(), "5".into()));
+                    return r;
+                }
+                Err(_) => return plain(403, "forbidden"),
+            };
             let init = sub.initial();
             let kinds: Vec<(MediaKind, Codec)> = init
                 .iter()

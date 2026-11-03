@@ -67,6 +67,19 @@ pub struct App {
     pub archiver: std::sync::OnceLock<Arc<crate::archive::Archiver>>,
     /// 削除の途中の録画（同じ録画を 2 度消しに行かない）。
     pub deleting: Mutex<std::collections::HashSet<String>>,
+    /// 視聴者の数（`limits.max_viewers`。ノードごと）。
+    pub viewers: Arc<crate::viewers::Viewers>,
+}
+
+/// 再生（RTMP・SRT・RTSP の play、WHEP）を始められない理由。
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum PlayError {
+    /// 署名の誤り・期限切れ。
+    Forbidden,
+    /// 配信していない（stream が無い・所有者が分からない）。
+    NotLive,
+    /// 視聴者が `limits.max_viewers` に達している。
+    TooManyViewers,
 }
 
 impl App {
@@ -105,6 +118,7 @@ impl App {
             storage: std::sync::OnceLock::new(),
             archiver: std::sync::OnceLock::new(),
             deleting: Mutex::new(Default::default()),
+            viewers: Default::default(),
         });
         *app.me.lock().unwrap() = Arc::downgrade(&app);
         if let Ok(h) = tokio::runtime::Handle::try_current() {
@@ -134,11 +148,7 @@ impl App {
     }
 
     pub fn log(&self, msg: &str) {
-        if self.cfg.log_json {
-            println!("{}", json!({ "ts": crate::util::rfc3339(crate::util::now_ms()), "node": self.node_id, "msg": msg }));
-        } else {
-            eprintln!("{} {msg}", crate::util::rfc3339(crate::util::now_ms()));
-        }
+        crate::util::log(msg);
     }
 
     /// 監査ログ（仕様 9.5）。秘密・本文は書かない。
@@ -162,7 +172,56 @@ impl App {
     }
 
     pub fn ready(&self) -> bool {
-        self.ready.load(Ordering::Relaxed) && !self.shutting_down()
+        self.ready.load(Ordering::Relaxed) && !self.shutting_down() && !self.fenced()
+    }
+
+    /// 分散で、過半数（またはリーダー）との連絡が `FENCE_AFTER_MS` を超えて途絶えている。
+    /// このノードはグリッドの仕事を止め、`/readyz` は 503（ADR-0013 の fencing）。単一ノードではいつも false。
+    pub fn fenced(&self) -> bool {
+        self.cluster.get().is_some_and(|c| c.contact_age_ms() > crate::grid::FENCE_AFTER_MS)
+    }
+
+    /// グリッドの仕事 `workload` の token `token` が、今もこのノードの割り当てで、過半数と連絡が取れているか。
+    /// 外への副作用（pull の送り手としてつなぐ・push の接続・パイプラインの公開）の前と、動いている間に確かめる。
+    pub fn work_current(&self, workload: &str, token: u64) -> bool {
+        !self.fenced() && self.control.lock().unwrap().state.grid.is_current(workload, &self.node_id, token)
+    }
+
+    /// このノードが排出中（drain）か。
+    pub fn draining(&self) -> bool {
+        self.control.lock().unwrap().state.nodes.get(&self.node_id).is_some_and(|n| n.draining)
+    }
+
+    /// 排出中でない別のノードの管理 API の URL（WHIP の案内先。分散で、`peers[].api` があるものだけ）。
+    pub fn undrained_peer_api(&self) -> Option<String> {
+        self.cluster.get()?;
+        let core = self.control.lock().unwrap();
+        let st = &core.state;
+        st.nodes
+            .values()
+            .filter(|n| n.id != self.node_id && !n.draining)
+            .filter(|n| st.grid.nodes.get(&n.id).is_none_or(|g| g.status.up))
+            .find_map(|n| n.media_addr.clone())
+    }
+
+    /// 秘密値を封じる（分散ではクラスタ共通のデータ鍵。まだ届いていなければ 503）。
+    pub fn seal_secret(&self, plain: &[u8], aad: &str) -> Result<String, Problem> {
+        let wrapped = self.control.lock().unwrap().state.secret_data_key.clone();
+        self.secret_box.seal(wrapped.as_deref(), plain, aad).map_err(|e| match e {
+            crate::secrets::SealError::NotReady => {
+                Problem::new(ProblemCode::CapacityUnavailable, "秘密値の鍵がまだこのノードに届いていません").with_retryable(true)
+            }
+            crate::secrets::SealError::BadKey => {
+                Problem::new(ProblemCode::CapacityUnavailable, "秘密値の鍵を開けません（クラスタの合言葉がノードで違う）").with_retryable(false)
+            }
+            crate::secrets::SealError::Internal => Problem::internal(),
+        })
+    }
+
+    /// 秘密値を開く。
+    pub fn open_secret(&self, sealed: &str, aad: &str) -> Option<Vec<u8>> {
+        let wrapped = self.control.lock().unwrap().state.secret_data_key.clone();
+        self.secret_box.open_sealed(wrapped.as_deref(), sealed, aad)
     }
 
     pub fn set_ready(&self) {
@@ -216,7 +275,31 @@ impl App {
         h
     }
 
-    fn on_hub_idle(&self, _id: &str) {}
+    /// stream の入力が終わった（再接続の猶予が切れた）・hub が閉じた。分散では、自分が持つ所有権を手放す
+    /// （`ReleaseStream`。token が今のものと同じときだけ外れる）。視聴者は止まった所有者へ案内されず、404 などになる。
+    fn on_hub_idle(&self, id: &str) {
+        if self.cluster.get().is_none() || self.shutting_down() {
+            return;
+        }
+        // 写し（中継で受けている hub）は所有権を持たない
+        if self.relay.get().is_some_and(|r| r.is_mirror(id)) {
+            return;
+        }
+        let token = self.control.lock().unwrap().state.owners.get(id).filter(|o| o.node == self.node_id).map(|o| o.token);
+        let (Some(token), Some(rt)) = (token, self.rt.get()) else { return };
+        let me = self.arc();
+        let sid = id.to_string();
+        rt.spawn_blocking(move || {
+            // 猶予の間に送り手が戻っていれば手放さない
+            if me.hubs.lock().unwrap().get(&sid).is_some_and(|h| h.is_live()) {
+                return;
+            }
+            match me.propose(Command::ReleaseStream { stream: sid.clone(), token }) {
+                Ok(()) => me.log(&format!("cluster: released ownership of stream {sid} (input ended)")),
+                Err(e) => me.log(&format!("cluster: release of stream {sid} failed: {}", e.title)),
+            }
+        });
+    }
 
     pub async fn attach_publisher(&self, key: &str, transport: &'static str, peer: &str) -> Result<Publisher, PublishError> {
         if !key.starts_with(crate::api::streams::KEY_PREFIX) || key.len() > 128 {
@@ -228,6 +311,10 @@ impl App {
             core.state.streams.values().find(|s| s.key_hash == h).cloned()
         };
         let Some(stream) = stream else { return Err(PublishError::BadKey) };
+        // 排出中のノードは新しい送り手を受けない（今つながっている送り手はそのまま）
+        if self.draining() {
+            return Err(PublishError::Draining);
+        }
         if !self.publish_allowed(&stream) {
             return Err(PublishError::Rejected("outside of the live schedule".into()));
         }
@@ -279,14 +366,15 @@ impl App {
         Ok(p)
     }
 
-    /// 予約に「live」があれば、その窓の間だけ publish を許す。
+    /// 予約に「live」があれば、その窓の間だけ publish を許す。見るのはこれから動く予約（`pending`・`running`）だけで、
+    /// 終わった（`completed`・`missed`・`failed`）・取り消した予約は、時間帯の外の配信を止めない。
     fn publish_allowed(&self, s: &Stream) -> bool {
         let core = self.control.lock().unwrap();
         let lives: Vec<&Schedule> = core
             .state
             .schedules
             .values()
-            .filter(|x| x.stream == s.id && x.action == ScheduleAction::Live && !matches!(x.state, ScheduleState::Canceled))
+            .filter(|x| x.stream == s.id && x.action == ScheduleAction::Live && matches!(x.state, ScheduleState::Pending | ScheduleState::Running))
             .collect();
         if lives.is_empty() {
             return true;
@@ -302,8 +390,9 @@ impl App {
             .any(|r| r.stream == stream && r.state == RecordingState::Recording && r.schedule.is_none())
     }
 
-    /// RTMP play（SRT・RTSP の play、WHEP も）: キーは署名付きの `{stream_id}?exp=..&sig=..`（publish 鍵では見られない）。
-    pub fn subscribe_rtmp_play(&self, key: &str) -> Option<Subscription> {
+    /// 再生のキー `{stream_id}?exp=..&sig=..`（署名付きの再生 URL と同じ署名。publish 鍵では見られない）を確かめ、
+    /// stream id を返す。RTMP・SRT・RTSP の play と WHEP で共通（MoQ は `moq.rs` が同じ署名を見る）。
+    pub fn verify_play_key(&self, key: &str) -> Result<String, PlayError> {
         let (id, q) = key.split_once('?').unwrap_or((key, ""));
         let mut exp = None;
         let mut sig = None;
@@ -314,12 +403,55 @@ impl App {
                 sig = Some(v);
             }
         }
-        let (exp, sig) = (exp?, sig?);
+        let (Some(exp), Some(sig)) = (exp, sig) else { return Err(PlayError::Forbidden) };
         if crate::util::now_ms() / 1000 > exp || !self.verify_signature("live", id, exp, sig) {
-            return None;
+            return Err(PlayError::Forbidden);
         }
-        let hub = self.source_hub(id)?;
-        Some(hub.subscribe())
+        Ok(id.to_string())
+    }
+
+    /// stream の視聴の上限と、HLS の客を視聴中と見なす長さ。
+    fn viewer_limits(&self, id: &str) -> (Option<u32>, u64, bool) {
+        let core = self.control.lock().unwrap();
+        match core.state.streams.get(id) {
+            Some(s) => (s.limits.max_viewers, crate::viewers::hls_active_ms(s.hls.segment_ms), s.latency_profile == LatencyProfile::Interactive),
+            None => (None, crate::viewers::hls_active_ms(2000), false),
+        }
+    }
+
+    /// まだ視聴者を受けられるか（数えない。SRT の受け入れの判断用）。
+    pub fn viewer_room(&self, id: &str) -> bool {
+        let (max, active, _) = self.viewer_limits(id);
+        self.viewers.has_room(id, max, active)
+    }
+
+    /// stream が `latency_profile: interactive` か。
+    pub fn interactive(&self, id: &str) -> bool {
+        self.viewer_limits(id).2
+    }
+
+    /// 接続を持つ再生（RTMP・SRT・RTSP の play、WHEP）を始める: キーを確かめ、視聴者を 1 人数えて、hub を購読する
+    /// （このノードに無ければ中継の写しから）。購読を手放すと視聴者の数が減る。`kind` は `viewers::SESSION_KINDS` のどれか。
+    pub fn subscribe_play(&self, key: &str, kind: &'static str) -> Result<Subscription, PlayError> {
+        let id = self.verify_play_key(key)?;
+        let (max, active, interactive) = self.viewer_limits(&id);
+        let guard = self.viewers.try_session(&id, kind, max, active).ok_or(PlayError::TooManyViewers)?;
+        let hub = self.source_hub(&id).ok_or(PlayError::NotLive)?;
+        let mut sub = hub.subscribe().with_viewer(guard);
+        sub.interactive = interactive;
+        Ok(sub)
+    }
+
+    /// MoQ の購読者 1 人を数える（同じセッションの catalog・映像・音声の購読は 1 人。印は呼び手が持つ）。
+    pub fn moq_viewer(&self, id: &str) -> Option<crate::viewers::ViewerGuard> {
+        let (max, active, _) = self.viewer_limits(id);
+        self.viewers.try_session(id, "moq", max, active)
+    }
+
+    /// HLS のプレイリストの取得を視聴として記録する。新しい客で上限に達していれば false（503 にする）。
+    pub fn hls_viewer(&self, id: &str, peer: &str, user_agent: Option<&str>) -> bool {
+        let (max, active, _) = self.viewer_limits(id);
+        self.viewers.hls_touch(id, crate::viewers::hls_client_key(peer, user_agent), max, active)
     }
 
     /// stream の hub。このノードに無く、別のノードが持っていれば中継の写しを作る（ADR-0014）。
@@ -339,7 +471,11 @@ impl App {
     pub fn live_info(&self, id: &str) -> Option<Value> {
         let hub = self.hubs.lock().unwrap().get(id).cloned()?;
         let l = hub.shared.live.lock().unwrap().clone()?;
-        serde_json::to_value(l).ok()
+        let mut v = serde_json::to_value(l).ok()?;
+        // このノードの視聴者の数（接続を持つ視聴と、最近の HLS の客）
+        let (_, active, _) = self.viewer_limits(id);
+        v["viewers"] = self.viewers.counts(id, active);
+        Some(v)
     }
 
     pub fn live_cache(&self, id: &str) -> Option<Arc<LiveCache>> {
@@ -358,6 +494,7 @@ impl App {
         if let Some(h) = h {
             tokio::spawn(async move { h.shutdown().await });
         }
+        self.viewers.forget(id);
         let _ = std::fs::remove_dir_all(self.cfg.data_dir.join("snapshots").join(id));
     }
 
@@ -401,7 +538,9 @@ impl App {
         self.propose(Command::PutRecording { recording: rec.clone() })?;
         let hub = self.hub(s);
         let id = rec.id.clone();
-        let res = tokio::runtime::Handle::current().block_on(hub.start_recording(&id, not_before_ms));
+        // 予約の録画は窓の終わりまで続ける（配信が途中で終わっても閉じない）
+        let keep_across_end = rec.schedule.is_some();
+        let res = tokio::runtime::Handle::current().block_on(hub.start_recording(&id, not_before_ms, keep_across_end));
         if let Err(e) = res {
             self.log(&format!("recording {id} could not start: {e}"));
             let mut r = rec.clone();
@@ -411,7 +550,8 @@ impl App {
             let _ = self.propose(Command::PutRecording { recording: r });
             return Err(Problem::internal());
         }
-        self.rec_info.lock().unwrap().insert(rec.id.clone(), RecInfo::default());
+        // 書き手の通知（セグメント・欠落）が先に来ていることがあるので、上書きしない
+        self.rec_info.lock().unwrap().entry(rec.id.clone()).or_default();
         Ok(rec)
     }
 
@@ -425,16 +565,56 @@ impl App {
         }
     }
 
+    /// 録画を閉じた記録を残す。分散では副作用の前に確かめる（ADR-0013 の fencing）:
+    /// - 録画を持つノード（`node`）だけが閉じる。
+    /// - 録画の間に stream の所有権が別のノードへ移っていれば（配信はそちらで続いた）、`interrupted` で閉じる。
+    /// - 過半数と連絡が取れない間は書けないので、取れるまで待ってやり直す（最長 10 分）。
     fn finish_recording(&self, id: &str, ended: i64, state: RecordingState) {
-        let r = self.control.lock().unwrap().state.recordings.get(id).cloned();
-        if let Some(mut r) = r
-            && r.state == RecordingState::Recording
+        if let Err(e) = self.finish_recording_once(id, ended, state)
+            && e.retryable
+            && self.cluster.get().is_some()
         {
-            r.state = state;
-            r.ended_at_ms = Some(ended);
-            r.generation += 1;
-            let _ = self.propose(Command::PutRecording { recording: r });
+            let me = self.arc();
+            let id = id.to_string();
+            std::thread::spawn(move || {
+                for _ in 0..600 {
+                    std::thread::sleep(Duration::from_secs(1));
+                    if me.shutting_down() {
+                        return;
+                    }
+                    match me.finish_recording_once(&id, ended, state) {
+                        Err(e) if e.retryable => continue,
+                        _ => return,
+                    }
+                }
+                me.log(&format!("recording {id}: could not record the end (no quorum for 10 minutes)"));
+            });
         }
+    }
+
+    fn finish_recording_once(&self, id: &str, ended: i64, state: RecordingState) -> Result<(), Problem> {
+        let (r, moved) = {
+            let core = self.control.lock().unwrap();
+            let r = core.state.recordings.get(id).cloned();
+            let moved = r.as_ref().is_some_and(|r| core.state.owners.get(&r.stream).is_some_and(|o| o.node != self.node_id));
+            (r, moved)
+        };
+        let Some(mut r) = r.filter(|r| r.state == RecordingState::Recording) else { return Ok(()) };
+        if self.cluster.get().is_some() && r.node.as_deref().is_some_and(|n| n != self.node_id) {
+            return Ok(());
+        }
+        if self.fenced() {
+            return Err(Problem::new(ProblemCode::CapacityUnavailable, "過半数と連絡が取れません").with_retryable(true));
+        }
+        r.state = if moved && state == RecordingState::Finalized {
+            self.log(&format!("recording {id}: ownership of the stream moved to another node; closing as interrupted"));
+            RecordingState::Interrupted
+        } else {
+            state
+        };
+        r.ended_at_ms = Some(ended);
+        r.generation += 1;
+        self.propose(Command::PutRecording { recording: r })
     }
 
     fn on_recorder_event(&self, e: RecorderEvent) {
@@ -450,6 +630,12 @@ impl App {
                 i.duration_ms += segment.duration_ms as u64;
                 i.segments += 1;
                 i.bytes += segment.bytes;
+            }
+            RecorderEvent::Gap { recording, at_ms, reason, dropped } => {
+                // 録画中にも欠落を見せる（索引に書いたものと同じ）
+                let mut m = self.rec_info.lock().unwrap();
+                let i = m.entry(recording).or_default();
+                i.gaps.push(json!({ "at": crate::util::rfc3339(at_ms), "reason": reason, "dropped": dropped }));
             }
             RecorderEvent::Stopped { recording, ended_at_ms, state } => {
                 let st = if state == "finalized" { RecordingState::Finalized } else { RecordingState::Interrupted };
@@ -511,9 +697,11 @@ impl App {
         self.rec_object_blocking(id, &format!("recordings/{id}/thumbnail.jpg"), None, 16 << 20)
     }
 
-    pub fn export_mp4(&self, id: &str) -> Result<Bytes, Problem> {
-        // 保存先にあれば、前に作った書き出しを使う
-        if let Some((st, loc)) = self.remote_of(id)
+    pub fn export_mp4(&self, id: &str, start_ms: Option<i64>, end_ms: Option<i64>) -> Result<Bytes, Problem> {
+        // 保存先にあれば、前に作った書き出しを使う。置いておくのは範囲を指定しない（録画全体の）書き出しだけ
+        if start_ms.is_none()
+            && end_ms.is_none()
+            && let Some((st, loc)) = self.remote_of(id)
             && let Some(rt) = self.rt.get()
         {
             let key = loc.key(&format!("recordings/{id}/export.mp4"));
@@ -522,11 +710,11 @@ impl App {
                 Ok(None) => {}
                 Err(e) => self.log(&format!("storage: export of {id}: {e}")),
             }
-            let b = crate::export::mp4(self, id)?;
+            let b = crate::export::mp4(self, id, None, None)?;
             crate::archive::store_export(&self.arc(), id, b.clone());
             return Ok(b);
         }
-        crate::export::mp4(self, id)
+        crate::export::mp4(self, id, start_ms, end_ms)
     }
 
     // ---- 再生 ----
@@ -560,6 +748,10 @@ impl App {
             v["whep"] = if self.cfg.webrtc_udp.is_some() { json!(format!("{http}/whep/{id}?exp={exp}&sig={sig}")) } else { Value::Null };
             if let Some(r) = &self.cfg.public.rtsp {
                 v["rtsp"] = json!(format!("{r}/live/{id}?exp={exp}&sig={sig}"));
+            }
+            // MoQ（WebTransport の URL。namespace は senca/live/{id}、native QUIC では同じ query を認可のトークンに）
+            if let Some(u) = crate::moq::playback_url(self, exp, &sig) {
+                v["moq"] = json!(u);
             }
         } else {
             v["mp4"] = Value::Null;
@@ -662,6 +854,8 @@ impl App {
                 "hls": { "containers": ["ts", "fmp4"], "ll_hls": true },
                 "rtmp_play": true,
                 "whep": self.cfg.webrtc_udp.is_some(),
+                "moq": self.cfg.quic_listen.is_some(),
+                "http3": self.cfg.quic_listen.is_some(),
             },
             "codecs": {
                 "passthrough": ["h264", "h265", "av1", "vp8", "vp9", "aac", "opus", "pcma", "pcmu"],
@@ -680,6 +874,14 @@ impl App {
         })
     }
 
+    /// 部屋の係の状態（カスケード・イベント Webhook）。WebRTC が無い・応えなければ None。
+    fn rooms_status(&self) -> Option<Value> {
+        let rtc = self.rtc.get()?;
+        let (tx, rx) = std::sync::mpsc::channel();
+        rtc.room_cmd(crate::rooms::RoomCmd::Status(tx));
+        rx.recv_timeout(std::time::Duration::from_secs(1)).ok()
+    }
+
     pub fn render_node(&self, n: &NodeInfo) -> Value {
         let mine = n.id == self.node_id;
         let streams = if mine { self.hubs.lock().unwrap().values().filter(|h| h.is_live()).count() } else { 0 };
@@ -692,6 +894,7 @@ impl App {
             "live_streams": streams,
             "self": mine,
             "relay": if mine { self.relay.get().map(|r| r.status()) } else { None },
+            "rooms": if mine { self.rooms_status() } else { None },
         })
     }
 

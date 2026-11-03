@@ -60,6 +60,16 @@ pub(crate) fn check_ref(ctx: &Ctx, r: &Option<String>) -> Result<(), Problem> {
     Ok(())
 }
 
+/// 入力のプロトコルごとの options の検査（今は rtsps の公開鍵の固定）。
+fn check_input_options(protocol: &str, o: &BTreeMap<String, String>) -> Result<(), Problem> {
+    if protocol == "rtsp_pull"
+        && let Some(v) = o.get("tls_spki_sha256")
+    {
+        crate::rtsp_pull::parse_spki_pins(v).map_err(bad)?;
+    }
+    Ok(())
+}
+
 pub(crate) fn check_options(o: &BTreeMap<String, String>) -> Result<(), Problem> {
     if o.len() > 16 || o.iter().any(|(k, v)| k.is_empty() || k.len() > 64 || v.len() > 256) {
         return Err(bad("options は 16 個まで、キー 64 文字・値 256 文字まで"));
@@ -113,6 +123,7 @@ pub fn create_input(ctx: &Ctx, stream: &str) -> ApiResult {
     check_url(&b.protocol, &b.url)?;
     check_ref(ctx, &b.credential_ref)?;
     check_options(&b.options)?;
+    check_input_options(&b.protocol, &b.options)?;
     let placement = super::placement::check(ctx, b.placement, None)?;
     let i = Input {
         id: new_id()?,
@@ -198,6 +209,7 @@ pub fn patch_input(ctx: &Ctx, id: &str) -> ApiResult {
     }
     if let Some(o) = p.options {
         check_options(&o)?;
+        check_input_options(&i.protocol, &o)?;
         i.options = o;
     }
     if let Some(pl) = p.placement {
@@ -358,7 +370,7 @@ pub fn create_secret(ctx: &Ctx) -> ApiResult {
         return Err(bad("value は 1〜8192 バイト"));
     }
     let id = new_id()?;
-    let sealed = ctx.app.secret_box.seal(b.value.as_bytes(), &format!("{}/{id}", ctx.tenant())).map_err(|_| Problem::internal())?;
+    let sealed = ctx.app.seal_secret(b.value.as_bytes(), &format!("{}/{id}", ctx.tenant()))?;
     let s = SecretEntry { id: id.clone(), tenant: ctx.tenant().into(), name: b.name, sealed, created_at_ms: ctx.now_ms };
     ctx.app.propose(Command::PutSecret { secret: s.clone() })?;
     ctx.app.audit(ctx, "secret.create", &id);

@@ -32,7 +32,9 @@ pub enum RecMsg {
     },
     Stop { id: String, ended_at_ms: i64, not_after_ms: Option<i64>, state: &'static str, reply: Option<oneshot::Sender<()>> },
     /// 欠落（入力の切断など）。
-    Gap { at_ms: i64, reason: String },
+    /// `mark_next`: 次のセグメントに不連続の印を付ける（パッケージャーが新しい区切りで始め直したとき。
+    /// 猶予内の再接続ではパッケージャーが自分で印を付けるので false）。
+    Gap { at_ms: i64, reason: String, mark_next: bool },
     /// すべて止めて終わる（ノードの終了）。
     Shutdown { reply: oneshot::Sender<()> },
 }
@@ -77,6 +79,8 @@ impl RecorderTx {
 struct Active {
     file: File,
     segments: u64,
+    /// 欠落の後: 次のセグメントに不連続の印を付ける。
+    disc_next: bool,
 }
 
 pub struct Recorder {
@@ -95,6 +99,8 @@ pub struct Recorder {
 #[derive(Debug, Clone)]
 pub enum RecorderEvent {
     Appended { recording: String, segment: SegmentRef },
+    /// 欠落を索引に書いた（録画中の `gaps` に出す）。
+    Gap { recording: String, at_ms: i64, reason: String, dropped: u64 },
     Stopped { recording: String, ended_at_ms: i64, state: &'static str },
     Failed { recording: String, error: String },
     /// 不変のファイル（セグメント・初期化セグメント）を書き終えた（データ置き場からの相対パス）。
@@ -162,7 +168,7 @@ impl Recorder {
             RecMsg::Segment(s) => {
                 let dropped = self.dropped.swap(0, Ordering::Relaxed);
                 if dropped > 0 {
-                    self.append_all(&Entry::Gap { at_ms: s.wall_ms, reason: "queue_overflow".into(), dropped });
+                    self.append_all(&Entry::Gap { at_ms: s.wall_ms, reason: "queue_overflow".into(), dropped }, true);
                 }
                 if self.active.is_empty() {
                     return; // 誰も欲しがらないセグメントは書かない
@@ -194,15 +200,17 @@ impl Recorder {
                 for id in ids {
                     let ok = {
                         let a = self.active.get_mut(&id).unwrap();
-                        // 最初のセグメントは不連続の印を持たない
-                        let entry = if a.segments == 0 {
+                        // 最初のセグメントは不連続の印を持たない。欠落の後のセグメントには必ず付ける
+                        // （配信が終わってから送り手が戻ると、パッケージャーは新しい区切りで始めるので印が無い）
+                        let entry = if a.segments == 0 || (a.disc_next && !seg.discontinuity) {
                             let mut s2 = seg.clone();
-                            s2.discontinuity = false;
+                            s2.discontinuity = a.segments > 0;
                             Entry::Segment(s2)
                         } else {
                             e.clone()
                         };
                         a.segments += 1;
+                        a.disc_next = false;
                         append(&mut a.file, &entry)
                     };
                     match ok {
@@ -237,7 +245,7 @@ impl Recorder {
                     let _ = r.send(());
                 }
             }
-            RecMsg::Gap { at_ms, reason } => self.append_all(&Entry::Gap { at_ms, reason, dropped: 0 }),
+            RecMsg::Gap { at_ms, reason, mark_next } => self.append_all(&Entry::Gap { at_ms, reason, dropped: 0 }, mark_next),
             RecMsg::Shutdown { .. } => unreachable!(),
         }
     }
@@ -253,7 +261,7 @@ impl Recorder {
             let init = (self.rel(&name), sha256_hex(&bytes));
             self.init = Some(init.clone());
             (self.on_event)(RecorderEvent::Written { rel: init.0.clone() });
-            self.append_all(&Entry::Init { path: init.0, sha256: init.1, key: None });
+            self.append_all(&Entry::Init { path: init.0, sha256: init.1, key: None }, false);
         }
         Ok(())
     }
@@ -282,22 +290,30 @@ impl Recorder {
             append(&mut f, &Entry::Init { path: p.clone(), sha256: h.clone(), key: None }).map_err(|e| e.to_string())?;
         }
         crate::store::fsync_dir(&dir).map_err(|e| e.to_string())?;
-        self.active.insert(id.to_string(), Active { file: f, segments: 0 });
+        self.active.insert(id.to_string(), Active { file: f, segments: 0, disc_next: false });
         Ok(())
     }
 
-    fn append_all(&mut self, e: &Entry) {
+    /// `mark_next`: 欠落なら、次のセグメントに不連続の印を付ける。
+    fn append_all(&mut self, e: &Entry, mark_next: bool) {
         let ids: Vec<String> = self.active.keys().cloned().collect();
         for id in ids {
-            let r = append(&mut self.active.get_mut(&id).unwrap().file, e);
-            if let Err(err) = r {
-                self.fail(&id, &err.to_string());
+            let a = self.active.get_mut(&id).unwrap();
+            let r = append(&mut a.file, e);
+            match r {
+                Err(err) => self.fail(&id, &err.to_string()),
+                Ok(()) => {
+                    if let Entry::Gap { at_ms, reason, dropped } = e {
+                        a.disc_next |= mark_next;
+                        (self.on_event)(RecorderEvent::Gap { recording: id, at_ms: *at_ms, reason: reason.clone(), dropped: *dropped });
+                    }
+                }
             }
         }
     }
 
     fn fail(&mut self, id: &str, err: &str) {
-        eprintln!("recorder: recording {id}: {err}");
+        crate::util::log(&format!("recorder: recording {id}: {err}"));
         if let Some(mut a) = self.active.remove(id) {
             let now = crate::util::now_ms();
             let _ = append(&mut a.file, &Entry::End { ended_at_ms: now, state: "interrupted".into(), not_after_ms: None });

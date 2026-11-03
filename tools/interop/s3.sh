@@ -114,6 +114,16 @@ PY
   s3c -o "$W/exp.s3" "$S3/$BUCKET/single/recordings/$R/export.mp4"
   curl -s "${H[@]}" -o "$W/exp2.mp4" "$API/recordings/$R/export.mp4"
   cmp -s "$W/exp.mp4" "$W/exp.s3" && cmp -s "$W/exp.mp4" "$W/exp2.mp4" && pass "A stored export is identical and reused" || fail "A stored export differs"
+  # 範囲を指定した書き出しは置いてあるもの（録画全体）を返さず、置き換えもしない
+  ST=$(api GET /recordings/$R | python3 -c "
+import json,sys,datetime as d
+t=d.datetime.fromisoformat(json.load(sys.stdin)['started_at'].replace('Z','+00:00'))+d.timedelta(seconds=5)
+print(t.strftime('%Y-%m-%dT%H:%M:%SZ'))")
+  curl -s "${H[@]}" -o "$W/part.mp4" "$API/recordings/$R/export.mp4?start=$ST"
+  frames "$W/part.mp4" v > "$W/part.v"; np=$(wc -l < "$W/part.v")
+  sleep 1; s3c -o "$W/exp.s3b" "$S3/$BUCKET/single/recordings/$R/export.mp4"
+  [ "$np" -gt 0 ] && [ "$np" -lt "$(wc -l < "$W/src.v")" ] && contiguous "$W/src.v" "$W/part.v" "$np" && cmp -s "$W/exp.mp4" "$W/exp.s3b" \
+    && pass "A trimmed export ($np frames) built fresh, stored whole export unchanged" || fail "A trimmed export ($np frames)"
   # 再起動しても（手元に何も無くても）出せる
   stop_node; start_node
   frames "$V" v > "$W/vod2.v"

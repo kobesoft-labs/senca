@@ -27,6 +27,7 @@ pub fn worker_cmd(app: &App) -> Option<WorkerCommand> {
     if app.cfg.capture_synthetic {
         c.args.push("--synthetic".into());
     }
+    c.stderr_log = crate::util::worker_log_sink();
     Some(c)
 }
 
