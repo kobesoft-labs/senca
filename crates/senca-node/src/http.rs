@@ -30,7 +30,7 @@ impl Reply {
     fn new(status: u16, ct: &str, body: Bytes) -> Self {
         Reply { status, headers: vec![("Content-Type".into(), ct.into())], body }
     }
-    fn status(status: u16) -> Self {
+    pub(crate) fn status(status: u16) -> Self {
         Reply::new(status, "text/plain; charset=utf-8", Bytes::from(senca_http::response::reason_phrase(status)))
     }
     fn header(mut self, k: &str, v: impl Into<String>) -> Self {
@@ -50,6 +50,8 @@ where
     S: AsyncRead + AsyncWrite + Unpin + Send,
 {
     let mut parser = RequestParser::new(Limits::DEFAULT);
+    // HTTP/3 を開いていれば案内する（RFC 7838）
+    let alt_svc = app.cfg.quic_listen.map(|a| format!("h3=\":{}\"; ma=86400", a.port()));
     let mut buf = vec![0u8; 64 * 1024];
     loop {
         // 1 要求を読む
@@ -76,8 +78,7 @@ where
                 }
                 Ok(Event::Head(h)) => {
                     // 本文の上限は経路で決める（録画の書き出しなどは無し、WHIP の SDP は 256 KiB）
-                    let limit = if h.path().starts_with("/whip") || h.path().starts_with("/whep") { 256 * 1024 } else { 1 << 20 };
-                    parser.set_body_limit(limit);
+                    parser.set_body_limit(body_limit(h.path()));
                     if h.expect_continue {
                         let _ = sock.write_all(senca_http::CONTINUE_100).await;
                     }
@@ -109,7 +110,10 @@ where
             crate::events::serve_sse(&app, &mut sock, &h).await;
             return;
         }
-        let reply = route(&app, &h, body.freeze(), &peer).await;
+        let mut reply = route(&app, &h, body.freeze(), &peer).await;
+        if let Some(v) = &alt_svc {
+            reply.headers.push(("Alt-Svc".into(), v.clone()));
+        }
         if write_reply(&mut sock, reply, version, keep, head_only).await.is_err() || !keep {
             return;
         }
@@ -141,7 +145,14 @@ async fn write_reply<S: AsyncWrite + Unpin>(sock: &mut S, r: Reply, v: senca_htt
     sock.flush().await
 }
 
-async fn route(app: &Arc<App>, h: &RequestHead, body: Bytes, peer: &str) -> Reply {
+/// 要求の本文の上限（経路で決める。録画の書き出しなどは無し、WHIP の SDP は 256 KiB）。TCP と HTTP/3 で共通。
+pub(crate) fn body_limit(path: &str) -> u64 {
+    if path.starts_with("/whip") || path.starts_with("/whep") { 256 * 1024 } else { 1 << 20 }
+}
+
+/// 要求を経路に振り分ける。接続の種類（TCP の HTTP/1.1・HTTP/3）に依らない（head と本文だけを見る）。
+/// SSE（`/api/v1/events`）と WebSocket（`/signaling`）は接続を握り続けるので、ここでは扱わない。
+pub(crate) async fn route(app: &Arc<App>, h: &RequestHead, body: Bytes, peer: &str) -> Reply {
     let path = h.path();
     if let Some(rest) = path.strip_prefix("/api/v1") {
         let headers: Vec<(String, String)> =

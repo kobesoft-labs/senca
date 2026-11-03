@@ -29,7 +29,8 @@ JSON の形、クラスタの設定、環境変数、データ置き場の中身
 | `--srt` | ADDR\|`off` | 無効 | SRT（UDP） |
 | `--rtsp` | ADDR\|`off` | 無効 | RTSP の play（TCP） |
 | `--webrtc-udp` | ADDR\|`off` | 無効 | WebRTC の UDP ソケット（WHIP・WHEP・部屋で共用）。このアドレスがそのまま ICE の候補になるので、相手から届く IP を書く（`0.0.0.0` は使わない） |
-| `--tls-cert` | FILE | なし | `--https`・`--rtmps` の証明書チェーン（PEM、先頭が leaf） |
+| `--quic` | ADDR\|`off` | 無効 | QUIC v1 の UDP ポートです。HTTP/3（ALPN `h3`。SSE と `/signaling` を除き HTTP と同じ内容）、WebTransport、MoQ draft-22（ALPN `moqt-22`。WebTransport では `/moq`）を一つのポートで受け付けます。`--tls-cert`・`--tls-key` が必要です。有効にすると、HTTP・HTTPS の応答に `Alt-Svc: h3=":ポート"` が付きます（[4. 取り込みと再生](04-ingest-playback.md#415-moq-と-http3)） |
+| `--tls-cert` | FILE | なし | `--https`・`--rtmps`・`--quic` の証明書チェーン（PEM、先頭が leaf） |
 | `--tls-key` | FILE | なし | 上の秘密鍵（PEM。leaf の公開鍵と一致しないと起動しない） |
 
 ### 公開 URL
@@ -110,7 +111,7 @@ API の応答（`ingest`）と再生 URL に入れる、外から見た URL。�
 次のときは起動しない（終了コード 2）。
 
 - `--jwks` があるのに `--jwt-issuer` か `--jwt-audience` が無い。
-- `--https`・`--rtmps` があるのに `--tls-cert` か `--tls-key` が無い。
+- `--https`・`--rtmps`・`--quic` があるのに `--tls-cert` か `--tls-key` が無い。
 - `--record-queue` が 16〜1048576 の外。`--max-playback-ttl` が 0。
 - `--egress-allow` が CIDR として読めない。
 - クラスタの設定の `node_id` が 0、`peers` に自分が無い、`peers` が 1〜7 台の外。
@@ -128,7 +129,7 @@ API の応答（`ingest`）と再生 URL に入れる、外から見た URL。�
 | `data_dir` | `--data-dir` | 文字列 |
 | `node_name` | `--node-name` | 文字列 |
 | `http_listen` | `--http` | 文字列（ADDR） |
-| `https_listen`・`rtmp_listen`・`rtmps_listen`・`srt_listen`・`rtsp_listen`・`webrtc_udp` | `--https` など | 文字列（ADDR）か `null`（無効） |
+| `https_listen`・`rtmp_listen`・`rtmps_listen`・`srt_listen`・`rtsp_listen`・`webrtc_udp`・`quic_listen` | `--https` など（`quic_listen` は `--quic`） | 文字列（ADDR）か `null`（無効） |
 | `tls_cert`・`tls_key` | `--tls-cert`・`--tls-key` | 文字列 |
 | `public` | `--public-*-url` | `{"rtmp": 文字列, "http": 文字列か null, "srt": 文字列か null, "rtsp": 文字列か null}` |
 | `max_playback_ttl_secs` | `--max-playback-ttl` | 数 |

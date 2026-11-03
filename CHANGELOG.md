@@ -1,5 +1,38 @@
 # Changelog / 変更履歴
 
+## Unreleased
+
+### Added / 追加
+
+- `--quic ADDR`: a QUIC v1 listener on one UDP port (off by default; uses `--tls-cert`/`--tls-key`), driven by one task
+  over the sans-io `senca-quic` endpoint
+  ／ `--quic ADDR`: 一つの UDP ポートの QUIC v1 の受け口（既定は無効。`--tls-cert`・`--tls-key` を使う）。sans-io の
+  `senca-quic` の endpoint を一つのタスクで回す
+- HTTP/3 (ALPN `h3`): the same routes as TCP HTTP (`/api/v1`, signed HLS including LL-HLS blocking reloads, WHIP/WHEP,
+  `/healthz`); SSE and `/signaling` answer 501. TCP HTTP responses advertise `Alt-Svc: h3=":PORT"`
+  ／ HTTP/3（ALPN `h3`）: TCP の HTTP と同じ経路（`/api/v1`・LL-HLS のブロッキング・リロードを含む署名付き HLS・WHIP/WHEP・
+  `/healthz`）。SSE と `/signaling` は 501。TCP の HTTP の応答に `Alt-Svc: h3=":ポート"`
+- MoQ draft-22 subscriptions (native QUIC `moqt-22` and WebTransport `/moq`): every live stream is the namespace
+  `senca/live/{stream_id}` with a hang `catalog.json` (CMAF init, codec description) and CMAF tracks (one fragment per
+  object, one group per GOP), fed from the stream hub or a relay mirror; authorized by the playback signature
+  (`exp`/`sig` as an AUTHORIZATION TOKEN, native PATH or WebTransport URL query). Playback URLs gain `moq`;
+  capabilities gain `output.moq` and `output.http3`
+  ／ MoQ draft-22 の購読（native QUIC の `moqt-22` と WebTransport の `/moq`）: ライブの stream はすべて namespace
+  `senca/live/{stream_id}`、hang の `catalog.json`（CMAF の init・codec の description）と CMAF の track（object 一つが
+  fragment 一つ、GOP ごとに group）。stream の hub か中継のミラーから作る。認可は再生の署名（`exp`・`sig` を
+  AUTHORIZATION TOKEN・native の PATH・WebTransport の URL の query で）。再生 URL に `moq`、capabilities に
+  `output.moq`・`output.http3`
+- MoQ publishing: `PUBLISH_NAMESPACE senca/live/{stream_id}` with the stream key as AUTHORIZATION TOKEN; the node
+  subscribes to the catalog and CMAF tracks and becomes the stream's publisher (`cmaf` container only)
+  ／ MoQ の送出: publish 鍵を AUTHORIZATION TOKEN に入れた `PUBLISH_NAMESPACE senca/live/{stream_id}`。ノードが catalog と
+  CMAF の track を購読して stream の送り手になる（容器は `cmaf` だけ）
+- `senca-moq`: draft-22 FILL_PARAMETERS answered with a fill stream (`Session::fill_object`/`fill_finish`), and an
+  optional `description` in catalog renditions
+  ／ `senca-moq`: draft-22 の FILL_PARAMETERS に fill の stream で応える（`Session::fill_object`・`fill_finish`）、
+  catalog の rendition に `description`
+- `tools/interop/node_quic.sh`: aioquic (HTTP/3), moq-dev `moq export fmp4`/`fetch`, Chrome (HTTP/3 and WebTransport)
+  ／ `tools/interop/node_quic.sh`: aioquic（HTTP/3）、moq-dev の `moq export fmp4`・`fetch`、Chrome（HTTP/3・WebTransport）
+
 ## v0.0.0 — 2026-11-03
 
 First public snapshot. **Experimental**: the release gate in docs/RELEASE.md (long fuzzing, soak test,

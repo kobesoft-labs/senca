@@ -45,6 +45,9 @@ pub struct Rendition {
     /// 初期化セグメント（ftyp+moov）。
     pub init: Bytes,
     pub bitrate: Option<u64>,
+    /// デコーダーの初期化の情報（hang の `description`、16 進）。H.264 の avcC・H.265 の hvcC・
+    /// AAC の AudioSpecificConfig など。無いと受け手は帯域内（Annex B）の形とみなすことがある。
+    pub description: Option<Bytes>,
 }
 
 /// catalog の JSON を作る。
@@ -54,6 +57,7 @@ pub fn catalog_json(renditions: &[Rendition]) -> String {
     for r in renditions {
         let init = base64::engine::general_purpose::STANDARD.encode(&r.init);
         let container = json!({ "kind": "cmaf", "init": init });
+        let description: Option<String> = r.description.as_ref().filter(|d| !d.is_empty()).map(|d| d.iter().map(|b| format!("{b:02x}")).collect());
         match &r.kind {
             MediaKind::Video {
                 codec,
@@ -69,6 +73,9 @@ pub fn catalog_json(renditions: &[Rendition]) -> String {
                 });
                 if let Some(f) = framerate {
                     v["framerate"] = json!(f);
+                }
+                if let Some(d) = &description {
+                    v["description"] = json!(d);
                 }
                 if let Some(b) = r.bitrate {
                     v["bitrate"] = json!(b);
@@ -86,6 +93,9 @@ pub fn catalog_json(renditions: &[Rendition]) -> String {
                     "numberOfChannels": channels,
                     "container": container,
                 });
+                if let Some(d) = &description {
+                    v["description"] = json!(d);
+                }
                 if let Some(b) = r.bitrate {
                     v["bitrate"] = json!(b);
                 }
@@ -379,6 +389,7 @@ mod tests {
                 },
                 init: Bytes::from_static(b"init-v"),
                 bitrate: None,
+                description: Some(Bytes::from_static(&[1, 0x64, 0, 0x1f])),
             },
             Rendition {
                 track: "audio".into(),
@@ -389,9 +400,11 @@ mod tests {
                 },
                 init: Bytes::from_static(b"init-a"),
                 bitrate: Some(64000),
+                description: None,
             },
         ];
         let j = catalog_json(&r);
+        assert!(j.contains("\"description\":\"0164001f\""));
         let e = parse_catalog(j.as_bytes()).unwrap();
         assert_eq!(e.len(), 2);
         assert!(e.iter().all(|x| x.container == "cmaf"));

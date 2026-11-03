@@ -527,6 +527,10 @@ impl App {
             if let Some(r) = &self.cfg.public.rtsp {
                 v["rtsp"] = json!(format!("{r}/live/{id}?exp={exp}&sig={sig}"));
             }
+            // MoQ（WebTransport の URL。namespace は senca/live/{id}、native QUIC では同じ query を認可のトークンに）
+            if let Some(u) = crate::moq::playback_url(self, exp, &sig) {
+                v["moq"] = json!(u);
+            }
         } else {
             v["mp4"] = Value::Null;
         }
@@ -627,6 +631,8 @@ impl App {
                 "hls": { "containers": ["ts", "fmp4"], "ll_hls": true },
                 "rtmp_play": true,
                 "whep": self.cfg.webrtc_udp.is_some(),
+                "moq": self.cfg.quic_listen.is_some(),
+                "http3": self.cfg.quic_listen.is_some(),
             },
             "codecs": {
                 "passthrough": ["h264", "h265", "av1", "vp8", "vp9", "aac", "opus", "pcma", "pcmu"],

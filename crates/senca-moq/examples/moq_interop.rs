@@ -3,9 +3,9 @@
 //! ```text
 //! moq_interop relay     --listen 127.0.0.1:51020 --cert chain.pem --key key.pem [--wt-path /moq] [--allow-missing-wt-protocol]
 //! moq_interop publish   --connect 127.0.0.1:51020 (--ca ca.pem | --pin-spki HEX) --namespace live/demo
-//!                       [--fmp4 file.mp4] [--objects N] [--wt] [--path /moq] [--seconds S]
+//!                       [--fmp4 file.mp4] [--objects N] [--wt] [--path /moq] [--seconds S] [--token VALUE]
 //! moq_interop subscribe --connect 127.0.0.1:51020 (--ca ca.pem | --pin-spki HEX) --namespace live/demo --track video
-//!                       [--count N] [--out FILE] [--fetch G0:G1] [--wt] [--path /moq] [--seconds S]
+//!                       [--count N] [--out FILE] [--fetch G0:G1] [--wt] [--path /moq] [--seconds S] [--token VALUE]
 //! ```
 //!
 //! publish は `catalog.json`（hang の catalog、CMAF）と `video` track を出す。`--fmp4` があればその
@@ -103,6 +103,13 @@ fn client(args: &[String]) -> MoqClient {
     let mut cfg = SessionConfig::new(Role::Client);
     cfg.path = Some(path.clone());
     cfg.authority = Some(format!("{name}:{}", remote.port()));
+    // SETUP の AUTHORIZATION TOKEN（`--token VALUE`、型 0）
+    if let Some(t) = arg(args, "--token") {
+        cfg.setup_tokens.push(senca_moq::params::Token {
+            token_type: 0,
+            value: Bytes::from(t),
+        });
+    }
     if wt {
         MoqClient::connect_webtransport(ep, quic, remote, &name, &format!("{name}:{}", remote.port()), &path, cfg, Instant::now(), SystemTime::now()).unwrap()
     } else {
@@ -144,6 +151,7 @@ fn publish(args: &[String]) -> i32 {
         },
         init,
         bitrate: None,
+        description: None,
     }]);
     let mut mapper = GroupMapper::new();
     let objects: Vec<Object> = frags.into_iter().filter_map(|(b, k)| mapper.push(b, k, 128)).collect();

@@ -37,6 +37,9 @@ senca-relay = { path = "../senca-relay", features = ["tokio"] }
 senca-grid = { path = "../senca-grid" }
 senca-rooms = { path = "../senca-rooms" }
 senca-ws = { path = "../senca-ws" }
+senca-quic = { path = "../senca-quic" }
+senca-h3 = { path = "../senca-h3" }
+senca-moq = { path = "../senca-moq" }
 bytes.workspace = true
 tokio.workspace = true
 serde.workspace = true

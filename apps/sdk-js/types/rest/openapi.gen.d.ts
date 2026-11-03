@@ -30,6 +30,10 @@ export type Capabilities = {
       containers: Array<"ts" | "fmp4">;
       ll_hls: boolean;
     };
+    /** HTTP/3（`--quic`） */
+    http3?: boolean;
+    /** MoQ（draft-22）の購読と送出（`--quic`） */
+    moq?: boolean;
     rtmp_play: boolean;
     whep: boolean;
   };
@@ -349,6 +353,8 @@ export type LivePlayback = {
   playback: {
     /** `{http}/s/{exp}/{sig}/live/{id}/index.m3u8` */
     hls: string;
+    /** MoQ（draft-22）の WebTransport の URL `https://{host}:{quic port}/moq?exp=&sig=`。namespace は `senca/live/{id}`（`--quic` を設定したときだけ） */
+    moq?: string;
     /** `{rtmp}/play/{id}?exp=&sig=` */
     rtmp: string;
     /** `{public-rtsp-url}/live/{id}?exp=&sig=`（`--public-rtsp-url` を設定したときだけ） */

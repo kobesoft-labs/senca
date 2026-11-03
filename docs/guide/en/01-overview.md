@@ -145,8 +145,9 @@ status in the [conformance ledger](../../conformance/ledger.md), and release cri
 - DTLS (OpenSSL 3.5); SRTP (FFmpeg; AEAD-GCM against test vectors only)
 - Royalty-free codecs (bit-exact against FFmpeg's decoders); JPEG and PNG (FFmpeg)
 - WebRTC (WHIP, WHEP, rooms, media pipelines, browser SDK) with Chrome
-- QUIC v1, HTTP/3, WebTransport and MoQ as components (43/43 against aioquic, OpenSSL, Chrome and moq-dev), but
-  **not yet wired into the node**
+- QUIC v1, HTTP/3, WebTransport and MoQ as components (43/43 against aioquic, OpenSSL, Chrome and moq-dev), and the node's
+  `--quic` (HTTP/3 with aioquic and Chrome, MoQ subscriptions with moq-dev's `moq export` and Chrome WebTransport: 34/34;
+  MoQ publishing only with SENCA's own client)
 
 **Tested only with SENCA's own tests**: Enhanced RTMP, LL-HLS (not yet checked with Apple's validator or Safari),
 the management API, JWT, ICE, Raft (deterministic simulation), codec worker fault isolation, egress restrictions,

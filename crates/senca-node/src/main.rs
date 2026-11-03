@@ -18,10 +18,12 @@ mod hub;
 mod io;
 mod live;
 mod media;
+mod moq;
 mod packager;
 mod paas;
 mod pipelines;
 mod plan;
+mod quic;
 mod recorder;
 mod recovery;
 mod relay;
@@ -237,6 +239,9 @@ async fn run(cfg: Config) -> Result<(), String> {
                 app.log(&format!("srt: {e}"));
             }
         });
+    }
+    if let Some(addr) = cfg.quic_listen {
+        quic::start(app.clone(), addr).await?;
     }
     if let Some(addr) = cfg.webrtc_udp {
         let r = webrtc::start(app.clone(), addr).await?;

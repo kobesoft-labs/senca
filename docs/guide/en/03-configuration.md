@@ -33,7 +33,8 @@ the data directory.
 | `--srt` | ADDR\|`off` | off | SRT (UDP) |
 | `--rtsp` | ADDR\|`off` | off | RTSP play (TCP) |
 | `--webrtc-udp` | ADDR\|`off` | off | The WebRTC UDP socket shared by WHIP, WHEP and rooms. This address is advertised verbatim as the ICE candidate, so use an IP that clients can reach (not `0.0.0.0`) |
-| `--tls-cert` | FILE | none | Certificate chain for `--https` and `--rtmps` (PEM, leaf first) |
+| `--quic` | ADDR\|`off` | off | QUIC v1 over UDP: HTTP/3 (ALPN `h3`, the same content as HTTP except SSE and `/signaling`), WebTransport and MoQ draft-22 (ALPN `moqt-22`; `/moq` over WebTransport) on one port. Requires `--tls-cert` and `--tls-key`. When enabled, HTTP and HTTPS responses carry `Alt-Svc: h3=":PORT"` (see [4. Ingest and playback](04-ingest-playback.md#415-moq-and-http3)) |
+| `--tls-cert` | FILE | none | Certificate chain for `--https`, `--rtmps` and `--quic` (PEM, leaf first) |
 | `--tls-key` | FILE | none | Its private key (PEM). Startup fails if it does not match the leaf's public key |
 
 ### Public URLs
@@ -116,7 +117,7 @@ See [12. Security](12-security.md).
 The node refuses to start (exit code 2) when:
 
 - `--jwks` is given without `--jwt-issuer` or `--jwt-audience`;
-- `--https` or `--rtmps` is given without `--tls-cert` or `--tls-key`;
+- `--https`, `--rtmps` or `--quic` is given without `--tls-cert` or `--tls-key`;
 - `--record-queue` is outside 16–1048576, or `--max-playback-ttl` is 0;
 - an `--egress-allow` value is not a valid CIDR;
 - the cluster configuration has `node_id` 0, does not list itself in `peers`, or has fewer than 1 or more than 7 peers.
@@ -134,7 +135,7 @@ The `--config FILE` JSON is an object with the keys below. Every key is optional
 | `data_dir` | `--data-dir` | string |
 | `node_name` | `--node-name` | string |
 | `http_listen` | `--http` | string (ADDR) |
-| `https_listen`, `rtmp_listen`, `rtmps_listen`, `srt_listen`, `rtsp_listen`, `webrtc_udp` | `--https` etc. | string (ADDR) or `null` (disabled) |
+| `https_listen`, `rtmp_listen`, `rtmps_listen`, `srt_listen`, `rtsp_listen`, `webrtc_udp`, `quic_listen` | `--https` etc. (`quic_listen` is `--quic`) | string (ADDR) or `null` (disabled) |
 | `tls_cert`, `tls_key` | `--tls-cert`, `--tls-key` | string |
 | `public` | `--public-*-url` | `{"rtmp": string, "http": string or null, "srt": string or null, "rtsp": string or null}` |
 | `max_playback_ttl_secs` | `--max-playback-ttl` | number |

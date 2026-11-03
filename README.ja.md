@@ -24,7 +24,8 @@
 - **分散**: 自前の Raft で制御面を複製、mTLS、所有権と fencing、ノード間の中継（ADR-0014）
 - **管理**: REST API（OpenAPI: [docs/api/openapi.yaml](docs/api/openapi.yaml)）、SSE、管理画面（`apps/console`）、
   TypeScript・Rust の API クライアント（`apps/sdk-js`・`crates/senca-client`）
-- **部品**: QUIC v1・HTTP/3・WebTransport・MoQ（draft-22）。ノードへの組み込みはこれから
+- **QUIC**（`--quic`）: HTTP/3 での管理 API・署名付き HLS、MoQ（draft-22、native QUIC と WebTransport）での
+  ライブの購読（hang の catalog と CMAF）と CMAF の送出
 
 ## 特許とコーデック
 

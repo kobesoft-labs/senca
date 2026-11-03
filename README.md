@@ -28,7 +28,8 @@ It runs on a single node or as a grid of many nodes that places work by resource
   inter-node relay (ADR-0014)
 - **Management**: REST API (OpenAPI: [docs/api/openapi.yaml](docs/api/openapi.yaml)), SSE, web console (`apps/console`),
   TypeScript and Rust API clients (`apps/sdk-js`, `crates/senca-client`)
-- **Building blocks**: QUIC v1, HTTP/3, WebTransport, MoQ (draft-22); not yet wired into the node
+- **QUIC** (`--quic`): HTTP/3 (management API, signed HLS), and MoQ (draft-22, native QUIC and WebTransport)
+  for live subscriptions (hang catalog + CMAF) and CMAF publishing
 
 ## Codecs and patents
 

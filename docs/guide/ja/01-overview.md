@@ -138,7 +138,8 @@ WebRTC の SFU（サイマルキャスト・スポットライト・転送フィ
 - DTLS（OpenSSL 3.5）、SRTP（FFmpeg。AEAD-GCM は試験ベクターのみ）
 - ロイヤリティフリーのコーデック（FFmpeg の復号器とビット一致）、JPEG・PNG（FFmpeg）
 - WebRTC（WHIP・WHEP・部屋・メディアパイプライン・ブラウザー SDK）は Chrome で確認
-- QUIC v1・HTTP/3・WebTransport・MoQ の部品（aioquic・OpenSSL・Chrome・moq-dev と 43/43）。ただし**ノードへの組み込みはまだ**
+- QUIC v1・HTTP/3・WebTransport・MoQ（aioquic・OpenSSL・Chrome・moq-dev と 43/43）。ノードの `--quic` は、HTTP/3 を
+  aioquic・Chrome と、MoQ の購読を moq-dev の `moq export`・Chrome の WebTransport と確認しています（34/34）。MoQ の送出は SENCA 自身の client だけで確認しています
 
 **自前の試験だけのもの**: Enhanced RTMP、LL-HLS（Apple の検証器・Safari は未実施）、制御 API、JWT、ICE、
 Raft（決定的なシミュレーション）、codec worker の障害の隔離、外へ出る接続の制限、SBOM とライセンスの検査。

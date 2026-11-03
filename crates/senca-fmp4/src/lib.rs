@@ -21,4 +21,4 @@ pub use error::Mp4Error;
 pub use fragment::{FragmentWriter, Sample, SampleQueue, TrackRun};
 pub use init::{TrackSpec, write_init_segment};
 pub use mp4::{Mp4Writer, SampleInfo};
-pub use read::{InitSegment, Mp4Reader, Mp4Track, ReadSample, read_file};
+pub use read::{InitSegment, Mp4Reader, Mp4Track, ReadSample, parse_init, read_file};

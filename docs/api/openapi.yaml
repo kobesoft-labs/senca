@@ -2652,6 +2652,7 @@ components:
             rtmp: { type: string, description: '`{rtmp}/play/{id}?exp=&sig=`' }
             whep: { type: [string, 'null'], description: '`{http}/whep/{id}?exp=&sig=`（`--webrtc-udp` を設定しないノードでは null）' }
             rtsp: { type: string, description: '`{public-rtsp-url}/live/{id}?exp=&sig=`（`--public-rtsp-url` を設定したときだけ）' }
+            moq: { type: string, description: 'MoQ（draft-22）の WebTransport の URL `https://{host}:{quic port}/moq?exp=&sig=`。namespace は `senca/live/{id}`（`--quic` を設定したときだけ）' }
     VodPlayback:
       type: object
       additionalProperties: false
@@ -2958,6 +2959,8 @@ components:
                 ll_hls: { type: boolean }
             rtmp_play: { type: boolean }
             whep: { type: boolean }
+            moq: { type: boolean, description: MoQ（draft-22）の購読と送出（`--quic`） }
+            http3: { type: boolean, description: HTTP/3（`--quic`） }
         codecs:
           type: object
           additionalProperties: false

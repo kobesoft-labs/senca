@@ -240,6 +240,7 @@ curl -s -X POST "$API/streams/$SID/playback-url" "${H[@]}" -d '{"ttl_secs":600}'
 
 - 本文は省略できる。`ttl_secs` の既定は 300、範囲は 1〜`--max-playback-ttl`（既定 86400）。権限は `subscribe`。
 - `rtsp` は `--public-rtsp-url` があるときだけ。`whep` は `--webrtc-udp` の無いノードでは `null`。
+  `moq`（MoQ の WebTransport の URL。[4.15](#415-moq-と-http3) を参照）は、`--quic` を指定したノードだけに入ります。
 - 署名は `live/{stream_id}/{exp}` の HMAC-SHA256（先頭 16 バイト、base64url）。ファイル名は署名に含まれないので、
   同じ `/s/{exp}/{sig}/live/{id}/` の下の任意のファイル（セグメント・`master.m3u8`・字幕）に使える。
 - 期限切れ・署名の誤りは 403。鍵は制御状態にあり、クラスタの全ノードで同じ（どのノードでも検証できる）。
@@ -361,7 +362,63 @@ ffplay -rtsp_transport tcp "rtsp://127.0.0.1:8554/live/$SID?exp=$EXP&sig=$SIG"
 - 署名の誤り・期限切れは 403。
 - つながるまでの間は直近の GOP をためておき、つながったら送る（キーフレームから始まる）。
 
-## 4.15 静止画
+## 4.15 MoQ と HTTP/3
+
+`--quic ADDR`（と `--tls-cert`・`--tls-key`）を指定すると、一つの UDP ポートで QUIC v1 を受け付けます。既定では無効です。
+接続ごとに ALPN で中身が決まります。
+
+| ALPN | 中身 |
+|---|---|
+| `h3` | HTTP/3。TCP の HTTP と同じ経路を提供します（`/api/v1`、LL-HLS のブロッキング・リロードを含む署名付き HLS、WHIP/WHEP、`/healthz` など）。SSE（`/api/v1/events`）と `/signaling`（WebSocket）は 501 を返すので、HTTP/1.1 を使ってください。同じ接続で `/moq` への拡張 CONNECT を送ると、WebTransport の MoQ になります |
+| `moqt-22` | native QUIC の MoQ（draft-ietf-moq-transport-22） |
+
+- `--quic` を指定すると、HTTP・HTTPS の応答に `Alt-Svc: h3=":ポート"; ma=86400` が付き、ブラウザーは次の要求から HTTP/3 を使えます。
+- 証明書はノードの `--tls-cert`・`--tls-key`（TCP の HTTPS と同じもの）を使います。
+- MoQ は Internet-Draft のため、版は draft-22 に固定しています（`crates/senca-moq/DRAFT.md`）。他の版の client は、
+  ALPN または `wt-available-protocols` の交渉の段階で拒否します。
+
+### 購読（MoQ で視聴する）
+
+ライブ中の stream は、すべて namespace `senca/live/{stream_id}` として購読できます（別のノードが持つ stream は、
+中継のミラーから配信します）。
+
+| track | 中身 |
+|---|---|
+| `catalog.json` | hang 形式の catalog（moq-dev/moq と同じ形式）。更新ごとに group 一つ・object 一つです。`video`・`audio` の `renditions` に `codec`（RFC 6381）、`description`（avcC などの 16 進）、`container: {"kind":"cmaf","init": base64(ftyp+moov)}` が入ります |
+| `video`・`audio`（2 本目以降は `video2` など） | CMAF。object 一つが fragment 一つ（moof+mdat、サンプル一つ）です。映像は GOP ごと、音声はおよそ 1 秒ごとに新しい group になります |
+
+- 認可には再生 URL と同じ署名（`exp`・`sig`）を使います。次のいずれかで渡してください。
+  - MoQ の AUTHORIZATION TOKEN（SETUP または SUBSCRIBE）の値として `exp=..&sig=..`
+  - native QUIC の PATH（`moqt://host:port/?exp=..&sig=..`）
+  - WebTransport の URL のクエリー
+- 署名が無い・誤っている・期限切れの SUBSCRIBE・FETCH・TRACK_STATUS は `UNAUTHORIZED` で拒否します。
+  SUBSCRIBE_NAMESPACE には、署名が有効な stream だけを通知します。
+- `--quic` を指定したノードでは、再生 URL（4.8）の `moq` に WebTransport の URL（`https://{host}:{port}/moq?exp=..&sig=..`）が
+  入ります。host は `--public-http-url` の host です。
+- 途中から購読した場合は、現在の group の先頭（キーフレーム）から配信します。draft-22 の FILL_PARAMETERS
+  （current-group join）が指定されていれば、group の先頭部分を fill の stream で、続きを購読で配信します。
+  直近の 2 group は FETCH でも取得できます。
+
+moq-dev/moq の CLI で fMP4 に書き出す例:
+
+```sh
+Q="exp=1793669160&sig=MGO1aub_Vkp8D2OwIHZjGw"   # 再生 URL の moq のクエリー
+moq --connect "moqt://media.example.com:4433/?$Q" --connect-version moq-transport-22 \
+  --broadcast "senca/live/$SID" export fmp4 > live.mp4
+```
+
+### 送出（MoQ で送る）
+
+stream の publish 鍵（`sk_...`）を AUTHORIZATION TOKEN（SETUP または PUBLISH_NAMESPACE）に入れて
+`PUBLISH_NAMESPACE senca/live/{stream_id}` を送ると、ノードが `catalog.json` と catalog に載っている track を購読し、
+その stream の送り手になります（`live.transport` は `moq` です）。
+
+- 受け付ける容器は `cmaf`（init と fragment）だけです。hang の `legacy`・`loc` の track があると、拒否してセッションを閉じます
+  （moq-dev の `moq import` は `legacy` を出力するため、そのままでは送れません）。
+- 出版者起点の PUBLISH には対応していません（`NOT_SUPPORTED` を返します）。一つのセッションで送れる stream は一つです。
+- 予約の「live」の時間帯の外では、他の送り方と同じく拒否します。
+
+## 4.16 静止画
 
 | 操作 | 要求 | 権限 | 結果 |
 |---|---|---|---|
@@ -383,7 +440,7 @@ curl -s -o now.jpg "$API/streams/$SID/snapshot" -H "Authorization: Bearer $TOKEN
 curl -s -X PATCH "$API/streams/$SID" "${H[@]}" -H "If-Match: $ETAG" -d '{"snapshots":{"interval_secs":60,"keep":1440}}'
 ```
 
-## 4.16 送り手が切れたとき・入れ替わったとき
+## 4.17 送り手が切れたとき・入れ替わったとき
 
 - 送り手が切れても、`--reconnect-grace`（既定 30000 ms）の間は配信を終えない。その間に同じ鍵でつなぎ直すと、
   `epoch` を 1 増やして同じ配信として続ける。HLS は `EXT-X-DISCONTINUITY` で区切り、セグメントの番号は続きから。
@@ -391,7 +448,7 @@ curl -s -X PATCH "$API/streams/$SID" "${H[@]}" -H "If-Match: $ETAG" -d '{"snapsh
 - 猶予が切れると配信の終わり: HLS に `ENDLIST`、RTMP/SRT/RTSP/WHEP の視聴者は閉じられ、録画は確定する。
 - `desired_state: stopped` にすると送り手の受け付けをすぐ止め、猶予を待たずに配信を終える。
 
-## 4.17 どのノードでも再生できる（クラスタ）
+## 4.18 どのノードでも再生できる（クラスタ）
 
 クラスタでは、送り手を受けたノードが stream の所有者になる。所有者でないノードに再生（HLS・RTMP/SRT/RTSP play・WHEP）が来ると、
 そのノードは所有者から中継で AU を受けて手元に「写し」を作り、そこから配る。同じ stream の視聴者が何人いても上流は 1 本。
@@ -399,7 +456,7 @@ curl -s -X PATCH "$API/streams/$SID" "${H[@]}" -H "If-Match: $ETAG" -d '{"snapsh
 写しは録画・字幕をしない（所有者のノードの仕事）。中継が使えないときは、所有者のノード（`media_addr`）へ 307 で案内する。
 詳しくは [9. クラスタとグリッド](09-cluster-grid.md)。
 
-## 4.18 よくある誤り
+## 4.19 よくある誤り
 
 | 症状 | 原因 |
 |---|---|

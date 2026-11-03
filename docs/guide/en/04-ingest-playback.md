@@ -246,6 +246,7 @@ curl -s -X POST "$API/streams/$SID/playback-url" "${H[@]}" -d '{"ttl_secs":600}'
 
 - The body is optional. `ttl_secs` defaults to 300 and must be 1–`--max-playback-ttl` (default 86400). Requires the `subscribe` scope.
 - `rtsp` appears only with `--public-rtsp-url`. `whep` is `null` on a node without `--webrtc-udp`.
+  `moq` (the MoQ WebTransport URL, [4.15](#415-moq-and-http3)) appears only on nodes with `--quic`.
 - The signature is HMAC-SHA256 over `live/{stream_id}/{exp}` (first 16 bytes, base64url). The file name is not part of the signature,
   so it works for any file under the same `/s/{exp}/{sig}/live/{id}/` prefix (segments, `master.m3u8`, subtitles).
 - Expired or invalid signatures get 403. The signing key is part of the control state and is identical on every cluster node, so any node can verify.
@@ -367,7 +368,59 @@ ffplay -rtsp_transport tcp "rtsp://127.0.0.1:8554/live/$SID?exp=$EXP&sig=$SIG"
 - Invalid or expired signatures get 403.
 - Until the connection is established, the latest GOP is buffered and then sent, so playback starts at a keyframe.
 
-## 4.15 Still images
+## 4.15 MoQ and HTTP/3
+
+`--quic ADDR` (with `--tls-cert` and `--tls-key`) opens a QUIC v1 listener on one UDP port. It is off by default.
+The ALPN selects what runs on a connection.
+
+| ALPN | Content |
+|---|---|
+| `h3` | HTTP/3, routed exactly like TCP HTTP (`/api/v1`, signed HLS including LL-HLS blocking reloads, WHIP/WHEP, `/healthz`, ...). SSE (`/api/v1/events`) and `/signaling` (WebSocket) answer 501; use HTTP/1.1 for them. An extended CONNECT to `/moq` on the same connection is MoQ over WebTransport |
+| `moqt-22` | MoQ over native QUIC (draft-ietf-moq-transport-22) |
+
+- With `--quic`, HTTP and HTTPS responses carry `Alt-Svc: h3=":PORT"; ma=86400`, so browsers can switch to HTTP/3.
+- The certificate is the node's `--tls-cert`/`--tls-key` (the same as TCP HTTPS).
+- Experimental: MoQ is an Internet-Draft and the version is pinned to draft-22 (`crates/senca-moq/DRAFT.md`). Clients offering
+  other versions are refused during ALPN / `wt-available-protocols` negotiation.
+
+### Subscribing (watching over MoQ)
+
+Every live stream appears as the namespace `senca/live/{stream_id}` (streams owned by another node are served from a relay mirror).
+
+| Track | Content |
+|---|---|
+| `catalog.json` | A hang catalog (the moq-dev/moq format). One group with one object per update. `video`/`audio` `renditions` carry `codec` (RFC 6381), `description` (hex avcC etc.) and `container: {"kind":"cmaf","init": base64(ftyp+moov)}` |
+| `video`, `audio` (then `video2`, ...) | CMAF. One object is one fragment (moof+mdat, one sample). Video starts a group per GOP, audio roughly every second |
+
+- Authorization uses the playback signature (`exp`, `sig`), the same as signed URLs. Pass it as the value of a MoQ
+  AUTHORIZATION TOKEN (SETUP or SUBSCRIBE) `exp=..&sig=..`, in the native QUIC PATH (`moqt://host:port/?exp=..&sig=..`), or in the
+  WebTransport URL query. SUBSCRIBE, FETCH and TRACK_STATUS without a valid, unexpired signature get `UNAUTHORIZED`.
+  SUBSCRIBE_NAMESPACE announces only streams the signature is valid for.
+- The playback URL response (4.8) includes `moq`, a WebTransport URL (`https://{host}:{port}/moq?exp=..&sig=..`), on nodes with `--quic`.
+  The host is taken from `--public-http-url`.
+- A subscriber joining mid-stream gets the current group from its start (a keyframe). With draft-22 FILL_PARAMETERS (current-group
+  join) the head of the group goes on the fill stream and the rest on the subscription. The last two groups are also available via FETCH.
+
+Writing fMP4 with the moq-dev/moq CLI:
+
+```sh
+Q="exp=1793669160&sig=MGO1aub_Vkp8D2OwIHZjGw"   # the query of the playback URL's moq field
+moq --connect "moqt://media.example.com:4433/?$Q" --connect-version moq-transport-22 \
+  --broadcast "senca/live/$SID" export fmp4 > live.mp4
+```
+
+### Publishing (sending over MoQ)
+
+Send `PUBLISH_NAMESPACE senca/live/{stream_id}` with the stream key (`sk_...`) as an AUTHORIZATION TOKEN (in SETUP or in the
+PUBLISH_NAMESPACE). The node subscribes to `catalog.json`, then to the catalog's tracks, and becomes the stream's publisher
+(`live.transport` is `moq`).
+
+- Only the `cmaf` container (init plus fragments) is accepted. A hang `legacy` or `loc` track is refused and the session closed
+  (moq-dev's `moq import` emits `legacy`, so it cannot publish to SENCA as is).
+- Publisher-initiated PUBLISH is not used (`NOT_SUPPORTED`). One session publishes one stream.
+- Outside a "live" schedule window the publication is refused, as for every other ingest.
+
+## 4.16 Still images
 
 | Operation | Request | Scope | Result |
 |---|---|---|---|
@@ -390,7 +443,7 @@ curl -s -o now.jpg "$API/streams/$SID/snapshot" -H "Authorization: Bearer $TOKEN
 curl -s -X PATCH "$API/streams/$SID" "${H[@]}" -H "If-Match: $ETAG" -d '{"snapshots":{"interval_secs":60,"keep":1440}}'
 ```
 
-## 4.16 When the sender drops or is replaced
+## 4.17 When the sender drops or is replaced
 
 - When the sender disconnects, the broadcast does not end for `--reconnect-grace` (default 30000 ms). If a sender reconnects with the
   same key within that time, `epoch` increases by 1 and the broadcast continues. HLS is split with `EXT-X-DISCONTINUITY` and segment
@@ -399,7 +452,7 @@ curl -s -X PATCH "$API/streams/$SID" "${H[@]}" -H "If-Match: $ETAG" -d '{"snapsh
 - When the grace expires the broadcast ends: HLS gets `ENDLIST`, RTMP/SRT/RTSP/WHEP viewers are closed, and recordings are finalized.
 - Setting `desired_state: stopped` stops accepting the sender at once and ends the broadcast without waiting for the grace.
 
-## 4.17 Playback from any node (cluster)
+## 4.18 Playback from any node (cluster)
 
 In a cluster, the node that receives the sender becomes the stream's owner. When playback (HLS, RTMP/SRT/RTSP play, WHEP) reaches a
 node that is not the owner, that node receives the access units from the owner over the relay, builds a local "mirror", and serves
@@ -408,7 +461,7 @@ to 6 seconds for the mirror's first playlist; unused mirrors are removed after 3
 the owner's job). If the relay is unavailable, the request is redirected with 307 to the owner node (`media_addr`).
 See [9. Cluster and grid](09-cluster-grid.md).
 
-## 4.18 Troubleshooting
+## 4.19 Troubleshooting
 
 | Symptom | Cause |
 |---|---|

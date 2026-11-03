@@ -17,6 +17,8 @@ pub struct Config {
     pub srt_listen: Option<SocketAddr>,
     pub rtsp_listen: Option<SocketAddr>,
     pub webrtc_udp: Option<SocketAddr>,
+    /// QUIC v1 の UDP の待ち受け（HTTP/3・WebTransport・MoQ draft-22）。既定は無効。TLS の証明書が要る。
+    pub quic_listen: Option<SocketAddr>,
     pub tls_cert: Option<PathBuf>,
     pub tls_key: Option<PathBuf>,
     pub public: PublicUrls,
@@ -113,6 +115,7 @@ impl Default for Config {
             srt_listen: None,
             rtsp_listen: None,
             webrtc_udp: None,
+            quic_listen: None,
             tls_cert: None,
             tls_key: None,
             public: PublicUrls::default(),
@@ -144,7 +147,7 @@ impl Default for Config {
 }
 
 pub const USAGE: &str = "senca-node [--config FILE] [--data-dir DIR] [--http ADDR] [--rtmp ADDR|off] [--rtmps ADDR] [--https ADDR]
-  [--srt ADDR] [--rtsp ADDR] [--webrtc-udp ADDR] [--tls-cert FILE --tls-key FILE]
+  [--srt ADDR] [--rtsp ADDR] [--webrtc-udp ADDR] [--quic ADDR] [--tls-cert FILE --tls-key FILE]
   [--public-rtmp-url URL] [--public-http-url URL] [--public-srt-url URL] [--public-rtsp-url URL] [--capture-synthetic]
   [--max-playback-ttl SECS] [--reconnect-grace MS] [--record-queue N] [--retention-sweep SECS]
   [--jwks FILE --jwt-issuer ISS --jwt-audience AUD [--jwt-tenant-claim NAME]]
@@ -192,6 +195,7 @@ impl Config {
                 _ if flag("--srt") => cfg.srt_listen = opt_addr(val()?)?,
                 _ if flag("--rtsp") => cfg.rtsp_listen = opt_addr(val()?)?,
                 _ if flag("--webrtc-udp") => cfg.webrtc_udp = opt_addr(val()?)?,
+                _ if flag("--quic") => cfg.quic_listen = opt_addr(val()?)?,
                 _ if flag("--tls-cert") => cfg.tls_cert = Some(PathBuf::from(val()?)),
                 _ if flag("--tls-key") => cfg.tls_key = Some(PathBuf::from(val()?)),
                 _ if flag("--public-rtmp-url") => cfg.public.rtmp = val()?,
@@ -246,6 +250,9 @@ impl Config {
         }
         if (self.rtmps_listen.is_some() || self.https_listen.is_some()) && (self.tls_cert.is_none() || self.tls_key.is_none()) {
             return Err("--rtmps/--https need --tls-cert and --tls-key".into());
+        }
+        if self.quic_listen.is_some() && (self.tls_cert.is_none() || self.tls_key.is_none()) {
+            return Err("--quic needs --tls-cert and --tls-key".into());
         }
         if !(16..=1 << 20).contains(&self.record_queue) {
             return Err("--record-queue must be 16..=1048576".into());
