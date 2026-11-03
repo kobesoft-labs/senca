@@ -33,6 +33,26 @@
 - `tools/interop/node_quic.sh`: aioquic (HTTP/3), moq-dev `moq export fmp4`/`fetch`, Chrome (HTTP/3 and WebTransport)
   ／ `tools/interop/node_quic.sh`: aioquic（HTTP/3）、moq-dev の `moq export fmp4`・`fetch`、Chrome（HTTP/3・WebTransport）
 
+- Room cascading across nodes: with the room setting `cascade: true` (or `--rooms-cascade`), participants are served on the
+  node they connect to (edge) and joined to the room's node (home) over the inter-node relay. Presence and tracks are synced as
+  full snapshots, media is subscribed as `@room/<room>/<track>`, app messages go directly to the recipients' nodes. When the home
+  dies, an edge with participants becomes the new home.
+  ／ ノードをまたぐ部屋のカスケード: 部屋の設定 `cascade: true`（または `--rooms-cascade`）で、参加者はつないだノード（edge）で
+  受け、部屋の配置先（home）とノード間の中継でつながります。在室とトラックは全量で同期し、メディアは `@room/<部屋>/<トラック>`
+  の購読、アプリのメッセージは受け手のノードへ直接送ります。home が落ちると、参加者のいる edge が新しい home になります。
+- senca-relay: versioned, bounded App frame (`0x0f`, capability `APP`) for integration messages (`send_app`, `take_app_messages`).
+  ／ senca-relay: 統合側のメッセージのための、版つき・上限つきの App 枠（`0x0f`、capability `APP`）。
+- Auth webhook in the node: room setting `auth_webhook_url` or `--rooms-auth-webhook`, `--rooms-auth-mode after_token|only`,
+  signed with `--rooms-webhook-secret-file`, destinations checked by the egress policy. Rooms without a URL are admitted by token.
+  ／ ノードの認証 Webhook: 部屋の設定 `auth_webhook_url` か `--rooms-auth-webhook`、`--rooms-auth-mode after_token|only`、
+  `--rooms-webhook-secret-file` で署名、宛先は egress の方針で検査。URL の無い部屋はトークンで認めます。
+- Event webhook: `--rooms-event-webhook` delivers room events (signed, at least once, retries, dead letters shown in
+  `GET /api/v1/nodes`); SSE is unchanged.
+  ／ イベント Webhook: `--rooms-event-webhook` で部屋の出来事を送ります（署名つき・少なくとも 1 回・送り直し・諦めた件数は
+  `GET /api/v1/nodes` に表示）。SSE は今までどおりです。
+- Interop test `tools/interop/cluster_rooms.sh` (3 nodes, Chrome, home node failure, mock webhook receiver).
+  ／ 相互接続試験 `tools/interop/cluster_rooms.sh`（3 台、Chrome、home のノードの障害、Webhook の模擬の受け手）。
+
 ### Security / セキュリティ
 
 - Node-to-node authentication (Raft and relay) is now a mutual challenge-response with fresh nonces and HMAC keys
@@ -81,28 +101,6 @@
 - `--log-json` now also covers the first-admin-token notice, codec/capture worker stderr lines, configuration errors
   and fatal errors ／ `--log-json` で、最初の管理者トークンの通知・codec/capture worker の標準エラー出力・設定の誤り・
   起動の失敗も JSON で出力します
-
-### Added / 追加
-
-- Room cascading across nodes: with the room setting `cascade: true` (or `--rooms-cascade`), participants are served on the
-  node they connect to (edge) and joined to the room's node (home) over the inter-node relay. Presence and tracks are synced as
-  full snapshots, media is subscribed as `@room/<room>/<track>`, app messages go directly to the recipients' nodes. When the home
-  dies, an edge with participants becomes the new home.
-  ／ ノードをまたぐ部屋のカスケード: 部屋の設定 `cascade: true`（または `--rooms-cascade`）で、参加者はつないだノード（edge）で
-  受け、部屋の配置先（home）とノード間の中継でつながります。在室とトラックは全量で同期し、メディアは `@room/<部屋>/<トラック>`
-  の購読、アプリのメッセージは受け手のノードへ直接送ります。home が落ちると、参加者のいる edge が新しい home になります。
-- senca-relay: versioned, bounded App frame (`0x0f`, capability `APP`) for integration messages (`send_app`, `take_app_messages`).
-  ／ senca-relay: 統合側のメッセージのための、版つき・上限つきの App 枠（`0x0f`、capability `APP`）。
-- Auth webhook in the node: room setting `auth_webhook_url` or `--rooms-auth-webhook`, `--rooms-auth-mode after_token|only`,
-  signed with `--rooms-webhook-secret-file`, destinations checked by the egress policy. Rooms without a URL are admitted by token.
-  ／ ノードの認証 Webhook: 部屋の設定 `auth_webhook_url` か `--rooms-auth-webhook`、`--rooms-auth-mode after_token|only`、
-  `--rooms-webhook-secret-file` で署名、宛先は egress の方針で検査。URL の無い部屋はトークンで認めます。
-- Event webhook: `--rooms-event-webhook` delivers room events (signed, at least once, retries, dead letters shown in
-  `GET /api/v1/nodes`); SSE is unchanged.
-  ／ イベント Webhook: `--rooms-event-webhook` で部屋の出来事を送ります（署名つき・少なくとも 1 回・送り直し・諦めた件数は
-  `GET /api/v1/nodes` に表示）。SSE は今までどおりです。
-- Interop test `tools/interop/cluster_rooms.sh` (3 nodes, Chrome, home node failure, mock webhook receiver).
-  ／ 相互接続試験 `tools/interop/cluster_rooms.sh`（3 台、Chrome、home のノードの障害、Webhook の模擬の受け手）。
 
 ## v0.0.0 — 2026-11-03
 
