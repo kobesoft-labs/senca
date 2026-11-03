@@ -48,6 +48,24 @@ pub struct Config {
     /// 仕事に貸す CPU（ミリコア）・メモリ（MB）の上書き。無ければ実機の 90%・85%。
     pub capacity_cpu_millis: Option<u64>,
     pub capacity_memory_mb: Option<u64>,
+    /// 部屋のカスケードをノードの既定にする（部屋の設定 `cascade` が偽でも、別のノードの部屋の参加者をこのノードで受ける）。
+    pub rooms_cascade: bool,
+    /// 部屋の認証 Webhook（部屋の設定 `auth_webhook_url` が優先）。
+    pub rooms_auth_webhook: Option<String>,
+    /// 認証 Webhook の使い方（`after_token` = トークンを検証した後に問い合わせる、`only` = トークンの代わり）。
+    pub rooms_auth_mode: RoomsAuthMode,
+    /// 部屋の出来事を送る Webhook（少なくとも 1 回、署名つき）。
+    pub rooms_event_webhook: Option<String>,
+    /// Webhook の署名（HMAC-SHA256）の秘密のファイル（16 byte 以上）。
+    pub rooms_webhook_secret_file: Option<PathBuf>,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Deserialize, Default)]
+#[serde(rename_all = "snake_case")]
+pub enum RoomsAuthMode {
+    #[default]
+    AfterToken,
+    Only,
 }
 
 #[derive(Debug, Clone, Deserialize)]
@@ -139,6 +157,11 @@ impl Default for Config {
             labels: Default::default(),
             capacity_cpu_millis: None,
             capacity_memory_mb: None,
+            rooms_cascade: false,
+            rooms_auth_webhook: None,
+            rooms_auth_mode: RoomsAuthMode::AfterToken,
+            rooms_event_webhook: None,
+            rooms_webhook_secret_file: None,
         }
     }
 }
@@ -151,9 +174,22 @@ pub const USAGE: &str = "senca-node [--config FILE] [--data-dir DIR] [--http ADD
   [--codec-workers N] [--codec-worker-bin FILE] [--codec-lib-dir DIR] [--zoneinfo DIR]
   [--console-dir DIR] [--sender-dir DIR] [--verify-recordings] [--log-json] [--node-name NAME] [--egress-allow CIDR]...
   [--cluster-config FILE] [--net-mbps N] [--label KEY=VALUE]...
-  [--capacity-cpu-millis N] [--capacity-memory-mb N]";
+  [--capacity-cpu-millis N] [--capacity-memory-mb N]
+  [--rooms-cascade] [--rooms-auth-webhook URL] [--rooms-auth-mode after_token|only] [--rooms-event-webhook URL]
+  [--rooms-webhook-secret-file FILE]";
 
 impl Config {
+    /// Webhook の署名の秘密（ファイルの中身、前後の空白を除く）。
+    pub fn webhook_secret(&self) -> Result<Option<Vec<u8>>, String> {
+        let Some(p) = &self.rooms_webhook_secret_file else { return Ok(None) };
+        let s = std::fs::read_to_string(p).map_err(|e| format!("--rooms-webhook-secret-file {}: {e}", p.display()))?;
+        let s = s.trim();
+        if s.len() < 16 {
+            return Err("--rooms-webhook-secret-file: 秘密は 16 byte 以上にしてください".into());
+        }
+        Ok(Some(s.as_bytes().to_vec()))
+    }
+
     pub fn from_args(args: &[String]) -> Result<Config, String> {
         let mut cfg = Config::default();
         // まず --config
@@ -219,6 +255,17 @@ impl Config {
                 _ if flag("--net-mbps") => cfg.net_mbps = num(val()?)?,
                 _ if flag("--capacity-cpu-millis") => cfg.capacity_cpu_millis = Some(num(val()?)?),
                 _ if flag("--capacity-memory-mb") => cfg.capacity_memory_mb = Some(num(val()?)?),
+                _ if flag("--rooms-cascade") => cfg.rooms_cascade = true,
+                _ if flag("--rooms-auth-webhook") => cfg.rooms_auth_webhook = Some(val()?),
+                _ if flag("--rooms-auth-mode") => {
+                    cfg.rooms_auth_mode = match val()?.as_str() {
+                        "after_token" | "after-token" => RoomsAuthMode::AfterToken,
+                        "only" => RoomsAuthMode::Only,
+                        v => return Err(format!("--rooms-auth-mode は after_token か only: {v}")),
+                    }
+                }
+                _ if flag("--rooms-event-webhook") => cfg.rooms_event_webhook = Some(val()?),
+                _ if flag("--rooms-webhook-secret-file") => cfg.rooms_webhook_secret_file = Some(PathBuf::from(val()?)),
                 _ if flag("--label") => {
                     let v = val()?;
                     let (k, x) = v.split_once('=').ok_or_else(|| format!("--label は key=value: {v}"))?;
@@ -260,6 +307,19 @@ impl Config {
         }
         for c in &self.egress_allow {
             crate::egress::Cidr::parse(c).ok_or_else(|| format!("--egress-allow: bad CIDR {c}"))?;
+        }
+        for (name, u) in [("--rooms-auth-webhook", &self.rooms_auth_webhook), ("--rooms-event-webhook", &self.rooms_event_webhook)] {
+            if let Some(u) = u {
+                if !senca_rooms::model::valid_webhook_url(u) {
+                    return Err(format!("{name}: http:// か https:// の URL を渡してください: {u}"));
+                }
+                if self.rooms_webhook_secret_file.is_none() {
+                    return Err(format!("{name} には --rooms-webhook-secret-file（署名の秘密）が要ります"));
+                }
+            }
+        }
+        if self.rooms_webhook_secret_file.is_some() {
+            self.webhook_secret()?;
         }
         if self.max_playback_ttl_secs == 0 {
             return Err("--max-playback-ttl must be > 0".into());

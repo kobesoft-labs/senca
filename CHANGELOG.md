@@ -1,5 +1,29 @@
 # Changelog / 変更履歴
 
+## Unreleased
+
+### Added / 追加
+
+- Room cascading across nodes: with the room setting `cascade: true` (or `--rooms-cascade`), participants are served on the
+  node they connect to (edge) and joined to the room's node (home) over the inter-node relay. Presence and tracks are synced as
+  full snapshots, media is subscribed as `@room/<room>/<track>`, app messages go directly to the recipients' nodes. When the home
+  dies, an edge with participants becomes the new home.
+  ／ ノードをまたぐ部屋のカスケード: 部屋の設定 `cascade: true`（または `--rooms-cascade`）で、参加者はつないだノード（edge）で
+  受け、部屋の配置先（home）とノード間の中継でつながります。在室とトラックは全量で同期し、メディアは `@room/<部屋>/<トラック>`
+  の購読、アプリのメッセージは受け手のノードへ直接送ります。home が落ちると、参加者のいる edge が新しい home になります。
+- senca-relay: versioned, bounded App frame (`0x0f`, capability `APP`) for integration messages (`send_app`, `take_app_messages`).
+  ／ senca-relay: 統合側のメッセージのための、版つき・上限つきの App 枠（`0x0f`、capability `APP`）。
+- Auth webhook in the node: room setting `auth_webhook_url` or `--rooms-auth-webhook`, `--rooms-auth-mode after_token|only`,
+  signed with `--rooms-webhook-secret-file`, destinations checked by the egress policy. Rooms without a URL are admitted by token.
+  ／ ノードの認証 Webhook: 部屋の設定 `auth_webhook_url` か `--rooms-auth-webhook`、`--rooms-auth-mode after_token|only`、
+  `--rooms-webhook-secret-file` で署名、宛先は egress の方針で検査。URL の無い部屋はトークンで認めます。
+- Event webhook: `--rooms-event-webhook` delivers room events (signed, at least once, retries, dead letters shown in
+  `GET /api/v1/nodes`); SSE is unchanged.
+  ／ イベント Webhook: `--rooms-event-webhook` で部屋の出来事を送ります（署名つき・少なくとも 1 回・送り直し・諦めた件数は
+  `GET /api/v1/nodes` に表示）。SSE は今までどおりです。
+- Interop test `tools/interop/cluster_rooms.sh` (3 nodes, Chrome, home node failure, mock webhook receiver).
+  ／ 相互接続試験 `tools/interop/cluster_rooms.sh`（3 台、Chrome、home のノードの障害、Webhook の模擬の受け手）。
+
 ## v0.0.0 — 2026-11-03
 
 First public snapshot. **Experimental**: the release gate in docs/RELEASE.md (long fuzzing, soak test,

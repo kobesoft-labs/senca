@@ -362,6 +362,37 @@ fn auth_webhook_allow_override_deny_and_timeout() {
 }
 
 #[test]
+fn auth_webhook_skipped_falls_back_to_the_token() {
+    let mut h = H::new(|c| c.auth_webhook = AuthWebhookMode::AfterToken);
+    let rid_of = |acts: Vec<Action>| {
+        acts.into_iter()
+            .find_map(|a| match a {
+                Action::AuthWebhook { request_id, .. } => Some(request_id),
+                _ => None,
+            })
+            .unwrap()
+    };
+    // トークンだけで決める: トークンに無い client_id は名乗れない（Webhook を通したときとは違う）
+    let k = h.svc.open(h.now, Default::default());
+    let t = h.token("r", Role::Sendrecv, None, json!({}));
+    h.send(k, json!({"type":"connect","version":1,"room_id":"r","role":"sendrecv","token":t,"client_id":"mallory"}));
+    let rid = rid_of(h.take_other());
+    h.svc.on_auth_webhook_skipped(h.now, k, "old");
+    assert!(h.take(k).is_empty());
+    h.svc.on_auth_webhook_skipped(h.now, k, &rid);
+    assert_eq!(errors(&h.take(k)), vec![(ErrorCode::Forbidden, true)]);
+    // トークンの client_id で入る
+    let k = h.svc.open(h.now, Default::default());
+    let t = h.token("r", Role::Sendrecv, Some("alice"), json!({}));
+    h.send(k, json!({"type":"connect","version":1,"room_id":"r","role":"sendrecv","token":t}));
+    let rid = rid_of(h.take_other());
+    h.svc.on_auth_webhook_skipped(h.now, k, &rid);
+    let msgs = h.take(k);
+    let Some(ServerMessage::Connected(c)) = msgs.first() else { panic!("{msgs:?}") };
+    assert_eq!(c.client_id.as_deref(), Some("alice"));
+}
+
+#[test]
 fn room_limits_redirect_e2ee_and_codec() {
     let mut h = H::new(|c| {
         c.default_settings.max_participants = 2;

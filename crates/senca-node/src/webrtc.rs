@@ -84,7 +84,7 @@ pub async fn start(app: Arc<App>, udp: SocketAddr) -> Result<Arc<Rtc>, String> {
     let (down_tx, down_rx) = mpsc::channel(8192);
     // 公開する候補のアドレス（0.0.0.0 で待つときは、ノードの公開 URL のホストに置き換えるべきだが、ここでは待ち受けのアドレス）
     let (rooms_tx, rooms_rx) = mpsc::unbounded_channel();
-    let rooms = crate::rooms::RoomsHost::new(app.clone(), cert.clone(), udp);
+    let rooms = crate::rooms::RoomsHost::new(app.clone(), cert.clone(), udp, rooms_tx.clone());
     tokio::spawn(drive(app.clone(), sock, cert, rx, down_rx, udp, rooms, rooms_rx));
     app.log(&format!("webrtc listening on udp {udp}"));
     Ok(Arc::new(Rtc { tx, down_tx, rooms_tx }))

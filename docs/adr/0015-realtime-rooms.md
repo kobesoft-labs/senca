@@ -29,7 +29,27 @@
 
 ## 実装の状況（2026-11-03）
 
-- senca-node: 部屋はグリッドの仕事として 1 つのノードに置き、別のノードにつないだ参加者は `redirect` で案内する。
-  ノードをまたぐカスケードはまだ有効にしていない（部品は senca-rooms にある）。
-- 参加はトークン（Ed25519）で認める。認証 Webhook・イベント Webhook はノードではまだ送らない（出来事は SSE に流す）。
+- senca-node: 部屋はグリッドのワークロードとして 1 つのノード（home）に置く。部屋の設定 `cascade`（またはノードの
+  `--rooms-cascade`）が偽なら、別のノードにつないだ参加者は `redirect` で home へ案内する。
+- カスケード（決定）: 有効にするのは部屋の設定 `cascade: true` か、ノードの既定 `--rooms-cascade` のとき。参加者のつないだ
+  ノードが home でなければ、そのノードに edge のインスタンスを作って受ける（退避中のノードは作らない）。ノードが満杯のときに
+  自動で edge へ回す方式は採らない（明示した部屋だけが複数のノードにまたがる）。
+  - 在室・トラックは senca-relay の App 枠（`0x0f`、capability bit `APP`、topic `senca.rooms/1`、JSON の版 1、
+    1 MiB まで）で部屋ごとの全量を同期する（変化で即時、2 秒ごと、7 秒で失効）。星形（edge ↔ home）で、home が他の edge の
+    参加者を配る。差分を送らないので、取りこぼし・順序の入れ替わり・つなぎ直しに強い。
+  - メディアは既存の購読の枠組みに stream id `@room/<部屋>/<トラック>` で載せ、参加者のいるノードへ直接購読する
+    （層は TrackId 1, 2, … に rid の順で割り当て、層の変更・キーフレームの要求は既存の Control 枠）。アプリの message は
+    App 枠で受け手のノードへ直接送る。
+  - home が落ちてグリッドが部屋を edge のノードへ移すと、その edge が参加者のまま home になる（`was an edge`）。
+    home のノードが退避するだけで生きているなら、カスケードの部屋はそのノードを edge にして参加者を残す。
+  - edge は `room.created`・`room.updated`・`room.destroyed` のイベントを出さない（home と重ねない）。
+- 認証 Webhook: 部屋の設定 `auth_webhook_url`、無ければ `--rooms-auth-webhook`。既定は `AfterToken`。URL の無い部屋は
+  `RoomService::on_auth_webhook_skipped` でトークンだけで決める（`Off` と同じ規則）。署名は `--rooms-webhook-secret-file`、
+  宛先は egress の方針で検査する。
+- イベント Webhook: `--rooms-event-webhook`。`webhook::Outbox`（少なくとも 1 回、送り直し、dead letter の記録）で各ノードが
+  自分の出来事を送る。SSE にも今までどおり流す。
+- 残っていること: 参加者の上限は同期の遅れの間だけ超えうる（厳密な数え上げは home の確認が要る）。home の REST から
+  別のノードの参加者を切断・更新することはできない（その参加者のいるノードの API を使う）。メディアパイプラインの書き出しは
+  home のノードの参加者だけ。制御面の出来事はイベント Webhook へ送らない（SSE だけ）。中継が切れている間のアプリの
+  message は届かない（再送しない）。
 - E2EE の部屋には合成・文字起こしのメディアパイプラインを作れない（422）。

@@ -17,6 +17,7 @@ E2EE の素通し、統計）を持ちます。サーバーは SFU で、受け�
   置かれたノード（hosting node）が自分の部屋の核に部屋を開き、参加者のピア接続を受けます。結果は部屋の `placement_status` に出ます。
 - **どのノードにつないでもよい**: シグナリング `GET /signaling` は、最初の `connect` の `room_id` を見て、部屋が別のノードにあれば
   `redirect {location}` を返して閉じます。REST の参加者・メッセージ・統計は、受けたノードが部屋を置いたノードへ中継します。
+  `cascade: true` の部屋では redirect せず、つないだノードで受けます（§10 のカスケード）。
 - **部屋の置き場所が変わったら**（排出・ノードの停止）、元のノードがまだ動いていれば今の参加者に `redirect` を送り、新しいノードへ入り直させます。
 - **参加トークン**はどのノードでも発行・検査できます（署名鍵は制御状態の鍵から導くので、全ノードで同じ）。
 
@@ -89,6 +90,8 @@ senca-node --data-dir /var/lib/senca --http 0.0.0.0:8080 \
 | `forwarding_filter` | なし | 部屋全体の転送フィルター（§6） |
 | `data_labels` | `["#*"]` | 使ってよい DataChannel のラベルの型。`#` で始まる 64 byte まで、32 個まで。末尾の `*` は前方一致 |
 | `empty_timeout_secs` | 60 | 自動で作った部屋（`auto: true`）が空になってから消すまでの秒数 |
+| `cascade` | false | true なら、部屋の配置先でないノードにつないだ参加者も、そのノードで受けます（§10 のカスケード）。false なら配置先へ redirect します |
+| `auth_webhook_url` | なし | この部屋の認証 Webhook の URL（`http://`・`https://`）。ノードの `--rooms-auth-webhook` より優先します（§4） |
 
 ### 更新
 
@@ -172,14 +175,27 @@ senca-node --data-dir /var/lib/senca --http 0.0.0.0:8080 \
 
 参加のとき（`connect`）に部屋の核が検査します。
 
-- **トークンは必須**です。ノードは認証 Webhook も匿名の参加も使わない設定なので、トークンの無い `connect` は `auth_failed`（§12）。
+- **トークンは必須**です（既定）。トークンの無い `connect` は `auth_failed`（§12）になります。`--rooms-auth-mode only` のときだけ、
+  認証 Webhook がトークンの代わりに認めます。
 - `exp` は必須で、時計のずれは 30 秒まで。今から `exp` までが 24 時間を超えるものは拒否。`iat` が未来すぎるものも拒否。
 - トークンの `room` と `connect.room_id` が違えば `forbidden`。`connect.role` がトークンの `role` の範囲を超えれば `forbidden`。
 - **`client_id`・`bundle_id` は名乗った値を信じません**（転送フィルターの条件になるため）:
   - トークンに `client_id` があれば、それを使います。`connect.client_id` を付けるなら同じ値でなければ `forbidden`。
   - トークンに `client_id` が無いのに `connect.client_id` を付けると `forbidden`（`client_id must be issued in the token`）。
   - `bundle_id` も同じ（トークンに無いのに `connect.bundle_id` を付けると `forbidden`）。トークンにも無ければ `bundle_id` は `connection_id` と同じ値。
-- 参加者の metadata はトークンの `metadata`。`connect.metadata` は他の参加者には見せません（ノードでは使い道がない。認証 Webhook へ渡すための欄）。
+- 参加者の metadata はトークンの `metadata`。`connect.metadata` は他の参加者には見せません（認証 Webhook へ渡すための欄です）。
+
+### 認証 Webhook
+
+部屋の設定 `auth_webhook_url`、無ければノードの `--rooms-auth-webhook` に URL があると、ノードはトークンを検証した後に
+その URL へ署名つきの `POST` で問い合わせます（本文・応答の形は [シグナリング v1](../../realtime/signaling.md) §9）。
+
+- 応答の `allowed: false` は `auth_failed`（`reason` がクライアントへ届きます）。応答で `role`・`client_id`・`metadata`・
+  `permissions` を上書きできます。5 秒で答えが無い・2xx 以外も拒否です。
+- 署名の秘密は `--rooms-webhook-secret-file` で渡します（`Senca-Signature` ヘッダー）。秘密を設定していないノードでは、
+  URL のある部屋への参加を拒否します。
+- 宛先は `--egress-allow` の方針で検査します。社内のアドレスへ送るときは許可してください。
+- どちらの URL も無い部屋は、今までどおりトークンだけで認めます。
 
 ## 5. シグナリング
 
@@ -275,6 +291,22 @@ WebSocket の `GET /signaling`（subprotocol **`senca.rooms.v1`** が必須）�
   グリッドが移すまでの時間は [09](09-cluster-grid.md) を見てください。
 - 移る前の部屋の状態（参加者・トラック・スポットライト）は引き継ぎません。新しいノードでは空の部屋から始まります。
 
+### カスケード（部屋を複数のノードにまたがせる）
+
+部屋の設定 `cascade: true`（またはノードの `--rooms-cascade`）にすると、参加者は近いノードにつないだまま同じ部屋に入れます。
+クラスタ（ノード間の中継）が必要です。
+
+- 部屋の配置先のノードを **home**、それ以外で参加者を受けるノードを **edge** と呼びます。edge は参加者が来たときに作られ、
+  参加者がいなくなって 20 秒で閉じます。退避中のノードは edge を作らず、home へ redirect します。
+- 別のノードの参加者は `node` 欄つきの参加者として見え、映像・音声・DataChannel のメッセージはノード間の中継で届きます。
+  REST の参加者一覧（home へ中継されます）では `signaling: "remote"` と表示されます。
+- `max_participants` はノードをまたいで数えます。別々のノードで同時に入ると、少しの間だけ上限を超えることがあります。
+- **home が落ちたとき**: グリッドが部屋を別のノードへ移します。移った先が edge なら、その参加者は切れずにそのまま続きます。
+  落ちたノードにいた参加者は、別のノードへつなぎ直せば入り直せます（SDK の `url` に複数のノードを書いておきます）。
+- 別のノードの参加者を切断・更新する REST は、その参加者のいるノードで呼んでください。
+  メディアパイプラインで書き出せるのは、home のノードにいる参加者のトラックです。
+- カスケードの状態は `GET /api/v1/nodes` の自ノードの `rooms` で確かめられます。
+
 ## 11. E2EE（素通し）
 
 `settings.e2ee: true` の部屋では、クライアントが SFrame などで暗号化したメディアを、SFU は中身を見ずに配ります。
@@ -295,7 +327,7 @@ WebSocket の `GET /signaling`（subprotocol **`senca.rooms.v1`** が必須）�
 | `room.updated` | 部屋の作成・自動の作成・更新 | `{auto}` |
 | `room.deleted` | 部屋の削除（自動の部屋の掃除も） | `{}` |
 
-部屋の核の出来事（**部屋を置いたノードの購読者にだけ**流れる。SSE の `id` を持たず、`Last-Event-ID` の再開の対象外。取りこぼしは飛ばす）:
+部屋の核の出来事（**参加者のいるノードの購読者にだけ**流れる。カスケードでは edge のノードの参加者の出来事は edge のノードに流れ、`room.started`・`room.stopped` は home のノードだけ。SSE の `id` を持たず、`Last-Event-ID` の再開の対象外。取りこぼしは飛ばす）:
 
 | `event` | いつ |
 |---|---|
@@ -316,6 +348,17 @@ WebSocket の `GET /signaling`（subprotocol **`senca.rooms.v1`** が必須）�
 ```
 
 部屋の核の出来事を漏れなく受けるには、部屋を置いたノード（`placement_status.node`）の SSE を聞いてください。テナントで絞るので、他のテナントの部屋の出来事は流れません。
+
+### イベント Webhook
+
+`--rooms-event-webhook URL` と `--rooms-webhook-secret-file FILE` を渡すと、各ノードは自分の部屋の核の出来事を、
+その URL へ署名つきで `POST` します（本文の形は [シグナリング v1](../../realtime/signaling.md) §10。`type` は
+`connection.created` などの部屋の核の名前です）。
+
+- 少なくとも 1 回届けます。受け手は本文の `id`（`Senca-Webhook-Id` ヘッダーと同じ）で重複を除いてください。
+- 2xx で完了です。408・429・5xx・接続の失敗・10 秒の時間切れは 1、2、4…秒の間隔で送り直し、10 回で諦めます。その他の 4xx はすぐ諦めます。
+- 諦めた件数と最近の ID は `GET /api/v1/nodes` の自ノードの `rooms.event_webhook` に出ます。
+- 宛先は `--egress-allow` の方針で検査します。SSE にも今までどおり流れます。
 
 ## 13. 上限
 
@@ -338,12 +381,6 @@ WebSocket の `GET /signaling`（subprotocol **`senca.rooms.v1`** が必須）�
 
 部屋の核（`senca-rooms`）とシグナリング v1 の文書にはあっても、`senca-node` ではまだ使えないものがあります。
 
-- **認証 Webhook**: ノードは部屋の核を `auth_webhook` なしで動かします（トークンで認める）。参加の可否を外部に問い合わせることはできません。
-  （仮に部屋の核が問い合わせを出しても、ノードは応答なしとして拒否します: `crates/senca-node/src/rooms.rs` の `drive()`。）
-  したがって `connect.metadata` はどこにも使われず、トークンなしの参加もできません。
-- **イベントの Webhook**: 部屋の出来事を外部へ POST する仕組み（`senca_rooms::webhook::Outbox`）はノードに組み込まれていません。出来事は SSE だけです。
-- **カスケード（部屋を複数のノードにまたがせる）**: 有効ではありません。部屋は 1 つのノードに留まり、他のノードにつないだ参加者は redirect されます。
-  したがって 1 つの部屋の大きさは 1 つのノードの容量まで、参加者の `node` 欄（別のノードの参加者）は現れません。
 - **ノードの `overflow_redirect`**: 設定できません（ノードが満員なら `room_full`）。
 - **`settings.recording`**: 方針の値だけで、録画は始まりません（[11](11-media-pipelines.md) のメディアパイプラインを使う）。
 - **参加者が自分の metadata を変える message**: シグナリング v1 に無いので、アプリのサーバーから `PATCH /rooms/{id}/participants/{connection_id}` で変えます。

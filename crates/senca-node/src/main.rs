@@ -4,6 +4,7 @@ mod api;
 mod app;
 mod capture;
 mod captions;
+mod cascade;
 mod cluster;
 mod codec;
 mod config;

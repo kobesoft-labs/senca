@@ -7,6 +7,8 @@
 //!   GOP キャッシュ・購読者への配り方は所有者のノードと同じ。同じ stream を見る購読者が何人いても上流は 1 本。
 //! - 写しは録画・字幕・所有権の主張をしない（それらは所有者のノードの仕事）。
 //! - 使われなくなった写しは片付ける。所有権がこのノードへ移ったら、写しを止めて本物の送り手に譲る。
+//! - 部屋のカスケード（[`crate::cascade`]）も同じ接続に載せる: 在室・アプリの message は App の枠（topic
+//!   `senca.rooms/1`）、参加者のトラックは stream id `@room/<部屋>/<トラック>` の購読（部屋の係が答える）。
 
 use crate::app::App;
 use crate::cluster::{CLUSTER_SERVER_NAME, ClusterTls};
@@ -187,6 +189,20 @@ pub fn start(app: &Arc<App>, cc: &ClusterConfig, secret: String) -> Result<Arc<R
     }
     app.log(&format!("relay listening on {listen}"));
 
+    // 部屋のカスケードの message（部屋の係へ）
+    if let Some(mut apps) = endpoint.take_app_messages() {
+        let app = app.clone();
+        tokio::spawn(async move {
+            while let Some(m) = apps.recv().await {
+                if m.topic != crate::cascade::TOPIC {
+                    continue;
+                }
+                if let Some(rtc) = app.rtc.get() {
+                    rtc.room_cmd(crate::rooms::RoomCmd::CascadeIn { peer: m.peer, payload: m.payload });
+                }
+            }
+        });
+    }
     // 相手からの購読
     {
         let app = app.clone();
@@ -225,6 +241,14 @@ pub fn map_event(ev: &HubEvent) -> StreamEvent {
 
 /// 相手のノードからの購読に答える（このノードが送り手を持つ stream だけ）。
 fn serve(app: &Arc<App>, relay: &Arc<Relay>, inc: IncomingSubscribe) {
+    if inc.stream_id.starts_with(crate::cascade::STREAM_PREFIX) {
+        // 部屋の参加者のトラック: 部屋の係が答える
+        match app.rtc.get() {
+            Some(rtc) => rtc.room_cmd(crate::rooms::RoomCmd::RelayIncoming(inc)),
+            None => inc.reject(ErrorCode::NOT_FOUND, "rooms are not enabled on this node"),
+        }
+        return;
+    }
     let is_mirror = relay.is_mirror(&inc.stream_id);
     let hub = app.hubs.lock().unwrap().get(&inc.stream_id).cloned();
     let (owned_here, owned_elsewhere) = {

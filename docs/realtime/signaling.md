@@ -217,6 +217,12 @@ SENCA の署名鍵（Ed25519 = `EdDSA`、P-256 = `ES256`）で署名する。`PO
 
 `allowed: false` なら `reason` をクライアントへ（`auth_failed`）。2xx 以外・読めない本文も拒否。
 
+senca-node では、部屋の設定 `auth_webhook_url`（http/https）があればその URL へ、無ければ `--rooms-auth-webhook` の URL へ
+問い合わせます。使い方は `--rooms-auth-mode`（既定 `after_token` = トークンを検証した後に問い合わせる、`only` = トークンの
+代わり）です。どちらの URL も無い部屋はトークンだけで認めます（トークンに無い `client_id`・`bundle_id` は名乗れません）。
+署名の秘密は `--rooms-webhook-secret-file` で渡します。秘密が無いのに URL を持つ部屋への参加は拒否します。宛先は
+`--egress-allow` の方針で検査します（私設アドレスへ送るには許可が要ります）。要求には `Senca-Webhook-Id`（request_id）も付きます。
+
 ### 署名（Webhook 共通）
 
 `Senca-Signature: t=<UNIX 秒>,v1=<hex(HMAC-SHA256(secret, "<t>.<本文>"))>`。秘密を入れ替える間は `v1=` を複数付ける。
@@ -237,7 +243,10 @@ SENCA の署名鍵（Ed25519 = `EdDSA`、P-256 = `ES256`）で署名する。`PO
 
 senca-node の SSE では名前を `room.started`（= `room.created`）・`room.stopped`（= `room.destroyed`）・`room.connection.*`・
 `room.track.*`・`room.spotlight.changed` にし、`data` に中身を入れる（`room.updated` は制御の変更のイベントが出す）。
-senca-node は今のところ Webhook を送らない（SSE だけ）。認証 Webhook も使わない（参加はトークンで認める）。
+`--rooms-event-webhook URL` を渡すと、senca-node は同じ封筒（部屋の核の名前の `type`）を署名して POST します
+（`--rooms-webhook-secret-file` が必要です）。各ノードは自分の参加者の出来事を送ります（`node` で区別できます）。
+カスケードの edge のノードは `room.created`・`room.updated`・`room.destroyed` を送りません（home のノードだけが送ります）。
+諦めたイベントの数と ID は `GET /api/v1/nodes` の `rooms.event_webhook` で確かめられます。
 
 Webhook は**少なくとも 1 回**（受け手は `id` で重複を除く）。2xx で完了。408・429・5xx・接続の失敗・10 秒の時間切れは
 1, 2, 4, … 秒（±20 %、最大 1 時間）で送り直し、10 回で諦める（dead letter）。その他の 4xx はすぐ諦める。
@@ -286,7 +295,20 @@ E2EE の部屋（SFrame）では SFU は中身を見ずに配る。サーバー�
 部屋がこのノードで受けられないとき（グリッドの配置・上限）は `redirect {location}` で別のノードへ。
 senca-node では、最初の `connect` の前（部屋が別のノードにある）の案内は `redirect` を送ってから close 4300 で閉じる
 （`disconnect` は送らない）。`connect` が 10 秒届かなければ close 4408 で閉じる。
-今の senca-node はノードをまたぐカスケードを有効にしていない（部屋は 1 つのノードに置き、参加者はそこへ案内する）。
+
+senca-node のカスケード:
+
+- 部屋を置いたノード（グリッドの配置先）を **home** と呼びます。部屋の設定 `cascade: true`（またはノードの
+  `--rooms-cascade`）なら、別のノードにつないだ参加者は redirect せず、そのノードの **edge** の部屋で受けます。
+  `cascade` が偽の部屋は、今までどおり home へ案内します。退避中（draining）のノードは edge を新しく作りません。
+- 在室と公開したトラックは、ノード間の中継（ADR-0014）の App 枠（topic `senca.rooms/1`、版つき・1 MiB まで）で、部屋ごとの
+  全量を同期します（変化があればすぐ、無くても 2 秒ごと）。edge は自分の参加者を home へ、home は宛先以外の全員を各 edge へ
+  送ります。7 秒同期が届かないノードの参加者は外します。
+- メディアは、参加者のいるノードへ直接 `@room/<部屋>/<トラック>` を購読します（層の選択・キーフレームの要求も同じ購読で）。
+  アプリの message も、受け手のいるノードへ直接送ります。
+- `max_participants` はノードをまたいで数えます（別々のノードで同時に入ると、少しの間だけ超えることがあります）。
+- home が落ちると、グリッドが部屋を別のノードへ移します。移った先に edge があれば、その参加者のまま home になります。
+  落ちたノードにいた参加者は、別のノードへつなぎ直せば入り直せます。参加者のいなくなった edge は 20 秒で閉じます。
 
 ## 14. 例
 

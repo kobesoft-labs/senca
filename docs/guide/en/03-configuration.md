@@ -103,6 +103,18 @@ See [12. Security](12-security.md).
 | `--cluster-config` | FILE | none | Cluster configuration (JSON, see [3.4](#34-cluster-configuration)). Without it the node runs alone |
 | `--egress-allow` | CIDR | none | Private address range that outbound connections (pull inputs, push outputs, captions, PaaS, HLS pull) may reach. Repeatable. See [12. Security](12-security.md) |
 
+### Rooms (realtime)
+
+| Option | Value | Default | Meaning |
+|---|---|---|---|
+| `--rooms-cascade` | — | off | Use cascading for every room (serve participants of rooms placed on other nodes here even if the room setting `cascade` is false). [10. Realtime rooms](10-rooms.md) |
+| `--rooms-auth-webhook` | URL | none | Auth webhook for rooms (the room setting `auth_webhook_url` takes precedence). Requires `--rooms-webhook-secret-file` |
+| `--rooms-auth-mode` | `after_token`, `only` | `after_token` | `after_token` asks the webhook after the token is verified; `only` admits by webhook instead of a token |
+| `--rooms-event-webhook` | URL | none | Webhook that receives room events (signed, retried). Requires `--rooms-webhook-secret-file` |
+| `--rooms-webhook-secret-file` | FILE | none | File with the webhook signing secret (HMAC-SHA256), at least 16 bytes after trimming whitespace |
+
+Webhook destinations are checked against the `--egress-allow` policy (private addresses must be allowed).
+
 ### Other
 
 | Option | Value | Default | Meaning |
@@ -119,6 +131,8 @@ The node refuses to start (exit code 2) when:
 - `--https` or `--rtmps` is given without `--tls-cert` or `--tls-key`;
 - `--record-queue` is outside 16–1048576, or `--max-playback-ttl` is 0;
 - an `--egress-allow` value is not a valid CIDR;
+- `--rooms-auth-webhook` or `--rooms-event-webhook` is not an http/https URL, or is given without `--rooms-webhook-secret-file`;
+  the secret file cannot be read or is shorter than 16 bytes;
 - the cluster configuration has `node_id` 0, does not list itself in `peers`, or has fewer than 1 or more than 7 peers.
 
 Problems found later during startup (unreadable files, a listener that cannot be bound, a cluster secret shorter
@@ -152,6 +166,10 @@ The `--config FILE` JSON is an object with the keys below. Every key is optional
 | `net_mbps` | `--net-mbps` | number |
 | `labels` | `--label` | object mapping string to string |
 | `capacity_cpu_millis`, `capacity_memory_mb` | same names | number or `null` |
+| `rooms_cascade` | `--rooms-cascade` | boolean |
+| `rooms_auth_webhook`, `rooms_event_webhook` | same names | string or `null` |
+| `rooms_auth_mode` | `--rooms-auth-mode` | `"after_token"` or `"only"` |
+| `rooms_webhook_secret_file` | same names | string or `null` |
 
 Notes:
 
