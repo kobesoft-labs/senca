@@ -1,0 +1,33 @@
+{
+  "name": "@senca/sdk",
+  "version": "0.0.0",
+  "description": "SENCA client SDK: realtime rooms (WebRTC SFU, signaling v1) for browsers and the management REST API for browsers and Node.js",
+  "license": "Apache-2.0",
+  "type": "module",
+  "sideEffects": false,
+  "exports": {
+    ".": {
+      "types": "./types/index.d.ts",
+      "default": "./src/index.js"
+    },
+    "./rest": {
+      "types": "./types/rest/client.d.ts",
+      "default": "./src/rest/client.js"
+    },
+    "./protocol": {
+      "types": "./types/realtime/protocol.d.ts",
+      "default": "./src/realtime/protocol.js"
+    }
+  },
+  "types": "./types/index.d.ts",
+  "files": ["src", "types", "README.md", "API.md"],
+  "engines": { "node": ">=20" },
+  "scripts": {
+    "gen": "python3 scripts/gen_types.py",
+    "build": "node scripts/build.mjs",
+    "test": "node --test \"test/*.test.mjs\""
+  },
+  "devDependencies": {
+    "typescript": "5.9.3"
+  }
+}

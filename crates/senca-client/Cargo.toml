@@ -1,0 +1,19 @@
+[package]
+name = "senca-client"
+description = "Async (tokio) client for the SENCA management REST API: typed models, cursor pagination, idempotency, ETag/If-Match, problem+json errors, SSE events"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+
+[dependencies]
+bytes.workspace = true
+tokio.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+getrandom.workspace = true
+futures-core = "0.3"
+senca-http = { path = "../senca-http" }
+senca-tls = { path = "../senca-tls" }
+
+[lints]
+workspace = true
