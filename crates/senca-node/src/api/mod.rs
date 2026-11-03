@@ -37,6 +37,8 @@ pub struct ApiRequest {
     pub headers: Vec<(String, String)>,
     pub body: Bytes,
     pub request_id: String,
+    /// 送り元の IP（量の上限に使う）。
+    pub peer_ip: String,
 }
 
 impl ApiRequest {
@@ -126,8 +128,8 @@ impl ApiResponse {
         if p.status == 401 {
             r.headers.push(("WWW-Authenticate".into(), "Bearer".into()));
         }
-        if (p.status == 503 || p.status == 429) && p.retryable {
-            r.headers.push(("Retry-After".into(), "1".into()));
+        if (p.status == 503 || p.status == 429 || p.status == 504) && p.retryable {
+            r.headers.push(("Retry-After".into(), p.retry_after_secs().to_string()));
         }
         r
     }
@@ -256,17 +258,11 @@ pub fn handle(app: &App, req: ApiRequest) -> ApiResponse {
 }
 
 fn handle_inner(app: &App, req: &ApiRequest, now_ms: i64) -> ApiResult {
-    let principal = {
-        let core = app.control.lock().unwrap_or_else(|e| e.into_inner());
-        auth::authenticate(req.header("authorization"), &core.state, core.jwt.as_ref(), now_ms)
-    };
-    let principal = match principal {
-        Ok(p) => p,
-        Err(e) => {
-            app.log(&format!("auth failed: {e} request_id={}", req.request_id));
-            return Err(Problem::new(ProblemCode::AuthFailed, "認証に失敗しました"));
-        }
-    };
+    let principal = authenticate(app, req.header("authorization"), &req.peer_ip, &req.request_id, now_ms)?;
+    // 主体ごとの量の上限（テナント＋主体。同じトークンを複数の IP から使っても同じバケット）
+    if let Err(w) = app.limits.principal.take(&format!("{}\u{0}{}", principal.tenant, principal.subject), std::time::Instant::now()) {
+        return Err(Problem::rate_limited("token", crate::ratelimit::retry_after_secs(w)));
+    }
     let ctx = Ctx { app, req, principal, now_ms };
 
     if req.method == "POST"
@@ -275,6 +271,23 @@ fn handle_inner(app: &App, req: &ApiRequest, now_ms: i64) -> ApiResult {
         return idempotent(&ctx, key);
     }
     route(&ctx)
+}
+
+/// 認証する（認証の失敗の上限つき: 使い切った IP は、正しい資格情報でも 429）。SSE と共通。
+pub fn authenticate(app: &App, header: Option<&str>, peer_ip: &str, request_id: &str, now_ms: i64) -> Result<Principal, Problem> {
+    let now = std::time::Instant::now();
+    if let Some(w) = app.limits.auth_failures.exhausted(peer_ip, now) {
+        return Err(Problem::rate_limited("auth_failures", crate::ratelimit::retry_after_secs(w)));
+    }
+    let principal = {
+        let core = app.control.lock().unwrap_or_else(|e| e.into_inner());
+        auth::authenticate(header, &core.state, core.jwt.as_ref(), now_ms)
+    };
+    principal.map_err(|e| {
+        app.log(&format!("auth failed: {e} request_id={request_id}"));
+        let _ = app.limits.auth_failures.take(peer_ip, now);
+        Problem::new(ProblemCode::AuthFailed, "認証に失敗しました")
+    })
 }
 
 fn idempotent(ctx: &Ctx, key: &str) -> ApiResult {

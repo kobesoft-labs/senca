@@ -451,7 +451,7 @@ fn drive(
                     continue;
                 }
                 let result = match serde_json::from_slice::<Command>(&e.data) {
-                    Ok(cmd) => app.control.lock().unwrap().apply_committed(cmd, e.index),
+                    Ok(cmd) => app.control.lock().unwrap().apply_committed(cmd),
                     Err(_) => Err(Problem::internal()),
                 };
                 applied_since_snap += 1;

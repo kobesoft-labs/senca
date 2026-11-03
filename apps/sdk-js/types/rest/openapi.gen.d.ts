@@ -193,6 +193,8 @@ export type Grid = {
     roles: Array<"control" | "media">;
     /** 心拍が届いている（5 秒途絶えると false） */
     up: boolean;
+    /** 最後の心拍の実測の使用量（CPU は /proc/stat の差、メモリは /proc/meminfo の MemTotal − MemAvailable、帯域はループバックを除く /proc/net/dev の差）。配置係のノードだけが知っている。違えば null。配置は予約（reserved）で数え、この値は使わない */
+    usage: Resources | null;
     /** このノードに割り当てた仕事の数 */
     workloads: number;
   }>;
@@ -375,6 +377,8 @@ export type MediaPipeline = {
   export_participants: boolean;
   generation: number;
   id: string;
+  /** 部屋の設定 `recording` から作ったもの（ID は `room-rec.{部屋}`。API からは変えられない・消せない） */
+  managed?: boolean;
   name: MediaPipelineName;
   participants: MediaPipelineParticipants;
   recording: MediaPipelineRecording | null;
@@ -500,6 +504,8 @@ export type MediaPipelineState = "running" | "stopped";
 
 /** このノードでの実行の様子（制御状態には保存しない）。 */
 export type MediaPipelineStatus = {
+  /** `speaker` の並びで今大きく映している参加者（`client_id`、無ければ `connection_id`）。決まる前・`grid` では null */
+  active_speaker?: string | null;
   /** 合成の図に入っている参加者の数（`composite` が無い、または映像のある参加者が流れ始めていなければ null） */
   composite_members: number | null;
   /** 今書き出している参加者 */
@@ -525,6 +531,8 @@ export type Node = {
   registered_at: Timestamp;
   /** ノード間の中継（ADR-0014）の様子。応答したノード自身（`self: true`）で、クラスタを組んでいるときだけ値がある（単一ノード・他ノードは null）。 */
   relay: RelayStatus | null;
+  /** 部屋の係の様子（カスケードの部屋ごとの役割・中継の購読の数・イベント Webhook の送り箱）。応答したノード自身で、WebRTC が動いているときだけ値がある */
+  rooms?: Record<string, unknown> | null;
   /** 応答したノード自身か */
   self: boolean;
 };
@@ -1202,11 +1210,12 @@ export type RoomParticipantStats = {
   }>;
 };
 
-/** 書いたフィールドだけ変える。`settings` は全体を置き換える。`settings`・`metadata` の null は「変えない」、`placement: null` は配置の指定を外す。 */
+/** 書いたフィールドだけ変える。`settings` は JSON Merge Patch（項目の null で既定に戻す）。`settings`・`metadata` の null は「変えない」、`placement: null` は配置の指定を外す。 */
 export type RoomPatch = {
   metadata?: RoomMetadata;
   /** 配置の指定を丸ごと置き換える（`degrade` は使えない）。null で外す */
   placement?: PlacementSpec | null;
+  /** 変える設定の項目だけを書く（JSON Merge Patch。書かない項目は残り、項目の値の null はその項目を既定値に戻す） */
   settings?: RoomSettings | null;
 };
 
@@ -1238,7 +1247,7 @@ export type RoomSettings = {
   max_participants?: number;
   /** 送り手に勧める映像の上限（kbit/s） */
   max_video_bitrate_kbps?: number | null;
-  /** 録画の方針（`composite` は `e2ee` と併用できない） */
+  /** 録画の方針。`per_participant`・`composite` なら部屋の録画のメディアパイプライン（`managed: true`）を作る。`composite` は `e2ee` と併用できない（422） */
   recording?: "none" | "per_participant" | "composite";
   spotlight?: RoomSpotlight | null;
   /** 部屋の映像のコーデック（SFU は変換しないので全員が同じ） */
@@ -1393,6 +1402,10 @@ export type ScheduleRunList = {
 
 export type ScheduleState = "pending" | "running" | "completed" | "missed" | "canceled" | "failed";
 
+/**
+ * `publish` は送り出しの権限: `POST /whip/{stream}` の `Authorization: Bearer` に、publish 鍵の代わりに `publish` を持つ同じテナントの API トークン・JWT を使える。
+ * `subscribe` は `POST /streams/{id}/playback-url`。
+ */
 export type Scope = "stream:read" | "stream:write" | "publish" | "subscribe" | "recording:read" | "recording:delete" | "tenant:admin" | "node:admin";
 
 export type Secret = {

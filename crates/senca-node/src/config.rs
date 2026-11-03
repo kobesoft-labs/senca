@@ -60,6 +60,18 @@ pub struct Config {
     pub rooms_event_webhook: Option<String>,
     /// Webhook の署名（HMAC-SHA256）の秘密のファイル（16 byte 以上）。
     pub rooms_webhook_secret_file: Option<PathBuf>,
+    /// WebRTC の ICE の候補に載せる IP（`--webrtc-udp` の番号と組み合わせる）。空なら、待ち受けが 0.0.0.0・:: のときは
+    /// ノードのインターフェースのアドレス、そうでなければ待ち受けのアドレス。
+    pub webrtc_public_ips: Vec<std::net::IpAddr>,
+    /// 要求の量の上限（`crate::ratelimit`）。0 で無効。IP ごと・主体ごとは 1 秒あたり（一度に 2 倍まで）。
+    pub rate_limit_ip: u32,
+    pub rate_limit_token: u32,
+    /// 認証の失敗の上限（IP ごと、1 分あたり）。
+    pub rate_limit_auth_failures: u32,
+    /// 接続の開始（シグナリング・WHIP・WHEP・SSE）の上限（IP ごと、1 秒あたり）。
+    pub rate_limit_connect: u32,
+    /// SSE の再開のために残す直近のイベントの数。
+    pub events_retain: usize,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Deserialize, Default)]
@@ -165,9 +177,21 @@ impl Default for Config {
             rooms_auth_mode: RoomsAuthMode::AfterToken,
             rooms_event_webhook: None,
             rooms_webhook_secret_file: None,
+            webrtc_public_ips: Vec::new(),
+            rate_limit_ip: DEFAULT_RATE_LIMIT_IP,
+            rate_limit_token: DEFAULT_RATE_LIMIT_TOKEN,
+            rate_limit_auth_failures: DEFAULT_RATE_LIMIT_AUTH_FAILURES,
+            rate_limit_connect: DEFAULT_RATE_LIMIT_CONNECT,
+            events_retain: crate::control::DEFAULT_EVENT_LOG,
         }
     }
 }
+
+/// 要求の量の上限の既定（`--rate-limit-*`）。
+pub const DEFAULT_RATE_LIMIT_IP: u32 = 300;
+pub const DEFAULT_RATE_LIMIT_TOKEN: u32 = 200;
+pub const DEFAULT_RATE_LIMIT_AUTH_FAILURES: u32 = 30;
+pub const DEFAULT_RATE_LIMIT_CONNECT: u32 = 30;
 
 /// ノードのラベルの数の上限。
 pub const MAX_LABELS: usize = 64;
@@ -196,7 +220,8 @@ pub const USAGE: &str = "senca-node [--config FILE] [--data-dir DIR] [--http ADD
   [--cluster-config FILE] [--net-mbps N] [--label KEY=VALUE]...
   [--capacity-cpu-millis N] [--capacity-memory-mb N]
   [--rooms-cascade] [--rooms-auth-webhook URL] [--rooms-auth-mode after_token|only] [--rooms-event-webhook URL]
-  [--rooms-webhook-secret-file FILE]";
+  [--rooms-webhook-secret-file FILE] [--webrtc-public-ip IP[,IP]...]
+  [--rate-limit-ip N] [--rate-limit-token N] [--rate-limit-auth-failures N] [--rate-limit-connect N] [--events-retain N]";
 
 impl Config {
     /// Webhook の署名の秘密（ファイルの中身、前後の空白を除く）。
@@ -235,6 +260,7 @@ impl Config {
                 if s == "off" { Ok(None) } else { s.parse().map(Some).map_err(|_| format!("{a}: bad address {s}")) }
             };
             let num = |s: String| -> Result<u64, String> { s.parse().map_err(|_| format!("{a}: bad number {s}")) };
+            let small = |n: u64| -> Result<u32, String> { u32::try_from(n).ok().filter(|n| *n <= 1_000_000).ok_or_else(|| format!("{a}: 0〜1000000")) };
             match a {
                 "--config" => {
                     i += 1;
@@ -287,6 +313,17 @@ impl Config {
                 }
                 _ if flag("--rooms-event-webhook") => cfg.rooms_event_webhook = Some(val()?),
                 _ if flag("--rooms-webhook-secret-file") => cfg.rooms_webhook_secret_file = Some(PathBuf::from(val()?)),
+                _ if flag("--webrtc-public-ip") => {
+                    for x in val()?.split(',').map(str::trim).filter(|x| !x.is_empty()) {
+                        let ip: std::net::IpAddr = x.parse().map_err(|_| format!("--webrtc-public-ip: IP アドレスではありません: {x}"))?;
+                        cfg.webrtc_public_ips.push(ip);
+                    }
+                }
+                _ if flag("--rate-limit-ip") => cfg.rate_limit_ip = small(num(val()?)?)?,
+                _ if flag("--rate-limit-token") => cfg.rate_limit_token = small(num(val()?)?)?,
+                _ if flag("--rate-limit-auth-failures") => cfg.rate_limit_auth_failures = small(num(val()?)?)?,
+                _ if flag("--rate-limit-connect") => cfg.rate_limit_connect = small(num(val()?)?)?,
+                _ if flag("--events-retain") => cfg.events_retain = num(val()?)? as usize,
                 _ if flag("--label") => {
                     let v = val()?;
                     let (k, x) = v.split_once('=').ok_or_else(|| format!("--label は key=value: {v}"))?;
@@ -354,6 +391,15 @@ impl Config {
         }
         if self.rooms_webhook_secret_file.is_some() {
             self.webhook_secret()?;
+        }
+        if self.webrtc_public_ips.len() > 8 {
+            return Err("--webrtc-public-ip は 8 個まで".into());
+        }
+        if self.webrtc_public_ips.iter().any(|ip| ip.is_unspecified() || ip.is_multicast()) {
+            return Err("--webrtc-public-ip に 0.0.0.0・::・マルチキャストのアドレスは使えません".into());
+        }
+        if self.events_retain > 1_000_000 {
+            return Err("--events-retain は 0〜1000000".into());
         }
         if self.max_playback_ttl_secs == 0 {
             return Err("--max-playback-ttl must be > 0".into());

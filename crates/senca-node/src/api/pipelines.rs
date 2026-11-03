@@ -62,9 +62,14 @@ fn check(ctx: &Ctx, graph: &Value) -> Result<Value, Problem> {
     let mut rf = false;
     {
         let core = ctx.control();
-        for s in crate::pipelines::graph_sources(&g).into_iter().chain(crate::pipelines::sink_streams(&g)) {
+        let sources = crate::pipelines::graph_sources(&g);
+        for s in sources.iter().cloned().chain(crate::pipelines::sink_streams(&g)) {
             let st = core.state.tenant_stream(ctx.tenant(), &s).map_err(|_| Problem::new(ProblemCode::InvalidConfig, format!("stream {s} がありません")))?;
             rf |= st.codec_profile == senca_control::model::CodecProfile::RoyaltyFree;
+            // E2EE の部屋から書き出した stream はパイプラインの入力にできない（復号・合成・変換はサーバーでできない）
+            if sources.contains(&s) && crate::api::streams::stream_is_e2ee(&core.state, st) {
+                return Err(crate::api::streams::e2ee_refused(&format!("パイプラインの入力（{s}）")));
+            }
         }
     }
     let caps = ctx.app.codec.as_ref().map(|c| c.capability_list()).unwrap_or_default();

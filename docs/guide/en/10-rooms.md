@@ -29,13 +29,14 @@ Nodes that serve rooms must have WebRTC enabled.
 
 | Flag | Required | Meaning |
 |---|---|---|
-| `--webrtc-udp ADDR` | yes | The WebRTC UDP socket (shared with WHIP and WHEP). **The listen address is advertised as-is as the ICE candidate**, so use an IP the clients can reach, not `0.0.0.0` |
+| `--webrtc-udp ADDR` | yes | The WebRTC UDP socket (shared with WHIP and WHEP). When bound to `0.0.0.0:port`, the ICE candidates carry the node's network interface addresses |
+| `--webrtc-public-ip IP` | yes behind NAT or in Docker | The node's IP address as clients see it; the ICE candidates carry this address (several with commas or by repeating the flag) |
 | `--public-http-url URL` | recommended | Base of the `signaling_url` returned for rooms and tokens (`http://`→`ws://`, `https://`→`wss://`, plus `/signaling`). Without it, `signaling_url` is `null` for rooms hosted on this node |
 | `--https ADDR` with `--tls-cert`, `--tls-key` | optional | Accept `wss://` (`/signaling` is served on both the HTTP and HTTPS listeners) |
 
 ```sh
 senca-node --data-dir /var/lib/senca --http 0.0.0.0:8080 \
-  --webrtc-udp 203.0.113.10:20000 --public-http-url https://media.example.com
+  --webrtc-udp 0.0.0.0:20000 --webrtc-public-ip 203.0.113.10 --public-http-url https://media.example.com
 ```
 
 On a node without `--webrtc-udp`:
@@ -65,6 +66,8 @@ see [15. API and SDKs](15-api-and-sdks.md)).
 | Participant | `GET /rooms/{id}/participants/{connection_id}` | `stream:read` | 200 |
 | Participant metadata | `PATCH /rooms/{id}/participants/{connection_id}` `{metadata}` | `stream:write` | 200. Everyone receives `connection.updated` |
 | Disconnect | `DELETE /rooms/{id}/participants/{connection_id}` | `stream:write` | 204. Reason `kicked` |
+
+Updating or disconnecting a participant works on any node: the request is forwarded to the node the participant is connected to (including a cascade edge).
 | Send | `POST /rooms/{id}/messages` `{to?, label?, data}` | `stream:write` | 200 `{delivered}` (10.8) |
 | Stats | `GET /rooms/{id}/stats` | `stream:read` | 200 (10.9) |
 
@@ -89,7 +92,7 @@ with the offending fields in `details.errors`).
 | `audio_codec` | `opus` | `opus` only |
 | `max_video_bitrate_kbps` | none | 50–50000. Video ceiling recommended to senders in `connected` |
 | `spotlight` | none | `{number, unfocused?, focus_rid?}`. `number` 1–16, `unfocused` `lowest` (default) or `off`, `focus_rid` 1–16 alphanumerics (10.7) |
-| `recording` | `none` | `none`, `per_participant`, `composite`. **A policy value only**: the node does not start recording because of it. Recording is done with media pipelines ([11](11-media-pipelines.md)). `composite` cannot be combined with `e2ee: true` (400) |
+| `recording` | `none` | `none`, `per_participant`, `composite`. With `per_participant` (one recording per participant) or `composite` (everyone side by side in one recording), a recording media pipeline is created automatically ("Room recording" in 10.3). `composite` cannot be combined with `e2ee: true` (422) |
 | `forwarding_filter` | none | Room-wide forwarding filter (10.6) |
 | `data_labels` | `["#*"]` | DataChannel label patterns allowed in the room. Each starts with `#`, up to 64 bytes, at most 32 patterns. A trailing `*` is a prefix match |
 | `empty_timeout_secs` | 60 | For auto-created rooms (`auto: true`): seconds a room may stay empty before it is deleted |
@@ -98,9 +101,20 @@ with the offending fields in `details.errors`).
 
 ### Update
 
-- Sending `settings` **replaces the whole object** (fields you leave out revert to their defaults). Read the current settings and send all of them, not just the changed field.
+- Send **only the fields you want to change** in `settings` (JSON Merge Patch, RFC 7396). Fields you leave out keep their values, and a
+  field set to `null` reverts to its default (nested objects such as `spotlight` follow the same rule). The merged result is validated like a new room.
 - `e2ee`, `video_codec` and `audio_codec` cannot change while participants are present (409).
 - `placement: null` removes the placement spec.
+
+### Room recording
+
+When `settings.recording` is `per_participant` or `composite`, a recording media pipeline for the room (ID `room-rec.{room ID}`,
+`managed: true`) is created automatically and kept in line with the setting ([11. Media pipelines](11-media-pipelines.md)).
+
+- `per_participant`: each participant is exported to its own stream, and each stream is recorded (in E2EE rooms the media stays encrypted).
+- `composite`: video participants are laid out in a grid in one stream (AV1, 1280x720), which is recorded.
+- Setting it back to `none` deletes the media pipeline. Exported streams and recordings are kept.
+- This media pipeline cannot be changed or deleted through its own API (409); change the room setting instead.
 - The hosting node notices the new generation in the control state and applies the new settings. Changing the room's forwarding filter or spotlight
   reassigns receive slots immediately.
 
@@ -309,8 +323,8 @@ With the room setting `cascade: true` (or the node flag `--rooms-cascade`), part
 - `max_participants` counts participants on all nodes. Simultaneous joins on different nodes may exceed it for a short time.
 - **When the home dies**, the grid moves the room to another node. If that node is an edge, its participants continue without
   interruption. Participants of the dead node rejoin by connecting to another node (list several nodes in the SDK's `url`).
-- Call the REST endpoints that disconnect or update a participant on the node where that participant is.
-  Media pipelines can export tracks of participants on the home node.
+- The REST endpoints that disconnect or update a participant work on any node; the request is forwarded to the participant's node.
+- Media pipelines also export participants on edge nodes, receiving their tracks from that node over the relay.
 - The cascade state is shown in `rooms` of this node in `GET /api/v1/nodes`.
 
 ## 10.11 E2EE (pass-through)
@@ -319,9 +333,13 @@ In a room with `settings.e2ee: true`, the SFU forwards media that clients have e
 
 - Participants must set `connect.e2ee` to match the room's `e2ee` (otherwise `e2ee_mismatch`). `e2ee` cannot change while participants are present.
 - Encryption, decryption and key distribution are up to the application. The browser SDK only checks the flag against the room; it does not implement encryption (Encoded Transform).
-- Because the server cannot see the content, compositing, composite recording and transcription are meaningless; `recording: "composite"` is rejected with 400.
-  Creating or updating a media pipeline with a composite (`composite`) or transcription (`captions`) for an E2EE room fails with 422 (`details.reason: "e2ee"`).
-  E2EE rooms support only per-participant export and recording (which store the media still encrypted).
+- Because the server cannot see the content, every operation that would process it on the server fails with 422 (`UNSUPPORTED_CODEC`,
+  `details.reason: "e2ee"`):
+  - Rooms: `recording: "composite"`; creating or updating a media pipeline with a composite (`composite`) or transcription (`captions`);
+    turning on `e2ee` for a room that has such a media pipeline.
+  - Streams exported from an E2EE room (they carry `metadata.e2ee: "true"`): still images (`GET /streams/{id}/snapshot`), captions
+    (`captions`), saved still images (`snapshots`), snapshot schedules, and pipeline sources (`source`). Recording thumbnails are not made either.
+- E2EE rooms support only per-participant export and recording (which store the media still encrypted).
 
 ## 10.12 Events (SSE)
 
@@ -421,9 +439,9 @@ curl -s -H "$H" "$API/rooms/demo/stats"
 curl -s -X POST -H "$H" -H 'Content-Type: application/json' "$API/rooms/demo/messages" -d '{"data":{"notice":"ending in 5 minutes"}}'
 curl -s -X POST -H "$H" -H 'Content-Type: application/json' "$API/rooms/demo/messages" -d '{"label":"#chat","data":"hello"}'
 
-# Change settings (replaces the whole object; If-Match carries the current ETag)
+# Change settings (only the fields you send change; If-Match carries the current ETag)
 curl -s -X PATCH -H "$H" -H 'Content-Type: application/json' -H 'If-Match: "1"' "$API/rooms/demo" \
-  -d '{"settings":{"max_participants":20,"video_codec":"vp8","spotlight":{"number":2}}}'
+  -d '{"settings":{"max_participants":20,"spotlight":{"number":2}}}'
 
 # Kick one participant / delete the room
 curl -s -X DELETE -H "$H" "$API/rooms/demo/participants/$CONNECTION_ID"

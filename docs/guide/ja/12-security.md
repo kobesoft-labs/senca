@@ -33,7 +33,7 @@
 |---|---|
 | `stream:read` | stream・予約・入力・出力・パイプライン・部屋・メディアパイプラインの参照、静止画、SSE の購読 |
 | `stream:write` | stream の作成・変更・削除・鍵の作り直し、録画の開始・停止・変更（保持期間・法的保全）、予約・入力・出力・パイプライン・部屋・メディアパイプラインの変更、部屋の参加トークンの発行 |
-| `publish` | （予約。今の API で要求する操作は無い） |
+| `publish` | WHIP の送出（`POST /whip/{stream_id}` の `Authorization: Bearer` に、stream key の代わりに使えます。同じテナントの stream だけ） |
 | `subscribe` | ライブの再生 URL の発行 |
 | `recording:read` | 録画の参照、録画の再生 URL・サムネイル・MP4 の書き出し |
 | `recording:delete` | 録画の削除 |
@@ -56,6 +56,23 @@ API トークンは作った者のテナントにしか作れないので、**�
 2. 管理者のトークンを新しく作ってから、最初のトークンを `DELETE /api/v1/tokens/{id}` で消す
    （最後の `tenant:admin` は消せないので、先に作る）。
 3. `bootstrap-admin-token` のファイルを消すか、安全な場所へ移す（ノードはこのファイルを再び読まない）。
+
+### 要求の量の上限
+
+総当たりや使いすぎを防ぐため、ノードは要求の数を数え、上限を超えると 429（`RATE_LIMITED`）を返します。応答には、次に送ってよい
+までの秒数を `Retry-After` に、どの上限かを `details.limit` に入れます。上限はノードごとに数えます（クラスタ全体の合計ではありません）。
+
+| `details.limit` | 数える単位 | 対象 | 既定（オプション） |
+|---|---|---|---|
+| `ip` | 送信元の IP アドレス | 管理 API（`/api/v1`）。認証の前に数えます | 1 秒に 300（`--rate-limit-ip`） |
+| `token` | API トークン（JWT は subject） | 管理 API | 1 秒に 200（`--rate-limit-token`） |
+| `auth_failures` | 送信元の IP アドレス | 認証の失敗（管理 API・SSE・WHIP の誤ったトークン・stream key） | 1 分に 30（`--rate-limit-auth-failures`） |
+| `connect` | 送信元の IP アドレス | 接続の開始（`/signaling`・WHIP・WHEP・SSE） | 1 秒に 30（`--rate-limit-connect`） |
+
+- 1 秒あたりの上限は、一時的には 2 倍まで受け付けます（たまった分を使います）。
+- 認証の失敗を使い切った IP アドレスは、正しいトークンを送っても、回復するまで 429 になります。
+- 送信元の IP アドレスは、ノードが受けた TCP 接続の相手です。リバースプロキシの後ろに置く場合は、プロキシの側でも上限を設けてください。
+- どの上限も `0` で無効にできます（[3. 設定](03-configuration.md)）。
 
 ## 12.2 JWT
 
@@ -96,6 +113,8 @@ Ed25519 の鍵でこの流れを確かめた: テナント `acme` の JWT で st
   作り直すと古い鍵は使えなくなる。
 - RTMP では URL の最後の部分（`rtmp://host:1935/live/<key>`）、SRT では streamid `publish:<key>`、
   WHIP では `Authorization: Bearer <key>`。
+- WHIP では、stream key の代わりに `publish` の権限を持つ API トークン（または JWT）も使えます（同じテナントの stream だけ）。
+  配信の機材に stream key を渡さず、期限つきのトークンを渡して、終わったら消すことができます。
 - stream key・トークンはログ・エラー・Debug 表示に出さない。
 - 予約に `live` があれば、その時間帯の間だけ publish を受ける（[5. 録画](05-recording.md)）。
 

@@ -17,8 +17,15 @@ info:
     - **一覧**: `limit`（1〜1000、既定 100）と `cursor`（前の応答の `next_cursor`）。順序は ID の昇順。知らないクエリは 400。
     - **エラー**: `application/problem+json`（`Problem`）。すべての応答に `X-Request-Id`（要求の `X-Request-Id` が 64 文字以内の英数字と `-_.` ならそれを、違えば生成した `req_...`）と `Cache-Control: no-store` が付く。
     - **405**: 経路表にある資源（`/capabilities`・`/nodes/...`・`/devices`・`/grid`・`/events`・`/streams/...`・`/recordings/...`・`/schedules/...`・`/tokens/...`・`/inputs/...`・`/outputs/...`・`/secrets/...`・`/pipelines/...`・`/rooms/...`・`/media-pipelines/...`）に、ここに書いていないメソッド（HEAD を含む）を送ると 405（`METHOD_NOT_ALLOWED`）。それ以外の知らないパスは 404。`x-senca-undefined-method-status` を参照。
-    - **429**: 部品（`components.responses`）には定義するが、今の実装はどの操作でも返さない（レート制限は未実装）。
-    - **422**: `GET /streams/{id}/snapshot` の復号でだけ返す。配信の作成・更新ではコーデックを検査しない（入力のコーデックは publish まで分からない）。不適合は `POST /streams/{id}/plan` の結果の `code: UNSUPPORTED_CODEC` で知らせる。
+    - **429**: 要求の量の上限を超えると、どの `/api/v1` の操作（`GET /events` を含む）も 429（`RATE_LIMITED`、`retryable: true`、`Retry-After` は次に通るまでの秒数、
+      `details: {limit, retry_after_secs}`）を返す。`limit` は `ip`（送り元の IP ごと、認証の前に数える）・`token`（主体ごと: API トークン・JWT の subject）・
+      `auth_failures`（認証に失敗した IP。使い切ると正しい資格情報でも 429）・`connect`（`GET /events` の接続の開始）。上限はノードの設定（`--rate-limit-*`）。
+      各操作の responses には書かない。
+    - **API の版**: `/api/v{N}`（N が 1 以外）は 422（`UNSUPPORTED_PROTOCOL_VERSION`、`details: {requested, supported: ["v1"]}`）。
+    - **422**: `UNSUPPORTED_CODEC`。`GET /streams/{id}/snapshot` の復号と、E2EE の部屋・E2EE の部屋から書き出した stream でサーバーが中身を見る処理を頼んだとき
+      （`details.reason: "e2ee"`。部屋の合成の録画・合成・文字起こし、stream の静止画・字幕・静止画の保存・静止画の予約、パイプラインの入力）。
+      配信の作成・更新ではコーデックを検査しない（入力のコーデックは publish まで分からない）。不適合は `POST /streams/{id}/plan` の結果の `code: UNSUPPORTED_CODEC` で知らせる。
+    - **クラスター**: 配信を別のノードが受けている stream の録画の開始・今の画は 409（`OWNERSHIP_LOST`、`details: {owner_node, owner_api}`。そのノードへ頼み直す）。
     - **5xx**: 制御状態の永続化に失敗すると 500（`INTERNAL_ERROR`、`retryable: true`）。再試行してよい 503 には `Retry-After: 1` が付く。
 
     ## 仕様との主な差（まとめ）
@@ -28,7 +35,7 @@ info:
     - `POST /streams/{id}/sessions`、`DELETE /sessions/{id}`、`GET /inputs/{id}/reservations` は未実装。
     - 入力（`/streams/{id}/inputs`・`/inputs/{id}`）は pull だけ（push は stream の鍵で受ける）。
     - 入力・出力・秘密値・パイプライン・部屋・メディアパイプラインの DELETE は `If-Match` を読まない（付けても検査しない）。
-    - SSE は再送の保持を持たない（`Last-Event-ID` が今の位置より前なら必ず `resync`）。
+    - SSE の再送はノードが残している直近のイベント（既定 4096 件、`--events-retain`）の範囲だけ（24 時間の保持は無い）。
 x-senca-undefined-method-status: 405
 servers:
   - url: /api/v1
@@ -90,10 +97,11 @@ tags:
       - **動かす係**: 部屋を置いたノード（`GET /rooms/{id}` の `placement_status.node`）の係が毎秒、部屋の参加者を見て突き合わせる（部屋が別のノードへ移れば、移った先の係が引き継ぐ）。
         `desired_state: running` のものだけ動かす。
       - **参加者ごとの stream**: 参加者（`client_id`、無ければ `connection_id`）ごとに stream を 1 本作り、送ってきた映像（いちばん良い層）と音声を
-        **再符号化せずに** 流す。`participants` が空なら全員、書けばその `client_id` の参加者だけ。カスケードで他のノードにいる参加者は書き出さない。
+        **再符号化せずに** 流す。`participants` が空なら全員、書けばその `client_id` の参加者だけ。カスケードで他のノードにつないだ参加者も、そのノードから中継で受けて書き出す。
         stream の `metadata` に `media_pipeline`（メディアパイプラインの ID）と `room` が入る。stream の名前は `{name}-{参加者}-{ID の頭 6 文字}`。
         publish 鍵では受けない（使えない鍵を入れてある）。部屋の `video_codec` が H.264・H.265 なら `codec_profile: any`、他は `royalty_free`。
-      - **合成**（`composite`）: 映像のある参加者を並べ（`grid` は格子、`speaker` は最初の参加者を大きく）、音声はすべて混ぜて 1 本の stream にする
+      - **合成**（`composite`）: 映像のある参加者を並べ（`grid` は格子、`speaker` は部屋の話者の検出で選んだ主な話者を大きく。話している間と切り替えてから 2 秒は替えず、
+        切り替えた画はキーフレームから始まる。今の話者は `status.active_speaker`）、音声はすべて混ぜて 1 本の stream にする
         パイプライン（`pipelines` タグの資源、部屋を置いたノードに固定）を作る。参加者の stream が流れ始めてから図に入れ、参加者が変われば図を直す。
         映像のある参加者がいなければパイプラインは `stopped`。
       - **子の資源の ID** はメディアパイプラインの ID から決まる（何度作っても同じ。`artifacts` に出る）。合成のパイプライン・送り出しの出力は
@@ -298,7 +306,8 @@ paths:
         テナントを持たないイベント（`node.updated`・`stream.owner`・グリッドの `node.down`・`node.up`・`device.down`・`device.up`・`device.disabled`・
         `device.enabled`・`grid.decisions`）は `node:admin` を持つ主体にだけ流す。15 秒ごとにコメント行（keepalive）を送る。
 
-        - SSE の `id` は制御ログの位置（applied_index）、`event` はイベントの種類、`data` は `SseEventData` の JSON。
+        - SSE の `id` は制御ログの位置（applied_index: 適用したコマンドの数）。クラスターでもどのノードで受けても同じ値で、別のノードへつなぎ直しても `Last-Event-ID` がそのまま使える。
+          `event` はイベントの種類、`data` は `SseEventData` の JSON。
         - 制御コマンドのイベント: `stream.created`・`stream.updated`・`stream.deleted`・`stream.owner`・`recording.updated`・`recording.deleted`・
           `schedule.created`・`schedule.updated`・`schedule.deleted`・`schedule.run`・`node.updated`・`input.updated`・`input.deleted`・
           `output.updated`・`output.deleted`・`secret.created`・`secret.deleted`・`pipeline.updated`・`pipeline.deleted`・
@@ -309,10 +318,13 @@ paths:
           これらは SSE の `id` を持たない（`Last-Event-ID` の再開の対象外、取りこぼしは黙って飛ばす）。`data` に `event_id`（出来事の ID）と `node`（ノードの ID）があり、
           `data.data` は出来事の中身（部屋の核の `data`）。テナントで絞り、`node:admin` でも他テナントのものは流さない。
           部屋を消したとき（`DELETE /rooms/{id}`・自動の部屋の掃除）も `room.stopped` と、そのとき切った参加者の `room.connection.destroyed` が流れる。
-        - `Last-Event-ID` が今の位置より前なら、最初に `event: resync`（`id` は今の位置、`data: {}`）を送る（保持を持たないので必ず再同期になる）。
-        - 取りこぼし（購読の遅れ）では `event: resync`（`data: {}`）を送って閉じる。
+        - `Last-Event-ID` を付けてつなぎ直すと、その位置より後のイベントをノードが残している分（直近 `--events-retain` 件、既定 4096。単一ノードでは
+          再起動の後も、制御ログの写しより後の分）から送ってから、今のイベントを流す。位置が残している範囲より古いときは、最初に
+          `event: resync`（`id` は今の位置、`data: {}`）を送る（状態を読み直してから、この `id` で続きを受けられる）。クラスターで、つないだノードの
+          適用が `Last-Event-ID` に追いついていなければ 3 秒まで待つ（追いつかなければ `resync`）。
+        - 送るのが追いつかず通知の列からあふれたときは、残している分から続きを送る。それも無ければ `event: resync` を送って閉じる。
 
-        仕様との差: 制御のイベントの `data` に `event_id`・`generation` の欄は無い（`event_id` は SSE の `id`）。`occurred_at` は送った時刻。保持期間 24 時間の再送は無い。
+        仕様との差: 制御のイベントの `data` に `event_id`・`generation` の欄は無い（`event_id` は SSE の `id`）。`occurred_at` は適用した時刻（再起動の後に読み直したものは読み直した時刻）。保持期間 24 時間の再送は無い。
         401・403 は他の API と同じ problem+json。
       x-senca-scope: stream:read
       parameters:
@@ -377,6 +389,7 @@ paths:
         '403': { $ref: '#/components/responses/Forbidden' }
         '409': { $ref: '#/components/responses/Conflict' }
         '415': { $ref: '#/components/responses/UnsupportedMediaType' }
+        '422': { $ref: '#/components/responses/UnprocessableEntity' }
         '500': { $ref: '#/components/responses/InternalError' }
     get:
       tags: [streams]
@@ -433,6 +446,7 @@ paths:
         '409': { $ref: '#/components/responses/Conflict' }
         '412': { $ref: '#/components/responses/PreconditionFailed' }
         '415': { $ref: '#/components/responses/UnsupportedMediaType' }
+        '422': { $ref: '#/components/responses/UnprocessableEntity' }
         '428': { $ref: '#/components/responses/PreconditionRequired' }
         '500': { $ref: '#/components/responses/InternalError' }
     delete:
@@ -519,6 +533,7 @@ paths:
       description: |
         Recording を作って 202 で返す（`Location` は `/api/v1/recordings/{id}`）。本文は省略できる。
         stream が `stopped` なら 409。同じ stream の同時録画が 8 本なら 403（`QUOTA_EXCEEDED`）。
+        クラスターで配信を別のノードが受けていれば 409（`OWNERSHIP_LOST`、`details: {owner_node, owner_api}`）。
         仕様との差: operation 資源ではなく Recording を返す。
       x-senca-scope: stream:write
       parameters:
@@ -577,7 +592,9 @@ paths:
       operationId: getStreamSnapshot
       summary: 今の画（静止画）
       description: |
-        配信中でなければ 409。キーフレーム待ち・映像のトラックが無いときも 409。復号はコーデック worker で行う。
+        配信中でなければ 409（クラスターで配信を別のノードが受けていれば 409 `OWNERSHIP_LOST`）。映像のトラックが無いときも 409。
+        キーフレームがまだ無ければ 5 秒まで待ち、届かなければ 504（`INPUT_TIMEOUT`、`retryable: true`）。E2EE の部屋から書き出した stream は 422（`details.reason: "e2ee"`）。
+        復号はコーデック worker で行う。
         worker が動いていない・映像を復号できる装置が無い（H.264/H.265 はハードウェアだけ）ときは 503（`CAPACITY_UNAVAILABLE`、`retryable: false` で `Retry-After` は付かない）。
         worker が `UNSUPPORTED_CODEC`（royalty_free の方針など）を返すと 422、`INVALID_CONFIG` なら 400、それ以外の失敗は 500。
       x-senca-scope: stream:read
@@ -601,6 +618,7 @@ paths:
         '422': { $ref: '#/components/responses/UnprocessableEntity' }
         '500': { $ref: '#/components/responses/InternalError' }
         '503': { $ref: '#/components/responses/ServiceUnavailable' }
+        '504': { $ref: '#/components/responses/GatewayTimeout' }
   /streams/{id}/snapshots:
     parameters:
       - $ref: '#/components/parameters/StreamId'
@@ -862,6 +880,7 @@ paths:
         '404': { $ref: '#/components/responses/NotFound' }
         '409': { $ref: '#/components/responses/Conflict' }
         '415': { $ref: '#/components/responses/UnsupportedMediaType' }
+        '422': { $ref: '#/components/responses/UnprocessableEntity' }
         '500': { $ref: '#/components/responses/InternalError' }
     get:
       tags: [schedules]
@@ -1421,6 +1440,7 @@ paths:
         '403': { $ref: '#/components/responses/Forbidden' }
         '409': { $ref: '#/components/responses/Conflict' }
         '415': { $ref: '#/components/responses/UnsupportedMediaType' }
+        '422': { $ref: '#/components/responses/UnprocessableEntity' }
         '500': { $ref: '#/components/responses/InternalError' }
         '503': { $ref: '#/components/responses/ServiceUnavailable' }
     get:
@@ -1480,6 +1500,7 @@ paths:
         '409': { $ref: '#/components/responses/Conflict' }
         '412': { $ref: '#/components/responses/PreconditionFailed' }
         '415': { $ref: '#/components/responses/UnsupportedMediaType' }
+        '422': { $ref: '#/components/responses/UnprocessableEntity' }
         '428': { $ref: '#/components/responses/PreconditionRequired' }
         '500': { $ref: '#/components/responses/InternalError' }
         '503': { $ref: '#/components/responses/ServiceUnavailable' }
@@ -1526,6 +1547,7 @@ paths:
         '404': { $ref: '#/components/responses/NotFound' }
         '409': { $ref: '#/components/responses/Conflict' }
         '415': { $ref: '#/components/responses/UnsupportedMediaType' }
+        '422': { $ref: '#/components/responses/UnprocessableEntity' }
         '503': { $ref: '#/components/responses/ServiceUnavailable' }
   /pipelines/{id}/control:
     parameters:
@@ -1598,6 +1620,7 @@ paths:
         '403': { $ref: '#/components/responses/Forbidden' }
         '409': { $ref: '#/components/responses/Conflict' }
         '415': { $ref: '#/components/responses/UnsupportedMediaType' }
+        '422': { $ref: '#/components/responses/UnprocessableEntity' }
         '500': { $ref: '#/components/responses/InternalError' }
     get:
       tags: [rooms]
@@ -1644,7 +1667,11 @@ paths:
       operationId: patchRoom
       summary: 部屋の更新
       description: |
-        `settings`（**全体を置き換える**。書かなかった設定は既定値に戻る）・`metadata`・`placement`（null で外す）を変える。`settings`・`metadata` の null は「変えない」。
+        `settings`（**JSON Merge Patch（RFC 7396）**: 書いた項目だけを変え、項目の `null` はその項目を既定値に戻す。入れ子（`spotlight` など）も同じ）・
+        `metadata`・`placement`（null で外す）を変える。`settings`・`metadata` の null は「変えない」。合わせた結果を作成と同じく検査する。
+        `settings.recording` を `per_participant`・`composite` にすると、部屋の録画のメディアパイプライン（ID `room-rec.{部屋}`、`managed: true`）を作る・合わせる。
+        `none` に戻すと消す（書き出した stream・録画は残る）。
+        E2EE（`e2ee: true`）にする部屋に合成・文字起こしのメディアパイプラインがあれば 422（`details.reason: "e2ee"`）。
         検査の順: `If-Match`（428・412）→ 本文の形（400・415）→ 部屋があるか（404）→ 世代（412）→ 作成と同じ検査（400）。
         部屋の核に参加者がいる間は `e2ee`・`video_codec`・`audio_codec` を変えられない（409。部屋を置いたノードがこのノードのときだけ確かめる）。
         変更は部屋を置いたノードの部屋の核へ非同期に伝わる（スポットライトの変更は参加者の希望にも反映する）。
@@ -1672,6 +1699,7 @@ paths:
         '409': { $ref: '#/components/responses/Conflict' }
         '412': { $ref: '#/components/responses/PreconditionFailed' }
         '415': { $ref: '#/components/responses/UnsupportedMediaType' }
+        '422': { $ref: '#/components/responses/UnprocessableEntity' }
         '428': { $ref: '#/components/responses/PreconditionRequired' }
         '500': { $ref: '#/components/responses/InternalError' }
     delete:
@@ -1786,7 +1814,8 @@ paths:
       summary: 参加者の metadata を変える
       description: |
         参加者の `metadata` を置き換え、部屋の全員に `notify {event: connection.updated}` を送る（SSE は `room.connection.updated`）。
-        `If-Match` は読まない（参加者は世代を持たない）。このノードにつないだ参加者だけ（他のノードの参加者・参加していない接続は 404）。部屋を置いたノードへ中継する。
+        `If-Match` は読まない（参加者は世代を持たない）。どのノードで受けても、参加者がつないだノード（カスケードの edge を含む）へ中継して変える
+        （部屋を置いたノード → 参加者のノードの順。中継は 2 段まで）。参加していない接続は 404。
       x-senca-scope: stream:write
       requestBody:
         required: true
@@ -1811,7 +1840,7 @@ paths:
       tags: [rooms]
       operationId: disconnectRoomParticipant
       summary: 参加者を切る
-      description: '参加者を部屋から外す（シグナリングの `disconnect {reason: kicked}`）。トークンは無効にならない（入り直せる）。このノードにつないだ参加者だけ（他は 404）。部屋を置いたノードへ中継する。'
+      description: '参加者を部屋から外す（シグナリングの `disconnect {reason: kicked}`）。トークンは無効にならない（入り直せる）。どのノードで受けても、参加者がつないだノード（カスケードの edge を含む）へ中継して切る。参加していない接続は 404。'
       x-senca-scope: stream:write
       responses:
         '204': { $ref: '#/components/responses/NoContent' }
@@ -1924,6 +1953,7 @@ paths:
         '403': { $ref: '#/components/responses/Forbidden' }
         '409': { $ref: '#/components/responses/Conflict' }
         '415': { $ref: '#/components/responses/UnsupportedMediaType' }
+        '422': { $ref: '#/components/responses/UnprocessableEntity' }
         '500': { $ref: '#/components/responses/InternalError' }
     get:
       tags: [media-pipelines]
@@ -1974,6 +2004,7 @@ paths:
       summary: メディアパイプラインの更新・開始・停止
       description: |
         書いたフィールドだけ置き換える（`MediaPipelinePatch`）。`room` は変えられない（知らないフィールドとして 400）。`desired_state: stopped` で止め、`running` で動かす。
+        部屋の設定 `recording` から作ったもの（`managed: true`）は変えられない（409。部屋の設定を変える）。
         検査の順: `If-Match`（428・412）→ 本文の形（400・415）→ あるか（404）→ 世代（412）→ 作成と同じ中身の検査（400）。
         `stopped` にする・`composite` を外す・`egress` を変えると、前の定義の子（合成のパイプライン・送り出しの出力）を消す（動かすなら係が作り直す）。
         書き出した stream はそのまま（`participants` を減らしても、外れた参加者の stream は残る）。
@@ -1999,8 +2030,10 @@ paths:
         '401': { $ref: '#/components/responses/Unauthorized' }
         '403': { $ref: '#/components/responses/Forbidden' }
         '404': { $ref: '#/components/responses/NotFound' }
+        '409': { $ref: '#/components/responses/Conflict' }
         '412': { $ref: '#/components/responses/PreconditionFailed' }
         '415': { $ref: '#/components/responses/UnsupportedMediaType' }
+        '422': { $ref: '#/components/responses/UnprocessableEntity' }
         '428': { $ref: '#/components/responses/PreconditionRequired' }
         '500': { $ref: '#/components/responses/InternalError' }
     delete:
@@ -2009,6 +2042,7 @@ paths:
       summary: メディアパイプラインの削除
       description: |
         消して、子の合成のパイプラインと送り出しの出力を消す（PaaS の資源も片付ける）。書き出した stream（参加者ごと・合成）と録画は残る。
+        `managed: true` のものは消せない（409。部屋の設定 `recording` を `none` にする）。
         参加者の書き出しは、部屋を置いたノードの係が次の見回り（1 秒以内）で止める。`If-Match` は読まない。
       x-senca-scope: stream:write
       responses:
@@ -2016,6 +2050,7 @@ paths:
         '401': { $ref: '#/components/responses/Unauthorized' }
         '403': { $ref: '#/components/responses/Forbidden' }
         '404': { $ref: '#/components/responses/NotFound' }
+        '409': { $ref: '#/components/responses/Conflict' }
         '500': { $ref: '#/components/responses/InternalError' }
 
   # ------------------------------------------------------------------ playback（/api/v1 の外）
@@ -2401,7 +2436,7 @@ components:
         application/json:
           schema: { $ref: '#/components/schemas/Problem' }
     UnprocessableEntity:
-      description: '`UNSUPPORTED_CODEC`（今は `GET /streams/{id}/snapshot` の復号でだけ返す）'
+      description: '`UNSUPPORTED_CODEC`（`GET /streams/{id}/snapshot` の復号、E2EE で `details.reason: "e2ee"`）'
       headers: { X-Request-Id: { $ref: '#/components/headers/X-Request-Id' } }
       content:
         application/problem+json:
@@ -2413,7 +2448,15 @@ components:
         application/problem+json:
           schema: { $ref: '#/components/schemas/Problem' }
     TooManyRequests:
-      description: '`RATE_LIMITED`（予約。今はどの操作も返さない）。`Retry-After` が付く。'
+      description: '`RATE_LIMITED`（要求の量の上限。どの操作も返しうる）。`Retry-After` が付く。'
+      headers:
+        Retry-After: { $ref: '#/components/headers/Retry-After' }
+        X-Request-Id: { $ref: '#/components/headers/X-Request-Id' }
+      content:
+        application/problem+json:
+          schema: { $ref: '#/components/schemas/Problem' }
+    GatewayTimeout:
+      description: '`INPUT_TIMEOUT`（入力のメディアが時間内に届かない。`retryable: true`、`Retry-After` が付く）'
       headers:
         Retry-After: { $ref: '#/components/headers/Retry-After' }
         X-Request-Id: { $ref: '#/components/headers/X-Request-Id' }
@@ -2456,6 +2499,9 @@ components:
     Scope:
       type: string
       enum: ['stream:read', 'stream:write', publish, subscribe, 'recording:read', 'recording:delete', 'tenant:admin', 'node:admin']
+      description: |
+        `publish` は送り出しの権限: `POST /whip/{stream}` の `Authorization: Bearer` に、publish 鍵の代わりに `publish` を持つ同じテナントの API トークン・JWT を使える。
+        `subscribe` は `POST /streams/{id}/playback-url`。
     LatencyProfile:
       type: string
       enum: [standard, low, interactive]
@@ -3002,6 +3048,9 @@ components:
           oneOf:
             - { $ref: '#/components/schemas/RelayStatus' }
             - { type: 'null' }
+        rooms:
+          type: [object, 'null']
+          description: '部屋の係の様子（カスケードの部屋ごとの役割・中継の購読の数・イベント Webhook の送り箱）。応答したノード自身で、WebRTC が動いているときだけ値がある'
     RelayStatus:
       type: object
       additionalProperties: false
@@ -3886,7 +3935,7 @@ components:
           oneOf:
             - { $ref: '#/components/schemas/RoomSpotlight' }
             - { type: 'null' }
-        recording: { type: string, enum: [none, per_participant, composite], default: none, description: '録画の方針（`composite` は `e2ee` と併用できない）' }
+        recording: { type: string, enum: [none, per_participant, composite], default: none, description: '録画の方針。`per_participant`・`composite` なら部屋の録画のメディアパイプライン（`managed: true`）を作る。`composite` は `e2ee` と併用できない（422）' }
         forwarding_filter:
           description: 部屋全体の転送フィルター（購読者ごとのフィルターと両方を満たすものだけ配る）
           oneOf:
@@ -3918,9 +3967,10 @@ components:
     RoomPatch:
       type: object
       additionalProperties: false
-      description: '書いたフィールドだけ変える。`settings` は全体を置き換える。`settings`・`metadata` の null は「変えない」、`placement: null` は配置の指定を外す。'
+      description: '書いたフィールドだけ変える。`settings` は JSON Merge Patch（項目の null で既定に戻す）。`settings`・`metadata` の null は「変えない」、`placement: null` は配置の指定を外す。'
       properties:
         settings:
+          description: '変える設定の項目だけを書く（JSON Merge Patch。書かない項目は残り、項目の値の null はその項目を既定値に戻す）'
           oneOf:
             - { $ref: '#/components/schemas/RoomSettings' }
             - { type: 'null' }
@@ -4284,6 +4334,7 @@ components:
               stream: { type: string, description: 書き出し先の stream の ID }
               video: { type: boolean, description: 映像を送っているか }
         composite_members: { type: [integer, 'null'], minimum: 0, description: '合成の図に入っている参加者の数（`composite` が無い、または映像のある参加者が流れ始めていなければ null）' }
+        active_speaker: { type: [string, 'null'], description: '`speaker` の並びで今大きく映している参加者（`client_id`、無ければ `connection_id`）。決まる前・`grid` では null' }
     MediaPipeline:
       type: object
       additionalProperties: false
@@ -4291,6 +4342,7 @@ components:
                  created_at, updated_at, artifacts, status]
       properties:
         id: { type: string }
+        managed: { type: boolean, description: '部屋の設定 `recording` から作ったもの（ID は `room-rec.{部屋}`。API からは変えられない・消せない）' }
         name: { $ref: '#/components/schemas/MediaPipelineName' }
         room: { type: string }
         generation: { type: integer, minimum: 1 }

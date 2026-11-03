@@ -460,6 +460,7 @@ class Live:
         self.io(ro)
         self.pipelines(ro)
         self.rooms(ro)
+        self.room_recording_and_e2ee()
         self.media_pipelines(ro)
         self.events(sub_tok)
         self.methods()
@@ -1403,12 +1404,12 @@ class Live:
         self.call("PATCH", f"/rooms/{rid}", "部屋の更新 placement degrade", 400, headers={"If-Match": '"1"'},
                   body={"placement": {"degrade": [{"label": "x", "disable": ["a"]}]}})
         self.call("PATCH", f"/rooms/{rid}", "部屋の更新 stream:read", 403, token=ro, headers={"If-Match": '"1"'}, body={"metadata": {}})
-        s, h, p = self.call("PATCH", f"/rooms/{rid}", "部屋の更新（設定を置き換え・metadata）", 200, headers={"If-Match": '"1"'},
-                            body={"settings": {"max_participants": 4, "video_codec": "vp9"}, "metadata": {"topic": "u"}})
+        s, h, p = self.call("PATCH", f"/rooms/{rid}", "部屋の更新（settings の部分更新・metadata）", 200, headers={"If-Match": '"1"'},
+                            body={"settings": {"max_participants": 4, "spotlight": None}, "metadata": {"topic": "u"}})
         pst = (p.get("settings") or {}) if isinstance(p, dict) else {}
         check(h.get("etag") == '"2"' and p.get("generation") == 2 and pst.get("max_participants") == 4 and "spotlight" not in pst
-              and p.get("metadata") == {"topic": "u"} and (p.get("placement") or {}).get("node") == nid,
-              "部屋の更新: settings は全体を置き換え、placement は残る", f"{p}")
+              and pst.get("video_codec") == "vp9" and p.get("metadata") == {"topic": "u"} and (p.get("placement") or {}).get("node") == nid,
+              "部屋の更新: settings は JSON Merge Patch（書かない項目は残り、null で既定へ）、placement は残る", f"{p}")
         s, h, p = self.call("PATCH", f"/rooms/{rid}", "部屋の更新 placement: null・settings: null", 200, headers={"If-Match": '"2"'},
                             body={"placement": None, "settings": None, "metadata": None})
         check(isinstance(p, dict) and p.get("placement") is None and p.get("generation") == 3 and (p.get("settings") or {}).get("max_participants") == 4
@@ -1496,6 +1497,43 @@ class Live:
             self.call("DELETE", f"/rooms/{x}", f"部屋の削除 {x}", 204)
         s, _, lst = self.call("GET", "/rooms", "部屋の一覧（全部消した）", 200)
         check(isinstance(lst, dict) and lst.get("items") == [] and lst.get("next_cursor") is None, "部屋が残らない", f"{lst}")
+
+    def room_recording_and_e2ee(self):
+        """部屋の設定 recording から作るメディアパイプライン（managed）と、E2EE の部屋の 422。"""
+        rid = "oa-rec-room"
+        s, _, _ = self.call("POST", "/rooms", "部屋の作成 settings.recording per_participant", 201,
+                            body={"id": rid, "settings": {"max_participants": 2, "recording": "per_participant"}})
+        if s != 201:
+            return
+        mid = f"room-rec.{rid}"
+        s, h, m = self.call("GET", f"/media-pipelines/{mid}", "部屋の録画のメディアパイプライン（managed）", 200)
+        check(isinstance(m, dict) and m.get("managed") is True and m.get("room") == rid and (m.get("recording") or {}).get("participants") is True,
+              "settings.recording から managed のメディアパイプラインができる", f"{m}")
+        self.call("PATCH", f"/media-pipelines/{mid}", "managed のメディアパイプラインの更新は 409", 409, headers={"If-Match": h.get("etag", '"1"')}, body={"name": "x"})
+        self.call("DELETE", f"/media-pipelines/{mid}", "managed のメディアパイプラインの削除は 409", 409)
+        s, h, r = self.call("GET", f"/rooms/{rid}", "部屋（録画の設定）", 200)
+        self.call("PATCH", f"/rooms/{rid}", "部屋の更新 settings.recording: null", 200, headers={"If-Match": h.get("etag", '"1"')},
+                  body={"settings": {"recording": None}})
+        self.call("GET", f"/media-pipelines/{mid}", "recording を none にすると消える", 404)
+        self.call("DELETE", f"/rooms/{rid}", "部屋の削除（録画の設定）", 204)
+        s, _, e = self.call("POST", "/rooms", "E2EE の部屋で合成の録画は 422", 422,
+                            body={"id": "oa-e2ee", "settings": {"e2ee": True, "recording": "composite"}})
+        check(isinstance(e, dict) and e.get("code") == "UNSUPPORTED_CODEC" and (e.get("details") or {}).get("reason") == "e2ee",
+              "E2EE の 422 は details.reason: e2ee", f"{e}")
+        s, _, st = self.call("POST", "/streams", "E2EE の印の stream", 201, body={"name": "oa-e2ee-stream", "metadata": {"e2ee": "true"}})
+        if s == 201:
+            self.call("GET", f"/streams/{st['id']}/snapshot", "E2EE の stream の静止画は 422", 422)
+            self.call("PATCH", f"/streams/{st['id']}", "E2EE の stream に静止画の保存は 422", 422, headers={"If-Match": '"1"'},
+                      body={"snapshots": {"interval_secs": 10, "keep": 1}})
+            self.call("DELETE", f"/streams/{st['id']}", "E2EE の印の stream の削除", 204)
+        # API の版
+        s, hd, d = self.raw("GET", "/api/v2/streams")
+        try:
+            pr = json.loads(d)
+        except ValueError:
+            pr = {}
+        check(s == 422 and pr.get("code") == "UNSUPPORTED_PROTOCOL_VERSION" and not self.v.errors(pr, {"$ref": "#/components/schemas/Problem"}),
+              "/api/v2 は 422 UNSUPPORTED_PROTOCOL_VERSION（Problem の形）", f"{s} {d[:200]!r}")
 
     def media_pipelines(self, ro):
         """メディアパイプライン（ADR-0016）: 作成・検査・一覧・取得・更新・削除と、部屋の削除での片付け。"""
@@ -1604,7 +1642,7 @@ class Live:
                 break
             time.sleep(0.2)
         s, _, g = self.call("GET", f"/media-pipelines/{mid}", "メディアパイプラインの取得（係が動いた後）", 200, token=ro)
-        check(isinstance(g, dict) and g.get("status") == {"participants": [], "composite_members": None},
+        check(isinstance(g, dict) and g.get("status") == {"participants": [], "composite_members": None, "active_speaker": None},
               "部屋をこのノードに置いた running のメディアパイプラインは status を持つ（参加者なし）", f"{g.get('status') if isinstance(g, dict) else g}")
         self.call("GET", "/media-pipelines/nosuch", "メディアパイプラインの取得 無い", 404)
         # 更新
@@ -1701,7 +1739,9 @@ class Live:
             v = v[1:] if v.startswith(" ") else v
             cur[k] = cur.get(k, "") + v if k == "data" else v
         sock.close()
-        check(events and events[0].get("event") == "resync", "SSE Last-Event-ID が古いと最初に resync", f"{events[:1]}")
+        # Last-Event-ID: 1 は保持している範囲（既定 4096 件）の中: resync ではなく、続き（id 2 から）を再送する
+        check(events and events[0].get("event") != "resync" and int(events[0].get("id") or 0) > 1,
+              "SSE Last-Event-ID が保持の範囲なら続きから再送する（resync なし）", f"{events[:1]}")
         sch = self.spec["paths"]["/events"]["get"]["responses"]["200"]["content"]["text/event-stream"]["x-senca-event-data"]
         types = []
         for e in events:
@@ -1726,9 +1766,30 @@ class Live:
               "SSE に media_pipeline.updated / media_pipeline.deleted が流れる", f"{types}")
         for e in events:
             d = json.loads(e.get("data") or "{}") if e.get("event") == "media_pipeline.updated" else None
-            if d is not None:
+            if d is not None and d.get("resource_id") == mp_id:
                 check(d.get("resource_id") == mp_id and d.get("data") == {"room": "oa-sse-room", "desired_state": "stopped"},
                       "media_pipeline.updated の data は {room, desired_state}", f"{d}")
+        # Last-Event-ID からの再送: stream.created の位置からつなぎ直すと、その後のイベント（stream.deleted など）が resync なしで届く
+        created = next((e for e in events if e.get("event") == "stream.created"), None)
+        if created:
+            sock = socket.create_connection((self.host, self.port), timeout=5)
+            sock.sendall((f"GET /api/v1/events HTTP/1.1\r\nHost: x\r\nAuthorization: Bearer {self.token}\r\n"
+                          f"Last-Event-ID: {created['id']}\r\nAccept: text/event-stream\r\n\r\n").encode())
+            sock.settimeout(2)
+            buf = b""
+            try:
+                while b"event: media_pipeline.deleted" not in buf:
+                    c = sock.recv(65536)
+                    if not c:
+                        break
+                    buf += c
+            except (TimeoutError, socket.timeout):
+                pass
+            sock.close()
+            txt = buf.decode(errors="replace")
+            replay = [ln[7:] for ln in txt.splitlines() if ln.startswith("event: ")]
+            check("resync" not in replay and "stream.deleted" in replay and "media_pipeline.deleted" in replay,
+                  "SSE Last-Event-ID で取りこぼしを再送する（resync なし）", f"{replay}")
 
     def methods(self):
         self.call("PUT", "/streams", "PUT /streams は 405", 405, body={})

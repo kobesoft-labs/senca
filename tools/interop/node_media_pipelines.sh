@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 # 部屋のメディアパイプライン（ADR-0016）を Chrome で: 2 人が部屋に入り、メディアパイプラインが
 # - 参加者ごとの stream へ書き出す（再符号化しない。HLS で復号できる）
-# - 2 人を並べた合成（AV1）の stream を作る
+# - 2 人を並べた合成（AV1）の stream を作る（speaker の並び: 声を出している bob を大きく。alice は音を止める）
 # - 参加者ごと・合成を録画する（capture）。録画は MP4 に書き出せる（concatenation）
 # - 合成を RTMP で別の stream へ送る（live connector）
 # ことを確かめる。
@@ -43,7 +43,7 @@ c=$(code POST /media-pipelines -d '{"name":"bad","room":"nope"}'); [ "$c" = 400 
 c=$(code POST /media-pipelines -d '{"name":"bad","room":"meet","composite":{"width":641}}'); [ "$c" = 400 ] && pass "odd composite width is 400" || fail "composite width $c"
 cat > "$W/mp.json" <<J
 {"name":"mtg","room":"meet",
- "composite":{"layout":"grid","width":640,"height":360,"fps":30,"video_codec":"av1","bitrate_kbps":800},
+ "composite":{"layout":"speaker","width":640,"height":360,"fps":30,"video_codec":"av1","bitrate_kbps":800},
  "recording":{"participants":true,"composite":true},
  "egress":[{"protocol":"rtmp_push","url":"rtmp://127.0.0.1:$RP/live/$OUTKEY"}]}
 J
@@ -62,7 +62,14 @@ page = page.replace("ws = new WebSocket(`ws://${location.host}/signaling`, 'senc
 page = page.replace("client_id: name, ", "")
 # 確かめ終わってからも hold 秒は部屋に残る（書き出し・合成・録画を確かめる間）
 page = page.replace("Date.now() - doneAt > 3000", "Date.now() - doneAt > Number(q.get('hold') || '3') * 1000")
-assert "q.get('hold')" in page
+# 話者の検出: mute=1 で音を止める、noise=1 で途切れない音（雑音）を送る
+page = page.replace("const stream = await navigator.mediaDevices.getUserMedia({ video: { ...size, frameRate: 30 }, audio: true });",
+  "const stream = await navigator.mediaDevices.getUserMedia({ video: { ...size, frameRate: 30 }, audio: true });\n"
+  "  if (q.get('mute')) stream.getAudioTracks()[0].enabled = false;\n"
+  "  if (q.get('noise')) { const ac = new AudioContext(); const b = ac.createBuffer(1, ac.sampleRate, ac.sampleRate); const d = b.getChannelData(0);"
+  " for (let i = 0; i < d.length; i++) d[i] = Math.random() * 1.6 - 0.8; const src = ac.createBufferSource(); src.buffer = b; src.loop = true;"
+  " const dst = ac.createMediaStreamDestination(); src.connect(dst); src.start(); stream.removeTrack(stream.getAudioTracks()[0]); stream.addTrack(dst.stream.getAudioTracks()[0]); }")
+assert "q.get('hold')" in page and "q.get('noise')" in page
 os.makedirs(os.path.dirname(sys.argv[2]), exist_ok=True)
 open(sys.argv[2], "w").write(page)
 PY
@@ -73,8 +80,8 @@ s = open(sys.argv[1]).read()
 open(sys.argv[2], "w").write(re.search(r"cat > \"\$W/drive.cjs\" <<'EOF'\n(.*?)\nEOF\n", s, re.S).group(1))
 PY
 enc() { python3 -c "import urllib.parse,sys; print(urllib.parse.quote(sys.argv[1], safe=''))" "$1"; }
-Q1="room=meet&name=alice&simulcast=1&peers=1&secs=60&hold=28&token=$(enc "$(json "['token']" < "$W/tok-alice.json")")&ws=$(enc "$SIG")"
-Q2="room=meet&name=bob&peers=1&secs=60&hold=28&token=$(enc "$(json "['token']" < "$W/tok-bob.json")")&ws=$(enc "$SIG")"
+Q1="room=meet&name=alice&simulcast=1&peers=1&secs=60&hold=28&mute=1&token=$(enc "$(json "['token']" < "$W/tok-alice.json")")&ws=$(enc "$SIG")"
+Q2="room=meet&name=bob&peers=1&secs=60&hold=28&noise=1&token=$(enc "$(json "['token']" < "$W/tok-bob.json")")&ws=$(enc "$SIG")"
 # 参加している間に、書き出し・合成・送り出しを確かめる
 (
   for _ in $(seq 120); do
@@ -100,6 +107,12 @@ Q2="room=meet&name=bob&peers=1&secs=60&hold=28&token=$(enc "$(json "['token']" <
   { "$FFMPEG" -v error -t 4 -i "$UC" -map 0:v -f framemd5 - 2>/dev/null || true; } | grep -vc "^#" > "$W/comp_frames" || true
   "$FFPROBE" -v error -select_streams v:0 -show_entries stream=codec_name,width,height -of csv=p=0 "$UC" > "$W/comp_probe" 2>/dev/null || true
   api GET /streams/$OUTSID | json "['observed_state']" > "$W/connector_state" 2>/dev/null || true
+  # speaker の並び: 主な話者（声を出している bob）を大きくする
+  for _ in $(seq 30); do
+    sp=$(api GET /media-pipelines/$MP | python3 -c "import json,sys; print((json.load(sys.stdin).get('status') or {}).get('active_speaker'))" 2>/dev/null || echo none)
+    [ "$sp" = bob ] && break; sleep 0.5
+  done
+  echo "$sp" > "$W/speaker"
 ) & CHECKP=$!
 timeout 150 docker run --rm --name "$C" --network host -v "$W:$W" "$IMG" bash -c \
   "node '$W/drive.cjs' 'http://127.0.0.1:$PP' '$W/result.json' 90000 '$Q1' '$Q2'; chown $(id -u):$(id -g) '$W/result.json'" >"$W/browser.log" 2>&1 || true
@@ -115,6 +128,8 @@ n=$(cat "$W/comp_frames" 2>/dev/null || echo 0); [ "${n:-0}" -ge 30 ] && pass "c
 grep -q "^av1,640,360" "$W/comp_probe" && pass "composite is AV1 640x360" || fail "composite probe $(cat "$W/comp_probe")"
 [ "$(cat "$W/connector_state" 2>/dev/null)" = live ] && pass "live connector: composite pushed over RTMP into another stream" || fail "connector state $(cat "$W/connector_state" 2>/dev/null)"
 grep -q "composite with 2 participants" "$W/node.log" && pass "composite graph includes both participants" || fail "composite members"
+[ "$(cat "$W/speaker")" = bob ] && grep -q "speaker → bob" "$W/node.log" && pass "speaker layout follows the active speaker (bob, alice muted)" || fail "active speaker $(cat "$W/speaker") $(grep 'speaker →' "$W/node.log" | tail -3)"
+! grep -q "speaker → alice" "$W/node.log" && pass "speaker layout does not flip to the muted participant" || fail "flipped to alice: $(grep 'speaker →' "$W/node.log")"
 # 参加者が去った後: 録画が確定する
 sleep 6
 python3 - "$HP" "$TOKEN" "$MP" "$CSID" > "$W/recs.txt" <<'PY'

@@ -48,6 +48,10 @@ pub fn start(ctx: &Ctx, stream_id: &str) -> ApiResult {
         return Err(Problem::new(ProblemCode::InvalidConfig, "retention_days は 1〜36500"));
     }
     let s = ctx.control().state.tenant_stream(ctx.tenant(), stream_id)?.clone();
+    // クラスタ: 配信を受けているノードでしか録れない（別のノードなら案内する）
+    if let Some(p) = ctx.app.owned_elsewhere(&s.id) {
+        return Err(p);
+    }
     let rec = ctx.app.start_recording(&s, b.name, b.retention_days, None, None)?;
     ctx.app.audit(ctx, "recording.start", &rec.id);
     Ok(ApiResponse::json(202, &render(ctx, &rec))

@@ -19,6 +19,8 @@ pub struct Store {
     dir: PathBuf,
     log: File,
     log_records: u64,
+    /// 起動時に写しの後ろから適用したコマンド（適用後の位置つき）。SSE の取りこぼしの再送に使う（取り出したら空）。
+    pub replayed: Vec<(u64, Command)>,
 }
 
 pub fn crc32(data: &[u8]) -> u32 {
@@ -69,6 +71,7 @@ impl Store {
         let mut pos = 0usize;
         let mut n = 0u64;
         let mut good_end = 0usize;
+        let mut replayed = Vec::new();
         while pos + 8 <= buf.len() {
             let len = u32::from_be_bytes(buf[pos..pos + 4].try_into().unwrap()) as usize;
             let crc = u32::from_be_bytes(buf[pos + 4..pos + 8].try_into().unwrap());
@@ -86,8 +89,9 @@ impl Store {
                 .map_err(|e| io::Error::new(io::ErrorKind::InvalidData, format!("control log record {n}: {e}")))?;
             // 失敗したコマンドはログに書かない約束なので、ここで失敗するのは異常。
             state
-                .apply(cmd)
+                .apply(cmd.clone())
                 .map_err(|e| io::Error::new(io::ErrorKind::InvalidData, format!("control log record {n} does not apply: {e}")))?;
+            replayed.push((state.applied_index, cmd));
             pos += 8 + len;
             good_end = pos;
             n += 1;
@@ -100,7 +104,7 @@ impl Store {
         }
         let log = OpenOptions::new().create(true).append(true).open(&log_path)?;
         fsync_dir(dir)?;
-        Ok((Store { dir: dir.to_path_buf(), log, log_records: n }, state))
+        Ok((Store { dir: dir.to_path_buf(), log, log_records: n, replayed }, state))
     }
 
     /// 適用に成功したコマンドを書く。`state` は適用後の状態（写しを作るときに使う）。

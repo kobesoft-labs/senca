@@ -173,16 +173,19 @@ ffmpeg -re -i input.mp4 -c copy -f mpegts \
 ## 4.6 WHIP で配信する（WebRTC）
 
 `--webrtc-udp ADDR` を指定すると、WebRTC が有効になります（ICE-lite。1 つの UDP ソケットをすべてのセッションで共有します）。
-ICE の候補には待ち受けアドレスがそのまま使われるため、`0.0.0.0` ではなく、配信者から到達できる IP アドレスを指定してください。
+`0.0.0.0:ポート` で待つと、ICE の候補にはノードのネットワークインターフェースのアドレスを載せます。NAT や Docker の内側のように、
+配信者から見えるアドレスが違う場合は、`--webrtc-public-ip` でそのアドレスを指定してください（[3. 設定](03-configuration.md)）。
 
 | 操作 | リクエスト | 応答 |
 |---|---|---|
-| 開始 | `POST /whip/{stream_id}`、`Authorization: Bearer {stream_key}`、`Content-Type: application/sdp`、本文は offer | 201、本文は answer（`application/sdp`）、`Location: /whip/{stream_id}/{session}` |
+| 開始 | `POST /whip/{stream_id}`、`Authorization: Bearer {stream_key}`（または `publish` 権限の API トークン）、`Content-Type: application/sdp`、本文は offer | 201、本文は answer（`application/sdp`）、`Location: /whip/{stream_id}/{session}` |
 | trickle ICE・ICE restart | `PATCH {Location}`、`Content-Type: application/trickle-ice-sdpfrag` | 204、または 200 と sdpfrag（ICE restart） |
 | 終了 | `DELETE {Location}` | 200 |
 
 - パスにはストリームの **ID** を使います（名前ではありません）。`ingest.whip_url` をそのまま使えます。
-- キーが誤っていれば 401、Content-Type が誤っていれば 415、offer を受け付けられなければ 400、`--webrtc-udp` を指定していないノードでは 404 になります。
+- `Authorization` には、ストリームキーの代わりに、同じテナントの `publish` 権限を持つ API トークン（または JWT）も使えます。
+  配信の機材にストリームキーを渡さずに済みます（[12. セキュリティ](12-security.md)）。
+- キーやトークンが誤っていれば 401、Content-Type が誤っていれば 415、offer を受け付けられなければ 400、`--webrtc-udp` を指定していないノードでは 404 になります。
 - `PATCH`・`DELETE` は、推測できない 64 bit のセッション ID だけで受け付けます（`Location` を第三者に知られないようにしてください）。
 - CORS: `OPTIONS` に応答し、`Location`・`ETag` ヘッダーを公開します（ブラウザーから配信できます）。
 - 受信できるコーデック: H.264（Constrained Baseline・High、packetization-mode 1）・VP8・VP9 profile 0・AV1・Opus・PCMU・PCMA。
@@ -438,7 +441,10 @@ moq --connect "moqt://media.example.com:4433/?$Q" --connect-version moq-transpor
 
 - 静止画は、直近の GOP を**デコード**して作成します。デコードは codec worker で行います。H.264・H.265 は、GPU のデコーダーがないと 503
   `CAPACITY_UNAVAILABLE`（`retryable: false`）になります。AV1（dav1d）・VP8/VP9（libvpx）はソフトウェアでデコードできます
-  （[14. コーデックと特許](14-codecs-and-patents.md)）。配信中でない場合は 409、キーフレームを待っている間も 409 になります。
+  （[14. コーデックと特許](14-codecs-and-patents.md)）。配信中でない場合は 409 になります。
+- キーフレームがまだ届いていない場合は、最大 5 秒待ちます。届かなければ 504（`INPUT_TIMEOUT`、再試行できます）になります。
+- クラスターで、配信を別のノードが受けている場合は 409（`OWNERSHIP_LOST`）になります。`details.owner_api` のノードに頼み直してください。
+- E2EE の部屋から書き出したストリーム（[11. メディアパイプライン](11-media-pipelines.md)）は、中身を見られないため 422 になります。
 - 静止画は次の 3 つの理由（`reason`）で保存されます: `interval`（ストリームの `snapshots` の設定。`keep` 枚を超えると古いものから削除）、
   `schedule`（`snapshot` の予約。[5. 録画](05-recording.md)）、`board_change`（パイプラインの `snapshot_on_change`。[7. パイプライン](07-pipelines.md)）。
 - 保存先は `{data-dir}/snapshots/{stream_id}/` です。ストリームを削除すると、静止画も一緒に削除されます。

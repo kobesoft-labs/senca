@@ -4,6 +4,10 @@
 //! - 参加者ごとに SENCA の stream を用意し、送ってきた映像（いちばん良い層）・音声をそのまま流す（再符号化しない）。
 //!   stream の録画・字幕は普通の stream と同じ仕組み（自動録画・captions）で動く。
 //! - 合成があれば、映像のある参加者を並べるパイプライン（senca-pipeline の合成）を作り、参加者が変われば図を直す。
+//!   `speaker` の並びは参加者ごとに「その人を大きく」のシーンを持ち、部屋の話者の検出（主な話者。揺れを防ぐ
+//!   ため、話している間と替えてから 2 秒は替えない）に合わせてシーンを切り替える（図は作り直さない）。切り替えたら
+//!   合成の符号化にキーフレームを求める（切り替えた画はキーフレームから始まる）。
+//! - 別のノードにつないだ参加者（カスケード）も書き出す（参加者のいるノードから中継で受ける）。
 //! - 送り出しは合成の stream の出力（RTMP・SRT・PaaS）。
 //!
 //! 子の資源（stream・パイプライン・出力）の ID はメディアパイプラインの ID から決まる（何度作っても同じ）。
@@ -71,6 +75,11 @@ struct Run {
     generation: u64,
     parts: BTreeMap<String, Part>,
     graph: Option<Value>,
+    /// `speaker` の並びで今のシーン（合成のパイプラインへ切り替えを頼めたもの）と、その話者（参加者の鍵）。
+    program: Option<String>,
+    speaker: Option<String>,
+    /// 合成に今のシーンを最後に伝えた時刻（合成が作り直されても戻るよう、ときどき伝え直す）。
+    asserted_at: Option<std::time::Instant>,
 }
 
 #[derive(Default)]
@@ -87,6 +96,7 @@ impl MediaPipelines {
         Some(json!({
             "participants": r.parts.iter().map(|(k, p)| json!({ "participant": k, "stream": p.stream, "video": p.has_video })).collect::<Vec<_>>(),
             "composite_members": r.graph.as_ref().map(|g| g["nodes"].as_array().map(|a| a.iter().filter(|n| n["type"] == "source").count()).unwrap_or(0)),
+            "active_speaker": r.speaker,
         }))
     }
 }
@@ -119,6 +129,17 @@ pub fn start(app: &Arc<App>) {
 async fn propose(app: &Arc<App>, cmd: Command) -> Result<(), senca_control::Problem> {
     let a = app.clone();
     tokio::task::spawn_blocking(move || a.propose(cmd)).await.unwrap_or_else(|_| Err(senca_control::Problem::internal()))
+}
+
+/// 部屋の主な話者（connection_id）。`candidates` は合成に入っている映像の参加者。
+async fn dominant(app: &Arc<App>, room: &str, candidates: Vec<String>) -> Option<String> {
+    let rtc = app.rtc.get()?.clone();
+    let (tx, rx) = tokio::sync::oneshot::channel();
+    let rid = room.to_string();
+    rtc.room_cmd(RoomCmd::Call(Box::new(move |svc, now| {
+        let _ = tx.send(svc.dominant_speaker(now, &rid, Some(&candidates)));
+    })));
+    tokio::time::timeout(Duration::from_secs(3), rx).await.ok()?.ok()?
 }
 
 /// 部屋の参加者（このノードの部屋の核から）。
@@ -198,6 +219,8 @@ async fn ensure_stream(
     royalty_free: bool,
 ) -> Result<(), String> {
     let want_rec = RecordingPolicy { enabled: recording, retention_days: mp.recording.as_ref().and_then(|r| r.retention_days) };
+    // E2EE の部屋から書き出した stream: 中身は暗号のまま。サーバーで復号する処理（静止画・字幕・パイプライン）を断る印
+    let e2ee = app.control.lock().unwrap().state.rooms.get(&mp.room).is_some_and(crate::api::streams::room_is_e2ee);
     let want_cap: Option<senca_control::model::CaptionSettings> = if captions { mp.captions.clone().and_then(|c| serde_json::from_value(c).ok()) } else { None };
     let existing = app.control.lock().unwrap().state.streams.get(id).cloned();
     if let Some(mut cur) = existing {
@@ -232,6 +255,7 @@ async fn ensure_stream(
         metadata: [("media_pipeline".to_string(), mp.id.clone()), ("room".to_string(), mp.room.clone())]
             .into_iter()
             .chain(participant.map(|p| ("participant".to_string(), p.to_string())))
+            .chain(e2ee.then(|| ("e2ee".to_string(), "true".to_string())))
             .collect(),
         desired_state: "running".into(),
         captions: want_cap,
@@ -280,15 +304,18 @@ async fn step(
 ) -> Result<(), String> {
     let codec = room_codec(room);
     let rf_room = codec != "h264" && codec != "h265";
-    // 書き出す参加者: client_id（無ければ connection_id）で決める。別のノードの参加者は除く
+    // 書き出す参加者: client_id（無ければ connection_id）で決める。別のノードの参加者（カスケード）も含める
     let mut want: BTreeMap<String, Vec<(String, Option<String>, Kind)>> = BTreeMap::new();
     // 映像のトラック → サイマルキャストの層（低い順）
     let mut rids_of: HashMap<String, Vec<String>> = HashMap::new();
-    for p in people.into_iter().filter(|p| p.node.is_none()) {
+    // 参加者の鍵 → connection_id（話者の検出の答えを合成のシーンに結ぶ）
+    let mut conn_of: HashMap<String, String> = HashMap::new();
+    for p in people {
         if !mp.participants.is_empty() && !p.client_id.as_ref().is_some_and(|c| mp.participants.contains(c)) {
             continue;
         }
         let key = p.client_id.clone().unwrap_or_else(|| p.connection_id.clone());
+        conn_of.insert(key.clone(), p.connection_id.clone());
         let mut tracks = Vec::new();
         if let Some(v) = p.tracks.iter().find(|t| t.kind == Kind::Video) {
             tracks.push((v.track_id.clone(), v.rids.last().cloned(), Kind::Video));
@@ -351,7 +378,21 @@ async fn step(
         }
     }
     // 合成
-    let Some(c) = &mp.composite else { return Ok(()) };
+    let Some(c) = &mp.composite else {
+        // 合成をやめた（部屋の設定 `recording` で作ったものを per_participant に変えたなど）: 合成・送り出しを片付ける
+        let pid = composite_pipeline_id(&mp.id);
+        if app.control.lock().unwrap().state.pipelines.contains_key(&pid) {
+            let (a, m) = (app.clone(), mp.clone());
+            let _ = tokio::task::spawn_blocking(move || remove_children(&a, &m)).await;
+            if let Some(r) = app.mediapipes.runs.lock().unwrap().get_mut(&mp.id) {
+                r.graph = None;
+                r.program = None;
+                r.speaker = None;
+                r.asserted_at = None;
+            }
+        }
+        return Ok(());
+    };
     let csid = composite_stream_id(&mp.id);
     let rf_out = !matches!(c.video_codec.as_str(), "h264" | "h265");
     let rec_comp = mp.recording.as_ref().is_some_and(|r| r.composite);
@@ -370,10 +411,25 @@ async fn step(
     if changed {
         let pid = composite_pipeline_id(&mp.id);
         let now = crate::util::now_ms();
+        // speaker の並び: 今の話者がまだ映像の参加者なら、作り直した図もその人のシーンから始める
+        let speaker = app.mediapipes.runs.lock().unwrap().get(&mp.id).and_then(|r| r.speaker.clone());
+        let start_scene = speaker
+            .and_then(|k| live.iter().position(|m| m.0 == k && m.2))
+            .map(speaker_scene)
+            .filter(|s| graph.as_ref().is_some_and(|g| compose_node(g).is_some_and(|c| c["scenes"].get(s).is_some())));
         let (desired, g) = match &graph {
-            Some(g) => ("running", g.clone()),
+            Some(g) => {
+                let mut g = g.clone();
+                if let Some(s) = &start_scene
+                    && let Some(c) = g["nodes"].as_array_mut().and_then(|a| a.iter_mut().find(|n| n["type"] == "compose"))
+                {
+                    c["program"] = json!(s);
+                }
+                ("running", g)
+            }
             None => ("stopped", json!({ "version": 1, "nodes": [] })),
         };
+        let program = compose_node(&g).and_then(|c| c["program"].as_str().map(str::to_string));
         if graph.is_some() {
             senca_pipeline::Graph::from_json(&g.to_string()).map_err(|e| format!("composite graph: {e:?}"))?;
         }
@@ -398,8 +454,14 @@ async fn step(
         propose(app, Command::PutPipeline { pipeline: p, expect_generation: None }).await.map_err(|e| format!("composite pipeline: {}", e.title))?;
         app.log(&format!("media pipeline {}: composite with {} participants", mp.id, live.iter().filter(|m| m.2).count()));
         if let Some(r) = app.mediapipes.runs.lock().unwrap().get_mut(&mp.id) {
+            // 図を作り直した: 合成は図の program から始まる（比べるのは program を既定にした図）
+            r.program = program;
+            r.asserted_at = Some(std::time::Instant::now());
             r.graph = graph;
         }
+    } else if c.layout == "speaker" && live.iter().filter(|m| m.2).count() > 1 {
+        // 話者の大写し: 主な話者のシーンへ切り替える（図を作り直した回は、新しい合成が動き出すのを待つ）
+        follow_speaker(app, mp, &live, &conn_of).await;
     }
     // 送り出し（合成の stream の出力）
     for (i, e) in mp.egress.iter().enumerate() {
@@ -429,6 +491,56 @@ async fn step(
     Ok(())
 }
 
+/// `speaker` の並び: 部屋の主な話者を見て、その人を大きくしたシーンへ切り替える（キーフレームも求める）。
+async fn follow_speaker(app: &Arc<App>, mp: &MediaPipeline, live: &[(String, String, bool)], conn_of: &HashMap<String, String>) {
+    let videos: Vec<(usize, &String)> = live.iter().enumerate().filter(|(_, m)| m.2).map(|(i, m)| (i, &m.0)).collect();
+    let cands: Vec<String> = videos.iter().filter_map(|(_, k)| conn_of.get(*k).cloned()).collect();
+    let Some(cid) = dominant(app, &mp.room, cands).await else { return };
+    let Some((i, key)) = videos.iter().find(|(_, k)| conn_of.get(*k) == Some(&cid)).map(|(i, k)| (*i, (*k).clone())) else { return };
+    let scene = speaker_scene(i);
+    let (current, asserted) = app.mediapipes.runs.lock().unwrap().get(&mp.id).map(|r| (r.program.clone(), r.asserted_at)).unwrap_or_default();
+    let same = current.as_deref() == Some(scene.as_str());
+    if same && asserted.is_some_and(|t| t.elapsed() < REASSERT) {
+        if let Some(r) = app.mediapipes.runs.lock().unwrap().get_mut(&mp.id) {
+            r.speaker = Some(key);
+        }
+        return;
+    }
+    let pid = composite_pipeline_id(&mp.id);
+    let sw = senca_pipeline::Control::SwitchProgram { node: COMPOSE_NODE.into(), scene: scene.clone(), transition: None };
+    // 合成がまだ動いていなければ次の回に
+    if app.pipelines.control(&pid, sw).await.is_err() {
+        return;
+    }
+    if !same {
+        // 切り替えた画をキーフレームから始める
+        let _ = app.pipelines.control(&pid, senca_pipeline::Control::RequestKeyframe { node: Some(VIDEO_ENCODER.into()) }).await;
+        app.log(&format!("media pipeline {}: speaker → {key}", mp.id));
+    }
+    if let Some(r) = app.mediapipes.runs.lock().unwrap().get_mut(&mp.id) {
+        r.program = Some(scene);
+        r.speaker = Some(key);
+        r.asserted_at = Some(std::time::Instant::now());
+    }
+}
+
+/// 同じシーンでも伝え直す間隔（合成が作り直されて図の program に戻ったときに直す）。
+const REASSERT: Duration = Duration::from_secs(10);
+
+/// 図の合成の部品。
+fn compose_node(g: &Value) -> Option<&Value> {
+    g["nodes"].as_array()?.iter().find(|n| n["type"] == "compose")
+}
+
+/// 合成の部品の ID（図の中）。
+const COMPOSE_NODE: &str = "c";
+const VIDEO_ENCODER: &str = "venc";
+
+/// `speaker` の並びで、参加者 `i`（図の `p{i}`）を大きくしたシーンの名前。
+fn speaker_scene(i: usize) -> String {
+    format!("speaker-p{i}")
+}
+
 /// 合成の図: 映像のある参加者を格子（または話者を大きく）に並べ、音声はすべて混ぜる。映像の参加者がいなければ None。
 fn composite_graph(c: &senca_control::model::CompositeSpec, src_codec: &str, sink: &str, members: &[(String, String, bool)]) -> Option<Value> {
     let videos: Vec<usize> = (0..members.len()).filter(|&i| members[i].2).collect();
@@ -453,17 +565,22 @@ fn composite_graph(c: &senca_control::model::CompositeSpec, src_codec: &str, sin
     }
     let (w, h) = (c.width.max(64) as i64, c.height.max(64) as i64);
     let n = videos.len() as i64;
-    let mut layers = Vec::new();
-    if c.layout == "speaker" && n > 1 {
-        // 最初の人を大きく、残りを下に並べる（話者の検出が合成に届くまでは参加順）
+    let mut scenes = serde_json::Map::new();
+    let program = if c.layout == "speaker" && n > 1 {
+        // 映像の参加者ごとに「その人を大きく、残りを下に並べる」シーン。話者の検出で切り替える（始めは参加順の最初の人）
         let strip = h / 4;
-        layers.push(json!({ "source": format!("p{}", videos[0]), "x": 0, "y": 0, "width": w, "height": h - strip }));
         let k = n - 1;
-        for (j, &i) in videos[1..].iter().enumerate() {
-            let tw = w / k;
-            layers.push(json!({ "source": format!("p{i}"), "x": tw * j as i64, "y": h - strip, "width": tw, "height": strip, "z": 1 }));
+        let tw = w / k;
+        for &big in &videos {
+            let mut layers = vec![json!({ "source": format!("p{big}"), "x": 0, "y": 0, "width": w, "height": h - strip })];
+            for (j, &i) in videos.iter().filter(|&&i| i != big).enumerate() {
+                layers.push(json!({ "source": format!("p{i}"), "x": tw * j as i64, "y": h - strip, "width": tw, "height": strip, "z": 1 }));
+            }
+            scenes.insert(speaker_scene(big), json!({ "layers": layers }));
         }
+        speaker_scene(videos[0])
     } else {
+        let mut layers = Vec::new();
         let cols = (n as f64).sqrt().ceil() as i64;
         let rows = (n + cols - 1) / cols;
         let (cw, ch) = (w / cols, h / rows);
@@ -471,15 +588,48 @@ fn composite_graph(c: &senca_control::model::CompositeSpec, src_codec: &str, sin
             let j = j as i64;
             layers.push(json!({ "source": format!("p{i}"), "x": (j % cols) * cw, "y": (j / cols) * ch, "width": cw, "height": ch }));
         }
-    }
+        scenes.insert("main".into(), json!({ "layers": layers }));
+        "main".to_string()
+    };
     nodes.push(json!({
-        "type": "compose", "id": "c", "inputs": inputs,
+        "type": "compose", "id": COMPOSE_NODE, "inputs": inputs,
         "canvas": { "width": w, "height": h, "fps_num": c.fps.max(1) },
-        "scenes": { "main": { "layers": layers } }, "program": "main",
+        "scenes": scenes, "program": program,
     }));
     nodes.push(json!({ "type": "audio_mix", "id": "mix", "inputs": mix }));
-    nodes.push(json!({ "type": "encode", "id": "venc", "input": "c", "codec": c.video_codec, "bitrate_kbps": c.bitrate_kbps, "gop": c.fps.max(1) * 2 }));
+    nodes.push(json!({ "type": "encode", "id": VIDEO_ENCODER, "input": COMPOSE_NODE, "codec": c.video_codec, "bitrate_kbps": c.bitrate_kbps, "gop": c.fps.max(1) * 2 }));
     nodes.push(json!({ "type": "encode", "id": "aenc", "input": "mix", "codec": "opus", "bitrate_kbps": 96 }));
     nodes.push(json!({ "type": "sink", "id": "out", "inputs": ["venc", "aenc"], "stream": sink }));
     Some(json!({ "version": 1, "options": { "clock": "realtime" }, "nodes": nodes }))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn speaker_layout_has_a_scene_per_video_participant() {
+        let c = senca_control::model::CompositeSpec {
+            layout: "speaker".into(),
+            width: 640,
+            height: 360,
+            fps: 30,
+            video_codec: "av1".into(),
+            bitrate_kbps: 800,
+        };
+        let members = vec![("a".to_string(), "s1".to_string(), true), ("b".to_string(), "s2".to_string(), false), ("c".to_string(), "s3".to_string(), true)];
+        let g = composite_graph(&c, "vp8", "out", &members).unwrap();
+        let comp = g["nodes"].as_array().unwrap().iter().find(|n| n["type"] == "compose").unwrap();
+        let scenes = comp["scenes"].as_object().unwrap();
+        assert_eq!(scenes.keys().cloned().collect::<Vec<_>>(), vec!["speaker-p0", "speaker-p2"]);
+        assert_eq!(comp["program"], "speaker-p0");
+        // 大きく映すのはシーンの名前の人
+        assert_eq!(scenes["speaker-p2"]["layers"][0]["source"], "p2");
+        assert_eq!(scenes["speaker-p2"]["layers"][0]["width"], 640);
+        senca_pipeline::Graph::from_json(&g.to_string()).unwrap();
+        // grid は 1 つのシーン
+        let grid = composite_graph(&senca_control::model::CompositeSpec { layout: "grid".into(), ..c }, "vp8", "out", &members).unwrap();
+        let comp = grid["nodes"].as_array().unwrap().iter().find(|n| n["type"] == "compose").unwrap();
+        assert_eq!(comp["program"], "main");
+    }
 }

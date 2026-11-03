@@ -100,14 +100,18 @@ where
         let keep = h.keep_alive;
         let version = h.version;
         let head_only = h.method == Method::Head;
-        // 部屋のシグナリング（WebSocket に切り替える）
-        if h.method == Method::Get && h.path() == "/signaling" {
-            crate::rooms::serve_ws(app.clone(), sock, h, peer).await;
-            return;
-        }
-        // SSE は長く開いたままにする
-        if h.method == Method::Get && h.path() == "/api/v1/events" {
-            crate::events::serve_sse(&app, &mut sock, &h).await;
+        // 部屋のシグナリング（WebSocket に切り替える）・SSE（長く開いたまま）。どちらも接続の開始の上限を数える
+        let long_lived = h.method == Method::Get && (h.path() == "/signaling" || h.path() == "/api/v1/events");
+        if long_lived {
+            if let Err(r) = limit_connect(&app, &peer) {
+                let _ = write_reply(&mut sock, r, version, false, false).await;
+                return;
+            }
+            if h.path() == "/signaling" {
+                crate::rooms::serve_ws(app.clone(), sock, h, peer).await;
+            } else {
+                crate::events::serve_sse(&app, &mut sock, &h, &peer).await;
+            }
             return;
         }
         let mut reply = route(&app, &h, body.freeze(), &peer).await;
@@ -152,9 +156,50 @@ pub(crate) fn body_limit(path: &str) -> u64 {
 
 /// 要求を経路に振り分ける。接続の種類（TCP の HTTP/1.1・HTTP/3）に依らない（head と本文だけを見る）。
 /// SSE（`/api/v1/events`）と WebSocket（`/signaling`）は接続を握り続けるので、ここでは扱わない。
+/// 量の上限を超えた応答（problem+json、`Retry-After`）。
+fn rate_limited(p: senca_control::Problem) -> Reply {
+    let rid = crate::util::request_id(None);
+    let mut p = p;
+    p.request_id = Some(rid.clone());
+    let mut r: Reply = ApiResponse::problem(&p).into();
+    r.headers.push(("X-Request-Id".into(), rid));
+    r.headers.push(("Access-Control-Allow-Origin".into(), "*".into()));
+    r
+}
+
+/// 接続の開始（シグナリング・SSE・WHIP・WHEP）の量の上限（送り元の IP ごと）。
+pub(crate) fn limit_connect(app: &App, peer: &str) -> Result<(), Reply> {
+    let ip = crate::ratelimit::peer_ip(peer);
+    app.limits
+        .connects
+        .take(ip, std::time::Instant::now())
+        .map_err(|w| rate_limited(senca_control::Problem::rate_limited("connect", crate::ratelimit::retry_after_secs(w))))
+}
+
+/// `/api/v{N}`（N が 1 以外）の版。
+fn api_version(path: &str) -> Option<&str> {
+    let rest = path.strip_prefix("/api/v")?;
+    let v = rest.split('/').next().unwrap_or("");
+    (!v.is_empty() && v.bytes().all(|b| b.is_ascii_digit()) && v != "1").then_some(v)
+}
+
 pub(crate) async fn route(app: &Arc<App>, h: &RequestHead, body: Bytes, peer: &str) -> Reply {
     let path = h.path();
+    if let Some(v) = api_version(path) {
+        let rid = crate::util::request_id(h.headers.get_str("x-request-id"));
+        let mut p = senca_control::Problem::new(senca_control::ProblemCode::UnsupportedProtocolVersion, format!("API の版 v{v} はありません（v1 だけ）"))
+            .with_details(serde_json::json!({ "requested": format!("v{v}"), "supported": ["v1"] }));
+        p.request_id = Some(rid.clone());
+        let mut r: Reply = ApiResponse::problem(&p).into();
+        r.headers.push(("X-Request-Id".into(), rid));
+        return r;
+    }
     if let Some(rest) = path.strip_prefix("/api/v1") {
+        // 送り元の IP ごとの量の上限（認証の前に数える）
+        let ip = crate::ratelimit::peer_ip(peer).to_string();
+        if let Err(w) = app.limits.ip.take(&ip, std::time::Instant::now()) {
+            return rate_limited(senca_control::Problem::rate_limited("ip", crate::ratelimit::retry_after_secs(w)));
+        }
         let headers: Vec<(String, String)> =
             h.headers.iter().map(|(k, v)| (k.to_string(), String::from_utf8_lossy(v).into_owned())).collect();
         let rid = crate::util::request_id(h.headers.get_str("x-request-id"));
@@ -165,6 +210,7 @@ pub(crate) async fn route(app: &Arc<App>, h: &RequestHead, body: Bytes, peer: &s
             headers,
             body,
             request_id: rid,
+            peer_ip: ip,
         };
         let app2 = app.clone();
         // API は制御状態のロックとファイル I/O を使うので、ブロックしてよいスレッドで
@@ -184,6 +230,11 @@ pub(crate) async fn route(app: &Arc<App>, h: &RequestHead, body: Bytes, peer: &s
         return signed(app, rest, h).await;
     }
     if path.starts_with("/whip") || path.starts_with("/whep") {
+        if h.method == Method::Post
+            && let Err(r) = limit_connect(app, peer)
+        {
+            return r;
+        }
         return app.webrtc_http(h, body, peer).await;
     }
     if path == "/console" || path.starts_with("/console/") {

@@ -107,9 +107,10 @@ data: {"data":{"draining":true},"occurred_at":"2026-11-03T01:12:07.603Z","resour
 - `id` is the position in the control log. You only receive events for your own tenant. Node, device and grid
   events (`node.*`, `device.*`, `grid.decisions`, `stream.owner`) require `node:admin`.
 - A keep-alive is sent every 15 s.
-- When you reconnect with `Last-Event-ID` and that position is older than the node's current one, you immediately
-  get a `resync` event; past events are not replayed. A client that reads too slowly and falls behind also gets
-  `resync`, after which the connection is closed.
+- When you reconnect with `Last-Event-ID`, you get what you missed from the recent events the node keeps (4096 by
+  default, `--events-retain`); an older position gets `resync`. The `id` is the same on every node of a cluster, so you
+  can reconnect to another node and continue. A client that reads too slowly and falls behind beyond the retained
+  events gets `resync`, after which the connection is closed.
 - Room events (`room.started`, `room.connection.created`, ...) have no `id` and are not replayed if missed.
 
 A robust pattern: on connect and on every `resync`, re-list the resources you care about via REST, then follow

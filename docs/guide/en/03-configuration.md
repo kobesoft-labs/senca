@@ -32,7 +32,8 @@ the data directory.
 | `--rtmps` | ADDR\|`off` | off | RTMPS. Requires `--tls-cert` and `--tls-key` |
 | `--srt` | ADDR\|`off` | off | SRT (UDP) |
 | `--rtsp` | ADDR\|`off` | off | RTSP play (TCP) |
-| `--webrtc-udp` | ADDR\|`off` | off | The WebRTC UDP socket shared by WHIP, WHEP and rooms. This address is advertised verbatim as the ICE candidate, so use an IP that clients can reach (not `0.0.0.0`) |
+| `--webrtc-udp` | ADDR\|`off` | off | The WebRTC UDP socket shared by WHIP, WHEP and rooms. When bound to `0.0.0.0:port`, the ICE candidates carry the node's network interface addresses (loopback excluded); when bound to a specific address, that address |
+| `--webrtc-public-ip` | IP[,IP…] | none | IP addresses to announce as ICE candidates (with the `--webrtc-udp` port; up to 8, repeatable). Use it when peers see the node at a different address than it listens on, as behind NAT or in Docker |
 | `--quic` | ADDR\|`off` | off | QUIC v1 over UDP: HTTP/3 (ALPN `h3`, the same content as HTTP except SSE and `/signaling`), WebTransport and MoQ draft-22 (ALPN `moqt-22`; `/moq` over WebTransport) on one port. Requires `--tls-cert` and `--tls-key`. When enabled, HTTP and HTTPS responses carry `Alt-Svc: h3=":PORT"` (see [4. Ingest and playback](04-ingest-playback.md#415-moq-and-http3)) |
 | `--tls-cert` | FILE | none | Certificate chain for `--https`, `--rtmps` and `--quic` (PEM, leaf first) |
 | `--tls-key` | FILE | none | Its private key (PEM). Startup fails if it does not match the leaf's public key |
@@ -116,11 +117,23 @@ See [12. Security](12-security.md).
 
 Webhook destinations are checked against the `--egress-allow` policy (private addresses must be allowed).
 
+### Request rate limits
+
+Requests over a limit get 429 (`RATE_LIMITED` with `Retry-After`; see [12. Security](12-security.md)). `0` disables each limit.
+
+| Option | Value | Default | Meaning |
+|---|---|---|---|
+| `--rate-limit-ip` | N | `300` | Management API (`/api/v1`) requests per second per client IP address (bursts up to twice that). Counted before authentication |
+| `--rate-limit-token` | N | `200` | Management API requests per second per API token (per subject for JWTs), with bursts up to twice that |
+| `--rate-limit-auth-failures` | N | `30` | Failed authentications allowed per client IP address per minute. Once used up, even a valid token gets 429 |
+| `--rate-limit-connect` | N | `30` | New connections (`/signaling`, WHIP, WHEP, SSE) per second per client IP address (bursts up to twice that) |
+
 ### Other
 
 | Option | Value | Default | Meaning |
 |---|---|---|---|
 | `--config` | FILE | none | JSON configuration ([3.3](#33-configuration-file-json)) |
+| `--events-retain` | N | `4096` | Number of recent events the node keeps so that reconnecting SSE clients (`GET /api/v1/events`) get what they missed (0–1000000). See [15. API and SDKs](15-api-and-sdks.md) |
 | `--data-dir` | DIR | `out` (relative to the current directory) | Data directory ([3.6](#36-data-directory)). Always set it |
 | `--log-json` | — | off | Write node logs as one JSON object per line to stdout ([13. Operations](13-operations.md)) |
 
@@ -132,6 +145,7 @@ The node refuses to start (exit code 2) when:
 - `--https`, `--rtmps` or `--quic` is given without `--tls-cert` or `--tls-key`;
 - `--record-queue` is outside 16–1048576, or `--max-playback-ttl` is 0;
 - an `--egress-allow` value is not a valid CIDR;
+- a `--webrtc-public-ip` value is not an IP address, is `0.0.0.0`, `::` or a multicast address, or more than 8 are given; `--events-retain` is over 1000000;
 - `--rooms-auth-webhook` or `--rooms-event-webhook` is not an http/https URL, or is given without `--rooms-webhook-secret-file`;
   the secret file cannot be read or is shorter than 16 bytes;
 - the cluster configuration has `node_id` 0, does not list itself in `peers`, or has fewer than 1 or more than 7 peers.
@@ -268,8 +282,8 @@ The workers it starts read the following.
 - The codec worker starts with an empty environment; only `SENCA_CODEC_LIB_DIR`, `SENCA_CODEC_DISABLE` and
   `LD_LIBRARY_PATH` are copied from the node.
 - The capture worker inherits the node's environment.
-- `SENCA_PUBLIC_HTTP` and `SENCA_PUBLIC_RTMP` in `compose.yaml` are compose variable substitutions that feed
-  `--public-*-url`; the node does not read them.
+- `SENCA_PUBLIC_HTTP`, `SENCA_PUBLIC_RTMP` and `SENCA_PUBLIC_IP` in `compose.yaml` are compose variable substitutions that feed
+  `--public-*-url` and `--webrtc-public-ip`; the node does not read them.
 
 ## 3.6 Data directory
 

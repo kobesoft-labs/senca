@@ -26,8 +26,17 @@ pub fn generate(app: &App, recording: &str) {
         let tracks = init.tracks.iter().filter_map(|t| Some((t.track_id, (t.timescale, t.config.clone()?)))).collect();
         fmp4 = Some((senca_fmp4::Mp4Reader::new(init), tracks));
     }
-    let tenant = app.control.lock().unwrap().state.recordings.get(recording).map(|r| r.tenant.clone());
+    let (tenant, e2ee) = {
+        let core = app.control.lock().unwrap();
+        let r = core.state.recordings.get(recording);
+        let e2ee = r.and_then(|r| core.state.streams.get(&r.stream)).is_some_and(|s| crate::api::streams::stream_is_e2ee(&core.state, s));
+        (r.map(|r| r.tenant.clone()), e2ee)
+    };
     let Some(tenant) = tenant else { return };
+    // E2EE の部屋から書き出した録画は復号できない（サムネイルを作らない）
+    if e2ee {
+        return;
+    }
     let n = idx.segments.len();
     let step = (n as f64 / CANDIDATES as f64).max(1.0);
     let mut picks: Vec<usize> = (0..CANDIDATES.min(n)).map(|i| ((i as f64 + 0.5) * step) as usize).filter(|i| *i < n).collect();

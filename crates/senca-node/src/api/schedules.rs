@@ -117,7 +117,10 @@ fn check_schedule(ctx: &Ctx, s: &Schedule) -> Result<Value, Problem> {
         }
     }
     let core = ctx.control();
-    core.state.tenant_stream(&s.tenant, &s.stream)?;
+    let st = core.state.tenant_stream(&s.tenant, &s.stream)?;
+    if s.action == ScheduleAction::Snapshot && crate::api::streams::stream_is_e2ee(&core.state, st) {
+        return Err(crate::api::streams::e2ee_refused("静止画の予約"));
+    }
     // 同じ stream の録画予約の同時数
     let mut conflicts = Vec::new();
     if s.action == ScheduleAction::Record {

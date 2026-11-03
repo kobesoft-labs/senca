@@ -248,9 +248,11 @@ Notes:
 
 - The image's `ENTRYPOINT` fixes `--data-dir`, `--console-dir`, `--sender-dir` and `--codec-lib-dir`; listeners are
   passed through `CMD` (compose's `command`). If you override `command`, repeat `--http` and the other listeners.
-- WebRTC (WHIP, WHEP, rooms) is not enabled by the default `command`; 8443/udp is only exposed. To enable it, add
-  `--webrtc-udp <host IP>:8443` to `command` and `"8443:8443/udp"` to `ports`. The `--webrtc-udp` address is
-  handed to peers verbatim as the ICE candidate, so use an IP they can reach, not `0.0.0.0`.
+- WebRTC (WHIP, WHEP, rooms) is enabled by default on UDP 8443 (`--webrtc-udp 0.0.0.0:8443`). The IP address announced to
+  peers such as browsers (the ICE candidate) comes from the compose variable `SENCA_PUBLIC_IP` (default `127.0.0.1`, which only
+  works for a browser on the same machine). For example: `SENCA_PUBLIC_IP=203.0.113.10 docker compose up -d`. With `docker run`,
+  add `--webrtc-public-ip <host IP>` to the arguments; without it the container's internal address is announced and peers
+  outside the host cannot connect.
 - `compose.yaml` builds from your working tree. Images you distribute should be built from committed source
   (`git archive HEAD | docker build -t senca/node:local -`, per ADR-0008).
 - `compose.yaml` contains commented examples for passing GPUs (NVIDIA Container Toolkit for NVIDIA, `/dev/dri` for

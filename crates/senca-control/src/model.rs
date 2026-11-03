@@ -466,6 +466,9 @@ pub struct MediaPipeline {
     pub desired_state: String,
     pub created_at_ms: i64,
     pub updated_at_ms: i64,
+    /// 部屋の設定 `recording` から作ったもの（部屋の設定に合わせて作り直し・消す。API からは変えられない）。
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub managed: bool,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]

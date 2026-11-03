@@ -51,6 +51,8 @@ pub struct SpeakerDetector {
     speakers: BTreeMap<String, Speaker>,
     focus: Vec<String>,
     focused_at: BTreeMap<String, Instant>,
+    /// 主な話者（[`SpeakerDetector::dominant`]）と、その人にした時刻。
+    dominant: Option<(String, Instant)>,
 }
 
 /// Opus の packet の大きさから音量を見積もる（20 ms の packet で、無音・DTX は 10 byte 前後、声は 40 byte 以上）。
@@ -72,7 +74,48 @@ impl SpeakerDetector {
             speakers: BTreeMap::new(),
             focus: Vec::new(),
             focused_at: BTreeMap::new(),
+            dominant: None,
         }
+    }
+
+    /// 主な話者（1 人。合成の話者の大写しに使う）。揺れを防ぐ: 今の話者が話している間と、替えてから
+    /// `min_hold` の間は替えない。替えるときは、話している人のうち話し始めの早い人、いなければ `release_after` の間に
+    /// 声のあった人のうち最後に声のあった人。誰も声を出していなければ今の話者のまま（いなければ候補の先頭）。
+    pub fn dominant(&mut self, now: Instant, candidates: &[String]) -> Option<String> {
+        if self.dominant.as_ref().is_some_and(|(d, _)| !candidates.contains(d)) {
+            self.dominant = None;
+        }
+        if let Some((d, since)) = &self.dominant
+            && (self.is_speaking(d, now) || now.saturating_duration_since(*since) < self.cfg.min_hold)
+        {
+            return Some(d.clone());
+        }
+        let speaking = candidates
+            .iter()
+            .filter_map(|c| {
+                let s = self.speakers.get(c)?;
+                self.speaking(s, now).then(|| (s.speaking_since, c.clone()))
+            })
+            .min()
+            .map(|x| x.1);
+        let recent = || {
+            candidates
+                .iter()
+                .filter_map(|c| {
+                    let t = self.speakers.get(c)?.last_voice?;
+                    (now.saturating_duration_since(t) < self.cfg.release_after).then(|| (t, c.clone()))
+                })
+                .max()
+                .map(|x| x.1)
+        };
+        let next = speaking.or_else(recent);
+        match (next, &self.dominant) {
+            (Some(n), Some((d, _))) if &n == d => {}
+            (Some(n), _) => self.dominant = Some((n, now)),
+            (None, Some(_)) => {}
+            (None, None) => self.dominant = candidates.first().map(|c| (c.clone(), now)),
+        }
+        self.dominant.as_ref().map(|(d, _)| d.clone())
     }
 
     /// 音量（-dBov）を 1 つ入れる。
@@ -183,6 +226,48 @@ impl SpeakerDetector {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn dominant_speaker_with_hysteresis() {
+        let mut d = SpeakerDetector::new(DetectorConfig::default());
+        let cands = ids(&["a", "b"]);
+        let mut t = Instant::now();
+        // 誰も話していない: 候補の先頭
+        assert_eq!(d.dominant(t, &cands).as_deref(), Some("a"));
+        // b が話し続ける: min_hold の後に b へ
+        let mut seen = Vec::new();
+        for _ in 0..150 {
+            d.observe("b", 20, t);
+            d.observe("a", 127, t);
+            seen.push(d.dominant(t, &cands).unwrap());
+            t += Duration::from_millis(20);
+        }
+        assert_eq!(seen.last().map(String::as_str), Some("b"));
+        let first_b = seen.iter().position(|x| x == "b").unwrap();
+        assert!(first_b as u64 * 20 >= 2000, "switched too early at {} ms", first_b * 20);
+        // a が短く割り込む（話している判定に届かない 100 ms）: b のまま
+        for _ in 0..5 {
+            d.observe("a", 20, t);
+            d.observe("b", 20, t);
+            assert_eq!(d.dominant(t, &cands).as_deref(), Some("b"));
+            t += Duration::from_millis(20);
+        }
+        // b が黙り、a が話す: b の声が途切れて release_after の後に a へ
+        let mut switched = None;
+        for i in 0..200 {
+            d.observe("a", 20, t);
+            d.observe("b", 127, t);
+            if d.dominant(t, &cands).as_deref() == Some("a") {
+                switched = Some(i);
+                break;
+            }
+            t += Duration::from_millis(20);
+        }
+        let i = switched.expect("switched to a");
+        assert!(i * 20 >= 1400, "switched after {} ms", i * 20);
+        // 候補から外れた話者は外す
+        assert_eq!(d.dominant(t, &ids(&["b"])).as_deref(), Some("b"));
+    }
 
     fn ids(v: &[&str]) -> Vec<String> {
         v.iter().map(|s| s.to_string()).collect()

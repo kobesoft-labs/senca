@@ -46,6 +46,19 @@ pub fn stream_id(room: &str, track: &str) -> String {
     format!("{STREAM_PREFIX}{room}/{track}")
 }
 
+/// 書き出し（メディアパイプライン）のための購読の stream id（`@room/<部屋>/<トラック>/export`）。部屋の核どうしの
+/// 購読（同じノードの組・同じトラック）と分けて数える。
+pub fn export_stream_id(room: &str, track: &str) -> String {
+    format!("{STREAM_PREFIX}{room}/{track}/export")
+}
+
+/// `@room/<部屋>/<トラック>/export` を分ける。
+pub fn parse_export_stream_id(s: &str) -> Option<(&str, &str)> {
+    let rest = s.strip_prefix(STREAM_PREFIX)?.strip_suffix("/export")?;
+    let (room, track) = rest.split_once('/')?;
+    (!room.is_empty() && !track.is_empty() && !track.contains('/')).then_some((room, track))
+}
+
 /// `@room/<部屋>/<トラック>` を分ける（部屋の ID に `/` は入らない）。
 pub fn parse_stream_id(s: &str) -> Option<(&str, &str)> {
     let (room, track) = s.strip_prefix(STREAM_PREFIX)?.split_once('/')?;
@@ -451,6 +464,10 @@ mod tests {
         assert_eq!(parse_stream_id("@room/a"), None);
         assert_eq!(parse_stream_id("@room//x"), None);
         assert_eq!(parse_stream_id("@room/a/b/c"), None);
+        assert_eq!(export_stream_id("a", "b.0"), "@room/a/b.0/export");
+        assert_eq!(parse_export_stream_id("@room/a/b.0/export"), Some(("a", "b.0")));
+        assert_eq!(parse_export_stream_id("@room/a/b.0"), None);
+        assert_eq!(parse_stream_id(&export_stream_id("a", "b")), None);
         assert_eq!(parse_stream_id("live/a"), None);
     }
 

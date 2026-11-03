@@ -82,7 +82,7 @@ senca-node --jwks /etc/senca/jwks.json --jwt-issuer https://idp.example/ --jwt-a
 | `recording:delete` | `DELETE /recordings/{id}` |
 | `tenant:admin` | トークン・秘密値（`/secrets`）。**`node:admin` 以外のすべてを含む** |
 | `node:admin` | テナントの外の運用: `/nodes`・`/devices`・`/grid`・drain・装置の停止と再開、SSE のテナントを持たないイベント |
-| `publish` | 定義はあるが、今のノードの API でこれを求める操作は無い（送出は stream key で認める） |
+| `publish` | WHIP の送出（`POST /whip/{stream_id}` に stream key の代わりに使える。同じテナントの stream だけ） |
 
 - 操作ごとの権限は OpenAPI の拡張 `x-senca-scope` にある（`null` は認証だけ。`GET /capabilities` がそれ）。足りなければ 403
   （`FORBIDDEN`、title に要る権限の名前）。
@@ -154,15 +154,18 @@ curl -s -H "Authorization: Bearer $TOKEN" 'http://127.0.0.1:8080/api/v1/streams?
 ```
 
 - `title` は日本語の説明。プログラムでは `code` で分ける。`details` は code ごとの補足（無ければ省く）。
-- `retryable` が真なら、同じ要求を送り直してよい。503・429 で `retryable` のときは `Retry-After: 1` が付く。
+- `retryable` が真なら、同じ要求を送り直してよい。503・429・504 で `retryable` のときは `Retry-After` が付く
+  （429 は次に通るまでの秒数、それ以外は 1）。
+- 量の上限（429）は、どの `/api/v1` の操作でも返ることがある（[12. セキュリティ](12-security.md)）。
+- `/api/v1` 以外の版（`/api/v2/...` など）は 422 `UNSUPPORTED_PROTOCOL_VERSION`（`details.supported: ["v1"]`）。
 - 問い合わせには `request_id`（= `X-Request-Id`）を添える。
 
 | `code` | 状態 | `retryable` | 主な場面 |
 |---|---|---|---|
 | `INVALID_CONFIG` | 400 | 否 | 値の検査の誤り（範囲・組み合わせ・参照先） |
 | `INVALID_REQUEST` | 400 | 否 | 本文の解析の誤り・未知のフィールド・知らないクエリ・`limit` の範囲・Idempotency-Key の形 |
-| `UNSUPPORTED_PROTOCOL_VERSION` | 422 | 否 | 定義だけ（今のノードの API は返さない） |
-| `UNSUPPORTED_CODEC` | 422 | 否 | 静止画の復号（`GET /streams/{id}/snapshot`）、部屋の核からの 422 |
+| `UNSUPPORTED_PROTOCOL_VERSION` | 422 | 否 | `/api/v1` 以外の版のパス |
+| `UNSUPPORTED_CODEC` | 422 | 否 | 静止画の復号（`GET /streams/{id}/snapshot`）、部屋の核からの 422、E2EE の部屋・書き出した stream でのサーバーの処理（`details.reason: "e2ee"`） |
 | `UNSUPPORTED_MEDIA_TYPE` | 415 | 否 | `Content-Type` が `application/json` でない |
 | `AUTH_FAILED` | 401 | 否 | 認証の失敗 |
 | `FORBIDDEN` | 403 | 否 | 権限が足りない、持たない権限をトークンに渡そうとした |
@@ -173,10 +176,10 @@ curl -s -H "Authorization: Bearer $TOKEN" 'http://127.0.0.1:8080/api/v1/streams?
 | `PRECONDITION_FAILED` | 412 | 否 | `If-Match` が古い・形が違う |
 | `PRECONDITION_REQUIRED` | 428 | 否 | PATCH に `If-Match` が無い |
 | `QUOTA_EXCEEDED` | 403 | 否 | 上限（同じ stream の同時の録画は 8 本など） |
-| `RATE_LIMITED` | 429 | 是 | 定義だけ（レート制限は未実装で、今は返さない） |
+| `RATE_LIMITED` | 429 | 是 | 要求の量の上限を超えた（`details.limit` は `ip`・`token`・`auth_failures`・`connect`） |
 | `CAPACITY_UNAVAILABLE` | 503 | 多くは是 | クラスターの提案を受け付けられない（リーダーの交代・混雑）、部屋が別のノードにある、`--webrtc-udp` が無い、codec worker が無い（このときは否） |
-| `INPUT_TIMEOUT` | 504 | 是 | 定義だけ（今は返さない） |
-| `OWNERSHIP_LOST` | 409 | 否 | 定義だけ（今の API は返さない） |
+| `INPUT_TIMEOUT` | 504 | 是 | 今の画を頼んだが、配信のキーフレームが 5 秒以内に届かない |
+| `OWNERSHIP_LOST` | 409 | 否 | クラスターで、配信を別のノードが受けている stream の録画の開始・今の画（`details.owner_api` のノードに頼み直す） |
 | `PAYLOAD_TOO_LARGE` | 413 | 否 | 録画が大きすぎて MP4 に書き出せない、合意ログのコマンドが大きすぎる |
 | `INTERNAL_ERROR` | 500 | 是 | 制御状態の永続化の失敗など |
 
@@ -229,12 +232,16 @@ data: {"type":"stream.created","resource_id":"...","occurred_at":"2026-11-03T01:
 
 ### 3.1 Last-Event-ID と resync
 
-ノードは過去のイベントを保持しない（再送の保持は無い）。
+ノードは直近のイベントを残しています（既定 4096 件、`--events-retain`。単一ノードでは再起動の後も、制御ログの写しより後の分を読み直します）。
 
-- `Last-Event-ID` が今の位置より前なら、最初に `event: resync`（`id` は今の位置、`data: {}`）を送り、そのまま新しいイベントを流し続ける。
-  `Last-Event-ID` が今の位置と同じなら resync は来ない。無ければ、つないだ後のイベントだけが流れる。
-- 購読が遅れて取りこぼしたときは `event: resync`（`id` なし、`data: {}`）を送って**接続を閉じる**。
-- `resync` を受けたら、一覧の API で状態を読み直してから、受けた `id` を `Last-Event-ID` にしてつなぎ直す。
+- `id` は、適用したコマンドの数です。クラスターでは、どのノードでも同じイベントは同じ `id` になります。
+  そのため、別のノードへつなぎ直しても、同じ `Last-Event-ID` で続きを受け取れます。
+- `Last-Event-ID` を付けてつなぎ直すと、その位置より後のイベントのうち、ノードが残している分を先に送り、その後に新しいイベントを流します。
+- 位置が残している範囲より古いときは、最初に `event: resync`（`id` は今の位置、`data: {}`）を送り、そのまま新しいイベントを流し続けます。
+  `Last-Event-ID` が無ければ、つないだ後のイベントだけが流れます。
+- クラスターで、つないだノードの適用が `Last-Event-ID` に追いついていなければ、3 秒まで待ちます。
+- 読むのが遅れて通知があふれたときは、残している分から続きを送ります。それも無ければ `event: resync` を送って**接続を閉じます**。
+- `resync` を受けたら、一覧の API で状態を読み直してから、受けた `id` を `Last-Event-ID` にしてつなぎ直します。
 
 ### 3.2 イベントの一覧
 

@@ -74,9 +74,7 @@ fn check(ctx: &Ctx, m: &MediaPipeline) -> Result<(), Problem> {
     // E2EE の部屋: SFU は中身を見られないので、合成・文字起こしはできない（書き出し・録画は暗号のまま）
     let e2ee = ctx.control().state.rooms.get(&m.room).is_some_and(|r| r.settings.get("e2ee").and_then(|v| v.as_bool()).unwrap_or(false));
     if e2ee && (m.composite.is_some() || m.captions.is_some()) {
-        return Err(Problem::new(ProblemCode::UnsupportedCodec, "E2EE の部屋では合成・文字起こしはできません（中身はサーバーから見えない）")
-            .with_status(422)
-            .with_details(json!({ "reason": "e2ee" })));
+        return Err(crate::api::rooms::e2ee_refused("合成・文字起こし"));
     }
     if m.name.len() > 40 {
         return Err(bad("name は 40 文字まで（子の stream の名前に使う）"));
@@ -150,6 +148,15 @@ fn check(ctx: &Ctx, m: &MediaPipeline) -> Result<(), Problem> {
     Ok(())
 }
 
+/// 部屋の設定 `recording` から作ったものは、部屋の設定で変える（409）。
+fn managed_refused(m: &MediaPipeline) -> Result<(), Problem> {
+    if m.managed {
+        return Err(Problem::new(ProblemCode::Conflict, "このメディアパイプラインは部屋の設定 recording から作ったものです（部屋の設定を変えてください）")
+            .with_details(json!({ "room": m.room })));
+    }
+    Ok(())
+}
+
 fn tenant_mp(ctx: &Ctx, id: &str) -> Result<MediaPipeline, Problem> {
     ctx.control().state.media_pipelines.get(id).filter(|m| m.tenant == ctx.tenant()).cloned().ok_or_else(Problem::not_found)
 }
@@ -183,6 +190,7 @@ fn render(ctx: &Ctx, m: &MediaPipeline) -> Value {
         "participants": m.participants, "export_participants": m.export_participants,
         "composite": m.composite, "recording": m.recording, "egress": m.egress, "captions": m.captions,
         "desired_state": m.desired_state,
+        "managed": m.managed,
         "created_at": crate::util::rfc3339(m.created_at_ms), "updated_at": crate::util::rfc3339(m.updated_at_ms),
         "artifacts": { "participant_streams": parts, "composite": composite },
         "status": ctx.app.mediapipes.status(&m.id),
@@ -220,6 +228,7 @@ pub fn create(ctx: &Ctx) -> ApiResult {
         desired_state: b.desired_state.unwrap_or_else(|| "running".into()),
         created_at_ms: ctx.now_ms,
         updated_at_ms: ctx.now_ms,
+        managed: false,
     };
     check(ctx, &m)?;
     ctx.app.propose(Command::PutMediaPipeline { pipeline: m.clone(), expect_generation: None })?;
@@ -255,6 +264,7 @@ pub fn patch(ctx: &Ctx, id: &str) -> ApiResult {
     let expect = ctx.if_match(true)?.unwrap_or(0);
     let p: Patch = ctx.body()?;
     let mut m = tenant_mp(ctx, id)?;
+    managed_refused(&m)?;
     if m.generation != expect {
         return Err(Problem::new(ProblemCode::PreconditionFailed, "資源が更新されています（If-Match が古い）"));
     }
@@ -298,6 +308,7 @@ pub fn patch(ctx: &Ctx, id: &str) -> ApiResult {
 pub fn delete(ctx: &Ctx, id: &str) -> ApiResult {
     ctx.require(Scope::StreamWrite)?;
     let m = tenant_mp(ctx, id)?;
+    managed_refused(&m)?;
     ctx.app.propose(Command::DeleteMediaPipeline { tenant: ctx.tenant().into(), id: id.into() })?;
     remove_children(ctx, &m);
     ctx.app.audit(ctx, "media_pipeline.delete", id);

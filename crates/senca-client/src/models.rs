@@ -13,6 +13,8 @@ use std::collections::BTreeMap;
 
 pub type Timestamp = String;
 
+/// `publish` は送り出しの権限: `POST /whip/{stream}` の `Authorization: Bearer` に、publish 鍵の代わりに `publish` を持つ同じテナントの API トークン・JWT を使える。
+/// `subscribe` は `POST /streams/{id}/playback-url`。
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
 pub enum Scope {
     #[serde(rename = "stream:read")]
@@ -419,6 +421,9 @@ pub struct LivePlayback {
 pub struct LivePlaybackPlayback {
     /// `{http}/s/{exp}/{sig}/live/{id}/index.m3u8`
     pub hls: String,
+    /// MoQ（draft-22）の WebTransport の URL `https://{host}:{quic port}/moq?exp=&sig=`。namespace は `senca/live/{id}`（`--quic` を設定したときだけ）
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub moq: Option<String>,
     /// `{rtmp}/play/{id}?exp=&sig=`
     pub rtmp: String,
     /// `{public-rtsp-url}/live/{id}?exp=&sig=`（`--public-rtsp-url` を設定したときだけ）
@@ -1035,6 +1040,12 @@ pub struct CapabilitiesIngest {
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize, Default)]
 pub struct CapabilitiesOutput {
     pub hls: CapabilitiesOutputHls,
+    /// HTTP/3（`--quic`）
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub http3: Option<bool>,
+    /// MoQ（draft-22）の購読と送出（`--quic`）
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub moq: Option<bool>,
     pub rtmp_play: bool,
     pub whep: bool,
 }
@@ -1069,6 +1080,9 @@ pub struct Node {
     /// ノード間の中継（ADR-0014）の様子。応答したノード自身（`self: true`）で、クラスタを組んでいるときだけ値がある（単一ノード・他ノードは null）。
     #[serde(default)]
     pub relay: Option<RelayStatus>,
+    /// 部屋の係の様子（カスケードの部屋ごとの役割・中継の購読の数・イベント Webhook の送り箱）。応答したノード自身で、WebRTC が動いているときだけ値がある
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub rooms: Option<Value>,
     /// 応答したノード自身か
     #[serde(rename = "self")]
     pub is_self: bool,
@@ -1297,6 +1311,9 @@ pub struct GridNodesItem {
     pub roles: Vec<GridNodesItemRolesItem>,
     /// 心拍が届いている（5 秒途絶えると false）
     pub up: bool,
+    /// 最後の心拍の実測の使用量（CPU は /proc/stat の差、メモリは /proc/meminfo の MemTotal − MemAvailable、帯域はループバックを除く /proc/net/dev の差）。配置係のノードだけが知っている。違えば null。配置は予約（reserved）で数え、この値は使わない
+    #[serde(default)]
+    pub usage: Option<Resources>,
     /// このノードに割り当てた仕事の数
     pub workloads: u64,
 }
@@ -2577,7 +2594,7 @@ pub struct RoomSettings {
     /// 送り手に勧める映像の上限（kbit/s）
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub max_video_bitrate_kbps: Option<u64>,
-    /// 録画の方針（`composite` は `e2ee` と併用できない）
+    /// 録画の方針。`per_participant`・`composite` なら部屋の録画のメディアパイプライン（`managed: true`）を作る。`composite` は `e2ee` と併用できない（422）
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub recording: Option<RoomSettingsRecording>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -2606,7 +2623,7 @@ impl RoomSettingsAudioCodec {
     }
 }
 
-/// 録画の方針（`composite` は `e2ee` と併用できない）
+/// 録画の方針。`per_participant`・`composite` なら部屋の録画のメディアパイプライン（`managed: true`）を作る。`composite` は `e2ee` と併用できない（422）
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
 pub enum RoomSettingsRecording {
     #[serde(rename = "none")]
@@ -2676,7 +2693,7 @@ pub struct RoomCreate {
     pub settings: Option<RoomSettings>,
 }
 
-/// 書いたフィールドだけ変える。`settings` は全体を置き換える。`settings`・`metadata` の null は「変えない」、`placement: null` は配置の指定を外す。
+/// 書いたフィールドだけ変える。`settings` は JSON Merge Patch（項目の null で既定に戻す）。`settings`・`metadata` の null は「変えない」、`placement: null` は配置の指定を外す。
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize, Default)]
 pub struct RoomPatch {
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -2684,6 +2701,7 @@ pub struct RoomPatch {
     /// 配置の指定を丸ごと置き換える（`degrade` は使えない）。null で外す
     #[serde(default, skip_serializing_if = "Option::is_none", with = "crate::double_option")]
     pub placement: Option<Option<PlacementSpec>>,
+    /// 変える設定の項目だけを書く（JSON Merge Patch。書かない項目は残り、項目の値の null はその項目を既定値に戻す）
     #[serde(default, skip_serializing_if = "Option::is_none", with = "crate::double_option")]
     pub settings: Option<Option<RoomSettings>>,
 }
@@ -3212,6 +3230,9 @@ pub struct MediaPipelineArtifacts {
 /// このノードでの実行の様子（制御状態には保存しない）。
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize, Default)]
 pub struct MediaPipelineStatus {
+    /// `speaker` の並びで今大きく映している参加者（`client_id`、無ければ `connection_id`）。決まる前・`grid` では null
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub active_speaker: Option<String>,
     /// 合成の図に入っている参加者の数（`composite` が無い、または映像のある参加者が流れ始めていなければ null）
     #[serde(default)]
     pub composite_members: Option<u64>,
@@ -3243,6 +3264,9 @@ pub struct MediaPipeline {
     pub export_participants: bool,
     pub generation: u64,
     pub id: String,
+    /// 部屋の設定 `recording` から作ったもの（ID は `room-rec.{部屋}`。API からは変えられない・消せない）
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub managed: Option<bool>,
     pub name: MediaPipelineName,
     pub participants: MediaPipelineParticipants,
     #[serde(default)]

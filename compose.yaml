@@ -1,6 +1,8 @@
 # 単一ノード（REQ-003）: docker compose up -d
 # 最初の管理者トークン: docker compose exec senca cat /var/lib/senca/control/bootstrap-admin-token
 # 管理画面: http://localhost:8080/console/
+# WebRTC（WHIP・WHEP・部屋）は UDP 8443。相手から届く IP を SENCA_PUBLIC_IP に（既定 127.0.0.1 は同じ機械のブラウザーだけ）:
+#   SENCA_PUBLIC_IP=203.0.113.10 docker compose up -d
 services:
   senca:
     build: .
@@ -13,6 +15,10 @@ services:
       - 0.0.0.0:1935
       - --srt
       - 0.0.0.0:9000
+      - --webrtc-udp
+      - 0.0.0.0:8443
+      - --webrtc-public-ip
+      - ${SENCA_PUBLIC_IP:-127.0.0.1}
       - --public-http-url
       - ${SENCA_PUBLIC_HTTP:-http://localhost:8080}
       - --public-rtmp-url
@@ -21,6 +27,7 @@ services:
       - "8080:8080/tcp"   # 管理 API・HLS・管理画面
       - "1935:1935/tcp"   # RTMP
       - "9000:9000/udp"   # SRT
+      - "8443:8443/udp"   # WebRTC（WHIP・WHEP・部屋）
     volumes:
       - senca-data:/var/lib/senca
     # GPU を使うとき（ホストにドライバーと NVIDIA Container Toolkit が要る）:

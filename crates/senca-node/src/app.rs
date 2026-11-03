@@ -31,6 +31,9 @@ pub struct RecInfo {
     pub has_thumbnail: bool,
 }
 
+/// 今の画を頼まれたとき、キーフレームを待つ最長。
+const SNAPSHOT_WAIT: Duration = Duration::from_secs(5);
+
 pub struct App {
     pub cfg: Config,
     pub node_id: String,
@@ -61,6 +64,8 @@ pub struct App {
     pub mediapipes: crate::mediapipes::MediaPipelines,
     /// 部屋の出来事（SSE へ。合意ログに載せない）。
     pub room_events: tokio::sync::broadcast::Sender<crate::rooms::RoomEventOut>,
+    /// 要求の量の上限（IP・主体・認証の失敗・接続の開始）。
+    pub limits: crate::ratelimit::RateLimits,
 }
 
 impl App {
@@ -71,7 +76,9 @@ impl App {
         codec: Option<Arc<crate::codec::CodecService>>,
         secret_box: crate::secrets::SecretBox,
     ) -> Arc<App> {
+        let limits = crate::ratelimit::RateLimits::from_config(&cfg);
         let app = Arc::new(App {
+            limits,
             cfg,
             node_id,
             control: Mutex::new(control),
@@ -288,6 +295,12 @@ impl App {
             core.state.streams.values().find(|s| s.key_hash == h).cloned()
         };
         let Some(stream) = stream else { return Err(PublishError::BadKey) };
+        self.attach_checked(&stream, transport, peer).await
+    }
+
+    /// 認めた送り手（publish 鍵、または `publish` の権限を持つトークン）を stream につなぐ: 排出・予約の窓を確かめる。
+    pub async fn attach_checked(&self, stream: &Stream, transport: &'static str, peer: &str) -> Result<Publisher, PublishError> {
+        let stream = stream.clone();
         // 排出中のノードは新しい送り手を受けない（今つながっている送り手はそのまま）
         if self.draining() {
             return Err(PublishError::Draining);
@@ -688,14 +701,46 @@ impl App {
 
     // ---- 静止画 ----
 
+    /// 今の画。配信中でキーフレームがまだ無ければ `SNAPSHOT_WAIT` まで待ち、届かなければ 504（`INPUT_TIMEOUT`）。
+    /// クラスタで別のノードが配信を受けていれば 409（`OWNERSHIP_LOST`。そのノードで頼む）。
     pub fn snapshot_now(&self, s: &Stream, fmt: ImageFormat) -> Result<Bytes, Problem> {
         let hub = self.hubs.lock().unwrap().get(&s.id).cloned();
         let Some(hub) = hub.filter(|h| h.is_live()) else {
+            if let Some(p) = self.owned_elsewhere(&s.id) {
+                return Err(p);
+            }
             return Err(Problem::new(ProblemCode::Conflict, "配信中ではありません"));
         };
-        let gop: Vec<_> = hub.shared.gop.lock().unwrap().clone();
-        let configs = hub.shared.configs.lock().unwrap().clone();
-        crate::snapshot::render(self, s, &configs, &gop, fmt)
+        let deadline = std::time::Instant::now() + SNAPSHOT_WAIT;
+        loop {
+            let configs = hub.shared.configs.lock().unwrap().clone();
+            let video = configs.iter().find(|(_, c)| c.codec.kind() == senca_core::MediaKind::Video).map(|(t, _)| *t);
+            let gop: Vec<_> = hub.shared.gop.lock().unwrap().clone();
+            let has_key = video.is_some_and(|t| gop.iter().any(|e| matches!(e, crate::hub::HubEvent::Au(a) if a.track == t && a.keyframe)));
+            if has_key || video.is_none() {
+                return crate::snapshot::render(self, s, &configs, &gop, fmt);
+            }
+            if std::time::Instant::now() >= deadline || !hub.is_live() {
+                return Err(Problem::new(ProblemCode::InputTimeout, "映像のキーフレームが時間内に届きませんでした")
+                    .with_details(json!({ "waited_ms": SNAPSHOT_WAIT.as_millis() as u64 })));
+            }
+            std::thread::sleep(Duration::from_millis(100));
+        }
+    }
+
+    /// クラスタで、この stream の配信を別のノードが受けている（所有している）なら、その案内の problem（409 `OWNERSHIP_LOST`）。
+    pub fn owned_elsewhere(&self, stream: &str) -> Option<Problem> {
+        self.cluster.get()?;
+        let core = self.control.lock().unwrap();
+        let o = core.state.owners.get(stream)?;
+        if o.node == self.node_id {
+            return None;
+        }
+        let api = core.state.nodes.get(&o.node).and_then(|n| n.media_addr.clone());
+        Some(
+            Problem::new(ProblemCode::OwnershipLost, "この stream の配信は別のノードが受けています（そのノードで操作してください）")
+                .with_details(json!({ "owner_node": o.node, "owner_api": api })),
+        )
     }
 
     pub fn snapshot_store_list(&self, stream: &str) -> Vec<Value> {

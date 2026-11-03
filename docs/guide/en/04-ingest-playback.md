@@ -169,17 +169,20 @@ are separate and are passed with the input's or output's `credential_ref` ([6. I
 
 ## 4.6 Sending with WHIP (WebRTC)
 
-`--webrtc-udp ADDR` enables WebRTC (ICE-lite, one UDP socket shared by all sessions). The listen address is advertised as the ICE
-candidate as-is, so specify an IP the sender can reach instead of `0.0.0.0`.
+`--webrtc-udp ADDR` enables WebRTC (ICE-lite, one UDP socket shared by all sessions). When bound to `0.0.0.0:port`, the ICE candidates
+carry the node's network interface addresses. If senders see the node at a different address, as behind NAT or inside Docker, set
+that address with `--webrtc-public-ip` ([3. Configuration](03-configuration.md)).
 
 | Operation | Request | Response |
 |---|---|---|
-| Start | `POST /whip/{stream_id}`, `Authorization: Bearer {stream_key}`, `Content-Type: application/sdp`, body = offer | 201 with the answer (`application/sdp`) and `Location: /whip/{stream_id}/{session}` |
+| Start | `POST /whip/{stream_id}`, `Authorization: Bearer {stream_key}` (or an API token with the `publish` scope), `Content-Type: application/sdp`, body = offer | 201 with the answer (`application/sdp`) and `Location: /whip/{stream_id}/{session}` |
 | Trickle ICE / ICE restart | `PATCH {Location}`, `Content-Type: application/trickle-ice-sdpfrag` | 204, or 200 with an sdpfrag (ICE restart) |
 | Stop | `DELETE {Location}` | 200 |
 
 - The path uses the stream **ID** (not the name). `ingest.whip_url` can be used as-is.
-- Wrong key: 401. Wrong Content-Type: 415. Unacceptable offer: 400. Node without `--webrtc-udp`: 404.
+- Instead of the stream key, `Authorization` may carry an API token (or JWT) of the same tenant with the `publish` scope, so the
+  sending equipment never needs the stream key ([12. Security](12-security.md)).
+- Wrong key or token: 401. Wrong Content-Type: 415. Unacceptable offer: 400. Node without `--webrtc-udp`: 404.
 - `PATCH` and `DELETE` are authorized only by the unguessable 64-bit session ID, so do not leak the `Location`.
 - CORS: `OPTIONS` is answered and `Location` and `ETag` are exposed, so browsers can publish.
 - Accepted codecs: H.264 (Constrained Baseline and High, packetization-mode 1), VP8, VP9 profile 0, AV1, Opus, PCMU, PCMA.
@@ -430,7 +433,10 @@ PUBLISH_NAMESPACE). The node subscribes to `catalog.json`, then to the catalog's
 
 - Still images are made by **decoding** the latest GOP in the codec worker. H.264 and H.265 need a GPU decoder; without one the answer
   is 503 `CAPACITY_UNAVAILABLE` (`retryable: false`). AV1 (dav1d) and VP8/VP9 (libvpx) can be decoded in software
-  ([14. Codecs and patents](14-codecs-and-patents.md)). If the stream is not live, or no keyframe has arrived yet, the answer is 409.
+  ([14. Codecs and patents](14-codecs-and-patents.md)). If the stream is not live, the answer is 409.
+- If no keyframe has arrived yet, the node waits up to 5 seconds; if none arrives, the answer is 504 (`INPUT_TIMEOUT`, retryable).
+- In a cluster, if another node is receiving the stream, the answer is 409 (`OWNERSHIP_LOST`); ask the node in `details.owner_api`.
+- Streams exported from an E2EE room ([11. Media pipelines](11-media-pipelines.md)) get 422, because their content cannot be seen.
 - Images are saved for three reasons (`reason`): `interval` (the stream's `snapshots` policy; the oldest are deleted beyond `keep`),
   `schedule` (a `snapshot` schedule, see [5. Recording](05-recording.md)), and `board_change` (a pipeline's `snapshot_on_change`,
   see [7. Pipelines](07-pipelines.md)).

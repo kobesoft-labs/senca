@@ -61,6 +61,8 @@ pub enum RoomCmd {
     RelayIncoming(IncomingSubscribe),
     /// 購読した別のノードのトラックの AU。
     RemoteAu { room: String, track: String, rid: Option<String>, au: AccessUnit, config: Option<CodecConfig> },
+    /// 書き出しのために購読した別のノードの参加者のトラックの AU（カスケードの参加者の書き出し）。
+    BridgeAu { room: String, track: String, rid: Option<String>, au: AccessUnit, config: Option<CodecConfig> },
     /// 相手が受けるトラックの層を変えた・キーフレームを求めた・購読をやめた。
     DownTracks { node: String, room: String, track: String, rids: Vec<String> },
     DownKeyframe { room: String, track: String, rid: Option<String> },
@@ -71,6 +73,9 @@ pub enum RoomCmd {
     /// 状態（GET /nodes の補足）。
     Status(std::sync::mpsc::Sender<Value>),
 }
+
+/// 書き出しのための購読の相手の名前の後ろ（部屋の核の購読者の名前。カスケードの相手と区別する）。
+const EXPORT_SUFFIX: &str = "#export";
 
 /// 部屋の購読の優先度（中継のスケジューラーの重み。配信の写しの 128 より上）。
 const ROOM_RELAY_PRIORITY: u8 = 192;
@@ -174,6 +179,8 @@ struct BridgeLayers {
     rids: Vec<String>,
     current: Option<String>,
     seen: HashMap<String, Instant>,
+    /// 最後に届いた設定（キーフレームを待っている書き出し先へ、キーフレームといっしょに渡す）。
+    last_cfg: Option<CodecConfig>,
 }
 
 /// この時間届かない層は止まったとみなす。
@@ -274,6 +281,8 @@ pub struct RoomsHost {
     app: Arc<App>,
     cert: DtlsCertificate,
     local: SocketAddr,
+    /// ICE の候補に載せるアドレス（`crate::webrtc::advertised_addrs`）。
+    advertise: Vec<SocketAddr>,
     svc: Option<(RoomService, PeerHost)>,
     outs: HashMap<ConnKey, mpsc::UnboundedSender<WsOut>>,
     /// 作った部屋の世代（制御状態の）。
@@ -301,6 +310,8 @@ pub struct RoomsHost {
     ups: HashMap<TrackKey, mpsc::UnboundedSender<UpCtl>>,
     /// 別のノードに購読されたこのノードのトラック。
     downs: HashMap<TrackKey, DownHandle>,
+    /// 書き出しのために購読した別のノードの参加者のトラック（(部屋, トラック)）。
+    bridge_ups: HashMap<BridgeKey, mpsc::UnboundedSender<UpCtl>>,
     next_down: u64,
     /// 相手のノード（Raft の番号）ごとの App の送り口。
     app_out: HashMap<u64, mpsc::Sender<Bytes>>,
@@ -314,7 +325,7 @@ pub struct RoomsHost {
 const BRIDGE_KEYFRAME_INTERVAL: Duration = Duration::from_secs(2);
 
 impl RoomsHost {
-    pub fn new(app: Arc<App>, cert: DtlsCertificate, local: SocketAddr, tx: mpsc::UnboundedSender<RoomCmd>) -> RoomsHost {
+    pub fn new(app: Arc<App>, cert: DtlsCertificate, local: SocketAddr, advertise: Vec<SocketAddr>, tx: mpsc::UnboundedSender<RoomCmd>) -> RoomsHost {
         // 秘密のファイルは起動の検査で読めることを確かめてある
         let secret = app.cfg.webhook_secret().unwrap_or_else(|e| {
             app.log(&format!("rooms: {e}"));
@@ -332,6 +343,7 @@ impl RoomsHost {
             silenced: HashSet::new(),
             ups: HashMap::new(),
             downs: HashMap::new(),
+            bridge_ups: HashMap::new(),
             next_down: 1,
             app_out: HashMap::new(),
             hooks,
@@ -341,6 +353,7 @@ impl RoomsHost {
             app,
             cert,
             local,
+            advertise,
             svc: None,
             outs: HashMap::new(),
             applied: HashMap::new(),
@@ -380,7 +393,8 @@ impl RoomsHost {
                 unix_time_ns_at_start: Some(crate::util::now_ms() * 1_000_000),
                 ..Default::default()
             };
-            let host = PeerHost::new(base, self.local);
+            let mut host = PeerHost::new(base, self.local);
+            host.set_addresses(self.advertise.clone());
             self.svc = Some((svc, host));
         }
         self.svc.as_mut()
@@ -434,8 +448,23 @@ impl RoomsHost {
                 let Some((svc, _)) = self.svc.as_mut() else { return };
                 let key = (room.clone(), track_id.clone());
                 let first = !self.bridges.contains_key(&key);
-                self.bridge_layers.entry(key.clone()).or_insert_with(|| BridgeLayers { rids, ..Default::default() });
-                self.bridges.entry(key).or_default().push(BridgeSink { id, tx, waiting_key: true });
+                // 別のノードの参加者のトラック（カスケード）: 参加者のいるノードから直接購読する
+                let remote = svc
+                    .remote_participants(&room)
+                    .and_then(|ps| ps.into_iter().find(|p| p.tracks.iter().any(|t| t.track_id == track_id)))
+                    .and_then(|p| p.node);
+                self.bridge_layers.entry(key.clone()).or_insert_with(|| BridgeLayers { rids: rids.clone(), ..Default::default() });
+                self.bridges.entry(key.clone()).or_default().push(BridgeSink { id, tx, waiting_key: true });
+                if let Some(node) = remote {
+                    match self.bridge_ups.get(&key) {
+                        Some(u) if !u.is_closed() => {
+                            let _ = u.send(UpCtl::Keyframe(None));
+                        }
+                        _ => self.subscribe_export(node, room, track_id, rids),
+                    }
+                    return;
+                }
+                let Some((svc, _)) = self.svc.as_mut() else { return };
                 if first {
                     // 最初の書き出しで購読する（全部の層。キーフレームも求める）
                     svc.on_relay_subscribe(now, BRIDGE_NODE, &room, &track_id, Some(Vec::new()));
@@ -455,6 +484,8 @@ impl RoomsHost {
                 if empty {
                     self.bridges.remove(&key);
                     self.bridge_layers.remove(&key);
+                    // 別のノードからの購読なら、送り口を落とすと購読が終わる
+                    self.bridge_ups.remove(&key);
                     if let Some((svc, _)) = self.svc.as_mut() {
                         svc.on_relay_subscribe(now, BRIDGE_NODE, &room, &track_id, None);
                     }
@@ -472,6 +503,18 @@ impl RoomsHost {
             RoomCmd::RemoteAu { room, track, rid, au, config } => {
                 if let Some((svc, _)) = self.svc.as_mut() {
                     svc.on_remote_access_unit(now, &room, &track, rid.as_deref(), &au, config.as_ref());
+                }
+            }
+            RoomCmd::BridgeAu { room, track, rid, au, config } => {
+                if let Some((svc, _)) = self.svc.as_mut() {
+                    // 話者の検出にも入れる（合成の話者の大写し。この参加者の音声はここの SFU を通らないことがある）
+                    svc.observe_track_audio(now, &room, &track, &au);
+                }
+                let key = (room, track);
+                if bridge_deliver(&mut self.bridges, &mut self.bridge_layers, now, &key, rid, au, config)
+                    && let Some(u) = self.bridge_ups.get(&key)
+                {
+                    let _ = u.send(UpCtl::Keyframe(None));
                 }
             }
             RoomCmd::DownTracks { node, room, track, rids } => {
@@ -580,6 +623,7 @@ impl RoomsHost {
         // 送り口を落とすと、下流のタスクが購読を終える（上流は部屋の核の Unsubscribe で外れる）
         self.downs.retain(|k, _| k.1 != room);
         self.ups.retain(|k, _| k.1 != room);
+        self.bridge_ups.retain(|k, _| k.0 != room);
     }
 
     /// カスケードの message を相手のノードへ（相手ごとの送り口。詰まったら捨てる: 在室は定期の同期で戻る）。
@@ -601,7 +645,12 @@ impl RoomsHost {
 
     /// 相手のノードがこのノードの参加者のトラックを購読した。
     fn serve_down(&mut self, now: Instant, inc: IncomingSubscribe) {
-        let Some((room, track)) = cascade::parse_stream_id(&inc.stream_id).map(|(r, t)| (r.to_string(), t.to_string())) else {
+        // 書き出しのための購読は、部屋の核どうしの購読と別の相手として数える（同じノードの組・同じトラックでも重ならない）
+        let (parsed, export) = match cascade::parse_stream_id(&inc.stream_id) {
+            Some(x) => (Some(x), false),
+            None => (cascade::parse_export_stream_id(&inc.stream_id), true),
+        };
+        let Some((room, track)) = parsed.map(|(r, t)| (r.to_string(), t.to_string())) else {
             inc.reject(RelayErrorCode::BAD_REQUEST, "bad room track id");
             return;
         };
@@ -609,6 +658,7 @@ impl RoomsHost {
             inc.reject(RelayErrorCode::NOT_FOUND, "unknown node");
             return;
         };
+        let node = if export { format!("{node}{EXPORT_SUFFIX}") } else { node };
         let Some((svc, _)) = self.svc.as_mut() else {
             inc.reject(RelayErrorCode::NOT_FOUND, "rooms are not ready");
             return;
@@ -682,12 +732,47 @@ impl RoomsHost {
             self.app.log(&format!("rooms: node {node} is unknown; cannot subscribe to {track}"));
             return;
         };
-        let (ctx, mut ctl) = mpsc::unbounded_channel();
+        let (ctx, ctl) = mpsc::unbounded_channel();
         self.ups.insert(key, ctx);
+        let sid = cascade::stream_id(&room, &track);
+        self.spawn_up(relay, raft, sid, room, track, rids, sel, ctl, false);
+    }
+
+    /// 別のノードの参加者のトラックを、書き出しのために購読する（全部の層。層の選び方は書き出しの側で）。
+    fn subscribe_export(&mut self, node: String, room: String, track: String, rids: Vec<String>) {
+        let Some(relay) = self.app.relay.get().cloned() else {
+            self.app.log("rooms: exporting a participant on another node needs the cluster relay");
+            return;
+        };
+        let Some(raft) = raft_of(&self.app, &node) else {
+            self.app.log(&format!("rooms: node {node} is unknown; cannot export {track}"));
+            return;
+        };
+        let rids = self.cascade.track_rids(&room, &track).filter(|r| !r.is_empty()).unwrap_or(rids);
+        let (ctx, ctl) = mpsc::unbounded_channel();
+        self.bridge_ups.insert((room.clone(), track.clone()), ctx);
+        let sid = cascade::export_stream_id(&room, &track);
+        self.app.log(&format!("rooms: exporting track {track} of room {room} from node {node}"));
+        self.spawn_up(relay, raft, sid, room, track, rids, TrackSel::All, ctl, true);
+    }
+
+    /// 上流の購読のタスク（切れたらつなぎ直す。送り口が落ちれば終わる）。`export` なら AU は書き出しへ。
+    #[allow(clippy::too_many_arguments)]
+    fn spawn_up(
+        &self,
+        relay: Arc<crate::relay::Relay>,
+        raft: u64,
+        sid: String,
+        room: String,
+        track: String,
+        rids: Vec<String>,
+        sel: TrackSel,
+        mut ctl: mpsc::UnboundedReceiver<UpCtl>,
+        export: bool,
+    ) {
         let cmd = self.tx.clone();
         let app = self.app.clone();
         tokio::spawn(async move {
-            let sid = cascade::stream_id(&room, &track);
             let mut sel = sel;
             // 続けて失敗している間は最初の 1 回だけ記録する（相手のノードが落ちると、在室の期限まで試し続ける）
             let mut failing = false;
@@ -712,7 +797,13 @@ impl RoomsHost {
                                     Some(StreamEvent::Au(au)) => {
                                         let config = cfgs.remove(&au.track);
                                         let rid = rid_of(&rids, au.track);
-                                        if cmd.send(RoomCmd::RemoteAu { room: room.clone(), track: track.clone(), rid, au, config }).is_err() {
+                                        let (room, track) = (room.clone(), track.clone());
+                                        let m = if export {
+                                            RoomCmd::BridgeAu { room, track, rid, au, config }
+                                        } else {
+                                            RoomCmd::RemoteAu { room, track, rid, au, config }
+                                        };
+                                        if cmd.send(m).is_err() {
                                             return;
                                         }
                                     }
@@ -1059,8 +1150,15 @@ impl RoomsHost {
         if now >= self.next_bridge_key {
             self.next_bridge_key = now + BRIDGE_KEYFRAME_INTERVAL;
             for ((room, track), l) in &self.bridge_layers {
+                let up = self.bridge_ups.get(&(room.clone(), track.clone()));
+                let mut ask = |rid: Option<&String>| match up {
+                    Some(u) => {
+                        let _ = u.send(UpCtl::Keyframe(rid.cloned()));
+                    }
+                    None => svc.on_relay_keyframe_request(now, room, track, rid.map(String::as_str)),
+                };
                 if l.rids.is_empty() {
-                    svc.on_relay_keyframe_request(now, room, track, None);
+                    ask(None);
                     continue;
                 }
                 // 今の層と、より良い層が届いていればその層にも（キーフレームで上へ切り替える）
@@ -1071,10 +1169,10 @@ impl RoomsHost {
                     want.push(b);
                 }
                 if want.is_empty() {
-                    svc.on_relay_keyframe_request(now, room, track, None);
+                    ask(None);
                 }
                 for r in want {
-                    svc.on_relay_keyframe_request(now, room, track, Some(r));
+                    ask(Some(r));
                 }
             }
         }
@@ -1137,53 +1235,8 @@ impl RoomsHost {
                 a @ Action::AuthWebhook { .. } => later.push(a),
                 Action::Relay(senca_rooms::RelayAction::Forward { node, room_id, track_id, rid, au, config }) if node == BRIDGE_NODE => {
                     let key = (room_id, track_id);
-                    let mut config = config;
-                    // サイマルキャスト: 選んだ層だけを流す。より良い層（または今の層が止まったら届いている層）の
-                    // キーフレームで切り替える。切り替えたら寸法の変わった設定を渡す
-                    if let Some(l) = self.bridge_layers.get_mut(&key)
-                        && !l.rids.is_empty()
-                    {
-                        let Some(r) = rid else { continue };
-                        l.seen.insert(r.clone(), now);
-                        if l.current.as_ref() != Some(&r) {
-                            let cur_alive = l.current.as_ref().is_some_and(|c| l.alive(c, now));
-                            let better = l.best(now) == Some(&r);
-                            if !(au.keyframe && (better || !cur_alive)) {
-                                continue;
-                            }
-                            l.current = Some(r.clone());
-                            if config.is_none()
-                                && let Some((w, h)) = crate::media::vpx_keyframe_dims(au.codec, &au.payload)
-                            {
-                                config = Some(senca_core::CodecConfig {
-                                    codec: au.codec,
-                                    generation: 0,
-                                    record: bytes::Bytes::new(),
-                                    video: Some(senca_core::media::VideoParams { width: w, height: h, ..Default::default() }),
-                                    audio: None,
-                                });
-                            }
-                        }
-                    }
-                    let mut lost = false;
-                    if let Some(v) = self.bridges.get_mut(&key) {
-                        v.retain(|b| !b.tx.is_closed());
-                        let video = au.codec.kind() == senca_core::MediaKind::Video;
-                        for b in v.iter_mut() {
-                            if video && b.waiting_key {
-                                if !au.keyframe {
-                                    continue;
-                                }
-                                b.waiting_key = false;
-                            }
-                            if b.tx.try_send(BridgeItem { au: au.clone(), config: config.clone() }).is_err() {
-                                lost = true;
-                                b.waiting_key = video;
-                            }
-                        }
-                    }
                     // 書き出しが追いつかない: 次のキーフレームからやり直せるよう求める
-                    if lost {
+                    if bridge_deliver(&mut self.bridges, &mut self.bridge_layers, now, &key, rid, au, config) {
                         svc.on_relay_keyframe_request(now, &key.0, &key.1, None);
                     }
                 }
@@ -1207,6 +1260,74 @@ impl RoomsHost {
         }
         tx
     }
+}
+
+/// 書き出す AU を書き出し先へ渡す。サイマルキャスト: 選んだ層だけを流す。より良い層（または今の層が止まったら
+/// 届いている層）のキーフレームで切り替え、切り替えたら寸法の変わった設定を渡す。取りこぼした先は次のキーフレーム
+/// まで映像を送らない。取りこぼしがあれば真（キーフレームを求める）。
+fn bridge_deliver(
+    bridges: &mut HashMap<BridgeKey, Vec<BridgeSink>>,
+    layers: &mut HashMap<BridgeKey, BridgeLayers>,
+    now: Instant,
+    key: &BridgeKey,
+    rid: Option<String>,
+    au: AccessUnit,
+    config: Option<CodecConfig>,
+) -> bool {
+    let mut config = config;
+    if let Some(l) = layers.get_mut(key)
+        && !l.rids.is_empty()
+        && au.codec.kind() == senca_core::MediaKind::Video
+    {
+        let Some(r) = rid else { return false };
+        l.seen.insert(r.clone(), now);
+        if l.current.as_ref() != Some(&r) {
+            let cur_alive = l.current.as_ref().is_some_and(|c| l.alive(c, now));
+            let better = l.best(now) == Some(&r);
+            if !(au.keyframe && (better || !cur_alive)) {
+                return false;
+            }
+            l.current = Some(r.clone());
+            if config.is_none()
+                && let Some((w, h)) = crate::media::vpx_keyframe_dims(au.codec, &au.payload)
+            {
+                config = Some(senca_core::CodecConfig {
+                    codec: au.codec,
+                    generation: 0,
+                    record: bytes::Bytes::new(),
+                    video: Some(senca_core::media::VideoParams { width: w, height: h, ..Default::default() }),
+                    audio: None,
+                });
+            }
+        }
+    }
+    let video = au.codec.kind() == senca_core::MediaKind::Video;
+    // 設定はキーフレームより前の AU に付いて届くことがある: 覚えておき、待っていた先にはキーフレームといっしょに渡す
+    let last = layers.get_mut(key).map(|l| {
+        if video && let Some(c) = &config {
+            l.last_cfg = Some(c.clone());
+        }
+        l.last_cfg.clone()
+    });
+    let mut lost = false;
+    if let Some(v) = bridges.get_mut(key) {
+        v.retain(|b| !b.tx.is_closed());
+        for b in v.iter_mut() {
+            let mut cfg = config.clone();
+            if video && b.waiting_key {
+                if !au.keyframe {
+                    continue;
+                }
+                b.waiting_key = false;
+                cfg = cfg.or_else(|| last.clone().flatten());
+            }
+            if b.tx.try_send(BridgeItem { au: au.clone(), config: cfg }).is_err() {
+                lost = true;
+                b.waiting_key = video;
+            }
+        }
+    }
+    lost
 }
 
 /// `GET /signaling`（WebSocket）。部屋が別のノードにあれば `redirect` を送って閉じる。
