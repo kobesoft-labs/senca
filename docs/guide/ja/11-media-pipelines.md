@@ -3,7 +3,7 @@
 [English](../en/11-media-pipelines.md)
 
 部屋（[10-rooms.md](10-rooms.md)）の参加者を SENCA の stream に書き出し、録画・合成・送り出し・文字起こしを 1 つの資源で指定する。
-AWS Chime SDK Media Pipelines に相当する。設計の理由は [ADR-0016](../../adr/0016-media-pipelines.md)。
+AWS Chime SDK Media Pipelines に相当する。設計の理由は [ADR-0016](../../dev/adr/0016-media-pipelines.md)。
 
 - API: `/api/v1/media-pipelines`（`crates/senca-node/src/api/media_pipelines.rs`）
 - 動かす係: `crates/senca-node/src/mediapipes.rs`

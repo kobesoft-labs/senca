@@ -4,7 +4,7 @@ Health checks, logging, monitoring, event-driven automation, crash recovery, bac
 draining a node and shutting it down.
 
 - Related pages: [3. Configuration](03-configuration.md), [5. Recording](05-recording.md), [9. Cluster and grid](09-cluster-grid.md), [12. Security](12-security.md), [15. Management API and SDKs](15-api-and-sdks.md)
-- Rationale: [ADR-0005 Recording format and index](../../adr/0005-recording.md), [ADR-0009 Distributed control plane](../../adr/0009-cluster.md), [ADR-0013 Grid](../../adr/0013-grid.md)
+- Rationale: [ADR-0005 Recording format and index](../../dev/adr/0005-recording.md), [ADR-0009 Distributed control plane](../../dev/adr/0009-cluster.md), [ADR-0013 Grid](../../dev/adr/0013-grid.md)
 
 ## 13.1 Startup and exit codes
 
@@ -258,5 +258,5 @@ The grid places work by adding up fixed **estimates (reservations)** per workloa
 
 On a single development machine (8 threads, loopback), 4 publishers × 200 HLS viewers (about 4 Mbit/s each) for 60 s
 delivered 877 Mbit/s with a segment fetch p99 of 11.9 ms and no errors
-([performance.md](../../conformance/performance.md), Japanese). This checks the tooling and shows trends; it is not a
+([performance.md](../../dev/conformance/performance.md), Japanese). This checks the tooling and shows trends; it is not a
 guarantee. Load tests in the reference environment and the 72-hour soak are still to be done.

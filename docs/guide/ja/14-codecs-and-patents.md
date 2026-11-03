@@ -5,7 +5,7 @@
 SENCA がどのコーデックをどう扱うか、何を製品に入れず、何を実行時に読み込むか。運用者が用意するもの（GPU のドライバー、
 ロイヤリティフリーのコーデックのライブラリ）と、それが無いときの動きをまとめる。
 
-- 設計の理由: [ADR-0004 コーデックの選定と特許の方針](../../adr/0004-codecs-patents.md)、[ADR-0003 内部のメディア形式](../../adr/0003-internal-media-format.md)
+- 設計の理由: [ADR-0004 コーデックの選定と特許の方針](../../dev/adr/0004-codecs-patents.md)、[ADR-0003 内部のメディア形式](../../dev/adr/0003-internal-media-format.md)
 - 台帳: [ライセンス・特許の台帳](../../licenses/README.md)
 - 関係するページ: [4. 取り込みと再生](04-ingest-playback.md)、[5. 録画](05-recording.md)、[7. パイプライン](07-pipelines.md)、[11. メディアパイプライン](11-media-pipelines.md)、[13. 運用](13-operations.md)
 - 実装: `crates/senca-codec`（提供者・dlopen）、`crates/senca-codec-worker`（worker・サンドボックス）、`crates/senca-node/src/codec.rs`

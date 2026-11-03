@@ -467,8 +467,8 @@ client.streams().delete(&s.id, s.if_match()).await?;
 
 ## 6. 関係
 
-- 管理 API の契約の根拠: 仕様 SENCA-SRS-001 10 章、[REQ-002](../../requirements/REQ-002-control-api-and-console.md)
-- クラスターでの書き込み（どのノードに送ってもよい。提案はリーダーへ回る）: [09-cluster-grid.md](09-cluster-grid.md)、[ADR-0009](../../adr/0009-cluster.md)
-- 部屋と SSE の部屋の出来事: [10-rooms.md](10-rooms.md)、[ADR-0015](../../adr/0015-realtime-rooms.md)
-- メディアパイプライン: [11-media-pipelines.md](11-media-pipelines.md)、[ADR-0016](../../adr/0016-media-pipelines.md)
+- 管理 API の契約の根拠: 仕様 SENCA-SRS-001 10 章、[REQ-002](../../dev/requirements/REQ-002-control-api-and-console.md)
+- クラスターでの書き込み（どのノードに送ってもよい。提案はリーダーへ回る）: [09-cluster-grid.md](09-cluster-grid.md)、[ADR-0009](../../dev/adr/0009-cluster.md)
+- 部屋と SSE の部屋の出来事: [10-rooms.md](10-rooms.md)、[ADR-0015](../../dev/adr/0015-realtime-rooms.md)
+- メディアパイプライン: [11-media-pipelines.md](11-media-pipelines.md)、[ADR-0016](../../dev/adr/0016-media-pipelines.md)
 - トークン・秘密の扱い: [12-security.md](12-security.md)、運用（ログ・監視）: [13-operations.md](13-operations.md)

@@ -6,7 +6,7 @@ Several senca-node processes can form one cluster. The control state is replicat
 pipelines and rooms are placed on nodes by the grid. When a node or a device stops, its work moves to a
 live node or keeps running in a degraded form.
 
-- Rationale: [ADR-0009 Distributed control plane](../../adr/0009-cluster.md), [ADR-0013 Grid](../../adr/0013-grid.md), [ADR-0014 Relay](../../adr/0014-relay.md)
+- Rationale: [ADR-0009 Distributed control plane](../../dev/adr/0009-cluster.md), [ADR-0013 Grid](../../dev/adr/0013-grid.md), [ADR-0014 Relay](../../dev/adr/0014-relay.md)
 - Related pages: [3. Configuration](03-configuration.md), [6. Inputs and outputs](06-inputs-outputs.md), [7. Pipelines](07-pipelines.md), [10. Rooms](10-rooms.md), [12. Security](12-security.md), [13. Operations](13-operations.md), [15. API and SDKs](15-api-and-sdks.md)
 
 The grid also runs on a single node, using the same machinery (the node is its own leader and the only

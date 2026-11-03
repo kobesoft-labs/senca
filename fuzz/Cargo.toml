@@ -1,6 +1,6 @@
 # SENCA の coverage-guided fuzz（cargo-fuzz / libFuzzer）。仕様 15.3・AC-01。
 # ワークスペースの外に置く（nightly と sanitizer の設定を本体の build に持ち込まない）。
-# 使い方は docs/RELEASE.md の「fuzz」。
+# 使い方は docs/dev/RELEASE.md の「fuzz」。
 [package]
 name = "senca-fuzz"
 version = "0.0.0"

@@ -4,7 +4,7 @@
 
 配信中の stream の音声を音声認識のサービスへ送って字幕にし、必要なら翻訳して、言語ごとの WebVTT の HLS 字幕として出す。
 
-- 設計の理由: [ADR-0011 字幕と翻訳](../../adr/0011-captions.md)、[ADR-0004 コーデックと特許](../../adr/0004-codecs-patents.md)（音声を復号しない）
+- 設計の理由: [ADR-0011 字幕と翻訳](../../dev/adr/0011-captions.md)、[ADR-0004 コーデックと特許](../../dev/adr/0004-codecs-patents.md)（音声を復号しない）
 - 関係するページ: [4. 取り込みと再生](04-ingest-playback.md)、[6. 入力と出力](06-inputs-outputs.md)（秘密値・外向きの接続の制限）、[11. メディアパイプライン](11-media-pipelines.md)（部屋の参加者の字幕）、[12. セキュリティ](12-security.md)
 - 実装: `crates/senca-node/src/captions.rs`、`crates/senca-caption`（`chunk.rs`・`asr.rs`・`merge.rs`・`translate.rs`・`hls.rs`・`vtt.rs`）
 

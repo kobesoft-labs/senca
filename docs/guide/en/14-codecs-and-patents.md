@@ -5,7 +5,7 @@
 Which codecs SENCA handles and how, what it deliberately does not ship, and what it loads at run time. This page covers what operators
 provide (GPU drivers, royalty-free codec libraries) and how SENCA behaves when they are missing.
 
-- Rationale: [ADR-0004 codec selection and patent policy](../../adr/0004-codecs-patents.md), [ADR-0003 internal media format](../../adr/0003-internal-media-format.md)
+- Rationale: [ADR-0004 codec selection and patent policy](../../dev/adr/0004-codecs-patents.md), [ADR-0003 internal media format](../../dev/adr/0003-internal-media-format.md)
 - Ledger: [license and patent ledger](../../licenses/README.md)
 - Related pages: [4. Ingest and playback](04-ingest-playback.md), [5. Recording](05-recording.md), [7. Pipelines](07-pipelines.md), [11. Media pipelines](11-media-pipelines.md), [13. Operations](13-operations.md)
 - Implementation: `crates/senca-codec` (providers, dlopen), `crates/senca-codec-worker` (worker, sandbox), `crates/senca-node/src/codec.rs`

@@ -29,7 +29,7 @@ SENCA（ライブ配信・録画・リアルタイム通信のためのメディ
 
 | | |
 |---|---|
-| 設計の決定 | [docs/adr](../../adr) |
+| 設計の決定 | [docs/dev/adr](../../dev/adr) |
 | API の定義 | [docs/api/openapi.yaml](../../api/openapi.yaml)、部屋のシグナリング [docs/realtime/signaling.md](../../realtime/signaling.md) |
-| 進み具合 | [docs/ROADMAP.md](../../ROADMAP.md)、適合台帳 [docs/conformance/ledger.md](../../conformance/ledger.md) |
-| 開発・リリース | [docs/DEVELOPMENT.md](../../DEVELOPMENT.md)、[docs/RELEASE.md](../../RELEASE.md) |
+| 進み具合 | [docs/dev/ROADMAP.md](../../dev/ROADMAP.md)、適合台帳 [docs/dev/conformance/ledger.md](../../dev/conformance/ledger.md) |
+| 開発・リリース | [docs/dev/DEVELOPMENT.md](../../dev/DEVELOPMENT.md)、[docs/dev/RELEASE.md](../../dev/RELEASE.md) |

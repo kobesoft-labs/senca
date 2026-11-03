@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# release の配布物を作る（仕様 9.5: 再現可能な build・SBOM・署名）。手順と検証は docs/RELEASE.md。
+# release の配布物を作る（仕様 9.5: 再現可能な build・SBOM・署名）。手順と検証は docs/dev/RELEASE.md。
 #
 #   tools/release/build.sh                    # HEAD から作る（作業中の変更は入らない）
 #   SIGNING_KEY=/secure/senca-release.key tools/release/build.sh

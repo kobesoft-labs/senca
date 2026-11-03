@@ -4,7 +4,7 @@
 
 A media pipeline takes the participants of a room ([10-rooms.md](10-rooms.md)), exports them as SENCA streams, and lets you
 specify recording, compositing, live egress and transcription in a single resource. It is the SENCA equivalent of
-AWS Chime SDK Media Pipelines. For the design rationale see [ADR-0016](../../adr/0016-media-pipelines.md).
+AWS Chime SDK Media Pipelines. For the design rationale see [ADR-0016](../../dev/adr/0016-media-pipelines.md).
 
 - API: `/api/v1/media-pipelines` (`crates/senca-node/src/api/media_pipelines.rs`)
 - Runtime: `crates/senca-node/src/mediapipes.rs`

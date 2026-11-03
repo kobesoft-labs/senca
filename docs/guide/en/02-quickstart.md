@@ -3,7 +3,7 @@
 Build from source, run a single node, publish over RTMP and watch over HLS. Docker comes at the end.
 
 - Related pages: [1. Overview](01-overview.md), [3. Configuration](03-configuration.md), [4. Ingest and playback](04-ingest-playback.md), [12. Security](12-security.md), [14. Codecs and patents](14-codecs-and-patents.md)
-- Rationale: [ADR-0008 Container deployment](../../adr/0008-container-deployment.md)
+- Rationale: [ADR-0008 Container deployment](../../dev/adr/0008-container-deployment.md)
 
 Every command on this page was run on Linux x86_64 (Ubuntu 26.04).
 

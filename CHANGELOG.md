@@ -104,10 +104,10 @@
 
 ## v0.0.0 — 2026-11-03
 
-First public snapshot. **Experimental**: the release gate in docs/RELEASE.md (long fuzzing, soak test,
+First public snapshot. **Experimental**: the release gate in docs/dev/RELEASE.md (long fuzzing, soak test,
 independent security review, signed builds) has not been passed. Not for production use.
 
-最初の公開。**実験的**: docs/RELEASE.md の出荷 gate（長時間の fuzz、連続試験、独立したセキュリティレビュー、
+最初の公開。**実験的**: docs/dev/RELEASE.md の出荷 gate（長時間の fuzz、連続試験、独立したセキュリティレビュー、
 署名付きの配布）は通していない。本番には使わないこと。
 
 ### Included / 含まれるもの

@@ -5,7 +5,7 @@
 複数の senca-node を 1 つのクラスタにして、制御状態を複製し、入力・出力・パイプライン・部屋を
 グリッドで各ノードへ配置する。ノードや装置が止まっても、仕事は生きているノードへ移るか縮退して動き続ける。
 
-- 設計の理由: [ADR-0009 分散の制御面](../../adr/0009-cluster.md)、[ADR-0013 グリッド](../../adr/0013-grid.md)、[ADR-0014 中継](../../adr/0014-relay.md)
+- 設計の理由: [ADR-0009 分散の制御面](../../dev/adr/0009-cluster.md)、[ADR-0013 グリッド](../../dev/adr/0013-grid.md)、[ADR-0014 中継](../../dev/adr/0014-relay.md)
 - 関係するページ: [3. 設定](03-configuration.md)、[6. 入力と出力](06-inputs-outputs.md)、[7. パイプライン](07-pipelines.md)、[10. 部屋](10-rooms.md)、[12. セキュリティ](12-security.md)、[13. 運用](13-operations.md)、[15. API と SDK](15-api-and-sdks.md)
 
 単一ノードでもグリッドは同じ仕組みで動く（自分がリーダーで、配置先は自分だけ）。配置の指定（`placement`）・

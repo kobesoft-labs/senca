@@ -5,7 +5,7 @@
 SENCA から外へつないで映像を取りに行く**入力**（pull）と、stream を外へ送る**出力**（push・PaaS 連携）。
 送り手が SENCA につなぐ push（RTMP・SRT・WHIP）は stream の鍵で受けるので、ここではなく [4. 取り込みと再生](04-ingest-playback.md) で扱う。
 
-- 設計の理由: [ADR-0007 入力・出力と外向きの接続](../../adr/0007-inputs-outputs-egress.md)、[ADR-0010 PaaS 連携](../../adr/0010-paas.md)、[ADR-0013 グリッド](../../adr/0013-grid.md)
+- 設計の理由: [ADR-0007 入力・出力と外向きの接続](../../dev/adr/0007-inputs-outputs-egress.md)、[ADR-0010 PaaS 連携](../../dev/adr/0010-paas.md)、[ADR-0013 グリッド](../../dev/adr/0013-grid.md)
 - 関係するページ: [4. 取り込みと再生](04-ingest-playback.md)、[9. クラスタとグリッド](09-cluster-grid.md)、[12. セキュリティ](12-security.md)、[15. API と SDK](15-api-and-sdks.md)
 - 実装: `crates/senca-node/src/io.rs`・`hls_pull.rs`・`rtsp_pull.rs`・`srt.rs`・`capture.rs`・`paas.rs`・`egress.rs`・`api/io.rs`、`crates/senca-paas`
 

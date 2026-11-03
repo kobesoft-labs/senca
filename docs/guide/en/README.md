@@ -31,7 +31,7 @@ These are written in Japanese.
 
 | | |
 |---|---|
-| Design decisions | [docs/adr](../../adr) |
+| Design decisions | [docs/dev/adr](../../dev/adr) |
 | API definition | [docs/api/openapi.yaml](../../api/openapi.yaml); room signaling [docs/realtime/signaling.md](../../realtime/signaling.md) |
-| Progress | [docs/ROADMAP.md](../../ROADMAP.md); conformance ledger [docs/conformance/ledger.md](../../conformance/ledger.md) |
-| Development and releases | [docs/DEVELOPMENT.md](../../DEVELOPMENT.md), [docs/RELEASE.md](../../RELEASE.md) |
+| Progress | [docs/dev/ROADMAP.md](../../dev/ROADMAP.md); conformance ledger [docs/dev/conformance/ledger.md](../../dev/conformance/ledger.md) |
+| Development and releases | [docs/dev/DEVELOPMENT.md](../../dev/DEVELOPMENT.md), [docs/dev/RELEASE.md](../../dev/RELEASE.md) |

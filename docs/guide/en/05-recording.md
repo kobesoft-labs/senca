@@ -4,7 +4,7 @@
 
 Record streams, play recordings back as VOD, export them as MP4 or HLS, and use schedules to drive recording, publish windows and still images by time.
 
-- Rationale: [ADR-0005 recording format and index](../../adr/0005-recording.md), [ADR-0006 stream task](../../adr/0006-stream-hub.md)
+- Rationale: [ADR-0005 recording format and index](../../dev/adr/0005-recording.md), [ADR-0006 stream task](../../dev/adr/0006-stream-hub.md)
 - Related pages: [4. Ingest and playback](04-ingest-playback.md), [9. Cluster and grid](09-cluster-grid.md), [13. Operations](13-operations.md), [14. Codecs and patents](14-codecs-and-patents.md), [15. API and SDKs](15-api-and-sdks.md)
 - Implementation: `crates/senca-node/src/recorder.rs`, `recovery.rs`, `export.rs`, `thumbnail.rs`, `scheduler.rs`, `api/recordings.rs`, `api/schedules.rs`, `crates/senca-record`, `crates/senca-control/src/schedule.rs`
 

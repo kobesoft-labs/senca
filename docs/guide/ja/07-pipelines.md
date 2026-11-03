@@ -5,7 +5,7 @@
 パイプラインは、stream を入力にして復号・板書の補正・拡大縮小・切り抜き・合成・音声のミックス・符号化を行い、結果を別の stream に入れる
 処理のグラフ（有向非巡回グラフ）。ピクチャー・イン・ピクチャー、シーンの切り替え（スイッチャー）、トランスコードなどに使う。
 
-- 設計の理由: [ADR-0004 コーデックと特許](../../adr/0004-codecs-patents.md)、[ADR-0013 グリッド](../../adr/0013-grid.md)（配置と縮退）
+- 設計の理由: [ADR-0004 コーデックと特許](../../dev/adr/0004-codecs-patents.md)、[ADR-0013 グリッド](../../dev/adr/0013-grid.md)（配置と縮退）
 - 関係するページ: [4. 取り込みと再生](04-ingest-playback.md)、[9. クラスタとグリッド](09-cluster-grid.md)、[14. コーデックと特許](14-codecs-and-patents.md)、[15. API と SDK](15-api-and-sdks.md)
 - 実装: `crates/senca-pipeline`（`model.rs` 定義、`validate.rs` 検証、`control.rs` 操作）、`crates/senca-node/src/pipelines.rs`・`api/pipelines.rs`、`crates/senca-control/src/workloads.rs`（縮退）
 - 端から端までの試験: `tools/interop/node.sh` の場面 J

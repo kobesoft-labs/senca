@@ -6,7 +6,7 @@ A pipeline is a processing graph (a directed acyclic graph) that takes streams a
 composes, mixes audio and encodes, and feeds the result into another stream. Use it for picture-in-picture, scene switching (a
 production switcher), transcoding and similar tasks.
 
-- Rationale: [ADR-0004 codecs and patents](../../adr/0004-codecs-patents.md), [ADR-0013 grid](../../adr/0013-grid.md) (placement and degradation)
+- Rationale: [ADR-0004 codecs and patents](../../dev/adr/0004-codecs-patents.md), [ADR-0013 grid](../../dev/adr/0013-grid.md) (placement and degradation)
 - Related pages: [4. Ingest and playback](04-ingest-playback.md), [9. Cluster and grid](09-cluster-grid.md), [14. Codecs and patents](14-codecs-and-patents.md), [15. API and SDKs](15-api-and-sdks.md)
 - Implementation: `crates/senca-pipeline` (`model.rs` definition, `validate.rs` validation, `control.rs` operations), `crates/senca-node/src/pipelines.rs`, `api/pipelines.rs`, `crates/senca-control/src/workloads.rs` (degradation)
 - End-to-end test: scenario J in `tools/interop/node.sh`

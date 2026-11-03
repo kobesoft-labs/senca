@@ -4,7 +4,7 @@
 
 送り手（エンコーダー・カメラ・ブラウザー）から stream に映像・音声を入れる方法と、視聴者に配る方法をまとめる。
 
-- 設計の理由: [ADR-0006 stream タスク](../../adr/0006-stream-hub.md)、[ADR-0012 WebRTC](../../adr/0012-webrtc.md)、[ADR-0014 中継](../../adr/0014-relay.md)、[ADR-0004 コーデックと特許](../../adr/0004-codecs-patents.md)
+- 設計の理由: [ADR-0006 stream タスク](../../dev/adr/0006-stream-hub.md)、[ADR-0012 WebRTC](../../dev/adr/0012-webrtc.md)、[ADR-0014 中継](../../dev/adr/0014-relay.md)、[ADR-0004 コーデックと特許](../../dev/adr/0004-codecs-patents.md)
 - 関係するページ: [3. 設定](03-configuration.md)、[5. 録画](05-recording.md)、[6. 入力と出力](06-inputs-outputs.md)、[8. 字幕](08-captions.md)、[9. クラスタとグリッド](09-cluster-grid.md)、[12. セキュリティ](12-security.md)、[14. コーデックと特許](14-codecs-and-patents.md)、[15. API と SDK](15-api-and-sdks.md)
 - 実装: `crates/senca-node/src/rtmp.rs`・`srt.rs`・`webrtc.rs`・`capture.rs`・`http.rs`・`live.rs`・`packager.rs`・`rtsp_serve.rs`・`api/streams.rs`
 

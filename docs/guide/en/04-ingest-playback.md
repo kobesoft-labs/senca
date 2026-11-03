@@ -4,7 +4,7 @@
 
 How to get video and audio from a sender (encoder, camera, browser) into a stream, and how to deliver it to viewers.
 
-- Rationale: [ADR-0006 stream task](../../adr/0006-stream-hub.md), [ADR-0012 WebRTC](../../adr/0012-webrtc.md), [ADR-0014 relay](../../adr/0014-relay.md), [ADR-0004 codecs and patents](../../adr/0004-codecs-patents.md)
+- Rationale: [ADR-0006 stream task](../../dev/adr/0006-stream-hub.md), [ADR-0012 WebRTC](../../dev/adr/0012-webrtc.md), [ADR-0014 relay](../../dev/adr/0014-relay.md), [ADR-0004 codecs and patents](../../dev/adr/0004-codecs-patents.md)
 - Related pages: [3. Configuration](03-configuration.md), [5. Recording](05-recording.md), [6. Inputs and outputs](06-inputs-outputs.md), [8. Captions](08-captions.md), [9. Cluster and grid](09-cluster-grid.md), [12. Security](12-security.md), [14. Codecs and patents](14-codecs-and-patents.md), [15. API and SDKs](15-api-and-sdks.md)
 - Implementation: `crates/senca-node/src/rtmp.rs`, `srt.rs`, `webrtc.rs`, `capture.rs`, `http.rs`, `live.rs`, `packager.rs`, `rtsp_serve.rs`, `api/streams.rs`
 

@@ -3,8 +3,8 @@
 English | [日本語](#日本語)
 
 Thank you for your interest in SENCA. This document explains how to build and test the project, the rules the code follows, and how to
-propose changes. The detailed rules are in [docs/DEVELOPMENT.md](docs/DEVELOPMENT.md) ([English](docs/DEVELOPMENT.en.md)); the release
-gate is in [docs/RELEASE.md](docs/RELEASE.md) ([English](docs/RELEASE.en.md)).
+propose changes. The detailed rules are in [docs/dev/DEVELOPMENT.md](docs/dev/DEVELOPMENT.md) ([English](docs/dev/DEVELOPMENT.en.md)); the release
+gate is in [docs/dev/RELEASE.md](docs/dev/RELEASE.md) ([English](docs/dev/RELEASE.en.md)).
 
 SENCA is at v0.0.0 (experimental). Interfaces may still change without notice.
 
@@ -57,11 +57,11 @@ External tools used by the scripts (used only as test peers; none of them is par
 
 The header comment of each script lists exactly what it checks and which variables it reads.
 
-Fuzzing, sanitizers, load and soak tests are part of the release gate rather than of everyday changes; see [docs/RELEASE.en.md](docs/RELEASE.en.md).
+Fuzzing, sanitizers, load and soak tests are part of the release gate rather than of everyday changes; see [docs/dev/RELEASE.en.md](docs/dev/RELEASE.en.md).
 
 ## Coding rules
 
-A summary of [docs/DEVELOPMENT.en.md](docs/DEVELOPMENT.en.md):
+A summary of [docs/dev/DEVELOPMENT.en.md](docs/dev/DEVELOPMENT.en.md):
 
 - **sans-io layering.** Protocol, container and bitstream crates have no I/O, threads or clocks: they are state machines that take bytes and
   return events and output bytes, with time passed in as an argument. I/O (tokio) lives only in executables such as `senca-node`. Shared types
@@ -73,7 +73,7 @@ A summary of [docs/DEVELOPMENT.en.md](docs/DEVELOPMENT.en.md):
 - **No hand-written cryptographic primitives.** AES, SHA, HMAC, HKDF, signatures, key exchange and random numbers come from vetted libraries
   (ADR-0002). The protocols themselves (TLS/DTLS/SRTP/QUIC handshakes and record layers) are implemented in-house.
 - **Do not leak secrets.** Stream keys and tokens must not appear in logs, errors or `Debug` output.
-- **Dependencies.** When adding one, update the list in ADR-0002 (`docs/adr/0002-dependencies-and-crypto.md`). Software H.264/H.265/AAC codecs
+- **Dependencies.** When adding one, update the list in ADR-0002 (`docs/dev/adr/0002-dependencies-and-crypto.md`). Software H.264/H.265/AAC codecs
   and FFmpeg must never become product dependencies (ADR-0004).
 - **Language.** Documentation and code comments are written in Japanese; identifiers are in English.
 - **Commits.** Do not put the names of tools used for the work, or co-author trailers, in commit messages or tracked files.
@@ -81,7 +81,7 @@ A summary of [docs/DEVELOPMENT.en.md](docs/DEVELOPMENT.en.md):
 ## Proposing changes
 
 - Report bugs and propose features through issues on [github.com/kobesoft-labs/senca](https://github.com/kobesoft-labs/senca).
-  For larger changes, open an issue first to discuss the design (significant design decisions are recorded as ADRs in `docs/adr/`).
+  For larger changes, open an issue first to discuss the design (significant design decisions are recorded as ADRs in `docs/dev/adr/`).
 - Send changes as pull requests. Keep each pull request focused, include tests (unit tests, plus an interop test where an independent
   implementation exists), and make sure `cargo test --workspace` and `cargo clippy --workspace --all-targets -- -D warnings` pass.
   Mention which `tools/interop/` scripts you ran.
@@ -100,7 +100,7 @@ section 5 of the license). Only submit work that you have the right to license t
 [English](#contributing-to-senca) | 日本語
 
 SENCA に関心を持ってくださってありがとうございます。この文書は、作り方・試験の仕方・コードの決まり・変更の提案の仕方をまとめたもの。
-詳しい決まりは [docs/DEVELOPMENT.md](docs/DEVELOPMENT.md)、出荷 gate は [docs/RELEASE.md](docs/RELEASE.md)。
+詳しい決まりは [docs/dev/DEVELOPMENT.md](docs/dev/DEVELOPMENT.md)、出荷 gate は [docs/dev/RELEASE.md](docs/dev/RELEASE.md)。
 
 SENCA は v0.0.0（experimental）。インターフェースは予告なく変わることがある。
 
@@ -150,11 +150,11 @@ cargo clippy --workspace --all-targets -- -D warnings
 
 何を確かめ、どの変数を読むかは各スクリプトの先頭のコメントに書いてある。
 
-fuzz・sanitizer・負荷・長時間の試験は普段の変更ではなく出荷 gate の一部。[docs/RELEASE.md](docs/RELEASE.md) を見ること。
+fuzz・sanitizer・負荷・長時間の試験は普段の変更ではなく出荷 gate の一部。[docs/dev/RELEASE.md](docs/dev/RELEASE.md) を見ること。
 
 ### コードの決まり
 
-[docs/DEVELOPMENT.md](docs/DEVELOPMENT.md) の要約:
+[docs/dev/DEVELOPMENT.md](docs/dev/DEVELOPMENT.md) の要約:
 
 - **sans-io の層。** プロトコル・コンテナ・ビットストリームの crate は I/O・スレッド・時計を持たない。バイト列を入れるとイベントや出力バイト列が
   返る状態機械にし、時刻は引数で渡す。I/O（tokio）は `senca-node` などの実行ファイル側だけ。共通の型は `senca-core`。
@@ -165,7 +165,7 @@ fuzz・sanitizer・負荷・長時間の試験は普段の変更ではなく出�
 - **暗号の部品は自分で書かない。** AES・SHA・HMAC・HKDF・署名・鍵交換・乱数は検証済みのライブラリ（ADR-0002）。プロトコル
   （TLS/DTLS/SRTP/QUIC のハンドシェイクや記録層）は自前。
 - **秘密を出さない。** stream key・トークンはログ・エラー・`Debug` 表示に出さない。
-- **依存。** 足すときは ADR-0002（`docs/adr/0002-dependencies-and-crypto.md`）の一覧を更新する。ソフトウェアの H.264/H.265/AAC コーデックと
+- **依存。** 足すときは ADR-0002（`docs/dev/adr/0002-dependencies-and-crypto.md`）の一覧を更新する。ソフトウェアの H.264/H.265/AAC コーデックと
   FFmpeg は製品の依存にしない（ADR-0004）。
 - **言語。** 文書・コメントは日本語、識別子は英語。
 - **コミット。** コミットのメッセージや追跡するファイルに、作業に使った道具の名前や共同作者の行を残さない。
@@ -173,7 +173,7 @@ fuzz・sanitizer・負荷・長時間の試験は普段の変更ではなく出�
 ### 変更の提案
 
 - 不具合の報告・機能の提案は [github.com/kobesoft-labs/senca](https://github.com/kobesoft-labs/senca) の issue へ。
-  大きな変更は先に issue で設計を相談する（大きな設計の判断は `docs/adr/` の ADR に残す）。
+  大きな変更は先に issue で設計を相談する（大きな設計の判断は `docs/dev/adr/` の ADR に残す）。
 - 変更は pull request で送る。1 つの pull request は 1 つの目的に絞り、試験（単体試験と、独立実装があれば相互接続試験）を付け、
   `cargo test --workspace` と `cargo clippy --workspace --all-targets -- -D warnings` が通ることを確かめる。回した `tools/interop/` のスクリプトを書く。
 - **セキュリティの脆弱性は公開の issue に書かない。** [SECURITY.md](SECURITY.md) を見ること。

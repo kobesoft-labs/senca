@@ -6,7 +6,7 @@ English | [日本語](#日本語)
 
 SENCA has not had a stable release yet. The only version is the pre-release **v0.0.0**, which is **experimental**: the release gate
 (24-hour fuzzing, 72-hour soak test, independent review of the cryptographic and authorization code, signed reproducible builds; see
-[docs/RELEASE.en.md](docs/RELEASE.en.md)) has not been passed, and it should not be used in production.
+[docs/dev/RELEASE.en.md](docs/dev/RELEASE.en.md)) has not been passed, and it should not be used in production.
 
 | Version | Supported |
 |---|---|
@@ -42,13 +42,13 @@ project is pre-release, handling is best effort.
 
 - **In-house protocol implementations.** TLS, DTLS, SRTP, SRT encryption and QUIC (handshakes and record layers) are implemented in this
   repository. Only the cryptographic primitives (AES, SHA, HMAC, HKDF, signatures, key exchange, random numbers) come from vetted libraries
-  (ADR-0002). **These implementations have not yet been independently reviewed** (gate G8 in [docs/RELEASE.en.md](docs/RELEASE.en.md)), and
+  (ADR-0002). **These implementations have not yet been independently reviewed** (gate G8 in [docs/dev/RELEASE.en.md](docs/dev/RELEASE.en.md)), and
   reports about them are especially welcome.
 - **Authorization**: JWTs, signed playback URLs, API tokens and room join tokens.
 - **Cluster ownership**: mTLS between nodes and stream ownership with fencing.
 - **Parsers** for untrusted input (RTMP/AMF, FLV, MPEG-TS, fMP4, HLS, HTTP, SDP, STUN, RTP/RTCP, RTSP, SRT, codec bitstreams, images):
   panics, infinite loops, unbounded allocation and similar resource exhaustion are treated as vulnerabilities (see the strict-parsing rule in
-  [docs/DEVELOPMENT.en.md](docs/DEVELOPMENT.en.md)).
+  [docs/dev/DEVELOPMENT.en.md](docs/dev/DEVELOPMENT.en.md)).
 - **Secret handling**: stream keys and tokens appearing in logs, errors or debug output.
 - **Codec workers** that load external codec libraries through FFI and their sandbox.
 
@@ -64,7 +64,7 @@ things worse), the test tools under `tools/` used only against local test peers,
 ### 対応する版
 
 SENCA にはまだ安定版が無い。版は先行公開の **v0.0.0** だけで、**experimental**。出荷 gate（24 時間の fuzz、72 時間の長時間試験、
-暗号・認可のコードの独立レビュー、署名付きの再現可能な build。[docs/RELEASE.md](docs/RELEASE.md)）を通っておらず、本番で使わないこと。
+暗号・認可のコードの独立レビュー、署名付きの再現可能な build。[docs/dev/RELEASE.md](docs/dev/RELEASE.md)）を通っておらず、本番で使わないこと。
 
 | 版 | 対応 |
 |---|---|
@@ -98,11 +98,11 @@ SENCA にはまだ安定版が無い。版は先行公開の **v0.0.0** だけ�
 
 - **自前のプロトコルの実装。** TLS・DTLS・SRTP・SRT の暗号・QUIC（ハンドシェイクと記録層）はこのリポジトリの実装。暗号の部品（AES・SHA・HMAC・
   HKDF・署名・鍵交換・乱数）だけが検証済みのライブラリ（ADR-0002）。**これらの実装はまだ独立したレビューを受けていない**
-  （[docs/RELEASE.md](docs/RELEASE.md) の gate G8）。これらについての報告は特に歓迎する。
+  （[docs/dev/RELEASE.md](docs/dev/RELEASE.md) の gate G8）。これらについての報告は特に歓迎する。
 - **認可**: JWT・署名付きの再生 URL・API トークン・部屋の参加トークン。
 - **クラスタの所有権**: ノード間の mTLS、fencing 付きの stream の所有。
 - 信頼できない入力の**解析器**（RTMP/AMF・FLV・MPEG-TS・fMP4・HLS・HTTP・SDP・STUN・RTP/RTCP・RTSP・SRT・コーデックのビットストリーム・画像）:
-  パニック・無限ループ・無制限の確保などの資源の枯渇は脆弱性として扱う（[docs/DEVELOPMENT.md](docs/DEVELOPMENT.md) の「厳格に拒否する」）。
+  パニック・無限ループ・無制限の確保などの資源の枯渇は脆弱性として扱う（[docs/dev/DEVELOPMENT.md](docs/dev/DEVELOPMENT.md) の「厳格に拒否する」）。
 - **秘密の扱い**: stream key・トークンがログ・エラー・デバッグ表示に出ること。
 - 外部のコーデックのライブラリを FFI で読み込む **codec worker** とそのサンドボックス。
 

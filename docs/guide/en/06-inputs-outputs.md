@@ -5,7 +5,7 @@
 **Inputs** are connections SENCA makes to fetch media (pull); **outputs** send a stream elsewhere (push and PaaS integration).
 Push ingest where the sender connects to SENCA (RTMP, SRT, WHIP) is authorized by the stream key and covered in [4. Ingest and playback](04-ingest-playback.md).
 
-- Rationale: [ADR-0007 inputs, outputs and egress](../../adr/0007-inputs-outputs-egress.md), [ADR-0010 PaaS integration](../../adr/0010-paas.md), [ADR-0013 grid](../../adr/0013-grid.md)
+- Rationale: [ADR-0007 inputs, outputs and egress](../../dev/adr/0007-inputs-outputs-egress.md), [ADR-0010 PaaS integration](../../dev/adr/0010-paas.md), [ADR-0013 grid](../../dev/adr/0013-grid.md)
 - Related pages: [4. Ingest and playback](04-ingest-playback.md), [9. Cluster and grid](09-cluster-grid.md), [12. Security](12-security.md), [15. API and SDKs](15-api-and-sdks.md)
 - Implementation: `crates/senca-node/src/io.rs`, `hls_pull.rs`, `rtsp_pull.rs`, `srt.rs`, `capture.rs`, `paas.rs`, `egress.rs`, `api/io.rs`, `crates/senca-paas`
 

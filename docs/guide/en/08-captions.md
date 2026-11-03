@@ -5,7 +5,7 @@
 Send a live stream's audio to a speech recognition service, turn the result into captions, optionally translate them, and publish
 per-language WebVTT subtitles in HLS.
 
-- Rationale: [ADR-0011 captions and translation](../../adr/0011-captions.md), [ADR-0004 codecs and patents](../../adr/0004-codecs-patents.md) (audio is not decoded)
+- Rationale: [ADR-0011 captions and translation](../../dev/adr/0011-captions.md), [ADR-0004 codecs and patents](../../dev/adr/0004-codecs-patents.md) (audio is not decoded)
 - Related pages: [4. Ingest and playback](04-ingest-playback.md), [6. Inputs and outputs](06-inputs-outputs.md) (secrets, egress restrictions), [11. Media pipelines](11-media-pipelines.md) (captions for room participants), [12. Security](12-security.md)
 - Implementation: `crates/senca-node/src/captions.rs`, `crates/senca-caption` (`chunk.rs`, `asr.rs`, `merge.rs`, `translate.rs`, `hls.rs`, `vtt.rs`)
 

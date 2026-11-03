@@ -4,7 +4,7 @@ SENCA は、ライブ配信・録画・リアルタイム通信のためのメ�
 1 台の `senca-node` でも、複数のノードを束ねたクラスタ（グリッド）でも動く。
 
 - 関係するページ: [2. クイックスタート](02-quickstart.md)、[3. 設定](03-configuration.md)、[12. セキュリティ](12-security.md)、[13. 運用](13-operations.md)
-- 設計の理由: [ADR-0001 全体構成](../../adr/0001-architecture.md)
+- 設計の理由: [ADR-0001 全体構成](../../dev/adr/0001-architecture.md)
 
 > **状態: v0.0.0（実験的）。** 機能はそろってきたが、出荷 gate（24 時間の fuzz、72 時間の連続試験、暗号・認可の
 > 独立レビュー、署名付きの配布）をまだ通していない。本番には使わないこと（[1.5 状態](#15-状態何を確かめたか)）。
@@ -50,16 +50,16 @@ SENCA は、ライブ配信・録画・リアルタイム通信のためのメ�
   `control/snapshot.json` に写しを作り、ログを空にする。
 - クラスタでは、同じコマンドを自前の Raft（`senca-raft`）で複製する。投票者は 1〜7 台。どのノードに書いても
   リーダーへ転送される。過半数を失った側は書けない（503）。読みはそのノードの手元の状態から。
-  詳しくは [ADR-0009](../../adr/0009-cluster.md) と [9. クラスタとグリッド](09-cluster-grid.md)。
+  詳しくは [ADR-0009](../../dev/adr/0009-cluster.md) と [9. クラスタとグリッド](09-cluster-grid.md)。
 
 ### stream hub・packager・recorder
 
-- **hub**（[ADR-0006](../../adr/0006-stream-hub.md)）: stream ごとに 1 つのタスク。接続より長生きし、送り手の
+- **hub**（[ADR-0006](../../dev/adr/0006-stream-hub.md)）: stream ごとに 1 つのタスク。接続より長生きし、送り手の
   再接続を猶予（`--reconnect-grace`、既定 30 秒）の間は同じ stream として続ける。入口は有界のキューで、
   hub が遅れると送り手の読み込みが止まる（TCP の背圧）。
 - **packager**: hub の中でセグメント分割と多重化を 1 回だけ行い、結果をメモリの `LiveCache` に置く。
   ライブの HLS はディスクを通らない。
-- **recorder**（[ADR-0005](../../adr/0005-recording.md)）: 誰かが録画しているときだけ、ライブと同じセグメントを
+- **recorder**（[ADR-0005](../../dev/adr/0005-recording.md)）: 誰かが録画しているときだけ、ライブと同じセグメントを
   `segments/` に不変ファイルとして書き、録画ごとの索引（`recordings/{id}/index.jsonl`）に追記する。
   キューがあふれたら録画の側で落として欠落（gap）を記録する（ライブは止めない）。
   起動時には書きかけの録画を `interrupted` として閉じる（[13. 運用](13-operations.md)）。
@@ -69,7 +69,7 @@ SENCA は、ライブ配信・録画・リアルタイム通信のためのメ�
 H.264/H.265 の符号化・復号は GPU ベンダーの SDK（NVENC/NVDEC・oneVPL・AMF・VA-API）、AV1・VP8/VP9・Opus は
 ロイヤリティフリーのライブラリ（dav1d・SVT-AV1・libvpx・libopus）で行う。どれも実行時に `dlopen` で読み込み、
 `senca-node` の中には読み込まない。読み込むのは `senca-codec-worker` で、seccomp・Landlock・rlimit などで制限した
-別プロセスとして動く（[12. セキュリティ](12-security.md)、[ADR-0004](../../adr/0004-codecs-patents.md)、
+別プロセスとして動く（[12. セキュリティ](12-security.md)、[ADR-0004](../../dev/adr/0004-codecs-patents.md)、
 [14. コーデックと特許](14-codecs-and-patents.md)）。
 worker が無い・ライブラリが無いときは、受けたものをそのまま配る・録るのはでき、変換・静止画・サムネイルは
 `503 CAPACITY_UNAVAILABLE` になる。
@@ -79,24 +79,24 @@ worker が無い・ライブラリが無いときは、受けたものをその�
 ノードの資源（CPU・メモリ・帯域・GPU・キャプチャ機器）を数えて、仕事（pull 入力・push 出力・パイプライン・
 部屋・メディアパイプライン）をノードへ置く。配置は Raft のリーダーが決め、決定を合意ログに載せる。
 ノード・装置が止まると仕事は他へ移るか縮退し、戻れば元に戻る。単一ノードでも同じ仕組みで動く
-（[ADR-0013](../../adr/0013-grid.md)、[9. クラスタとグリッド](09-cluster-grid.md)）。
+（[ADR-0013](../../dev/adr/0013-grid.md)、[9. クラスタとグリッド](09-cluster-grid.md)）。
 
 ### 中継（relay）
 
 クラスタで、stream を受けていないノードに視聴者が来たとき、所有者のノードから符号化済みの AU をノード間の
-1 本の多重化した接続で運び、手元の「写し」から配る（[ADR-0014](../../adr/0014-relay.md)）。
+1 本の多重化した接続で運び、手元の「写し」から配る（[ADR-0014](../../dev/adr/0014-relay.md)）。
 stream ごとに上流は 1 本で、同じノードの視聴者が何人いても運ぶのは 1 回。
 
 ### リアルタイムの部屋
 
 WebRTC の SFU（サイマルキャスト・スポットライト・転送フィルター・DataChannel・E2EE の素通し）。
 シグナリングは WebSocket（`GET /signaling`）、参加の資格は参加トークン。部屋はグリッドの仕事として 1 つのノードに
-置かれる（[ADR-0015](../../adr/0015-realtime-rooms.md)、[10. リアルタイムの部屋](10-rooms.md)）。
+置かれる（[ADR-0015](../../dev/adr/0015-realtime-rooms.md)、[10. リアルタイムの部屋](10-rooms.md)）。
 
 ### メディアパイプライン
 
 部屋の参加者を stream に書き出し、合成・録画・RTMP などへの送り出し・文字起こしにつなぐ
-（[ADR-0016](../../adr/0016-media-pipelines.md)、[11. メディアパイプライン](11-media-pipelines.md)）。
+（[ADR-0016](../../dev/adr/0016-media-pipelines.md)、[11. メディアパイプライン](11-media-pipelines.md)）。
 
 ## 1.3 データの流れの約束
 
@@ -128,8 +128,8 @@ WebRTC の SFU（サイマルキャスト・スポットライト・転送フィ
 
 ## 1.5 状態（何を確かめたか）
 
-版は v0.0.0（実験的）。進み具合は [docs/ROADMAP.md](../../ROADMAP.md)、標準ごとの試験の状態は
-[適合台帳](../../conformance/ledger.md)、出荷の条件は [docs/RELEASE.md](../../RELEASE.md)。
+版は v0.0.0（実験的）。進み具合は [docs/dev/ROADMAP.md](../../dev/ROADMAP.md)、標準ごとの試験の状態は
+[適合台帳](../../dev/conformance/ledger.md)、出荷の条件は [docs/dev/RELEASE.md](../../dev/RELEASE.md)。
 
 **独立した実装と相互接続を確かめたもの**（`tools/interop/*.sh`）:
 

@@ -3,7 +3,7 @@
 ソースからビルドして単一ノードを動かし、RTMP で送って HLS で見るまで。最後に Docker での起動を書く。
 
 - 関係するページ: [1. 概要](01-overview.md)、[3. 設定](03-configuration.md)、[4. 取り込みと再生](04-ingest-playback.md)、[12. セキュリティ](12-security.md)、[14. コーデックと特許](14-codecs-and-patents.md)
-- 設計の理由: [ADR-0008 コンテナでの導入](../../adr/0008-container-deployment.md)
+- 設計の理由: [ADR-0008 コンテナでの導入](../../dev/adr/0008-container-deployment.md)
 
 このページのコマンドは、Linux x86_64（Ubuntu 26.04）で実際に流して確かめた。
 

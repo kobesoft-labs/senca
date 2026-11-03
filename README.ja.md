@@ -5,7 +5,7 @@
 ライブ配信・録画・リアルタイム通信のためのメディアサーバー（Rust）。1 台でも、何台ものノードを束ねたグリッドでも動く。
 
 > **状態: v0.0.0（実験的）。** 機能は揃ってきたが、出荷 gate（24 時間の fuzz、72 時間の連続試験、暗号・認可の独立レビュー、
-> 署名付きの配布）をまだ通していない。本番には使わないこと。手順は [docs/RELEASE.md](docs/RELEASE.md)。
+> 署名付きの配布）をまだ通していない。本番には使わないこと。手順は [docs/dev/RELEASE.md](docs/dev/RELEASE.md)。
 
 ## できること
 
@@ -33,7 +33,7 @@ H.264/H.265 の符号化・復号は、GPU の製造元の SDK（NVIDIA NVENC/NV
 実行時に読み込んで行う（隔離した codec worker の中）。ソフトウェアの H.264/H.265/AAC のコーデックは同梱しない。
 GPU が無ければ、その変換は `503 CAPACITY_UNAVAILABLE` になる（受けた H.264/AAC をそのまま配る・録るのはできる）。
 ロイヤリティフリーのコーデック（AV1: dav1d・SVT-AV1、VP8/VP9: libvpx、Opus: libopus）はソフトウェアで扱う。
-コンテンツの配信に伴う使用料の扱いは、利用者が自分で確かめること。詳しくは [ADR-0004](docs/adr/0004-codecs-patents.md)。
+コンテンツの配信に伴う使用料の扱いは、利用者が自分で確かめること。詳しくは [ADR-0004](docs/dev/adr/0004-codecs-patents.md)。
 
 ## 使ってみる
 
@@ -44,8 +44,8 @@ cargo build --release -p senca-node -p senca-codec-worker
 cat ./data/control/bootstrap-admin-token   # 管理 API のトークン
 ```
 
-- コンテナ: `Dockerfile`・`compose.yaml`（[ADR-0008](docs/adr/0008-container-deployment.md)）
-- 分散: `--cluster-config`（[ADR-0009](docs/adr/0009-cluster.md)・[ADR-0013](docs/adr/0013-grid.md)）
+- コンテナ: `Dockerfile`・`compose.yaml`（[ADR-0008](docs/dev/adr/0008-container-deployment.md)）
+- 分散: `--cluster-config`（[ADR-0009](docs/dev/adr/0009-cluster.md)・[ADR-0013](docs/dev/adr/0013-grid.md)）
 
 ## 文書
 
@@ -53,11 +53,11 @@ cat ./data/control/bootstrap-admin-token   # 管理 API のトークン
 
 | | |
 |---|---|
-| 仕様・要件 | [docs/spec](docs/spec)・[docs/requirements](docs/requirements) |
-| 設計の決定 | [docs/adr](docs/adr) |
+| 仕様・要件 | [docs/dev/spec](docs/dev/spec)・[docs/dev/requirements](docs/dev/requirements) |
+| 設計の決定 | [docs/dev/adr](docs/dev/adr) |
 | API | [docs/api/openapi.yaml](docs/api/openapi.yaml)、部屋のシグナリング [docs/realtime/signaling.md](docs/realtime/signaling.md) |
-| 進み具合 | [docs/ROADMAP.md](docs/ROADMAP.md)、適合台帳 [docs/conformance](docs/conformance) |
-| 開発 | [docs/DEVELOPMENT.md](docs/DEVELOPMENT.md)、リリース [docs/RELEASE.md](docs/RELEASE.md)、依存のライセンス [docs/licenses](docs/licenses) |
+| 進み具合 | [docs/dev/ROADMAP.md](docs/dev/ROADMAP.md)、適合台帳 [docs/dev/conformance](docs/dev/conformance) |
+| 開発 | [docs/dev/DEVELOPMENT.md](docs/dev/DEVELOPMENT.md)、リリース [docs/dev/RELEASE.md](docs/dev/RELEASE.md)、依存のライセンス [docs/licenses](docs/licenses) |
 
 ## ライセンス
 

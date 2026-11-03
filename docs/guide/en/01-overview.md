@@ -4,7 +4,7 @@ SENCA is a media server for live streaming, recording and real-time communicatio
 under Apache-2.0. It runs as a single `senca-node` process or as a cluster of nodes (the grid).
 
 - Related pages: [2. Quickstart](02-quickstart.md), [3. Configuration](03-configuration.md), [12. Security](12-security.md), [13. Operations](13-operations.md)
-- Rationale: [ADR-0001 Architecture](../../adr/0001-architecture.md)
+- Rationale: [ADR-0001 Architecture](../../dev/adr/0001-architecture.md)
 
 > **Status: v0.0.0 (experimental).** The feature set is broad, but the release gate has not been passed
 > (24-hour fuzzing, 72-hour soak, independent review of the cryptographic and authorization code, signed builds).
@@ -52,17 +52,17 @@ under Apache-2.0. It runs as a single `senca-node` process or as a cluster of no
   1000 commands the state is written to `control/snapshot.json` and the log is emptied.
 - In a cluster, the same commands are replicated with SENCA's own Raft implementation (`senca-raft`), with 1 to 7
   voters. A write sent to any node is forwarded to the leader. The side that loses the majority cannot write (503).
-  Reads are served from each node's local copy. See [ADR-0009](../../adr/0009-cluster.md) and
+  Reads are served from each node's local copy. See [ADR-0009](../../dev/adr/0009-cluster.md) and
   [9. Cluster and grid](09-cluster-grid.md).
 
 ### Stream hub, packager and recorder
 
-- **Hub** ([ADR-0006](../../adr/0006-stream-hub.md)): one task per stream. It outlives connections; if the publisher
+- **Hub** ([ADR-0006](../../dev/adr/0006-stream-hub.md)): one task per stream. It outlives connections; if the publisher
   reconnects within the grace period (`--reconnect-grace`, 30 s by default) the stream simply continues.
   Its input queue is bounded, so a slow hub stops reading from the publisher (TCP backpressure).
 - **Packager**: segmenting and muxing happen once, inside the hub, and the result is kept in the in-memory
   `LiveCache`. Live HLS never touches the disk.
-- **Recorder** ([ADR-0005](../../adr/0005-recording.md)): only while something is being recorded, the same segments
+- **Recorder** ([ADR-0005](../../dev/adr/0005-recording.md)): only while something is being recorded, the same segments
   that serve live HLS are written to `segments/` as immutable files and appended to a per-recording index
   (`recordings/{id}/index.jsonl`). If its queue overflows the recorder drops segments and records a gap; live
   delivery is never stalled. On startup, unfinished recordings are closed as `interrupted`
@@ -74,7 +74,7 @@ H.264/H.265 are encoded and decoded only through GPU vendor SDKs (NVENC/NVDEC, o
 and Opus use royalty-free libraries (dav1d, SVT-AV1, libvpx, libopus). All of them are loaded at run time with
 `dlopen`, never into `senca-node` itself, but into `senca-codec-worker`, which runs as a separate process restricted
 with seccomp, Landlock and resource limits ([12. Security](12-security.md),
-[ADR-0004](../../adr/0004-codecs-patents.md), [14. Codecs and patents](14-codecs-and-patents.md)).
+[ADR-0004](../../dev/adr/0004-codecs-patents.md), [14. Codecs and patents](14-codecs-and-patents.md)).
 Without the worker or the libraries, SENCA can still pass through, deliver and record what it receives;
 transcoding, snapshots and thumbnails return `503 CAPACITY_UNAVAILABLE`.
 
@@ -83,25 +83,25 @@ transcoding, snapshots and thumbnails return `503 CAPACITY_UNAVAILABLE`.
 The grid accounts for node resources (CPU, memory, bandwidth, GPUs, capture devices) and places work (pull inputs,
 push outputs, pipelines, rooms, media pipelines) on nodes. Placement is decided by the Raft leader and written to
 the replicated log. When a node or a device fails, its work moves elsewhere or degrades, and it comes back when the
-resource returns. A single node runs the same machinery ([ADR-0013](../../adr/0013-grid.md),
+resource returns. A single node runs the same machinery ([ADR-0013](../../dev/adr/0013-grid.md),
 [9. Cluster and grid](09-cluster-grid.md)).
 
 ### Relay
 
 In a cluster, when a viewer reaches a node that is not receiving the stream, the node pulls encoded access units
 from the owning node over one multiplexed inter-node connection and serves them from a local mirror
-([ADR-0014](../../adr/0014-relay.md)). There is a single upstream per stream, no matter how many viewers the node has.
+([ADR-0014](../../dev/adr/0014-relay.md)). There is a single upstream per stream, no matter how many viewers the node has.
 
 ### Realtime rooms
 
 A WebRTC SFU with simulcast, spotlight, forwarding filters, DataChannels and E2EE pass-through. Signaling is a
 WebSocket (`GET /signaling`), and participants authenticate with join tokens. Each room is a grid workload placed on
-one node ([ADR-0015](../../adr/0015-realtime-rooms.md), [10. Realtime rooms](10-rooms.md)).
+one node ([ADR-0015](../../dev/adr/0015-realtime-rooms.md), [10. Realtime rooms](10-rooms.md)).
 
 ### Media pipelines
 
 Export room participants as SENCA streams and feed them into compositing, recording, RTMP and other outputs, and
-transcription ([ADR-0016](../../adr/0016-media-pipelines.md), [11. Media pipelines](11-media-pipelines.md)).
+transcription ([ADR-0016](../../dev/adr/0016-media-pipelines.md), [11. Media pipelines](11-media-pipelines.md)).
 
 ## 1.3 Data-path principles
 
@@ -134,9 +134,9 @@ page (`apps/sender-web`, WHIP) at `/sender/` when `--sender-dir` is set.
 
 ## 1.5 Status: what has been verified
 
-The version is v0.0.0 (experimental). Progress is tracked in [docs/ROADMAP.md](../../ROADMAP.md), per-standard test
-status in the [conformance ledger](../../conformance/ledger.md), and release criteria in
-[docs/RELEASE.md](../../RELEASE.md) (all in Japanese).
+The version is v0.0.0 (experimental). Progress is tracked in [docs/dev/ROADMAP.md](../../dev/ROADMAP.md), per-standard test
+status in the [conformance ledger](../../dev/conformance/ledger.md), and release criteria in
+[docs/dev/RELEASE.md](../../dev/RELEASE.md) (all in Japanese).
 
 **Interoperability tested against independent implementations** (`tools/interop/*.sh`):
 

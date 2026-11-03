@@ -7,7 +7,7 @@ It runs on a single node or as a grid of many nodes that places work by resource
 
 > **Status: v0.0.0 (experimental).** The feature set is broad, but the release gate has not been passed yet
 > (24-hour fuzzing, 72-hour soak test, independent review of the cryptographic and authorization code, signed builds).
-> Do not use it in production. See [docs/RELEASE.md](docs/RELEASE.md) (Japanese).
+> Do not use it in production. See [docs/dev/RELEASE.md](docs/dev/RELEASE.md) (Japanese).
 
 ## Features
 
@@ -38,7 +38,7 @@ VA-API), loaded at run time inside a sandboxed codec worker. No software H.264/H
 Without a GPU, those transcodes return `503 CAPACITY_UNAVAILABLE`; passing received H.264/AAC through
 (delivery and recording) always works. Royalty-free codecs (AV1: dav1d and SVT-AV1, VP8/VP9: libvpx, Opus: libopus)
 are handled in software. Licensing obligations for distributing content are yours to check.
-See [ADR-0004](docs/adr/0004-codecs-patents.md) (Japanese) and the guide page on codecs.
+See [ADR-0004](docs/dev/adr/0004-codecs-patents.md) (Japanese) and the guide page on codecs.
 
 ## Getting started
 
@@ -61,9 +61,9 @@ rooms, media pipelines, API and SDKs). The same guide in Japanese is in [docs/gu
 |---|---|
 | API | [docs/api/openapi.yaml](docs/api/openapi.yaml), room signaling [docs/realtime/signaling.en.md](docs/realtime/signaling.en.md) |
 | SDKs | [apps/sdk-js](apps/sdk-js/README.md), [crates/senca-client](crates/senca-client/README.md) |
-| Design records, specification, requirements (Japanese) | [docs/adr](docs/adr), [docs/spec](docs/spec), [docs/requirements](docs/requirements) |
-| Progress (Japanese) | [docs/ROADMAP.md](docs/ROADMAP.md), conformance ledger [docs/conformance](docs/conformance) |
-| Development (Japanese) | [docs/DEVELOPMENT.md](docs/DEVELOPMENT.md), [docs/RELEASE.md](docs/RELEASE.md), dependency licenses [docs/licenses](docs/licenses) |
+| Design records, specification, requirements (Japanese) | [docs/dev/adr](docs/dev/adr), [docs/dev/spec](docs/dev/spec), [docs/dev/requirements](docs/dev/requirements) |
+| Progress (Japanese) | [docs/dev/ROADMAP.md](docs/dev/ROADMAP.md), conformance ledger [docs/dev/conformance](docs/dev/conformance) |
+| Development (Japanese) | [docs/dev/DEVELOPMENT.md](docs/dev/DEVELOPMENT.md), [docs/dev/RELEASE.md](docs/dev/RELEASE.md), dependency licenses [docs/licenses](docs/licenses) |
 
 ## License
 

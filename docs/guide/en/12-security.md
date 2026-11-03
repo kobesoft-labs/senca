@@ -4,7 +4,7 @@ Authentication and scopes, credentials for publishers and viewers (stream keys, 
 storage, egress restrictions, cluster mTLS, the codec worker sandbox, and what has not been independently reviewed.
 
 - Related pages: [3. Configuration](03-configuration.md), [9. Cluster and grid](09-cluster-grid.md), [10. Realtime rooms](10-rooms.md), [13. Operations](13-operations.md), [15. Management API and SDKs](15-api-and-sdks.md)
-- Rationale: [ADR-0002 Dependencies and cryptography](../../adr/0002-dependencies-and-crypto.md), [ADR-0007 Inputs, outputs, secrets and egress](../../adr/0007-inputs-outputs-egress.md), [ADR-0009 Distributed control plane](../../adr/0009-cluster.md)
+- Rationale: [ADR-0002 Dependencies and cryptography](../../dev/adr/0002-dependencies-and-crypto.md), [ADR-0007 Inputs, outputs, secrets and egress](../../dev/adr/0007-inputs-outputs-egress.md), [ADR-0009 Distributed control plane](../../dev/adr/0009-cluster.md)
 
 > SENCA is v0.0.0 (experimental). Its TLS, DTLS, SRTP, SRT encryption and QUIC protocol code, and its authorization
 > and distributed-ownership code, have not yet been independently reviewed
@@ -298,7 +298,7 @@ Responses remembered for Idempotency-Key replay have `stream_key`, `token` and `
 
 ## 12.13 What has not been independently reviewed
 
-Release gate G8 ([docs/RELEASE.md](../../RELEASE.md)) is still open: there is no review report, independent of the
+Release gate G8 ([docs/dev/RELEASE.md](../../dev/RELEASE.md)) is still open: there is no review report, independent of the
 implementers, for:
 
 - cryptographic protocols: TLS 1.3 (HTTPS, RTMPS, cluster mTLS, outbound HTTPS), DTLS 1.2 and SRTP (WebRTC),
@@ -307,4 +307,4 @@ implementers, for:
 - distributed ownership: fencing, mTLS.
 
 The 24-hour fuzzing campaign (only a 60-second smoke run so far) and the 72-hour soak are also outstanding
-([conformance ledger](../../conformance/ledger.md)). Take this into account before putting a node on a public network.
+([conformance ledger](../../dev/conformance/ledger.md)). Take this into account before putting a node on a public network.

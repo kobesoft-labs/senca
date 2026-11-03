@@ -498,9 +498,9 @@ client.streams().delete(&s.id, s.if_match()).await?;
 
 ## 6. Related
 
-- Basis of the API contract: specification SENCA-SRS-001 chapter 10, [REQ-002](../../requirements/REQ-002-control-api-and-console.md)
+- Basis of the API contract: specification SENCA-SRS-001 chapter 10, [REQ-002](../../dev/requirements/REQ-002-control-api-and-console.md)
 - Writes in a cluster (any node accepts them; proposals are forwarded to the leader): [09-cluster-grid.md](09-cluster-grid.md),
-  [ADR-0009](../../adr/0009-cluster.md)
-- Rooms and room events on SSE: [10-rooms.md](10-rooms.md), [ADR-0015](../../adr/0015-realtime-rooms.md)
-- Media pipelines: [11-media-pipelines.md](11-media-pipelines.md), [ADR-0016](../../adr/0016-media-pipelines.md)
+  [ADR-0009](../../dev/adr/0009-cluster.md)
+- Rooms and room events on SSE: [10-rooms.md](10-rooms.md), [ADR-0015](../../dev/adr/0015-realtime-rooms.md)
+- Media pipelines: [11-media-pipelines.md](11-media-pipelines.md), [ADR-0016](../../dev/adr/0016-media-pipelines.md)
 - Token and secret handling: [12-security.md](12-security.md); operations (logs, monitoring): [13-operations.md](13-operations.md)

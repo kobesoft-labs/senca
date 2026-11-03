@@ -2,7 +2,7 @@
 
 [日本語](../ja/10-rooms.md)
 
-- Related: [ADR-0015](../../adr/0015-realtime-rooms.md) (realtime rooms), [ADR-0013](../../adr/0013-grid.md) (grid), [ADR-0014](../../adr/0014-relay.md) (relay), [ADR-0016](../../adr/0016-media-pipelines.md) (media pipelines)
+- Related: [ADR-0015](../../dev/adr/0015-realtime-rooms.md) (realtime rooms), [ADR-0013](../../dev/adr/0013-grid.md) (grid), [ADR-0014](../../dev/adr/0014-relay.md) (relay), [ADR-0016](../../dev/adr/0016-media-pipelines.md) (media pipelines)
 - Protocol: [Signaling v1](../../realtime/signaling.en.md)
 - Implementation: `crates/senca-rooms` (room core), `crates/senca-node/src/rooms.rs` (node integration), `crates/senca-node/src/api/rooms.rs` (REST)
 

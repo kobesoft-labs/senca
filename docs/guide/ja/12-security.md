@@ -4,7 +4,7 @@
 クラスタの mTLS、codec worker のサンドボックス、そしてまだ独立したレビューを受けていない部分。
 
 - 関係するページ: [3. 設定](03-configuration.md)、[9. クラスタとグリッド](09-cluster-grid.md)、[10. リアルタイムの部屋](10-rooms.md)、[13. 運用](13-operations.md)、[15. 管理 API と SDK](15-api-and-sdks.md)
-- 設計の理由: [ADR-0002 依存と暗号の部品](../../adr/0002-dependencies-and-crypto.md)、[ADR-0007 入力・出力・秘密値と外へ出る接続の制限](../../adr/0007-inputs-outputs-egress.md)、[ADR-0009 分散の制御面](../../adr/0009-cluster.md)
+- 設計の理由: [ADR-0002 依存と暗号の部品](../../dev/adr/0002-dependencies-and-crypto.md)、[ADR-0007 入力・出力・秘密値と外へ出る接続の制限](../../dev/adr/0007-inputs-outputs-egress.md)、[ADR-0009 分散の制御面](../../dev/adr/0009-cluster.md)
 
 > SENCA は v0.0.0（実験的）。TLS・DTLS・SRTP・SRT の暗号・QUIC のプロトコル部分と、認可・分散の所有権の実装は、
 > まだ独立したレビューを受けていない（[12.13](#1213-まだ独立したレビューを受けていないもの)）。
@@ -272,11 +272,11 @@ Idempotency-Key で覚えた応答からも `stream_key`・`token`・`secret` �
 
 ## 12.13 まだ独立したレビューを受けていないもの
 
-出荷 gate の G8（[docs/RELEASE.md](../../RELEASE.md)）は未了。次は担当した実装者と独立したレビューの報告書が無い。
+出荷 gate の G8（[docs/dev/RELEASE.md](../../dev/RELEASE.md)）は未了。次は担当した実装者と独立したレビューの報告書が無い。
 
 - 暗号プロトコル: TLS 1.3（HTTPS・RTMPS・クラスタの mTLS・外向きの HTTPS）、DTLS 1.2・SRTP（WebRTC）、SRT の暗号、QUIC
 - 認可: JWT、署名付き URL、API トークン
 - 分散の所有権: fencing、mTLS
 
 あわせて、24 時間の fuzz（今は 60 秒の smoke のみ）、72 時間の連続試験も未了
-（[適合台帳](../../conformance/ledger.md)）。公開のネットワークに置くときは、この状態を前提に判断すること。
+（[適合台帳](../../dev/conformance/ledger.md)）。公開のネットワークに置くときは、この状態を前提に判断すること。

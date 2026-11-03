@@ -4,7 +4,7 @@
 ノードの排出、終了のしかた。
 
 - 関係するページ: [3. 設定](03-configuration.md)、[5. 録画](05-recording.md)、[9. クラスタとグリッド](09-cluster-grid.md)、[12. セキュリティ](12-security.md)、[15. 管理 API と SDK](15-api-and-sdks.md)
-- 設計の理由: [ADR-0005 録画の形式と索引](../../adr/0005-recording.md)、[ADR-0009 分散の制御面](../../adr/0009-cluster.md)、[ADR-0013 グリッド](../../adr/0013-grid.md)
+- 設計の理由: [ADR-0005 録画の形式と索引](../../dev/adr/0005-recording.md)、[ADR-0009 分散の制御面](../../dev/adr/0009-cluster.md)、[ADR-0013 グリッド](../../dev/adr/0013-grid.md)
 
 ## 13.1 起動と終了コード
 
@@ -243,5 +243,5 @@ GPU は codec worker が見つけた装置ごとに、符号化・復号のセ�
 ### 測った数字
 
 開発機 1 台（8 スレッド、ループバック）で、送り手 4 本 × 視聴者 200 人（各 約 4 Mbit/s）の HLS を 60 秒配り、
-877 Mbit/s・セグメントの取得 p99 11.9 ms・誤り 0 だった（[performance.md](../../conformance/performance.md)）。
+877 Mbit/s・セグメントの取得 p99 11.9 ms・誤り 0 だった（[performance.md](../../dev/conformance/performance.md)）。
 これは道具の動作と傾向の確認で、保証値ではない。基準環境での負荷試験と 72 時間の試験はまだ。

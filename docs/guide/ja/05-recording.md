@@ -4,7 +4,7 @@
 
 stream を録画し、VOD として再生し、MP4・HLS として持ち出す。予約（スケジュール）で時刻を決めて録画・配信の受け付け・静止画を動かす。
 
-- 設計の理由: [ADR-0005 録画の形式と索引](../../adr/0005-recording.md)、[ADR-0006 stream タスク](../../adr/0006-stream-hub.md)
+- 設計の理由: [ADR-0005 録画の形式と索引](../../dev/adr/0005-recording.md)、[ADR-0006 stream タスク](../../dev/adr/0006-stream-hub.md)
 - 関係するページ: [4. 取り込みと再生](04-ingest-playback.md)、[9. クラスタとグリッド](09-cluster-grid.md)、[13. 運用](13-operations.md)、[14. コーデックと特許](14-codecs-and-patents.md)、[15. API と SDK](15-api-and-sdks.md)
 - 実装: `crates/senca-node/src/recorder.rs`・`recovery.rs`・`export.rs`・`thumbnail.rs`・`scheduler.rs`・`api/recordings.rs`・`api/schedules.rs`、`crates/senca-record`、`crates/senca-control/src/schedule.rs`
 
