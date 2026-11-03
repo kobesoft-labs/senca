@@ -3,6 +3,7 @@
 mod api;
 mod app;
 mod archive;
+mod audit;
 mod capture;
 mod captions;
 mod cascade;

@@ -35,6 +35,22 @@ const K_FORWARD: u8 = 2;
 const K_RESULT: u8 = 3;
 /// グリッドの心拍（ADR-0013。合意ログに載せない。リーダーへ送る）。
 const K_HEARTBEAT: u8 = 4;
+/// 監査ログの読み出しの問い合わせと答え（合意ログに載せない。[`Cluster::audit_query`]）。
+const K_AUDIT_QUERY: u8 = 5;
+const K_AUDIT_RESULT: u8 = 6;
+/// 監査ログの答えを待つ上限。
+pub const AUDIT_QUERY_TIMEOUT: Duration = Duration::from_secs(5);
+
+/// 別のノードへの監査ログの問い合わせ（絞り込みのテナントは、問い合わせる側が呼び手の権限から決めたもの）。
+#[derive(serde::Serialize, serde::Deserialize)]
+pub struct AuditQuery {
+    pub filter: crate::audit::Filter,
+    pub start: Option<crate::audit::Pos>,
+    pub limit: usize,
+}
+
+/// 問い合わせ中の答えの受け口（番号 → (問い合わせたノード, 送り先)）。
+type Pending = Arc<std::sync::Mutex<HashMap<u64, (u64, tokio::sync::oneshot::Sender<Bytes>)>>>;
 
 type Reply = smpsc::Sender<Result<(), Problem>>;
 
@@ -56,6 +72,9 @@ pub struct Cluster {
     out: HashMap<u64, mpsc::Sender<Vec<u8>>>,
     /// 過半数（またはリーダー）との連絡を最後に確かめた時刻（`util::mono_ms() + 1`。0 = まだ無い）。
     contact: Arc<AtomicU64>,
+    /// 監査ログの問い合わせ（答え待ち）。
+    pending: Pending,
+    next_query: AtomicU64,
 }
 
 fn unavailable(t: &str) -> Problem {
@@ -83,6 +102,27 @@ impl Cluster {
         if let Some(q) = self.out.get(&to) {
             let _ = q.try_send(frame(K_HEARTBEAT, body));
         }
+    }
+
+    /// 別のノード（Raft の番号 `to`）の監査ログを読む。ノード間の接続（合言葉の相互認証・mTLS）で送り、呼び手の資格情報は
+    /// 送らない（テナントの絞り込みは `q.filter.tenant` に入れて送る）。届かない・時間内に答えが無ければ Err。
+    pub async fn audit_query(&self, to: u64, q: &AuditQuery) -> Result<crate::audit::Page, String> {
+        let out = self.out.get(&to).ok_or_else(|| format!("unknown node {to}"))?;
+        let id = self.next_query.fetch_add(1, Ordering::Relaxed);
+        let (tx, rx) = tokio::sync::oneshot::channel();
+        self.pending.lock().unwrap_or_else(|e| e.into_inner()).insert(id, (to, tx));
+        let mut p = id.to_be_bytes().to_vec();
+        p.extend_from_slice(&serde_json::to_vec(q).map_err(|e| e.to_string())?);
+        let r = match out.try_send(frame(K_AUDIT_QUERY, &p)) {
+            Err(_) => Err("send queue full or closed".to_string()),
+            Ok(()) => match tokio::time::timeout(AUDIT_QUERY_TIMEOUT, rx).await {
+                Ok(Ok(b)) => serde_json::from_slice::<Result<crate::audit::Page, String>>(&b).map_err(|e| e.to_string()).and_then(|r| r),
+                Ok(Err(_)) => Err("closed".into()),
+                Err(_) => Err("timeout".into()),
+            },
+        };
+        self.pending.lock().unwrap_or_else(|e| e.into_inner()).remove(&id);
+        r
     }
 
     /// 提案して、自分のノードで適用されるまで待つ（ブロックしてよいスレッドから呼ぶ）。
@@ -173,8 +213,18 @@ pub fn start(app: Arc<App>, me: u64, listen: SocketAddr, peers: HashMap<u64, Soc
     let l = std::net::TcpListener::bind(listen).map_err(|e| format!("cluster: bind {listen}: {e}"))?;
     l.set_nonblocking(true).map_err(|e| e.to_string())?;
     let l = tokio::net::TcpListener::from_std(l).map_err(|e| e.to_string())?;
-    rt.spawn(accept(app.clone(), l, me, voters.clone(), key, tx.clone(), tls.clone()));
-    let c = Arc::new(Cluster { me, tx: tx.clone(), leader: leader.clone(), peers, out: outq.clone(), contact: contact.clone() });
+    let pending: Pending = Default::default();
+    rt.spawn(accept(app.clone(), l, me, voters.clone(), key, tx.clone(), tls.clone(), outq.clone(), pending.clone()));
+    let c = Arc::new(Cluster {
+        me,
+        tx: tx.clone(),
+        leader: leader.clone(),
+        peers,
+        out: outq.clone(),
+        contact: contact.clone(),
+        pending,
+        next_query: AtomicU64::new(1),
+    });
     let app2 = app.clone();
     std::thread::Builder::new()
         .name("senca-raft".into())
@@ -237,8 +287,11 @@ async fn accept(
     key: crate::cluster_auth::AuthKey,
     tx: smpsc::Sender<DriverMsg>,
     tls: Option<ClusterTls>,
+    outq: HashMap<u64, mpsc::Sender<Vec<u8>>>,
+    pending: Pending,
 ) {
     let voters = Arc::new(voters);
+    let outq = Arc::new(outq);
     loop {
         let Ok((tcp, peer)) = l.accept().await else {
             // EMFILE などで回り続けない
@@ -250,6 +303,8 @@ async fn accept(
         let tls = tls.clone();
         let key = key.clone();
         let voters = voters.clone();
+        let outq = outq.clone();
+        let pending = pending.clone();
         tokio::spawn(async move {
             let mut s: Box<dyn crate::io::IoStream> = match tls {
                 None => Box::new(tcp),
@@ -321,7 +376,41 @@ async fn accept(
                         };
                         let _ = tx.send(DriverMsg::ForwardResult { req, result });
                     }
-                    _ => return,
+                    K_AUDIT_QUERY => {
+                        if body.len() < 8 {
+                            return;
+                        }
+                        let id = (&body[..8]).get_u64();
+                        let Some(out) = outq.get(&from).cloned() else { continue };
+                        let q = serde_json::from_slice::<AuditQuery>(&body[8..]);
+                        let app = app.clone();
+                        // ファイルを読むのでブロックしてよいスレッドで。答えは自分から相手への接続で返す
+                        tokio::task::spawn_blocking(move || {
+                            let r: Result<crate::audit::Page, String> = match q {
+                                Ok(q) => Ok(app.audit_log.query(&q.filter, q.start, q.limit.clamp(1, 1000), crate::audit::SCAN_BUDGET)),
+                                Err(e) => Err(format!("bad query: {e}")),
+                            };
+                            let mut p = id.to_be_bytes().to_vec();
+                            p.extend_from_slice(&serde_json::to_vec(&r).unwrap_or_default());
+                            let _ = out.try_send(frame(K_AUDIT_RESULT, &p));
+                        });
+                    }
+                    K_AUDIT_RESULT => {
+                        if body.len() < 8 {
+                            return;
+                        }
+                        let id = (&body[..8]).get_u64();
+                        // 問い合わせた相手からの答えだけを受ける
+                        let w = {
+                            let mut p = pending.lock().unwrap_or_else(|e| e.into_inner());
+                            if p.get(&id).is_some_and(|(to, _)| *to == from) { p.remove(&id) } else { None }
+                        };
+                        if let Some((_, w)) = w {
+                            let _ = w.send(body.slice(8..));
+                        }
+                    }
+                    // 知らない種類の枠は読み飛ばす（新しい版のノードと混ざっても接続を切らない）
+                    _ => continue,
                 }
             }
         });

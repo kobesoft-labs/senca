@@ -74,6 +74,8 @@ pub struct App {
     pub limits: crate::ratelimit::RateLimits,
     /// 視聴者の数（`limits.max_viewers`。ノードごと）。
     pub viewers: Arc<crate::viewers::Viewers>,
+    /// 監査ログ（`data_dir/audit.log`。書き込み・回転・読み出し）。
+    pub audit_log: crate::audit::AuditLog,
 }
 
 /// 再生（RTMP・SRT・RTSP の play、WHEP）を始められない理由。
@@ -96,8 +98,10 @@ impl App {
         secret_box: crate::secrets::SecretBox,
     ) -> Arc<App> {
         let limits = crate::ratelimit::RateLimits::from_config(&cfg);
+        let audit_log = crate::audit::AuditLog::new(&cfg.data_dir, cfg.audit_log_max_bytes, cfg.audit_log_keep);
         let app = Arc::new(App {
             limits,
+            audit_log,
             cfg,
             node_id,
             control: Mutex::new(control),
@@ -168,12 +172,7 @@ impl App {
             "resource": resource,
             "request_id": ctx.req.request_id,
         });
-        let path = self.cfg.data_dir.join("audit.log");
-        let r = std::fs::OpenOptions::new().create(true).append(true).open(&path).and_then(|mut f| {
-            use std::io::Write;
-            writeln!(f, "{line}")
-        });
-        if let Err(e) = r {
+        if let Err(e) = self.audit_log.append(&line.to_string()) {
             self.log(&format!("audit log write failed: {e}"));
         }
     }

@@ -7,6 +7,7 @@
 //! - 一覧は `limit`（既定 100、最大 1000）と `cursor`。
 //! - エラーは problem+json。`X-Request-Id` を返す。
 
+pub mod audit;
 pub mod io;
 pub mod media_pipelines;
 pub mod pipelines;
@@ -211,6 +212,7 @@ impl Ctx<'_> {
                 "cursor" => cursor = Some(v),
                 "stream" | "state" if self.req.path == "/recordings" || self.req.path == "/schedules" => {}
                 "room" if self.req.path == "/media-pipelines" => {}
+                "since" | "until" | "action" | "subject" | "resource" | "q" | "tenant" | "node" if self.req.path == "/audit" => {}
                 _ => return Err(Problem::invalid(format!("知らないクエリ: {k}"))),
             }
         }
@@ -490,6 +492,8 @@ fn route(ctx: &Ctx) -> ApiResult {
         ("GET", ["pipelines", id, "snapshots", sid]) => pipelines::snapshot_get(ctx, id, sid),
         ("DELETE", ["pipelines", id, "snapshots", sid]) => pipelines::snapshot_delete(ctx, id, sid),
 
+        ("GET", ["audit"]) => audit::list(ctx),
+
         ("POST", ["tokens"]) => tokens::create(ctx),
         ("GET", ["tokens"]) => tokens::list(ctx),
         ("GET", ["tokens", id]) => tokens::get(ctx, id),
@@ -499,6 +503,7 @@ fn route(ctx: &Ctx) -> ApiResult {
             _,
             ["capabilities"] | ["nodes", ..] | ["devices"] | ["events"] | ["streams", ..] | ["recordings", ..] | ["schedules", ..]
             | ["tokens", ..]
+            | ["audit"]
             | ["inputs", ..]
             | ["outputs", ..]
             | ["secrets", ..]
