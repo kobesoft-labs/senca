@@ -210,6 +210,14 @@ impl Aggregator {
     }
 
     /// 上流に頼んでいるトラック。
+    /// 上流の今の設定（取りこぼした購読者へ渡し直す）。
+    pub fn configs_of(&self, stream_id: &str) -> Vec<(TrackId, CodecConfig)> {
+        self.streams
+            .get(stream_id)
+            .map(|a| a.configs.iter().map(|(t, c)| (*t, c.clone())).collect())
+            .unwrap_or_default()
+    }
+
     pub fn upstream_tracks(&self, stream_id: &str) -> Option<&TrackSel> {
         self.streams.get(stream_id).map(|a| &a.upstream)
     }

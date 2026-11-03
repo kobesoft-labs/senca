@@ -107,6 +107,9 @@ pub struct JoinClaims {
     /// 決めた client_id（あれば connect の値より優先し、違えば拒否）。
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub client_id: Option<String>,
+    /// 決めた bundle_id（同じ利用者の複数の接続をまとめる。転送フィルターの条件にも使う）。
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub bundle_id: Option<String>,
     /// 他の参加者に見せるメタデータ。
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub metadata: Option<Value>,
@@ -417,7 +420,11 @@ impl TokenVerifier {
         if claims.nbf.is_some_and(|nbf| now_secs + self.leeway_secs < nbf) {
             return Err(TokenError::NotYetValid);
         }
-        if claims.exp - claims.iat.unwrap_or(now_secs) > self.max_ttl_secs {
+        // 寿命は「今から exp まで」で測る（iat を未来に偽っても延ばせない）。iat が未来すぎるものも拒む
+        if claims.iat.is_some_and(|iat| iat > now_secs.saturating_add(self.leeway_secs)) {
+            return Err(TokenError::NotYetValid);
+        }
+        if claims.exp.saturating_sub(now_secs) > self.max_ttl_secs {
             return Err(TokenError::TooLong);
         }
         if claims.iss != self.issuer {
@@ -449,6 +456,7 @@ mod tests {
             room: "daily".into(),
             role: Role::Sendrecv,
             client_id: Some("alice".into()),
+            bundle_id: None,
             metadata: Some(json!({"name": "Alice"})),
             permissions: Some(Permissions {
                 publish: vec![Kind::Audio],
@@ -480,6 +488,27 @@ mod tests {
         let other = TokenSigner::ed25519("k-ed", &[4u8; 32]);
         let t = other.sign(&claims(2000)).unwrap();
         assert_eq!(ed.verifier("senca", "senca-rooms").verify(&t, 1500), Err(TokenError::BadSignature));
+    }
+
+    #[test]
+    fn lifetime_is_measured_from_now_not_iat() {
+        let s = TokenSigner::ed25519("k1", &[9u8; 32]);
+        let v = s.verifier("senca", "senca-rooms");
+        let now = 1_000_000;
+        // iat を exp の直前に偽った 10 年のトークン
+        let mut c = claims(now + 10 * 365 * 86_400);
+        c.iat = Some(c.exp - 60);
+        let t = s.sign(&c).unwrap();
+        assert!(v.verify(&t, now).is_err());
+        // iat が未来すぎる
+        let mut c = claims(now + 600);
+        c.iat = Some(now + 3600);
+        let t = s.sign(&c).unwrap();
+        assert!(v.verify(&t, now).is_err());
+        // 普通のもの
+        let mut c = claims(now + 600);
+        c.iat = Some(now);
+        assert!(v.verify(&s.sign(&c).unwrap(), now).is_ok());
     }
 
     #[test]

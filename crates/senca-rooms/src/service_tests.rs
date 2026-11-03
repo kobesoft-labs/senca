@@ -62,6 +62,7 @@ impl H {
             room: room.into(),
             role,
             client_id: client_id.map(str::to_string),
+            bundle_id: None,
             metadata: None,
             permissions: None,
         })
@@ -105,7 +106,9 @@ impl H {
     /// 参加する（`connected` まで）。
     fn join(&mut self, room: &str, role: Role, client: &str, extra: Value) -> (ConnKey, Value) {
         let k = self.svc.open(self.now, Default::default());
-        let tok = self.token(room, Role::Sendrecv, Some(client), json!({}));
+        // bundle_id は発行者がトークンに入れる（利用者が名乗った値は信じない）
+        let claims_extra = extra.get("bundle_id").map(|b| json!({ "bundle_id": b })).unwrap_or(json!({}));
+        let tok = self.token(room, Role::Sendrecv, Some(client), claims_extra);
         let mut c = json!({"type":"connect","version":1,"room_id":room,"role":role,"token":tok,"client_id":client});
         if let (Some(m), Some(e)) = (c.as_object_mut(), extra.as_object()) {
             for (k, v) in e {
@@ -911,7 +914,7 @@ fn rest_resources_and_events() {
     assert!(h.take(a).iter().any(|m| matches!(m, ServerMessage::Disconnect(d) if d.reason == crate::signaling::DisconnectReason::Kicked)));
     assert_eq!(h.svc.api_get_participant("daily", &a_id).unwrap_err().status, 404);
     // トークンの発行
-    let t = h.svc.api_issue_token(h.now, "daily", IssueToken { role: Role::Recvonly, client_id: Some("carol".into()), metadata: None, permissions: None, ttl_secs: 600 }).unwrap();
+    let t = h.svc.api_issue_token(h.now, "daily", IssueToken { role: Role::Recvonly, client_id: Some("carol".into()), bundle_id: None, metadata: None, permissions: None, ttl_secs: 600 }).unwrap();
     let claims = h.signer.verifier("senca", "senca-rooms").verify(&t.token, UNIX_MS / 1000).unwrap();
     assert_eq!((claims.room.as_str(), claims.role), ("daily", Role::Recvonly));
     assert_eq!(t.expires_at, UNIX_MS / 1000 + 600);
@@ -1026,4 +1029,61 @@ fn cascade_remote_tracks_and_relay() {
     assert!(acts.iter().any(|a| matches!(a, Action::Relay(RelayAction::Unsubscribe { track_id, .. }) if track_id == "remote1.0")), "{acts:?}");
     let m = h.take(s);
     assert!(slots_of(&m).iter().any(|x| x.state == SlotState::Empty));
+}
+
+/// 見直しで見つかった穴の回帰試験: 名乗った client_id・bundle_id、宣言していないラベル、受け手の権限。
+#[test]
+fn review_regressions_identity_and_labels() {
+    let mut h = H::new(|_| {});
+    // トークンに client_id が無いのに名乗る → 拒否（転送フィルターをすり抜けられない）
+    let k = h.svc.open(h.now, Default::default());
+    let t = h.token("r", Role::Sendrecv, None, json!({}));
+    h.send(k, json!({"type":"connect","version":1,"room_id":"r","role":"sendrecv","token":t,"client_id":"teacher"}));
+    assert_eq!(errors(&h.take(k)), vec![(ErrorCode::Forbidden, true)]);
+    // bundle_id も同じ
+    let k = h.svc.open(h.now, Default::default());
+    let t = h.token("r", Role::Sendrecv, None, json!({}));
+    h.send(k, json!({"type":"connect","version":1,"room_id":"r","role":"sendrecv","token":t,"bundle_id":"teachers"}));
+    assert_eq!(errors(&h.take(k)), vec![(ErrorCode::Forbidden, true)]);
+    // トークンが bundle_id を決めていれば、それを使う
+    let k = h.svc.open(h.now, Default::default());
+    let t = h.token("r", Role::Sendrecv, Some("s1"), json!({"bundle_id": "b1"}));
+    h.send(k, json!({"type":"connect","version":1,"room_id":"r","role":"sendrecv","token":t}));
+    assert!(h.take(k).iter().any(|m| matches!(m, ServerMessage::Connected(_))));
+    assert_eq!(h.svc.api_get_participant("r", h.svc.connection_id(k).unwrap()).unwrap().info.bundle_id, "b1");
+
+    // シグナリングの message: 受け手の権限と宣言を確かめる・送り手は送る向きで宣言したラベルだけ
+    let (a, _) = h.join("m", Role::Sendrecv, "a", json!({"data_channels":[{"label":"#admin","direction":"sendrecv"},{"label":"#ro","direction":"recvonly"}]}));
+    let kb = h.svc.open(h.now, Default::default());
+    let t = h.token("m", Role::Sendrecv, Some("b"), json!({"permissions": {"data": ["#chat"]}}));
+    h.send(kb, json!({"type":"connect","version":1,"room_id":"m","role":"sendrecv","token":t,"data_channels":[{"label":"#chat"}]}));
+    h.take(kb);
+    let (c, _) = h.join("m", Role::Sendrecv, "c", json!({"data_channels":[{"label":"#admin","direction":"sendrecv"}]}));
+    h.inbox.clear();
+    h.send(a, json!({"type":"message","label":"#admin","data":"secret"}));
+    assert!(h.take(kb).is_empty(), "#admin を許されていない参加者には届かない");
+    assert!(h.take(c).iter().any(|m| matches!(m, ServerMessage::Message(x) if x.data.as_deref() == Some("secret"))));
+    // recvonly で宣言したラベルでは送れない
+    h.send(a, json!({"type":"message","label":"#ro","data":"x"}));
+    assert_eq!(errors(&h.take(a)), vec![(ErrorCode::UnknownLabel, false)]);
+    assert!(h.take(c).is_empty());
+}
+
+/// 部屋が別のノードへ移る（グリッド）: 今の参加者は redirect を受けて切れ、新しい参加も案内される。
+#[test]
+fn redirect_room_moves_members_and_new_joins() {
+    let mut h = H::new(|_| {});
+    let (a, _) = h.join("mv", Role::Sendrecv, "a", json!({}));
+    let (b, _) = h.join("mv", Role::Sendrecv, "b", json!({}));
+    h.inbox.clear();
+    assert_eq!(h.svc.redirect_room(h.now, "mv", "wss://n2.example/signaling".into()), 2);
+    for k in [a, b] {
+        assert!(h.take(k).iter().any(|m| matches!(m, ServerMessage::Redirect(r) if r.location == "wss://n2.example/signaling")));
+    }
+    // 新しい参加も案内される
+    let k = h.svc.open(h.now, Default::default());
+    let t = h.token("mv", Role::Sendrecv, Some("c"), json!({}));
+    h.send(k, json!({"type":"connect","version":1,"room_id":"mv","role":"sendrecv","token":t}));
+    assert!(h.take(k).iter().any(|m| matches!(m, ServerMessage::Redirect(_))));
+    assert_eq!(h.svc.redirect_room(h.now, "nope", "x".into()), 0);
 }

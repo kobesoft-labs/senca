@@ -66,8 +66,8 @@ SFU の送信トラックの送り元を替えて流す（受け手には 1 本�
 | `room_id` | string | 必須 | 1〜128 文字の英数字と `-_.:@` |
 | `token` | string | | 参加トークン（§9）。認証 Webhook だけで認可するなら省ける |
 | `role` | `sendrecv`・`sendonly`・`recvonly` | 必須 | トークンの `role` の範囲（`sendrecv` のトークンはどれでも） |
-| `client_id` | string | | トークンに `client_id` があれば同じでなければならない |
-| `bundle_id` | string | `connection_id` | 同じ値の接続どうしは互いのトラックを受けない（同じ人のカメラと画面共有） |
+| `client_id` | string | | トークンに `client_id` があれば同じでなければならない。トークンだけで認める部屋では、トークンに無い値は名乗れない（転送フィルターの条件になるため。認証 Webhook はこの値を見て認める） |
+| `bundle_id` | string | `connection_id` | 同じ値の接続どうしは互いのトラックを受けない（同じ人のカメラと画面共有）。`client_id` と同じく、トークンだけで認める部屋ではトークンの `bundle_id` だけを使う |
 | `metadata` | JSON | | 認証 Webhook へだけ渡す（他の参加者には見せない） |
 | `multistream` | bool | true | false で種類ごとに 1 本だけ受ける |
 | `simulcast` | `{rids, default_rid?}` | | 送る層の rid（**低い順**、1〜4 個、英数字 16 文字まで）。`default_rid` は受けるときの最初の層 |
@@ -87,7 +87,7 @@ SFU の送信トラックの送り元を替えて流す（受け手には 1 本�
 | `candidate` | `candidate`, `sdp_mid?`, `sdp_mline_index?`, `username_fragment?` | trickle ICE（空文字列は end-of-candidates）。サーバーは ICE-lite なので省いてよい |
 | `pong` | `stats?` | `ping` への答え。`stats` に getStats の要約（64 KiB まで）を載せてよい |
 | `layer` | `track_id`, `rid`（`null` で自動） | 受けているトラックの層を選ぶ |
-| `message` | `label`, `to?`, `data` か `data_base64` | アプリの message（`to` は connection_id の並び、空なら全員）。§6 |
+| `message` | `label`, `to?`, `data` か `data_base64` | アプリの message（`to` は connection_id の並び、空なら全員）。送り手は `label` を送る向き（`sendrecv`・`sendonly`）で宣言していること。受け手は `label` を受ける向きで宣言し、権限で許されている参加者だけ。§6 |
 | `stats` | `reports` | getStats の要約（API の統計に出る） |
 | `disconnect` | `reason?` | 切断する |
 
@@ -238,11 +238,12 @@ Webhook は**少なくとも 1 回**（受け手は `id` で重複を除く）�
 
 ## 11. REST
 
-`/api/v1` の共通の契約（Bearer、problem+json、`Idempotency-Key`、`If-Match`・`ETag`、`limit`・`cursor`）に従う。
+`/api/v1` の共通の契約（Bearer、problem+json、`Idempotency-Key`、`If-Match`・`ETag`、`limit`・`cursor`、時刻は RFC 3339）に従う。
+参加者・メッセージ・統計は部屋を置いたノードで答える（どのノードに送っても、そのノードへ中継する）。シグナリングもどのノードにつないでよい（部屋が別のノードにあれば `redirect`）。
 
 | 操作 | パス |
 |---|---|
-| 部屋を作る | `POST /rooms` `{id?, settings?, metadata?}` → 201 |
+| 部屋を作る | `POST /rooms` `{id?, settings?, metadata?, placement?}` → 201（部屋はグリッドの仕事として 1 つのノードに置く。`placement` で手動の割り当て・優先度。ADR-0013） |
 | 一覧・取得 | `GET /rooms?limit&cursor`・`GET /rooms/{id}`（`ETag: "{generation}"`） |
 | 更新 | `PATCH /rooms/{id}` `{settings?, metadata?}`（`If-Match` 必須。参加者がいる間は `e2ee`、トラックがある間はコーデックを変えられない: 409） |
 | 削除 | `DELETE /rooms/{id}`（参加者は `room_deleted`） |
@@ -251,7 +252,7 @@ Webhook は**少なくとも 1 回**（受け手は `id` で重複を除く）�
 | 切断 | `DELETE /rooms/{id}/participants/{connection_id}`（`kicked`） |
 | 送る | `POST /rooms/{id}/messages` `{to?, label?, data}`（`label` があれば DataChannel、無ければ `push`） |
 | 統計 | `GET /rooms/{id}/stats`（参加者ごとの RTT・推定帯域・送受の量・送る層の bitrate・受けている層・クライアントの getStats） |
-| 参加トークン | `POST /rooms/{id}/tokens` `{role, client_id?, metadata?, permissions?, ttl_secs?}` |
+| 参加トークン | `POST /rooms/{id}/tokens` `{role, client_id?, bundle_id?, metadata?, permissions?, ttl_secs?}`（`ttl_secs` の既定 600、10〜86400）→ `{token, room_id, expires_at（RFC 3339）, signaling_url}`。無い部屋なら自動で作る（`auto: true`、空いてしばらくすると消える）。署名は Ed25519 |
 
 部屋の設定（`settings`）: `max_participants`（50）・`e2ee`・`video_codec`（`vp8`・`vp9`・`h264`・`av1`）・`audio_codec`（`opus`）・
 `max_video_bitrate_kbps`・`spotlight {number, unfocused: "lowest"|"off", focus_rid?}`・`recording`（`none`・`per_participant`・

@@ -224,6 +224,7 @@ fn handle_tcp(mut s: TcpStream, tx: mpsc::Sender<Msg>, signer: TokenSigner) -> s
                 room,
                 role: Role::Sendrecv,
                 client_id: Some(name.clone()),
+                bundle_id: None,
                 metadata: Some(serde_json::json!({ "name": name })),
                 permissions: None,
             };

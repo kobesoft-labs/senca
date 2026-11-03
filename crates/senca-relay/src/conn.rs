@@ -232,6 +232,8 @@ pub struct Connection {
     events: VecDeque<ConnEvent>,
     up: HashMap<u32, UpChan>,
     down: HashMap<u32, DownChan>,
+    /// 送り終えてから閉じる下流（積んだ End などを捨てない）: (チャネル, 理由, 期限)。
+    closing: Vec<(u32, ErrorCode, String, Instant)>,
     next_up: u32,
     closed: Option<ConnError>,
     /// 閉じた後、最後の GoAway を送り終えた。
@@ -266,6 +268,7 @@ impl Connection {
             events: VecDeque::new(),
             up: HashMap::new(),
             down: HashMap::new(),
+            closing: Vec::new(),
             next_up: 1,
             closed: None,
             flushed: false,
@@ -445,7 +448,44 @@ impl Connection {
     }
 
     /// 購読を断る、または受け付けた購読を終える（stream が終わった・所有権が移った）。
+    /// 積んである物を送り終えてから下流を閉じる（終わりの知らせを捨てない）。長く掛かるなら期限で閉じる。
+    pub fn finish_downstream(&mut self, id: DownstreamId, code: ErrorCode, reason: &str, now: Instant) {
+        if !self.down.contains_key(&id.0) || self.closing.iter().any(|c| c.0 == id.0) {
+            return;
+        }
+        if self.sched.channel_pending(id.0) {
+            self.closing.push((id.0, code, reason.to_string(), now + Duration::from_secs(3)));
+        } else {
+            self.reject(id, code, reason);
+        }
+    }
+
+    fn close_drained(&mut self, now: Instant) {
+        if self.closing.is_empty() {
+            return;
+        }
+        let ready: Vec<(u32, ErrorCode, String)> = self
+            .closing
+            .iter()
+            .filter(|c| !self.sched.channel_pending(c.0) || now >= c.3)
+            .map(|c| (c.0, c.1, c.2.clone()))
+            .collect();
+        if ready.is_empty() {
+            return;
+        }
+        self.closing.retain(|c| !ready.iter().any(|r| r.0 == c.0));
+        for (ch, code, reason) in ready {
+            self.flush_batch();
+            self.reject(DownstreamId(ch), code, &reason);
+        }
+        while let Some(f) = self.ctrl.pop_front() {
+            self.writer.control(&f);
+            self.stats.tx_frames += 1;
+        }
+    }
+
     pub fn reject(&mut self, id: DownstreamId, code: ErrorCode, reason: &str) {
+        self.closing.retain(|c| c.0 != id.0);
         if self.down.remove(&id.0).is_some() {
             self.sched.remove_channel(id.0);
             self.push_ctrl(Frame::SubscribeErr {
@@ -631,6 +671,9 @@ impl Connection {
         if let Some(w) = self.sched.next_wakeup(now) {
             t = t.min(w);
         }
+        if let Some(c) = self.closing.iter().map(|c| c.3).min() {
+            t = t.min(c);
+        }
         Some(t)
     }
 
@@ -691,6 +734,9 @@ impl Connection {
         } else if self.peer.is_some() && self.sched.hold_until(now).is_none() {
             self.pull_media(now);
         }
+        if self.closed.is_none() {
+            self.close_drained(now);
+        }
         let n = self.writer.take(out);
         if n > 0 {
             self.stats.tx_bytes += n as u64;
@@ -734,8 +780,15 @@ impl Connection {
                 }
                 Out::Au { channel, au, gap } => {
                     let len = au.payload.len();
-                    if !self.down.contains_key(&channel) || len + 128 > peer_max {
-                        continue; // 相手が受けられない大きさ
+                    if !self.down.contains_key(&channel) {
+                        continue;
+                    }
+                    if len + 128 > peer_max {
+                        // 相手が受けられない大きさ: 捨てたうえで、映像は次のキーフレームまで送らない（壊れた GOP を送らない）
+                        if au.codec.kind() == senca_core::MediaKind::Video {
+                            self.sched.skip_to_key(channel, au.track);
+                        }
+                        continue;
                     }
                     let small = batching && len <= item_max;
                     if !small

@@ -192,6 +192,7 @@ impl World {
             room: "e2e".into(),
             role: Role::Sendrecv,
             client_id: Some(name.into()),
+            bundle_id: None,
             metadata: Some(json!({"name": name})),
             permissions: None,
         };

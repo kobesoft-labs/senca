@@ -51,6 +51,8 @@ impl Default for RelayHubConfig {
 struct SubTx {
     tx: mpsc::Sender<StreamEvent>,
     waiting_key: bool,
+    /// 設定・区切りを落とした（次に渡せるときに区切りと設定を渡し直す）。
+    needs_reset: bool,
 }
 
 enum PumpCmd {
@@ -124,6 +126,7 @@ impl RelayHub {
                 SubTx {
                     tx,
                     waiting_key: false,
+                    needs_reset: false,
                 },
             );
             apply_actions(&self.inner, &mut st);
@@ -238,10 +241,30 @@ fn deliver(inner: &HubInner, stream_id: &str, ev: StreamEvent) {
             }
             s.waiting_key = false;
         }
+        if s.needs_reset {
+            // 前に設定・区切りを落とした: 余裕ができたら区切りと今の設定を渡し直してから続ける
+            if !matches!(&ev, StreamEvent::Au(au) if au.keyframe || au.codec.kind() != MediaKind::Video) {
+                continue;
+            }
+            let mut resend = vec![StreamEvent::Discontinuity];
+            resend.extend(st.agg.configs_of(stream_id).into_iter().map(|(t, c)| StreamEvent::Config(t, c)));
+            if s.tx.capacity() < resend.len() + 1 {
+                continue;
+            }
+            for e in resend {
+                let _ = s.tx.try_send(e);
+            }
+            s.needs_reset = false;
+        }
         if let Err(mpsc::error::TrySendError::Full(e)) = s.tx.try_send(ev.clone()) {
-            // 遅い購読者: 映像は次のキーフレームまで捨てる
-            if matches!(e, StreamEvent::Au(_)) {
-                s.waiting_key = true;
+            match e {
+                // 遅い購読者: 映像は次のキーフレームまで捨てる
+                StreamEvent::Au(_) => s.waiting_key = true,
+                // 設定・区切り・終わりは捨てられない: 渡し直す印を付ける
+                _ => {
+                    s.needs_reset = true;
+                    s.waiting_key = true;
+                }
             }
         }
     }

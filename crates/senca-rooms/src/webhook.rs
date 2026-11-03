@@ -80,7 +80,8 @@ pub fn verify_signature(
     if sigs.is_empty() {
         return Err(SignatureError::Malformed);
     }
-    if (now_secs - t).abs() > tolerance_secs {
+    // t は相手の見出しから来る（極端な値で桁あふれさせない）
+    if now_secs.checked_sub(t).is_none_or(|d| d.unsigned_abs() > tolerance_secs.unsigned_abs()) {
         return Err(SignatureError::Stale);
     }
     for k in secrets {
@@ -129,6 +130,8 @@ pub struct AuthResponse {
     pub role: Option<Role>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub client_id: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub bundle_id: Option<String>,
     /// 他の参加者に見せるメタデータ（トークンのものを上書き）。
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub metadata: Option<Value>,
@@ -231,9 +234,14 @@ pub struct Outbox {
     queue: VecDeque<Pending>,
     in_flight: BTreeMap<String, (Pending, Instant)>,
     delivered: u64,
-    dead: Vec<String>,
+    /// 届けられなかったイベントの ID（新しい方から [`MAX_DEAD`] 件だけ残す）。
+    dead: VecDeque<String>,
+    dead_total: u64,
     dropped: u64,
 }
+
+/// 覚えておく、届けられなかったイベントの数の上限。
+pub const MAX_DEAD: usize = 1024;
 
 impl Outbox {
     pub fn new(cfg: OutboxConfig) -> Outbox {
@@ -242,7 +250,8 @@ impl Outbox {
             queue: VecDeque::new(),
             in_flight: BTreeMap::new(),
             delivered: 0,
-            dead: Vec::new(),
+            dead: VecDeque::new(),
+            dead_total: 0,
             dropped: 0,
         }
     }
@@ -314,7 +323,13 @@ impl Outbox {
                 p.due = now + d;
                 self.queue.push_back(p);
             }
-            None => self.dead.push(p.id),
+            None => {
+                if self.dead.len() >= MAX_DEAD {
+                    self.dead.pop_front();
+                }
+                self.dead.push_back(p.id);
+                self.dead_total += 1;
+            }
         }
     }
 
@@ -333,8 +348,8 @@ impl Outbox {
     }
 
     /// 諦めたイベントの ID。
-    pub fn dead_letters(&self) -> &[String] {
-        &self.dead
+    pub fn dead_letters(&self) -> impl Iterator<Item = &String> {
+        self.dead.iter()
     }
 
     pub fn dropped(&self) -> u64 {
@@ -375,6 +390,9 @@ mod tests {
         assert_eq!(verify_signature(&[b"k"], "v1=00", body, 0, 300), Err(SignatureError::Malformed));
         assert_eq!(verify_signature(&[b"k"], "t=1", body, 0, 300), Err(SignatureError::Malformed));
         assert_eq!(verify_signature(&[b"k"], "garbage", body, 0, 300), Err(SignatureError::Malformed));
+        // 極端な時刻で桁あふれしない
+        assert_eq!(verify_signature(&[b"k"], "t=-9223372036854775808,v1=00", body, 1_700_000_000, 300), Err(SignatureError::Stale));
+        assert_eq!(verify_signature(&[b"k"], "t=9223372036854775807,v1=00", body, -5, 300), Err(SignatureError::Stale));
         // 既知の値（RFC 4231 の形の HMAC-SHA256: 鍵 "key"、"0.body"）
         let known = sign(&[b"key"], 0, b"body");
         assert_eq!(known.len(), "t=0,v1=".len() + 64);
@@ -453,13 +471,13 @@ mod tests {
         let d = o.poll_delivery(t3, 1013).unwrap();
         assert_eq!(d.attempt, 3);
         o.on_result(t3, "e1", Outcome::Failed);
-        assert_eq!(o.dead_letters(), &["e1".to_string()]);
+        assert_eq!(o.dead_letters().cloned().collect::<Vec<_>>(), vec!["e1".to_string()]);
         assert_eq!(o.pending(), 0);
         // 400 はすぐ諦める、429 は送り直す
         o.push(t3, &env("e3"));
         o.poll_delivery(t3, 0).unwrap();
         o.on_result(t3, "e3", Outcome::Status(400));
-        assert_eq!(o.dead_letters().len(), 2);
+        assert_eq!(o.dead_letters().count(), 2);
         o.push(t3, &env("e4"));
         o.poll_delivery(t3, 0).unwrap();
         o.on_result(t3, "e4", Outcome::Status(429));

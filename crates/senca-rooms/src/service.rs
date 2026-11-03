@@ -775,13 +775,28 @@ impl RoomService {
     }
 
     fn admit(&mut self, now: Instant, key: ConnKey, cm: Connect, claims: Option<JoinClaims>, resp: Option<AuthResponse>) {
+        // client_id・bundle_id は転送フィルターの条件になるので、利用者が名乗った値をそのまま信じない:
+        // トークンだけで認めたときは、トークンに無い値を名乗れない（Webhook は名乗った値を見て認める）。
+        let via_webhook = resp.is_some();
+        let token_only = claims.is_some() && !via_webhook;
         let resp = resp.unwrap_or_default();
         let role = resp.role.unwrap_or(cm.role);
-        let client_id = resp
-            .client_id
-            .clone()
-            .or_else(|| claims.as_ref().and_then(|c| c.client_id.clone()))
-            .or_else(|| cm.client_id.clone());
+        let issued_client = resp.client_id.clone().or_else(|| claims.as_ref().and_then(|c| c.client_id.clone()));
+        let client_id = match issued_client {
+            Some(c) => Some(c),
+            None if token_only && cm.client_id.is_some() => {
+                return self.forbid(now, key, "client_id must be issued in the token");
+            }
+            None => cm.client_id.clone(),
+        };
+        let issued_bundle = resp.bundle_id.clone().or_else(|| claims.as_ref().and_then(|c| c.bundle_id.clone()));
+        let bundle_id = match issued_bundle {
+            Some(b) => Some(b),
+            None if token_only && cm.bundle_id.is_some() => {
+                return self.forbid(now, key, "bundle_id must be issued in the token");
+            }
+            None => cm.bundle_id.clone(),
+        };
         let metadata = resp
             .metadata
             .clone()
@@ -862,7 +877,7 @@ impl RoomService {
         c.room_id = cm.room_id.clone();
         c.role = role;
         c.client_id = client_id;
-        c.bundle_id = cm.bundle_id.clone().unwrap_or_else(|| connection_id.clone());
+        c.bundle_id = bundle_id.unwrap_or_else(|| connection_id.clone());
         c.metadata = metadata;
         c.multistream = cm.multistream;
         c.spotlight = spotlight.clone();
@@ -1278,6 +1293,10 @@ impl RoomService {
         if !room_ok || !c.perms.may_use_label(&m.label) {
             return self.out.error(c, ErrorCode::UnknownLabel, "label not allowed", false, Some("message"));
         }
+        // DataChannel の経路と同じ規則: 送る向きで宣言したラベルだけ送れる
+        if !c.data_channels.iter().any(|d| d.label == m.label && d.direction.sends()) {
+            return self.out.error(c, ErrorCode::UnknownLabel, "label not declared for sending", false, Some("message"));
+        }
         let (data, binary) = match (&m.data, &m.data_base64) {
             (Some(d), _) => (Bytes::from(d.clone()), false),
             (None, Some(b)) => {
@@ -1303,7 +1322,9 @@ impl RoomService {
                 continue;
             }
             let Some(o) = self.conns.get(k) else { continue };
-            if to.is_empty() || to.contains(&o.connection_id) {
+            // 受け手の権限と宣言（受ける向き）も確かめる（DataChannel の経路と同じ）
+            let may_recv = o.perms.may_use_label(label) && o.data_channels.iter().any(|d| d.label == label && d.direction.recvs());
+            if may_recv && (to.is_empty() || to.contains(&o.connection_id)) {
                 self.out.send(o, &msg);
             }
         }
@@ -1329,7 +1350,8 @@ impl RoomService {
             if !to.is_empty() && !to.contains(&o.connection_id) {
                 continue;
             }
-            if o.dc_ids.values().any(|l| l == label)
+            if o.perms.may_use_label(label)
+                && o.dc_ids.values().any(|l| l == label)
                 && o.data_channels.iter().any(|d| d.label == label && d.direction.recvs())
             {
                 self.out.actions.push_back(Action::SendData {
@@ -1574,6 +1596,18 @@ impl RoomService {
         }
     }
 
+    /// 部屋を別のノードへ移す（グリッドの配置が変わった）: 新しい参加は `location` へ案内し、今の参加者にも
+    /// `redirect` を送って切る（クライアントは案内先へ入り直す）。案内した人数を返す。
+    pub fn redirect_room(&mut self, now: Instant, room_id: &str, location: String) -> usize {
+        let Some(room) = self.rooms.get_mut(room_id) else { return 0 };
+        room.redirect = Some(location.clone());
+        let members = room.members.clone();
+        for k in &members {
+            self.redirect(now, *k, location.clone());
+        }
+        members.len()
+    }
+
     /// 別のノードの参加者を足す（グリッドの中継で知った）。
     pub fn add_remote_participant(&mut self, now: Instant, room_id: &str, mut p: ParticipantInfo) -> bool {
         if p.node.is_none() || !self.rooms.contains_key(room_id) {
@@ -1750,9 +1784,11 @@ impl RoomService {
             if !to.is_empty() && !to.contains(&o.connection_id) {
                 continue;
             }
-            if o.dc_ids.values().any(|l| l == label)
-                && o.data_channels.iter().any(|d| d.label == label && d.direction.recvs())
-            {
+            let declared = o.perms.may_use_label(label) && o.data_channels.iter().any(|d| d.label == label && d.direction.recvs());
+            if !declared {
+                continue;
+            }
+            if o.dc_ids.values().any(|l| l == label) {
                 self.out.actions.push_back(Action::SendData {
                     conn: *k,
                     label: label.to_string(),

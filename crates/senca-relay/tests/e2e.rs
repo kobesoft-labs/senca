@@ -490,3 +490,35 @@ async fn one_connection_per_node_pair() {
         "{e:?}"
     );
 }
+
+/// 元のノードが End を積んですぐに下流を手放しても、End は捨てられずに届く（積んだ物を送ってから閉じる）。
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn end_is_delivered_even_if_the_downstream_is_dropped_right_after() {
+    let Some(src) = source_events(0) else { return };
+    let (a, _ia) = endpoint(1);
+    let (b, mut ib) = endpoint(2);
+    tokio::spawn(async move {
+        while let Some(inc) = ib.recv().await {
+            let down = inc.accept(None);
+            down.send_all(&src);
+            down.send(&StreamEvent::End);
+            drop(down);
+        }
+    });
+    // 狭い管にして、手放した時点でまだ積んである状態にする
+    let (x, y) = tokio::io::duplex(16 << 10);
+    let (ra, rb) = tokio::join!(a.connect(x), b.accept(y));
+    ra.unwrap();
+    rb.unwrap();
+    let mut up = a.subscribe(2, "live", TrackSel::All, 0).await.unwrap();
+    let mut n = 0usize;
+    loop {
+        match tokio::time::timeout(Duration::from_secs(10), up.recv()).await.unwrap() {
+            Some(StreamEvent::End) => break,
+            Some(StreamEvent::Lost(r)) => panic!("lost before End after {n} events: {r:?}"),
+            Some(_) => n += 1,
+            None => panic!("closed before End after {n} events"),
+        }
+    }
+    assert!(n > 100, "{n}");
+}

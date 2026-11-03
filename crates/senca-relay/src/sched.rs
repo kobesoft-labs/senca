@@ -421,6 +421,11 @@ impl Scheduler {
         self.key_wanted.retain(|k| k.0 != channel);
     }
 
+    /// チャネルにまだ送っていない物（AU・設定・出来事）があるか。
+    pub fn channel_pending(&self, channel: u32) -> bool {
+        self.chans.get(&channel).is_some_and(|c| !c.events.is_empty() || c.tracks.iter().any(|t| !t.q.is_empty()))
+    }
+
     pub fn has_channel(&self, channel: u32) -> bool {
         self.chans.contains_key(&channel)
     }
@@ -467,6 +472,58 @@ impl Scheduler {
             }
             // 積んである差分は前の続きなので、そのままでよい。次に積む差分から捨てる
             t.need_key = true;
+        }
+    }
+
+    /// 送れなかった AU の後ろに積んである差分を、次のキーフレームまで捨てる（壊れた GOP を送らない）。
+    /// キーフレームが積まれていなければ、次に積まれるまで差分を受け付けない。
+    pub fn skip_to_key(&mut self, channel: u32, track: TrackId) {
+        let Some(c) = self.chans.get_mut(&channel) else { return };
+        let Some(i) = c.tracks.iter().position(|t| t.track == track) else { return };
+        let mut removed = Vec::new();
+        {
+            let t = &mut c.tracks[i];
+            if !t.is_video() {
+                return;
+            }
+            let mut keep = VecDeque::with_capacity(t.q.len());
+            let mut found_key = false;
+            while let Some(it) = t.q.pop_front() {
+                let drop_it = !found_key && matches!(&it.e, Entry::Au(a) if !a.keyframe);
+                if matches!(&it.e, Entry::Au(a) if a.keyframe) && !found_key {
+                    found_key = true;
+                    let mut it = it;
+                    it.gap = true;
+                    keep.push_back(it);
+                    continue;
+                }
+                if drop_it {
+                    t.bytes -= it.size();
+                    removed.push(it);
+                } else {
+                    keep.push_back(it);
+                }
+            }
+            t.q = keep;
+            if !found_key {
+                t.need_key = true;
+                t.gap_pending = true;
+            }
+        }
+        let mut bytes = 0usize;
+        for it in &removed {
+            bytes += it.size();
+        }
+        c.bytes -= bytes;
+        c.stats.dropped += removed.len() as u64;
+        c.stats.dropped_bytes += bytes as u64;
+        self.stats.dropped[Class::VideoDelta as usize] += removed.len() as u64;
+        self.stats.dropped_bytes += bytes as u64;
+        for it in &removed {
+            self.forget(it);
+        }
+        if !self.key_wanted.contains(&(channel, track)) {
+            self.key_wanted.push((channel, track));
         }
     }
 
@@ -1130,6 +1187,37 @@ mod tests {
             v.push(o);
         }
         v
+    }
+
+    #[test]
+    fn skip_to_key_drops_deltas_until_the_next_keyframe() {
+        let t0 = Instant::now();
+        let mut s = Scheduler::new(cfg(), t0);
+        s.add_channel(1, 128, None, t0);
+        // 0=key, 1..3=差分, 4=key, 5=差分
+        for i in 0..6 {
+            s.push_au(1, au(0, Codec::H264, i, i == 0 || i == 4, 1000), t0);
+        }
+        // 0 を送れなかった（相手が受けられない大きさ）として、その後ろを次のキーフレームまで捨てる
+        let first = s.pop(t0);
+        assert!(matches!(first, Some(Out::Au { ref au, .. }) if au.sequence == 0));
+        s.skip_to_key(1, TrackId(0));
+        let out = drain(&mut s, t0);
+        let seqs: Vec<(u64, bool)> = out
+            .iter()
+            .filter_map(|o| if let Out::Au { au, gap, .. } = o { Some((au.sequence, *gap)) } else { None })
+            .collect();
+        assert_eq!(seqs, vec![(4, true), (5, false)]);
+        assert_eq!(s.take_key_wanted(), vec![(1, TrackId(0))]);
+        assert_eq!(s.queued_bytes(), 0);
+        // キーフレームが積まれていなければ、次のキーフレームまで差分を受けない
+        s.push_au(1, au(0, Codec::H264, 6, false, 1000), t0);
+        s.skip_to_key(1, TrackId(0));
+        s.push_au(1, au(0, Codec::H264, 7, false, 1000), t0);
+        s.push_au(1, au(0, Codec::H264, 8, true, 1000), t0);
+        let out = drain(&mut s, t0);
+        let seqs: Vec<u64> = out.iter().filter_map(|o| if let Out::Au { au, .. } = o { Some(au.sequence) } else { None }).collect();
+        assert_eq!(seqs, vec![8]);
     }
 
     #[test]

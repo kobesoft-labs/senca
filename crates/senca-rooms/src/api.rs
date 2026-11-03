@@ -179,6 +179,8 @@ pub struct IssueToken {
     #[serde(default)]
     pub client_id: Option<String>,
     #[serde(default)]
+    pub bundle_id: Option<String>,
+    #[serde(default)]
     pub metadata: Option<Value>,
     #[serde(default)]
     pub permissions: Option<Permissions>,
@@ -246,7 +248,8 @@ pub struct StatsView {
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct Page<T> {
     pub items: Vec<T>,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
+    /// 続きの頁の位置（無ければ null。REST の他の一覧と同じく、いつも載せる）。
+    #[serde(default)]
     pub next_cursor: Option<String>,
 }
 
@@ -256,18 +259,20 @@ fn page<T>(mut items: Vec<(String, T)>, limit: usize, cursor: Option<&str>) -> R
     }
     items.sort_by(|a, b| a.0.cmp(&b.0));
     let mut out = Vec::new();
-    let mut next = None;
+    let mut last = None;
+    let mut more = false;
     for (id, it) in items.into_iter().filter(|(id, _)| cursor.is_none_or(|c| id.as_str() > c)) {
         if out.len() == limit {
+            // 続きが本当にあるときだけ next_cursor を付ける
+            more = true;
             break;
         }
-        next = Some(id);
+        last = Some(id);
         out.push(it);
     }
-    let more = out.len() == limit;
     Ok(Page {
         items: out,
-        next_cursor: if more { next } else { None },
+        next_cursor: if more { last } else { None },
     })
 }
 
@@ -572,6 +577,7 @@ impl RoomService {
             room: room_id.to_string(),
             role: req.role,
             client_id: req.client_id,
+            bundle_id: req.bundle_id,
             metadata: req.metadata,
             permissions: req.permissions,
         };

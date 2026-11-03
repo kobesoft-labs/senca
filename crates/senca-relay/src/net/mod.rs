@@ -654,6 +654,19 @@ impl Drop for Upstream {
     }
 }
 
+/// 重複した接続を退かせる: GoAway で新しい購読を止め、流れている物が移るのを待ってから閉じる
+/// （閉じないと Ping で生き続ける）。
+fn retire(c: &RelayConnection) {
+    c.go_away(ErrorCode::NORMAL, "duplicate connection");
+    let c = c.clone();
+    tokio::spawn(async move {
+        tokio::time::sleep(Duration::from_secs(15)).await;
+        if !c.is_closed() {
+            c.close("duplicate connection");
+        }
+    });
+}
+
 /// 相手からの購読。[`accept`](Self::accept) か [`reject`](Self::reject) で答える（drop は断る）。
 pub struct IncomingSubscribe {
     pub peer: NodeId,
@@ -795,7 +808,7 @@ impl Downstream {
         self.done = true;
         let id = self.id;
         self.conn.sh.downs.lock().unwrap().remove(&id);
-        self.conn.with(|c| c.reject(id, code, reason));
+        self.conn.with(|c| c.finish_downstream(id, code, reason, Instant::now()));
     }
 }
 
@@ -804,8 +817,9 @@ impl Drop for Downstream {
         if !self.done {
             let id = self.id;
             self.conn.sh.downs.lock().unwrap().remove(&id);
+            // 積んである物（End など）を送ってから閉じる
             self.conn
-                .with(|c| c.reject(id, ErrorCode::NORMAL, "publisher closed"));
+                .with(|c| c.finish_downstream(id, ErrorCode::NORMAL, "publisher closed", Instant::now()));
         }
     }
 }
@@ -901,14 +915,14 @@ impl RelayEndpoint {
             match m.get(&peer) {
                 Some(old) if !old.is_closed() && dialer_of(old) < dialer_of(&c) => {
                     // 両方から同時につないだ: 番号の小さいノードがつないだ方を残す
-                    c.go_away(ErrorCode::NORMAL, "duplicate connection");
+                    retire(&c);
                     old.clone()
                 }
                 Some(old) => {
                     let old = old.clone();
                     m.insert(peer, c.clone());
                     if !old.is_closed() {
-                        old.go_away(ErrorCode::NORMAL, "duplicate connection");
+                        retire(&old);
                     }
                     c.clone()
                 }
