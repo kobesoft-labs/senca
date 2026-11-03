@@ -27,6 +27,7 @@ mod recovery;
 mod relay;
 mod grid;
 mod rooms;
+mod mediapipes;
 mod rtmp;
 mod rtsp_pull;
 mod rtsp_serve;
@@ -137,6 +138,7 @@ async fn run(cfg: Config) -> Result<(), String> {
         tokio::task::spawn_blocking(move || cluster_bootstrap(&a, &cc, &nid));
     }
     grid::start(&app);
+    mediapipes::start(&app);
     recovery::recover(&app);
     app.log(&format!("senca-node {} started (node {})", env!("CARGO_PKG_VERSION"), app.node_id));
 

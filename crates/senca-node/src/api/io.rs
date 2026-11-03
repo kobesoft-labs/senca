@@ -12,14 +12,14 @@ use std::collections::BTreeMap;
 
 const INPUT_PROTOCOLS: &[&str] = &["rtmp_pull", "rtsp_pull", "srt_pull", "hls_pull", "device"];
 // whip_push（外部の WHIP サーバーへ送る）は未実装なので受け付けない
-const OUTPUT_PROTOCOLS: &[&str] = &["rtmp_push", "srt_push", "paas"];
+pub(crate) const OUTPUT_PROTOCOLS: &[&str] = &["rtmp_push", "srt_push", "paas"];
 
 fn bad(t: impl Into<String>) -> Problem {
     Problem::new(ProblemCode::InvalidConfig, t)
 }
 
 /// URL の形を検査する（宛先の IP は接続時に egress の方針で検査する）。資格情報を URL に入れさせない。
-fn check_url(protocol: &str, url: &str) -> Result<(), Problem> {
+pub(crate) fn check_url(protocol: &str, url: &str) -> Result<(), Problem> {
     if protocol == "device" {
         return if url.len() <= 300 && url.starts_with("device:") && !url.chars().any(|c| c.is_control() || c == ' ') { Ok(()) } else { Err(bad("url は device:{機器 ID}")) };
     }
@@ -49,7 +49,7 @@ fn check_url(protocol: &str, url: &str) -> Result<(), Problem> {
     Ok(())
 }
 
-fn check_ref(ctx: &Ctx, r: &Option<String>) -> Result<(), Problem> {
+pub(crate) fn check_ref(ctx: &Ctx, r: &Option<String>) -> Result<(), Problem> {
     if let Some(r) = r {
         let name = r.strip_prefix("secret:").ok_or_else(|| bad("credential_ref は secret:{name} の形です"))?;
         let core = ctx.control();
@@ -60,7 +60,7 @@ fn check_ref(ctx: &Ctx, r: &Option<String>) -> Result<(), Problem> {
     Ok(())
 }
 
-fn check_options(o: &BTreeMap<String, String>) -> Result<(), Problem> {
+pub(crate) fn check_options(o: &BTreeMap<String, String>) -> Result<(), Problem> {
     if o.len() > 16 || o.iter().any(|(k, v)| k.is_empty() || k.len() > 64 || v.len() > 256) {
         return Err(bad("options は 16 個まで、キー 64 文字・値 256 文字まで"));
     }

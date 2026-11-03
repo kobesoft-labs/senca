@@ -8,6 +8,7 @@
 //! - エラーは problem+json。`X-Request-Id` を返す。
 
 pub mod io;
+pub mod media_pipelines;
 pub mod pipelines;
 pub mod placement;
 pub mod recordings;
@@ -207,6 +208,7 @@ impl Ctx<'_> {
                 }
                 "cursor" => cursor = Some(v),
                 "stream" | "state" if self.req.path == "/recordings" || self.req.path == "/schedules" => {}
+                "room" if self.req.path == "/media-pipelines" => {}
                 _ => return Err(Problem::invalid(format!("知らないクエリ: {k}"))),
             }
         }
@@ -398,6 +400,11 @@ fn route(ctx: &Ctx) -> ApiResult {
         ("POST", ["nodes", id, "undrain"]) => system::drain(ctx, id, false),
         ("GET", ["devices"]) => system::devices(ctx),
         ("GET", ["grid"]) => system::grid(ctx),
+        ("POST", ["media-pipelines"]) => media_pipelines::create(ctx),
+        ("GET", ["media-pipelines"]) => media_pipelines::list(ctx),
+        ("GET", ["media-pipelines", id]) => media_pipelines::get(ctx, id),
+        ("PATCH", ["media-pipelines", id]) => media_pipelines::patch(ctx, id),
+        ("DELETE", ["media-pipelines", id]) => media_pipelines::delete(ctx, id),
         ("POST", ["rooms"]) => rooms::create(ctx),
         ("GET", ["rooms"]) => rooms::list(ctx),
         ("GET", ["rooms", id]) => rooms::get(ctx, id),
@@ -481,6 +488,7 @@ fn route(ctx: &Ctx) -> ApiResult {
             | ["secrets", ..]
             | ["pipelines", ..]
             | ["rooms", ..]
+            | ["media-pipelines", ..]
             | ["grid"],
         ) => not_allowed(),
         _ => Err(Problem::not_found()),

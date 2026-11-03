@@ -165,6 +165,10 @@ fn describe(c: &Command) -> Option<(&'static str, Option<String>, String, serde_
         Command::ClaimStream { stream, node, .. } => ("stream.owner", None, stream.clone(), json!({ "node": node })),
         Command::PutRoom { room: r, .. } => ("room.updated", Some(r.tenant.clone()), r.id.clone(), json!({ "auto": r.auto })),
         Command::DeleteRoom { tenant, id } => ("room.deleted", Some(tenant.clone()), id.clone(), json!({})),
+        Command::PutMediaPipeline { pipeline: m, .. } => {
+            ("media_pipeline.updated", Some(m.tenant.clone()), m.id.clone(), json!({ "room": m.room, "desired_state": m.desired_state }))
+        }
+        Command::DeleteMediaPipeline { tenant, id } => ("media_pipeline.deleted", Some(tenant.clone()), id.clone(), json!({})),
         // グリッド: 運用の権限だけに見せる（テナントの外）
         Command::Grid { cmd } => match cmd {
             senca_grid::GridCommand::NodeDown { node, .. } => ("node.down", None, node.clone(), json!({})),

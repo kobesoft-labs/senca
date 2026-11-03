@@ -266,8 +266,8 @@ pub fn pipeline_disabled_at(p: &Pipeline, level: usize) -> BTreeSet<String> {
 
 /// 部屋: 参加者の上限から見積もる（SFU は受けた物を複写せずに配るので CPU は軽く、下りの帯域が効く）。
 /// 1 人あたり上り 2 Mbit/s、下りは見る相手を最大 8 人として 2 × 8 Mbit/s。
-/// 部屋のメディアパイプラインは部屋と同じノードで動くので、部屋の見積もりに足す
-/// （書き出しは複写しないので軽い。合成は参加者の復号と 1 本の符号化）。
+/// 部屋のメディアパイプラインの書き出し（参加者の AU を stream へ流す。複写しないので軽い）は部屋と同じノードで
+/// 動くので、部屋の見積もりに足す。合成は別の仕事（パイプライン）として数える（二重に数えない）。
 pub fn room_workload(r: &Room, mps: &[&MediaPipeline]) -> Workload {
     let max = r.settings.get("max_participants").and_then(|v| v.as_u64()).unwrap_or(50).clamp(1, 10_000);
     let mut req = Requirements {
@@ -279,22 +279,9 @@ pub fn room_workload(r: &Room, mps: &[&MediaPipeline]) -> Workload {
         },
         ..Default::default()
     };
-    for m in mps.iter().filter(|m| m.desired_state == "running") {
-        let shown = max.min(16);
-        req.resources.cpu_millis += 50 * max;
-        req.resources.memory_mb += 16 * max;
-        if let Some(c) = &m.composite {
-            // 見せる人数ぶんの復号（ソフトウェア）と合成、1 本の符号化
-            req.resources.cpu_millis += 400 * shown + 300;
-            req.resources.memory_mb += 128 * shown + 256;
-            if needs_gpu(&c.video_codec) {
-                let g = req.gpu.get_or_insert_with(GpuReq::default);
-                g.encode += 1;
-            } else {
-                req.resources.cpu_millis += 1500;
-            }
-            req.resources.net_out_mbps += (c.bitrate_kbps as u64 / 1000 + 1) * (1 + m.egress.len() as u64);
-        }
+    for _ in mps.iter().filter(|m| m.desired_state == "running") {
+        req.resources.cpu_millis += 20 * max;
+        req.resources.memory_mb += 8 * max;
     }
     base(format!("{ROOM}{}", r.id), &r.tenant, WorkloadKind::Room, req, r.placement.as_ref())
 }

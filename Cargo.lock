@@ -808,7 +808,7 @@ checksum = "8a7852d02fc848982e0c167ef163aaff9cd91dc640ba85e263cb1ce46fae51cd"
 
 [[package]]
 name = "senca-aac"
-version = "0.1.0"
+version = "0.0.0"
 dependencies = [
  "bytes",
  "senca-core",
@@ -816,11 +816,11 @@ dependencies = [
 
 [[package]]
 name = "senca-amf0"
-version = "0.1.0"
+version = "0.0.0"
 
 [[package]]
 name = "senca-av1"
-version = "0.1.0"
+version = "0.0.0"
 dependencies = [
  "bytes",
  "senca-core",
@@ -828,14 +828,14 @@ dependencies = [
 
 [[package]]
 name = "senca-board"
-version = "0.1.0"
+version = "0.0.0"
 dependencies = [
  "senca-image",
 ]
 
 [[package]]
 name = "senca-caption"
-version = "0.1.0"
+version = "0.0.0"
 dependencies = [
  "bytes",
  "senca-aac",
@@ -850,7 +850,7 @@ dependencies = [
 
 [[package]]
 name = "senca-capture"
-version = "0.1.0"
+version = "0.0.0"
 dependencies = [
  "bytes",
  "libc",
@@ -867,7 +867,7 @@ dependencies = [
 
 [[package]]
 name = "senca-client"
-version = "0.1.0"
+version = "0.0.0"
 dependencies = [
  "bytes",
  "futures-core",
@@ -881,7 +881,7 @@ dependencies = [
 
 [[package]]
 name = "senca-codec"
-version = "0.1.0"
+version = "0.0.0"
 dependencies = [
  "bytes",
  "libc",
@@ -891,7 +891,7 @@ dependencies = [
 
 [[package]]
 name = "senca-codec-worker"
-version = "0.1.0"
+version = "0.0.0"
 dependencies = [
  "bytes",
  "libc",
@@ -904,14 +904,14 @@ dependencies = [
 
 [[package]]
 name = "senca-compose"
-version = "0.1.0"
+version = "0.0.0"
 dependencies = [
  "senca-image",
 ]
 
 [[package]]
 name = "senca-control"
-version = "0.1.0"
+version = "0.0.0"
 dependencies = [
  "base64",
  "ed25519-dalek",
@@ -928,7 +928,7 @@ dependencies = [
 
 [[package]]
 name = "senca-core"
-version = "0.1.0"
+version = "0.0.0"
 dependencies = [
  "bytes",
  "getrandom 0.3.4",
@@ -936,7 +936,7 @@ dependencies = [
 
 [[package]]
 name = "senca-devtools"
-version = "0.1.0"
+version = "0.0.0"
 dependencies = [
  "bytes",
  "senca-core",
@@ -946,7 +946,7 @@ dependencies = [
 
 [[package]]
 name = "senca-dtls"
-version = "0.1.0"
+version = "0.0.0"
 dependencies = [
  "aes-gcm",
  "bytes",
@@ -964,7 +964,7 @@ dependencies = [
 
 [[package]]
 name = "senca-flv"
-version = "0.1.0"
+version = "0.0.0"
 dependencies = [
  "bytes",
  "senca-amf0",
@@ -973,7 +973,7 @@ dependencies = [
 
 [[package]]
 name = "senca-fmp4"
-version = "0.1.0"
+version = "0.0.0"
 dependencies = [
  "bytes",
  "senca-core",
@@ -982,7 +982,7 @@ dependencies = [
 
 [[package]]
 name = "senca-grid"
-version = "0.1.0"
+version = "0.0.0"
 dependencies = [
  "serde",
  "serde_json",
@@ -990,7 +990,7 @@ dependencies = [
 
 [[package]]
 name = "senca-h264"
-version = "0.1.0"
+version = "0.0.0"
 dependencies = [
  "bytes",
  "senca-core",
@@ -998,7 +998,7 @@ dependencies = [
 
 [[package]]
 name = "senca-h265"
-version = "0.1.0"
+version = "0.0.0"
 dependencies = [
  "bytes",
  "senca-core",
@@ -1006,7 +1006,7 @@ dependencies = [
 
 [[package]]
 name = "senca-h3"
-version = "0.1.0"
+version = "0.0.0"
 dependencies = [
  "bytes",
  "senca-quic",
@@ -1015,7 +1015,7 @@ dependencies = [
 
 [[package]]
 name = "senca-hls"
-version = "0.1.0"
+version = "0.0.0"
 dependencies = [
  "bytes",
  "senca-core",
@@ -1023,14 +1023,14 @@ dependencies = [
 
 [[package]]
 name = "senca-http"
-version = "0.1.0"
+version = "0.0.0"
 dependencies = [
  "bytes",
 ]
 
 [[package]]
 name = "senca-ice"
-version = "0.1.0"
+version = "0.0.0"
 dependencies = [
  "bytes",
  "getrandom 0.3.4",
@@ -1040,14 +1040,14 @@ dependencies = [
 
 [[package]]
 name = "senca-image"
-version = "0.1.0"
+version = "0.0.0"
 dependencies = [
  "bytes",
 ]
 
 [[package]]
 name = "senca-moq"
-version = "0.1.0"
+version = "0.0.0"
 dependencies = [
  "base64",
  "bytes",
@@ -1062,7 +1062,7 @@ dependencies = [
 
 [[package]]
 name = "senca-mpegts"
-version = "0.1.0"
+version = "0.0.0"
 dependencies = [
  "bytes",
  "senca-core",
@@ -1070,7 +1070,7 @@ dependencies = [
 
 [[package]]
 name = "senca-node"
-version = "0.1.0"
+version = "0.0.0"
 dependencies = [
  "aes-gcm",
  "base64",
@@ -1117,7 +1117,7 @@ dependencies = [
 
 [[package]]
 name = "senca-opus"
-version = "0.1.0"
+version = "0.0.0"
 dependencies = [
  "bytes",
  "senca-core",
@@ -1125,7 +1125,7 @@ dependencies = [
 
 [[package]]
 name = "senca-paas"
-version = "0.1.0"
+version = "0.0.0"
 dependencies = [
  "bytes",
  "hmac",
@@ -1137,7 +1137,7 @@ dependencies = [
 
 [[package]]
 name = "senca-pipeline"
-version = "0.1.0"
+version = "0.0.0"
 dependencies = [
  "base64",
  "bytes",
@@ -1153,7 +1153,7 @@ dependencies = [
 
 [[package]]
 name = "senca-quic"
-version = "0.1.0"
+version = "0.0.0"
 dependencies = [
  "aes",
  "aes-gcm",
@@ -1170,14 +1170,14 @@ dependencies = [
 
 [[package]]
 name = "senca-raft"
-version = "0.1.0"
+version = "0.0.0"
 dependencies = [
  "bytes",
 ]
 
 [[package]]
 name = "senca-record"
-version = "0.1.0"
+version = "0.0.0"
 dependencies = [
  "serde",
  "serde_json",
@@ -1185,7 +1185,7 @@ dependencies = [
 
 [[package]]
 name = "senca-relay"
-version = "0.1.0"
+version = "0.0.0"
 dependencies = [
  "bytes",
  "senca-core",
@@ -1195,7 +1195,7 @@ dependencies = [
 
 [[package]]
 name = "senca-rooms"
-version = "0.1.0"
+version = "0.0.0"
 dependencies = [
  "base64",
  "bytes",
@@ -1216,7 +1216,7 @@ dependencies = [
 
 [[package]]
 name = "senca-rtmp"
-version = "0.1.0"
+version = "0.0.0"
 dependencies = [
  "bytes",
  "senca-amf0",
@@ -1226,7 +1226,7 @@ dependencies = [
 
 [[package]]
 name = "senca-rtp"
-version = "0.1.0"
+version = "0.0.0"
 dependencies = [
  "base64",
  "bytes",
@@ -1240,7 +1240,7 @@ dependencies = [
 
 [[package]]
 name = "senca-rtsp"
-version = "0.1.0"
+version = "0.0.0"
 dependencies = [
  "base64",
  "bytes",
@@ -1257,7 +1257,7 @@ dependencies = [
 
 [[package]]
 name = "senca-sctp"
-version = "0.1.0"
+version = "0.0.0"
 dependencies = [
  "bytes",
  "getrandom 0.3.4",
@@ -1268,7 +1268,7 @@ dependencies = [
 
 [[package]]
 name = "senca-sdk"
-version = "0.1.0"
+version = "0.0.0"
 dependencies = [
  "bytes",
  "getrandom 0.3.4",
@@ -1285,11 +1285,11 @@ dependencies = [
 
 [[package]]
 name = "senca-sdp"
-version = "0.1.0"
+version = "0.0.0"
 
 [[package]]
 name = "senca-srt"
-version = "0.1.0"
+version = "0.0.0"
 dependencies = [
  "aes",
  "aes-gcm",
@@ -1306,7 +1306,7 @@ dependencies = [
 
 [[package]]
 name = "senca-srtp"
-version = "0.1.0"
+version = "0.0.0"
 dependencies = [
  "aes",
  "aes-gcm",
@@ -1320,7 +1320,7 @@ dependencies = [
 
 [[package]]
 name = "senca-stun"
-version = "0.1.0"
+version = "0.0.0"
 dependencies = [
  "bytes",
  "getrandom 0.3.4",
@@ -1333,7 +1333,7 @@ dependencies = [
 
 [[package]]
 name = "senca-tls"
-version = "0.1.0"
+version = "0.0.0"
 dependencies = [
  "aes",
  "aes-gcm",
@@ -1355,7 +1355,7 @@ dependencies = [
 
 [[package]]
 name = "senca-turn"
-version = "0.1.0"
+version = "0.0.0"
 dependencies = [
  "bytes",
  "getrandom 0.3.4",
@@ -1368,7 +1368,7 @@ dependencies = [
 
 [[package]]
 name = "senca-webrtc"
-version = "0.1.0"
+version = "0.0.0"
 dependencies = [
  "bytes",
  "getrandom 0.3.4",
@@ -1388,7 +1388,7 @@ dependencies = [
 
 [[package]]
 name = "senca-ws"
-version = "0.1.0"
+version = "0.0.0"
 dependencies = [
  "base64",
  "bytes",

@@ -57,6 +57,8 @@ pub struct App {
     pub relay: std::sync::OnceLock<Arc<crate::relay::Relay>>,
     /// グリッド（資源の申告・心拍・配置。ADR-0013）。
     pub grid: crate::grid::GridRuntime,
+    /// 部屋のメディアパイプライン（ADR-0016）。
+    pub mediapipes: crate::mediapipes::MediaPipelines,
     /// 部屋の出来事（SSE へ。合意ログに載せない）。
     pub room_events: tokio::sync::broadcast::Sender<crate::rooms::RoomEventOut>,
 }
@@ -89,6 +91,7 @@ impl App {
             relay: std::sync::OnceLock::new(),
             grid: Default::default(),
             room_events: tokio::sync::broadcast::channel(4096).0,
+            mediapipes: Default::default(),
             io: crate::io::IoManager::default(),
             pipelines: crate::pipelines::PipelineManager::default(),
             captions_running: Mutex::new(HashMap::new()),

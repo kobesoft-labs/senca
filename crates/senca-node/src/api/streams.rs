@@ -104,29 +104,36 @@ fn validate(s: &Stream) -> Result<(), Problem> {
         return bad("desired_state は running か stopped");
     }
     if let Some(c) = &s.captions {
-        if !matches!(c.asr_provider.as_str(), "openai" | "whisper_cpp") {
-            return bad("captions.asr_provider は openai か whisper_cpp");
+        validate_captions(c)?;
+    }
+    Ok(())
+}
+
+/// 字幕の設定の検査（stream とメディアパイプラインで共通）。
+pub(crate) fn validate_captions(c: &CaptionSettings) -> Result<(), Problem> {
+    let bad = |t: &str| Err(Problem::new(ProblemCode::InvalidConfig, t.to_string()));
+    if !matches!(c.asr_provider.as_str(), "openai" | "whisper_cpp") {
+        return bad("captions.asr_provider は openai か whisper_cpp");
+    }
+    if senca_caption::http::Endpoint::parse(&c.asr_endpoint).is_err() {
+        return bad("captions.asr_endpoint の形が違います");
+    }
+    if let Some(t) = &c.translate_provider {
+        if !matches!(t.as_str(), "anthropic" | "deepl" | "openai") {
+            return bad("captions.translate_provider は anthropic・deepl・openai");
         }
-        if senca_caption::http::Endpoint::parse(&c.asr_endpoint).is_err() {
-            return bad("captions.asr_endpoint の形が違います");
+        if c.translate_endpoint.as_deref().is_none_or(|e| senca_caption::http::Endpoint::parse(e).is_err()) {
+            return bad("captions.translate_endpoint が要ります");
         }
-        if let Some(t) = &c.translate_provider {
-            if !matches!(t.as_str(), "anthropic" | "deepl" | "openai") {
-                return bad("captions.translate_provider は anthropic・deepl・openai");
-            }
-            if c.translate_endpoint.as_deref().is_none_or(|e| senca_caption::http::Endpoint::parse(e).is_err()) {
-                return bad("captions.translate_endpoint が要ります");
-            }
-        }
-        if c.targets.len() > 8 || c.targets.iter().chain(std::iter::once(&c.language)).any(|l| l.is_empty() || l.len() > 8 || !l.bytes().all(|b| b.is_ascii_alphanumeric() || b == b'-')) {
-            return bad("captions の言語は 8 個まで、ISO 639-1 の形");
-        }
+    }
+    if c.targets.len() > 8 || c.targets.iter().chain(std::iter::once(&c.language)).any(|l| l.is_empty() || l.len() > 8 || !l.bytes().all(|b| b.is_ascii_alphanumeric() || b == b'-')) {
+        return bad("captions の言語は 8 個まで、ISO 639-1 の形");
     }
     Ok(())
 }
 
 /// 字幕の資格情報の参照が、このテナントの秘密値を指しているか。
-fn check_caption_refs(ctx: &Ctx, c: &Option<CaptionSettings>) -> Result<(), Problem> {
+pub(crate) fn check_caption_refs(ctx: &Ctx, c: &Option<CaptionSettings>) -> Result<(), Problem> {
     let Some(c) = c else { return Ok(()) };
     for r in [&c.asr_credential_ref, &c.translate_credential_ref].into_iter().flatten() {
         let name = r.strip_prefix("secret:").ok_or_else(|| Problem::new(ProblemCode::InvalidConfig, "credential_ref は secret:{name} の形です"))?;

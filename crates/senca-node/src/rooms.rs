@@ -153,7 +153,13 @@ pub struct RoomsHost {
     /// (部屋, トラック) → 書き出し先
     /// (部屋, トラック) → 書き出し先（取りこぼした先は次のキーフレームまで映像を送らない）
     bridges: HashMap<BridgeKey, Vec<BridgeSink>>,
+    /// 書き出す映像の層（HLS を区切れるよう、定期的にキーフレームを求める）。
+    bridge_rids: HashMap<BridgeKey, Option<String>>,
+    next_bridge_key: Instant,
 }
+
+/// 書き出す映像にキーフレームを求める間隔（HLS のセグメントの目標長。WHIP と同じ）。
+const BRIDGE_KEYFRAME_INTERVAL: Duration = Duration::from_secs(2);
 
 impl RoomsHost {
     pub fn new(app: Arc<App>, cert: DtlsCertificate, local: SocketAddr) -> RoomsHost {
@@ -169,6 +175,8 @@ impl RoomsHost {
             next_sweep: Instant::now(),
             warned_relay: false,
             bridges: HashMap::new(),
+            bridge_rids: HashMap::new(),
+            next_bridge_key: Instant::now(),
         }
     }
 
@@ -207,7 +215,8 @@ impl RoomsHost {
 
     pub fn poll_timeout(&self) -> Option<Instant> {
         let (svc, host) = self.svc.as_ref()?;
-        [svc.poll_timeout(), host.poll_timeout(), Some(self.next_sweep)].into_iter().flatten().min()
+        let bridge = (!self.bridge_rids.is_empty()).then_some(self.next_bridge_key);
+        [svc.poll_timeout(), host.poll_timeout(), Some(self.next_sweep), bridge].into_iter().flatten().min()
     }
 
     pub fn handle_cmd(&mut self, now: Instant, c: RoomCmd) {
@@ -240,6 +249,7 @@ impl RoomsHost {
                 let Some((svc, _)) = self.svc.as_mut() else { return };
                 let key = (room.clone(), track_id.clone());
                 let first = !self.bridges.contains_key(&key);
+                self.bridge_rids.insert(key.clone(), rid.clone());
                 self.bridges.entry(key).or_default().push(BridgeSink { id, tx, waiting_key: true });
                 if first {
                     // 最初の書き出しで購読する（キーフレームも求める）
@@ -259,6 +269,7 @@ impl RoomsHost {
                 };
                 if empty {
                     self.bridges.remove(&key);
+                    self.bridge_rids.remove(&key);
                     if let Some((svc, _)) = self.svc.as_mut() {
                         svc.on_relay_subscribe(now, BRIDGE_NODE, &room, &track_id, None);
                     }
@@ -376,6 +387,13 @@ impl RoomsHost {
             self.sweep(now);
         }
         let Some((svc, host)) = self.svc.as_mut() else { return Vec::new() };
+        // 書き出す映像: ブラウザーはキーフレームを求められたときしか送らないので、定期的に求める
+        if now >= self.next_bridge_key {
+            self.next_bridge_key = now + BRIDGE_KEYFRAME_INTERVAL;
+            for ((room, track), rid) in &self.bridge_rids {
+                svc.on_relay_keyframe_request(now, room, track, rid.as_deref());
+            }
+        }
         host.handle_timeout(now);
         if svc.poll_timeout().is_some_and(|t| t <= now) {
             svc.handle_timeout(now);

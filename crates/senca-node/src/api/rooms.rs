@@ -208,6 +208,9 @@ pub fn patch(ctx: &Ctx, id: &str) -> ApiResult {
 
 pub fn delete(ctx: &Ctx, id: &str) -> ApiResult {
     ctx.require(Scope::StreamWrite)?;
+    tenant_room(ctx, id)?;
+    // 部屋のメディアパイプラインの子（合成・送り出し）も片付ける（書き出した stream・録画は残す）
+    super::media_pipelines::remove_for_room(ctx, id);
     ctx.app.propose(Command::DeleteRoom { tenant: ctx.tenant().into(), id: id.into() })?;
     ctx.app.audit(ctx, "room.delete", id);
     Ok(ApiResponse::empty(204))

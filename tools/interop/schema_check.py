@@ -460,6 +460,7 @@ class Live:
         self.io(ro)
         self.pipelines(ro)
         self.rooms(ro)
+        self.media_pipelines(ro)
         self.events(sub_tok)
         self.methods()
         self.cleanup(sid, other, ro)
@@ -1496,6 +1497,153 @@ class Live:
         s, _, lst = self.call("GET", "/rooms", "部屋の一覧（全部消した）", 200)
         check(isinstance(lst, dict) and lst.get("items") == [] and lst.get("next_cursor") is None, "部屋が残らない", f"{lst}")
 
+    def media_pipelines(self, ro):
+        """メディアパイプライン（ADR-0016）: 作成・検査・一覧・取得・更新・削除と、部屋の削除での片付け。"""
+        rid = "oa-mp-room"
+        s, _, _ = self.call("POST", "/rooms", "部屋の作成（メディアパイプライン用）", 201, body={"id": rid})
+        if s != 201:
+            return
+        out = {"protocol": "rtmp_push", "url": "rtmp://127.0.0.1:9/live/mp"}
+        body = {"name": "oa-mp", "room": rid, "composite": {"layout": "speaker", "width": 640}, "recording": {"retention_days": 7},
+                "egress": [out]}
+        s, h, m = self.call("POST", "/media-pipelines", "メディアパイプラインの作成（合成・録画・送り出し）", 201, body=body)
+        if s != 201:
+            return
+        mid = m["id"]
+        check(h.get("location") == f"/api/v1/media-pipelines/{mid}" and h.get("etag") == '"1"' and m.get("generation") == 1,
+              "作成の Location・ETag・generation", f"{h.get('location')} {h.get('etag')}")
+        c = m.get("composite") or {}
+        check(c == {"layout": "speaker", "width": 640, "height": 720, "fps": 30, "video_codec": "av1", "bitrate_kbps": 2500}
+              and m.get("recording") == {"participants": True, "composite": True, "retention_days": 7}
+              and m.get("export_participants") is True and m.get("desired_state") == "running" and m.get("participants") == []
+              and m.get("captions") is None and m.get("egress") == [out],
+              "作成: 書かなかったフィールドは既定値（合成 1280x720 30fps av1 2500、録画は両方 true、running）", f"{m}")
+        art = m.get("artifacts") or {}
+        comp = art.get("composite") or {}
+        check(art.get("participant_streams") == [] and isinstance(comp.get("stream"), str) and isinstance(comp.get("pipeline"), str)
+              and len(comp.get("outputs") or []) == 1, "作成: artifacts に合成の stream・パイプライン・送り出しの ID", f"{art}")
+        # 合成なし・参加者の書き出しと字幕だけ（insights 相当）
+        cap = {"asr_provider": "whisper_cpp", "asr_endpoint": "http://127.0.0.1:9/inference"}
+        s, _, m2 = self.call("POST", "/media-pipelines", "メディアパイプラインの作成（参加者の書き出し・字幕、Idempotency 1 回目）", 201,
+                             headers={"Idempotency-Key": "mp-1"},
+                             body={"name": "oa-mp-2", "room": rid, "participants": ["alice"], "captions": cap,
+                                   "recording": {"composite": False}, "desired_state": "stopped"})
+        s, h2, m2b = self.call("POST", "/media-pipelines", "メディアパイプラインの作成 Idempotency 再送", 201,
+                               headers={"Idempotency-Key": "mp-1"},
+                               body={"name": "oa-mp-2", "room": rid, "participants": ["alice"], "captions": cap,
+                                     "recording": {"composite": False}, "desired_state": "stopped"})
+        check(h2.get("idempotency-replayed") == "true" and isinstance(m2, dict) and isinstance(m2b, dict) and m2.get("id") == m2b.get("id"),
+              "メディアパイプライン Idempotency の再送は同じ答え")
+        mid2 = m2.get("id") if isinstance(m2, dict) else None
+        check(isinstance(m2, dict) and m2.get("composite") is None and (m2.get("artifacts") or {}).get("composite") is None
+              and (m2.get("captions") or {}).get("language") == "ja" and m2.get("status") is None,
+              "合成なし: artifacts.composite は null、captions は既定値つき、stopped の status は null", f"{m2}")
+        base = {"name": "oa-mp-x", "room": rid}
+        cases = [
+            ("無い部屋", {"name": "oa-mp-x", "room": "nosuch-room"}),
+            ("送り出しに合成が無い", dict(base, egress=[out])),
+            ("合成の幅が奇数", dict(base, composite={"width": 641})),
+            ("合成の高さが小さい", dict(base, composite={"height": 32})),
+            ("合成の video_codec", dict(base, composite={"video_codec": "mpeg2"})),
+            ("合成の layout", dict(base, composite={"layout": "pip"})),
+            ("合成の fps", dict(base, composite={"fps": 0})),
+            ("合成の bitrate_kbps", dict(base, composite={"bitrate_kbps": 50})),
+            ("字幕に export_participants が要る", dict(base, export_participants=False, captions=cap)),
+            ("recording.composite に合成が要る", dict(base, recording={"participants": True})),
+            ("recording.participants に export_participants が要る", dict(base, export_participants=False, composite={}, recording={})),
+            ("recording.retention_days 0", dict(base, composite={}, recording={"retention_days": 0})),
+            ("送り出しの protocol", dict(base, composite={}, egress=[{"protocol": "whip_push", "url": "https://x/whip"}])),
+            ("送り出しの url が無い", dict(base, composite={}, egress=[{"protocol": "rtmp_push"}])),
+            ("送り出しの url の形", dict(base, composite={}, egress=[{"protocol": "srt_push", "url": "rtmp://x/y"}])),
+            ("送り出しの paas に provider が無い", dict(base, composite={}, egress=[{"protocol": "paas"}])),
+            ("送り出しの credential_ref が無い秘密値", dict(base, composite={}, egress=[dict(out, credential_ref="secret:nosuch")])),
+            ("送り出しが 9 個", dict(base, composite={}, egress=[out] * 9)),
+            ("name の形", dict(base, name=".x")),
+            ("name が 41 文字", dict(base, name="a" * 41)),
+            ("desired_state", dict(base, desired_state="paused")),
+            ("participants が空文字", dict(base, participants=[""])),
+            ("知らないフィールド", dict(base, bogus=1)),
+            ("合成の知らないフィールド", dict(base, composite={"bogus": 1})),
+            ("name が無い", {"room": rid}),
+        ]
+        for label, b in cases:
+            self.call("POST", "/media-pipelines", f"メディアパイプラインの作成 {label}", 400, body=b)
+        self.call("POST", "/media-pipelines", "メディアパイプラインの作成 Content-Type", 415, body="{}", headers={"Content-Type": "text/plain"})
+        self.call("POST", "/media-pipelines", "メディアパイプラインの作成 name の重複", 409, body={"name": "oa-mp", "room": rid})
+        self.call("POST", "/media-pipelines", "メディアパイプラインの作成 stream:read", 403, token=ro, body=base)
+        # 一覧
+        s, _, lst = self.call("GET", "/media-pipelines?limit=1", "メディアパイプラインの一覧 1 件", 200)
+        seen = [x["id"] for x in (lst.get("items") or [])] if isinstance(lst, dict) else []
+        cur = lst.get("next_cursor") if isinstance(lst, dict) else None
+        while cur:
+            s, _, l2 = self.call("GET", f"/media-pipelines?limit=1&cursor={urllib.parse.quote(cur)}", "メディアパイプラインの一覧 次のページ", 200)
+            seen += [x["id"] for x in (l2.get("items") or [])] if isinstance(l2, dict) else []
+            cur = l2.get("next_cursor") if isinstance(l2, dict) else None
+        check(seen == sorted(seen) and {mid, mid2} <= set(seen), "メディアパイプラインの一覧は ID の昇順で全部たどれる", f"{seen}")
+        # ?room= は handler が読むが、一覧の共通の検査が知らないクエリとして 400 にする（文書に書いた不備）。直れば 200 で絞る
+        s, _, lr = self.call("GET", f"/media-pipelines?room={rid}", "メディアパイプラインの一覧 ?room=", (200, 400))
+        if s == 200:
+            check(isinstance(lr, dict) and {x["id"] for x in lr["items"]} == {mid, mid2} and all(x["room"] == rid for x in lr["items"]),
+                  "?room= で部屋を絞る", f"{lr}")
+            s, _, ln = self.call("GET", "/media-pipelines?room=nosuch-room", "メディアパイプラインの一覧 ?room= 無い部屋", 200)
+            check(isinstance(ln, dict) and ln.get("items") == [], "?room= の無い部屋は空")
+        else:
+            check(isinstance(lr, dict) and "room" in lr.get("title", ""), "?room= は今 400（知らないクエリ: room。文書に書いた不備）", f"{lr}")
+        self.call("GET", "/media-pipelines?limit=0", "メディアパイプラインの一覧 limit=0", 400)
+        self.call("GET", "/media-pipelines?bogus=1", "メディアパイプラインの一覧 知らないクエリ", 400)
+        self.call("GET", "/media-pipelines", "メディアパイプラインの一覧 stream:read", 200, token=ro)
+        # 取得と、係が動き始めた後の status（部屋はこのノードに置かれる）
+        s, h, g = self.call("GET", f"/media-pipelines/{mid}", "メディアパイプラインの取得", 200)
+        check(h.get("etag") == '"1"' and isinstance(g, dict) and g.get("id") == mid, "取得の ETag", f"{h.get('etag')}")
+        self.wait_room_live(rid)
+        st = None
+        for _ in range(50):
+            s, _, g = self.raw("GET", f"/api/v1/media-pipelines/{mid}")
+            st = json.loads(g).get("status") if s == 200 else None
+            if st is not None:
+                break
+            time.sleep(0.2)
+        s, _, g = self.call("GET", f"/media-pipelines/{mid}", "メディアパイプラインの取得（係が動いた後）", 200, token=ro)
+        check(isinstance(g, dict) and g.get("status") == {"participants": [], "composite_members": None},
+              "部屋をこのノードに置いた running のメディアパイプラインは status を持つ（参加者なし）", f"{g.get('status') if isinstance(g, dict) else g}")
+        self.call("GET", "/media-pipelines/nosuch", "メディアパイプラインの取得 無い", 404)
+        # 更新
+        self.call("PATCH", f"/media-pipelines/{mid}", "メディアパイプラインの更新 If-Match なし", 428, body={"participants": []})
+        self.call("PATCH", f"/media-pipelines/{mid}", "メディアパイプラインの更新 古い If-Match", 412, headers={"If-Match": '"9"'}, body={"participants": []})
+        self.call("PATCH", f"/media-pipelines/{mid}", "メディアパイプラインの更新 If-Match の形", 412, headers={"If-Match": "1"}, body={"participants": []})
+        self.call("PATCH", "/media-pipelines/nosuch", "メディアパイプラインの更新 無い", 404, headers={"If-Match": '"1"'}, body={})
+        self.call("PATCH", f"/media-pipelines/{mid}", "メディアパイプラインの更新 room は変えられない", 400, headers={"If-Match": '"1"'}, body={"room": "x"})
+        self.call("PATCH", f"/media-pipelines/{mid}", "メディアパイプラインの更新 合成を外すと送り出しが残る", 400, headers={"If-Match": '"1"'},
+                  body={"composite": None})
+        self.call("PATCH", f"/media-pipelines/{mid}", "メディアパイプラインの更新 Content-Type", 415, headers={"If-Match": '"1"', "Content-Type": "text/plain"}, body="{}")
+        self.call("PATCH", f"/media-pipelines/{mid}", "メディアパイプラインの更新 stream:read", 403, token=ro, headers={"If-Match": '"1"'}, body={})
+        s, h, p = self.call("PATCH", f"/media-pipelines/{mid}", "メディアパイプラインの更新（止める・参加者を絞る・送り出しを外す）", 200,
+                            headers={"If-Match": '"1"'}, body={"desired_state": "stopped", "participants": ["alice", "bob"], "egress": [], "name": None})
+        check(h.get("etag") == '"2"' and isinstance(p, dict) and p.get("generation") == 2 and p.get("desired_state") == "stopped"
+              and p.get("participants") == ["alice", "bob"] and p.get("egress") == [] and p.get("name") == "oa-mp"
+              and (p.get("artifacts") or {}).get("composite", {}).get("outputs") == [],
+              "PATCH: 書いたフィールドだけ変わり、generation が進む（name: null は変えない）", f"{p}")
+        s, h, p = self.call("PATCH", f"/media-pipelines/{mid}", "メディアパイプラインの更新（合成・録画を外す）", 200,
+                            headers={"If-Match": '"2"'}, body={"composite": None, "recording": None})
+        check(isinstance(p, dict) and p.get("composite") is None and p.get("recording") is None and (p.get("artifacts") or {}).get("composite") is None,
+              "PATCH: composite・recording の null は外す", f"{p}")
+        # 削除
+        self.call("DELETE", f"/media-pipelines/{mid}", "メディアパイプラインの削除 stream:read", 403, token=ro)
+        self.call("DELETE", f"/media-pipelines/{mid}", "メディアパイプラインの削除", 204)
+        self.call("GET", f"/media-pipelines/{mid}", "削除したメディアパイプライン", 404)
+        self.call("DELETE", f"/media-pipelines/{mid}", "メディアパイプラインの削除 2 回目", 404)
+        # 部屋を消すと、その部屋のメディアパイプラインも消える
+        self.call("DELETE", f"/rooms/{rid}", "部屋の削除（メディアパイプラインごと）", 204)
+        if mid2:
+            self.call("GET", f"/media-pipelines/{mid2}", "部屋と一緒に消えたメディアパイプライン", 404)
+        s, _, lst = self.call("GET", "/media-pipelines", "メディアパイプラインの一覧（全部消えた）", 200)
+        check(isinstance(lst, dict) and lst.get("items") == [], "メディアパイプラインが残っていない", f"{lst}")
+        # 書き出した stream（合成の stream）は成果物として残る: 片付ける
+        s, _, sl = self.raw("GET", "/api/v1/streams?limit=1000")
+        for x in json.loads(sl).get("items", []) if s == 200 else []:
+            if (x.get("metadata") or {}).get("media_pipeline") in (mid, mid2):
+                self.raw("DELETE", f"/api/v1/streams/{x['id']}")
+
     def events(self, sub_tok):
         # 認証なし・権限なし
         for label, tok, want in [("SSE 認証なし", None, 401), ("SSE stream:read が無い", sub_tok, 403)]:
@@ -1525,8 +1673,14 @@ class Live:
         self.raw("DELETE", f"/api/v1/streams/{probe}")
         self.raw("POST", "/api/v1/rooms", body={"id": "oa-sse-room"})
         self.wait_room_live("oa-sse-room")
+        # メディアパイプライン: media_pipeline.updated・media_pipeline.deleted
+        s, _, mp = self.raw("POST", "/api/v1/media-pipelines", body={"name": "oa-sse-mp", "room": "oa-sse-room", "desired_state": "stopped"})
+        mp_id = json.loads(mp).get("id") if s == 201 else None
+        check(mp_id is not None, "SSE 用のメディアパイプラインを作る", f"{s} {mp[:200]!r}")
+        if mp_id:
+            self.raw("DELETE", f"/api/v1/media-pipelines/{mp_id}")
         self.raw("DELETE", "/api/v1/rooms/oa-sse-room")
-        want = {"stream.created", "stream.deleted", "room.updated", "room.deleted", "room.started"}
+        want = {"stream.created", "stream.deleted", "room.updated", "room.deleted", "room.started", "media_pipeline.updated", "media_pipeline.deleted"}
         events = []
         cur = {}
         deadline = time.time() + 10
@@ -1568,6 +1722,13 @@ class Live:
         check("stream.created" in types and "stream.deleted" in types, "SSE に stream.created / stream.deleted が流れる", f"{types}")
         check("room.updated" in types and "room.deleted" in types, "SSE に room.updated / room.deleted が流れる", f"{types}")
         check("room.started" in types, "SSE に部屋の核の room.started が流れる", f"{types}")
+        check("media_pipeline.updated" in types and "media_pipeline.deleted" in types,
+              "SSE に media_pipeline.updated / media_pipeline.deleted が流れる", f"{types}")
+        for e in events:
+            d = json.loads(e.get("data") or "{}") if e.get("event") == "media_pipeline.updated" else None
+            if d is not None:
+                check(d.get("resource_id") == mp_id and d.get("data") == {"room": "oa-sse-room", "desired_state": "stopped"},
+                      "media_pipeline.updated の data は {room, desired_state}", f"{d}")
 
     def methods(self):
         self.call("PUT", "/streams", "PUT /streams は 405", 405, body={})

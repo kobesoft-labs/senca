@@ -459,6 +459,11 @@ impl ControlState {
                         if expect_generation.is_some_and(|g| g != cur.generation) {
                             return Err(stale());
                         }
+                        if cur.name != pipeline.name
+                            && self.media_pipelines.values().any(|m| m.tenant == pipeline.tenant && m.name == pipeline.name && m.id != pipeline.id)
+                        {
+                            return Err(conflict("同じ名前のメディアパイプラインがあります"));
+                        }
                         pipeline.generation = cur.generation + 1;
                         pipeline.created_at_ms = cur.created_at_ms;
                     }

@@ -16,7 +16,7 @@ info:
     - **楽観的排他**: 応答の `ETag` は `"{generation}"`。PATCH は `If-Match` 必須（無いと 428、形が違う・古いと 412）。DELETE の `If-Match` は任意（付ければ検査）。
     - **一覧**: `limit`（1〜1000、既定 100）と `cursor`（前の応答の `next_cursor`）。順序は ID の昇順。知らないクエリは 400。
     - **エラー**: `application/problem+json`（`Problem`）。すべての応答に `X-Request-Id`（要求の `X-Request-Id` が 64 文字以内の英数字と `-_.` ならそれを、違えば生成した `req_...`）と `Cache-Control: no-store` が付く。
-    - **405**: 経路表にある資源（`/capabilities`・`/nodes/...`・`/devices`・`/grid`・`/events`・`/streams/...`・`/recordings/...`・`/schedules/...`・`/tokens/...`・`/inputs/...`・`/outputs/...`・`/secrets/...`・`/pipelines/...`・`/rooms/...`）に、ここに書いていないメソッド（HEAD を含む）を送ると 405（`METHOD_NOT_ALLOWED`）。それ以外の知らないパスは 404。`x-senca-undefined-method-status` を参照。
+    - **405**: 経路表にある資源（`/capabilities`・`/nodes/...`・`/devices`・`/grid`・`/events`・`/streams/...`・`/recordings/...`・`/schedules/...`・`/tokens/...`・`/inputs/...`・`/outputs/...`・`/secrets/...`・`/pipelines/...`・`/rooms/...`・`/media-pipelines/...`）に、ここに書いていないメソッド（HEAD を含む）を送ると 405（`METHOD_NOT_ALLOWED`）。それ以外の知らないパスは 404。`x-senca-undefined-method-status` を参照。
     - **429**: 部品（`components.responses`）には定義するが、今の実装はどの操作でも返さない（レート制限は未実装）。
     - **422**: `GET /streams/{id}/snapshot` の復号でだけ返す。配信の作成・更新ではコーデックを検査しない（入力のコーデックは publish まで分からない）。不適合は `POST /streams/{id}/plan` の結果の `code: UNSUPPORTED_CODEC` で知らせる。
     - **5xx**: 制御状態の永続化に失敗すると 500（`INTERNAL_ERROR`、`retryable: true`）。再試行してよい 503 には `Retry-After: 1` が付く。
@@ -27,7 +27,7 @@ info:
     - `PATCH /streams/{id}` は 202 ではなく 200（その場で反映した資源を返す）。`DELETE /streams/{id}` は 202 ではなく 204。
     - `POST /streams/{id}/sessions`、`DELETE /sessions/{id}`、`GET /inputs/{id}/reservations` は未実装。
     - 入力（`/streams/{id}/inputs`・`/inputs/{id}`）は pull だけ（push は stream の鍵で受ける）。
-    - 入力・出力・秘密値・パイプライン・部屋の DELETE は `If-Match` を読まない（付けても検査しない）。
+    - 入力・出力・秘密値・パイプライン・部屋・メディアパイプラインの DELETE は `If-Match` を読まない（付けても検査しない）。
     - SSE は再送の保持を持たない（`Last-Event-ID` が今の位置より前なら必ず `resync`）。
 x-senca-undefined-method-status: 405
 servers:
@@ -74,6 +74,33 @@ tags:
         message の形は `docs/realtime/signaling.md`。部屋が別のノードにあれば `redirect {location}` を送って閉じる（close code 4300）。
         WebRTC が動いていないノードは 503（text/plain）、WebSocket の握手の誤り（subprotocol が無いなど）は握手の層の 4xx を返す。
       - 部屋の核の出来事（参加・退出・トラック・スポットライト）は `GET /events` に `room.*` として流れる。
+  - name: media-pipelines
+    description: |
+      部屋のメディアパイプライン（ADR-0016、AWS Chime SDK Media Pipelines 相当）。部屋（`rooms`）の参加者を SENCA の stream に書き出し、
+      録画・合成・送り出し・文字起こしを 1 つの資源で指定する。定義は制御状態の資源で、どのノードでも受ける。
+
+      | AWS（Chime SDK Media Pipelines） | SENCA |
+      |---|---|
+      | Media stream pipeline（Kinesis Video Streams へ） | 参加者ごとの stream（`export_participants`）。以後は普通の stream と同じく HLS・録画・出力・パイプラインに乗る |
+      | Media capture pipeline（会議を S3 へ録る） | `recording`（参加者ごとの stream と合成の stream の自動録画。置き場所は録画の設定どおり、ローカル・S3 互換） |
+      | Media concatenation pipeline | 録画の断片を 1 本にまとめるのは普通の録画の API（`GET /recordings/{id}/export.mp4`・VOD の HLS） |
+      | Media live connector pipeline（会議を RTMP へ） | `egress`（合成の stream の出力。RTMP・SRT・PaaS。`composite` が要る） |
+      | Media insights pipeline（文字起こし・分析） | `captions`（参加者ごとの stream の字幕・翻訳、`CaptionSettings`。`export_participants` が要る） |
+
+      - **動かす係**: 部屋を置いたノード（`GET /rooms/{id}` の `placement_status.node`）の係が毎秒、部屋の参加者を見て突き合わせる（部屋が別のノードへ移れば、移った先の係が引き継ぐ）。
+        `desired_state: running` のものだけ動かす。
+      - **参加者ごとの stream**: 参加者（`client_id`、無ければ `connection_id`）ごとに stream を 1 本作り、送ってきた映像（いちばん良い層）と音声を
+        **再符号化せずに** 流す。`participants` が空なら全員、書けばその `client_id` の参加者だけ。カスケードで他のノードにいる参加者は書き出さない。
+        stream の `metadata` に `media_pipeline`（メディアパイプラインの ID）と `room` が入る。stream の名前は `{name}-{参加者}-{ID の頭 6 文字}`。
+        publish 鍵では受けない（使えない鍵を入れてある）。部屋の `video_codec` が H.264・H.265 なら `codec_profile: any`、他は `royalty_free`。
+      - **合成**（`composite`）: 映像のある参加者を並べ（`grid` は格子、`speaker` は最初の参加者を大きく）、音声はすべて混ぜて 1 本の stream にする
+        パイプライン（`pipelines` タグの資源、部屋を置いたノードに固定）を作る。参加者の stream が流れ始めてから図に入れ、参加者が変われば図を直す。
+        映像のある参加者がいなければパイプラインは `stopped`。
+      - **子の資源の ID** はメディアパイプラインの ID から決まる（何度作っても同じ。`artifacts` に出る）。合成のパイプライン・送り出しの出力は
+        普通の `GET /pipelines/{id}`・`GET /outputs/{id}` でも読める。
+      - **片付け**: メディアパイプラインや部屋を消す、`stopped` にする、合成・送り出しを変えると、合成のパイプラインと送り出しの出力を消す
+        （動かすなら係が作り直す）。書き出した stream と録画は成果物として**残る**（要らなければ `DELETE /streams/{id}` で消す）。
+      - SSE: 作成・更新は `media_pipeline.updated`（`data: {room, desired_state}`）、削除は `media_pipeline.deleted`（`data: {}`）。
   - name: events
     description: SSE のイベント購読（仕様 10.5）。
   - name: playback
@@ -273,7 +300,8 @@ paths:
         - 制御コマンドのイベント: `stream.created`・`stream.updated`・`stream.deleted`・`stream.owner`・`recording.updated`・`recording.deleted`・
           `schedule.created`・`schedule.updated`・`schedule.deleted`・`schedule.run`・`node.updated`・`input.updated`・`input.deleted`・
           `output.updated`・`output.deleted`・`secret.created`・`secret.deleted`・`pipeline.updated`・`pipeline.deleted`・
-          `room.updated`（部屋の作成・自動の作成・更新。`data: {auto}`）・`room.deleted`、グリッドの `node.down`・`node.up`・`device.*`・`grid.decisions`（`resource_id` は空、`data: {decisions}`）。
+          `room.updated`（部屋の作成・自動の作成・更新。`data: {auto}`）・`room.deleted`、
+          `media_pipeline.updated`（メディアパイプラインの作成・更新。`data: {room, desired_state}`）・`media_pipeline.deleted`、グリッドの `node.down`・`node.up`・`device.*`・`grid.decisions`（`resource_id` は空、`data: {decisions}`）。
         - **部屋の核の出来事**（ADR-0015。合意ログに載らず、部屋を置いたノードの購読者にだけ流れる）: `room.started`（部屋の核が部屋を開いた）・`room.stopped`・
           `room.connection.created`・`room.connection.updated`・`room.connection.destroyed`・`room.track.published`・`room.track.unpublished`・`room.spotlight.changed`。
           これらは SSE の `id` を持たない（`Last-Event-ID` の再開の対象外、取りこぼしは黙って飛ばす）。`data` に `event_id`（出来事の ID）と `node`（ノードの ID）があり、
@@ -1650,7 +1678,10 @@ paths:
       tags: [rooms]
       operationId: deleteRoom
       summary: 部屋の削除
-      description: 部屋を消す。部屋の核は参加者に `room_deleted` を送って切る（非同期）。`If-Match` は読まない。
+      description: |
+        部屋を消す。部屋の核は参加者に `room_deleted` を送って切る（非同期）。`If-Match` は読まない。
+        部屋のメディアパイプライン（`media-pipelines`）も消え、その子の合成のパイプライン・送り出しの出力も消す（書き出した stream・録画は残る）。
+        このときメディアパイプラインの `media_pipeline.deleted` は流れない（`room.deleted` だけ）。
       x-senca-scope: stream:write
       responses:
         '204': { $ref: '#/components/responses/NoContent' }
@@ -1849,6 +1880,145 @@ paths:
         '500': { $ref: '#/components/responses/InternalError' }
         '503': { $ref: '#/components/responses/ServiceUnavailable' }
 
+  # ------------------------------------------------------------------ media-pipelines
+  /media-pipelines:
+    post:
+      tags: [media-pipelines]
+      operationId: createMediaPipeline
+      summary: メディアパイプラインの作成
+      description: |
+        部屋のメディアパイプラインを作る（ADR-0016）。`desired_state` の既定は `running`（作るとすぐ、部屋を置いたノードの係が動かし始める）。
+        検査の順: 本文の形（400 `INVALID_REQUEST`・415）→ `room` がテナントの部屋か（無ければ 400 `INVALID_CONFIG`）→ 中身の検査（400 `INVALID_CONFIG`）
+        → name の重複（テナント内で一意、409）→ 部屋あたり 8 つまで（超えると 403 `QUOTA_EXCEEDED`）。
+        中身の検査（順に）:
+        - `name`: 1〜40 文字の英数字と `-_.`（`.` で始まらない。子の stream の名前に使うので stream より短い）
+        - `desired_state`: `running` か `stopped`
+        - `participants`: 100 人まで、各 1〜255 バイト
+        - `composite`: `layout`（`grid`・`speaker`）、大きさ（幅 64〜3840・高さ 64〜2160 の偶数）、`fps`（1〜60）、`video_codec`（`av1`・`vp9`・`vp8`・`h264`・`h265`）、`bitrate_kbps`（100〜50000）
+        - `recording`: `composite: true` には `composite` が要る、`participants: true` には `export_participants: true` が要る、`retention_days`（1〜36500）。
+          **`recording` の `participants`・`composite` は省くと true**（`composite` の無いメディアパイプラインで `recording` を書くなら `composite: false` を明示する）
+        - `egress`: `composite` が要る（合成した 1 本を送る）、8 個まで。各要素は出力（`OutputCreate`）と同じ検査（`protocol`、`paas` 以外は `url`、`paas` は `provider`、`credential_ref` の秘密値、`options`）
+        - `captions`: stream の `captions` と同じ検査（`CaptionSettings`）、`export_participants: true` が要る
+        H.264・H.265 の合成は GPU が要るが、作成では検査しない（合成のパイプラインの配置・検証で失敗し、パイプラインの `placement_status` に出る）。
+      x-senca-scope: stream:write
+      parameters:
+        - $ref: '#/components/parameters/IdempotencyKey'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: '#/components/schemas/MediaPipelineCreate' }
+      responses:
+        '201':
+          description: 作成した
+          headers:
+            Location: { $ref: '#/components/headers/Location' }
+            ETag: { $ref: '#/components/headers/ETag' }
+            X-Request-Id: { $ref: '#/components/headers/X-Request-Id' }
+            Idempotency-Replayed: { $ref: '#/components/headers/Idempotency-Replayed' }
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/MediaPipeline' }
+        '400': { $ref: '#/components/responses/BadRequest' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '403': { $ref: '#/components/responses/Forbidden' }
+        '409': { $ref: '#/components/responses/Conflict' }
+        '415': { $ref: '#/components/responses/UnsupportedMediaType' }
+        '500': { $ref: '#/components/responses/InternalError' }
+    get:
+      tags: [media-pipelines]
+      operationId: listMediaPipelines
+      summary: メディアパイプラインの一覧
+      description: |
+        テナントのメディアパイプライン。ID の昇順。
+        `room` で部屋を絞る（実装の handler は読むが、**今は一覧の共通の検査が `room` を知らないクエリとして 400 にする**。実装の不備。
+        直るまでは全件を取って `room` で絞る）。`room` の値は URL の復号をしない（英数字と `-_.` の ID だけ正しく絞れる）。
+      x-senca-scope: stream:read
+      parameters:
+        - $ref: '#/components/parameters/RoomFilter'
+        - $ref: '#/components/parameters/Limit'
+        - $ref: '#/components/parameters/Cursor'
+      responses:
+        '200':
+          description: メディアパイプラインの一覧
+          headers: { X-Request-Id: { $ref: '#/components/headers/X-Request-Id' } }
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/MediaPipelineList' }
+        '400': { $ref: '#/components/responses/BadRequest' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '403': { $ref: '#/components/responses/Forbidden' }
+  /media-pipelines/{id}:
+    parameters:
+      - $ref: '#/components/parameters/MediaPipelineId'
+    get:
+      tags: [media-pipelines]
+      operationId: getMediaPipeline
+      summary: メディアパイプラインの定義・成果物・様子
+      description: 定義と、子の資源（`artifacts`）、このノードでの実行の様子（`status`）。他テナントのものは 404。
+      x-senca-scope: stream:read
+      responses:
+        '200':
+          description: メディアパイプライン
+          headers:
+            ETag: { $ref: '#/components/headers/ETag' }
+            X-Request-Id: { $ref: '#/components/headers/X-Request-Id' }
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/MediaPipeline' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '403': { $ref: '#/components/responses/Forbidden' }
+        '404': { $ref: '#/components/responses/NotFound' }
+    patch:
+      tags: [media-pipelines]
+      operationId: patchMediaPipeline
+      summary: メディアパイプラインの更新・開始・停止
+      description: |
+        書いたフィールドだけ置き換える（`MediaPipelinePatch`）。`room` は変えられない（知らないフィールドとして 400）。`desired_state: stopped` で止め、`running` で動かす。
+        検査の順: `If-Match`（428・412）→ 本文の形（400・415）→ あるか（404）→ 世代（412）→ 作成と同じ中身の検査（400）。
+        `stopped` にする・`composite` を外す・`egress` を変えると、前の定義の子（合成のパイプライン・送り出しの出力）を消す（動かすなら係が作り直す）。
+        書き出した stream はそのまま（`participants` を減らしても、外れた参加者の stream は残る）。
+        仕様との差: 作成と違い、更新では name の重複を検査しない（同じ名前のメディアパイプラインが作れてしまう。実装の不備）。
+      x-senca-scope: stream:write
+      parameters:
+        - $ref: '#/components/parameters/IfMatchRequired'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: '#/components/schemas/MediaPipelinePatch' }
+      responses:
+        '200':
+          description: 更新したメディアパイプライン
+          headers:
+            ETag: { $ref: '#/components/headers/ETag' }
+            X-Request-Id: { $ref: '#/components/headers/X-Request-Id' }
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/MediaPipeline' }
+        '400': { $ref: '#/components/responses/BadRequest' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '403': { $ref: '#/components/responses/Forbidden' }
+        '404': { $ref: '#/components/responses/NotFound' }
+        '412': { $ref: '#/components/responses/PreconditionFailed' }
+        '415': { $ref: '#/components/responses/UnsupportedMediaType' }
+        '428': { $ref: '#/components/responses/PreconditionRequired' }
+        '500': { $ref: '#/components/responses/InternalError' }
+    delete:
+      tags: [media-pipelines]
+      operationId: deleteMediaPipeline
+      summary: メディアパイプラインの削除
+      description: |
+        消して、子の合成のパイプラインと送り出しの出力を消す（PaaS の資源も片付ける）。書き出した stream（参加者ごと・合成）と録画は残る。
+        参加者の書き出しは、部屋を置いたノードの係が次の見回り（1 秒以内）で止める。`If-Match` は読まない。
+      x-senca-scope: stream:write
+      responses:
+        '204': { $ref: '#/components/responses/NoContent' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '403': { $ref: '#/components/responses/Forbidden' }
+        '404': { $ref: '#/components/responses/NotFound' }
+        '500': { $ref: '#/components/responses/InternalError' }
+
   # ------------------------------------------------------------------ playback（/api/v1 の外）
   /s/{exp}/{sig}/live/{stream}/index.m3u8:
     servers: [{ url: / }]
@@ -2025,6 +2195,13 @@ components:
     RoomId: { name: id, in: path, required: true, schema: { type: string }, description: '部屋の ID（テナントをまたいで一意）' }
     ConnectionId: { name: c, in: path, required: true, schema: { type: string }, description: '参加者の接続の ID（`connection_id`）' }
     SnapshotId: { name: sid, in: path, required: true, schema: { type: string }, description: 静止画の ID }
+    MediaPipelineId: { name: id, in: path, required: true, schema: { type: string }, description: メディアパイプラインの ID }
+    RoomFilter:
+      name: room
+      in: query
+      required: false
+      description: '部屋の ID で絞る（今は 400 になる。`GET /media-pipelines` の説明）'
+      schema: { type: string }
     Limit:
       name: limit
       in: query
@@ -3926,6 +4103,228 @@ components:
         room_id: { $ref: '#/components/schemas/RoomId' }
         at: { $ref: '#/components/schemas/Timestamp' }
         participants: { type: array, items: { $ref: '#/components/schemas/RoomParticipantStats' }, description: '部屋を置いたノードにつないだ参加者' }
+    MediaPipelineName:
+      type: string
+      minLength: 1
+      maxLength: 40
+      pattern: '^[A-Za-z0-9_-][A-Za-z0-9_.-]*$'
+      description: 'テナント内で一意（作成のとき）。1〜40 文字の英数字と `-_.`（`.` で始まらない）。子の stream・パイプラインの名前の頭に使う'
+    MediaPipelineState:
+      type: string
+      enum: [running, stopped]
+      description: running = 部屋を置いたノードの係が動かす、stopped = 止める（子の合成・送り出しを消す。書き出した stream・録画は残る）
+    MediaPipelineParticipants:
+      type: array
+      maxItems: 100
+      items: { type: string, minLength: 1, maxLength: 255 }
+      description: '書き出す参加者の `client_id`（参加トークンの `client_id`）。空なら全員（`client_id` の無い参加者は `connection_id` で区別する）'
+    MediaPipelineComposite:
+      type: object
+      additionalProperties: false
+      description: |
+        合成（会議の 1 本の映像・音声）。書かなかったフィールドは既定値（応答ではすべて入る）。映像のある参加者を並べ、音声はすべて混ぜて Opus 96 kbit/s にする。
+        `grid` は格子（列数は人数の平方根の切り上げ）、`speaker` は最初に書き出した参加者を上に大きく、残りを下の 1/4 の帯に並べる（話者の検出はまだ合成に届かない）。
+        H.264・H.265 は GPU が要る。GOP は `fps` の 2 倍。
+      properties:
+        layout: { type: string, enum: [grid, speaker], default: grid }
+        width: { type: integer, minimum: 64, maximum: 3840, multipleOf: 2, default: 1280 }
+        height: { type: integer, minimum: 64, maximum: 2160, multipleOf: 2, default: 720 }
+        fps: { type: integer, minimum: 1, maximum: 60, default: 30 }
+        video_codec: { type: string, enum: [av1, vp9, vp8, h264, h265], default: av1 }
+        bitrate_kbps: { type: integer, minimum: 100, maximum: 50000, default: 2500 }
+    MediaPipelineRecording:
+      type: object
+      additionalProperties: false
+      description: |
+        録画（AWS の media capture pipeline 相当）。書き出した stream の自動録画（`RecordingPolicy`）を有効にする。録画は普通の録画の API（`GET /recordings?stream=...`）で読む。
+        録画の設定は stream を作るときに決まる（後から `recording` を変えても、作った stream には効かない）。
+      properties:
+        participants: { type: boolean, default: true, description: '参加者ごとの stream を録る（`export_participants: true` が要る）' }
+        composite: { type: boolean, default: true, description: '合成の stream を録る（`composite` が要る）' }
+        retention_days: { type: [integer, 'null'], minimum: 1, maximum: 36500, description: 保持日数（省けば録画の既定。応答では省いたとき欄が無い） }
+    MediaPipelineEgress:
+      type: object
+      additionalProperties: false
+      required: [protocol]
+      description: |
+        送り出し（AWS の media live connector pipeline 相当）。合成の stream の出力（`Output`）として作る。形と検査は `OutputCreate` と同じ
+        （ただし `whip_push` は使えず、`paas` でも `credential_ref` を検査しない）。応答では null・空のフィールドは欄が無い。
+      properties:
+        protocol: { type: string, enum: [rtmp_push, srt_push, paas] }
+        url:
+          type: [string, 'null']
+          description: '`paas` 以外で必須。rtmp_push: `rtmp`・`rtmps`、srt_push: `srt`。資格情報は入れられない。'
+        credential_ref: { $ref: '#/components/schemas/CredentialRef' }
+        provider:
+          type: [string, 'null']
+          enum: [cloudflare_stream, aws_ivs, aws_medialive, null]
+          description: '`paas` で必須'
+        options: { $ref: '#/components/schemas/IoOptions' }
+    MediaPipelineCreate:
+      type: object
+      additionalProperties: false
+      required: [name, room]
+      properties:
+        name: { $ref: '#/components/schemas/MediaPipelineName' }
+        room: { type: string, description: 部屋の ID（テナントの部屋。無ければ 400） }
+        participants: { $ref: '#/components/schemas/MediaPipelineParticipants' }
+        export_participants:
+          type: [boolean, 'null']
+          default: true
+          description: '参加者ごとの stream を残す（AWS の media stream pipeline 相当）。false でも合成のために書き出す（`recording.participants`・`captions` は使えない）'
+        composite:
+          description: 合成（省略・null は合成しない）
+          oneOf:
+            - { $ref: '#/components/schemas/MediaPipelineComposite' }
+            - { type: 'null' }
+        recording:
+          description: 録画（省略・null は録らない）
+          oneOf:
+            - { $ref: '#/components/schemas/MediaPipelineRecording' }
+            - { type: 'null' }
+        egress:
+          type: array
+          maxItems: 8
+          default: []
+          items: { $ref: '#/components/schemas/MediaPipelineEgress' }
+          description: 送り出し（`composite` が要る）
+        captions:
+          description: '文字起こし・翻訳（AWS の media insights pipeline 相当）。参加者ごとの stream の `captions` になる（省略・null は付けない）'
+          oneOf:
+            - { $ref: '#/components/schemas/CaptionSettings' }
+            - { type: 'null' }
+        desired_state:
+          oneOf:
+            - { $ref: '#/components/schemas/MediaPipelineState' }
+            - { type: 'null' }
+          description: 省略・null は running
+    MediaPipelinePatch:
+      type: object
+      additionalProperties: false
+      description: '書いたフィールドだけ置き換える。`composite`・`recording`・`captions` の null は外す、他の null は「変えない」。`egress` は列ごと置き換える。'
+      properties:
+        name:
+          oneOf:
+            - { $ref: '#/components/schemas/MediaPipelineName' }
+            - { type: 'null' }
+        participants:
+          oneOf:
+            - { $ref: '#/components/schemas/MediaPipelineParticipants' }
+            - { type: 'null' }
+        export_participants: { type: [boolean, 'null'] }
+        composite:
+          oneOf:
+            - { $ref: '#/components/schemas/MediaPipelineComposite' }
+            - { type: 'null' }
+        recording:
+          oneOf:
+            - { $ref: '#/components/schemas/MediaPipelineRecording' }
+            - { type: 'null' }
+        egress:
+          type: [array, 'null']
+          maxItems: 8
+          items: { $ref: '#/components/schemas/MediaPipelineEgress' }
+        captions:
+          oneOf:
+            - { $ref: '#/components/schemas/CaptionSettings' }
+            - { type: 'null' }
+        desired_state:
+          oneOf:
+            - { $ref: '#/components/schemas/MediaPipelineState' }
+            - { type: 'null' }
+    MediaPipelineParticipantStream:
+      type: object
+      additionalProperties: false
+      required: [stream, name]
+      properties:
+        stream: { type: string, description: stream の ID }
+        name: { type: string, description: 'stream の名前（`{name}-{参加者}-{ID の頭 6 文字}`）' }
+    MediaPipelineCompositeArtifacts:
+      type: object
+      additionalProperties: false
+      required: [stream, pipeline, outputs]
+      description: 合成の子の資源の ID（メディアパイプラインの ID から決まる。まだ作っていなくても ID は出る）
+      properties:
+        stream: { type: string, description: '合成の stream の ID（`GET /streams/{id}`）' }
+        pipeline: { type: string, description: '合成のパイプラインの ID（`GET /pipelines/{id}`。映像のある参加者が流れ始めるまでは無いことがある）' }
+        outputs: { type: array, items: { type: string }, description: '`egress` の順の送り出しの出力の ID（`GET /outputs/{id}`）' }
+    MediaPipelineArtifacts:
+      type: object
+      additionalProperties: false
+      required: [participant_streams, composite]
+      description: 子の資源
+      properties:
+        participant_streams:
+          type: array
+          items: { $ref: '#/components/schemas/MediaPipelineParticipantStream' }
+          description: '書き出した参加者ごとの stream（`metadata.media_pipeline` がこの ID の stream。今いない参加者のものも残る）。ID の昇順'
+        composite:
+          description: '`composite` が無ければ null'
+          oneOf:
+            - { $ref: '#/components/schemas/MediaPipelineCompositeArtifacts' }
+            - { type: 'null' }
+    MediaPipelineStatus:
+      type: object
+      additionalProperties: false
+      required: [participants, composite_members]
+      description: このノードでの実行の様子（制御状態には保存しない）。
+      properties:
+        participants:
+          type: array
+          description: 今書き出している参加者
+          items:
+            type: object
+            additionalProperties: false
+            required: [participant, stream, video]
+            properties:
+              participant: { type: string, description: '`client_id`（無ければ `connection_id`）' }
+              stream: { type: string, description: 書き出し先の stream の ID }
+              video: { type: boolean, description: 映像を送っているか }
+        composite_members: { type: [integer, 'null'], minimum: 0, description: '合成の図に入っている参加者の数（`composite` が無い、または映像のある参加者が流れ始めていなければ null）' }
+    MediaPipeline:
+      type: object
+      additionalProperties: false
+      required: [id, name, room, generation, participants, export_participants, composite, recording, egress, captions, desired_state,
+                 created_at, updated_at, artifacts, status]
+      properties:
+        id: { type: string }
+        name: { $ref: '#/components/schemas/MediaPipelineName' }
+        room: { type: string }
+        generation: { type: integer, minimum: 1 }
+        participants: { $ref: '#/components/schemas/MediaPipelineParticipants' }
+        export_participants: { type: boolean }
+        composite:
+          oneOf:
+            - { $ref: '#/components/schemas/MediaPipelineComposite' }
+            - { type: 'null' }
+        recording:
+          oneOf:
+            - { $ref: '#/components/schemas/MediaPipelineRecording' }
+            - { type: 'null' }
+        egress: { type: array, items: { $ref: '#/components/schemas/MediaPipelineEgress' } }
+        captions:
+          description: 資格情報は `secret:{name}` の参照で、値は返さない
+          oneOf:
+            - { $ref: '#/components/schemas/CaptionSettings' }
+            - { type: 'null' }
+        desired_state: { $ref: '#/components/schemas/MediaPipelineState' }
+        created_at: { $ref: '#/components/schemas/Timestamp' }
+        updated_at: { $ref: '#/components/schemas/Timestamp' }
+        artifacts: { $ref: '#/components/schemas/MediaPipelineArtifacts' }
+        status:
+          description: |
+            このノードでの実行の様子。部屋をこのノードに置いていない・`stopped`・係がまだ見回っていない（作った直後）なら null
+            （分散のときは部屋を置いたノードに問い合わせる）。止めた・消した直後の 1 秒ほどは前の様子が残ることがある。
+          oneOf:
+            - { $ref: '#/components/schemas/MediaPipelineStatus' }
+            - { type: 'null' }
+    MediaPipelineList:
+      type: object
+      additionalProperties: false
+      required: [items, next_cursor]
+      properties:
+        items: { type: array, items: { $ref: '#/components/schemas/MediaPipeline' } }
+        next_cursor: { type: [string, 'null'] }
     SseEventData:
       type: object
       additionalProperties: false
@@ -3937,6 +4336,7 @@ components:
                  schedule.created, schedule.updated, schedule.deleted, schedule.run, node.updated,
                  input.updated, input.deleted, output.updated, output.deleted, secret.created, secret.deleted,
                  pipeline.updated, pipeline.deleted, room.updated, room.deleted,
+                 media_pipeline.updated, media_pipeline.deleted,
                  node.down, node.up, device.down, device.up, device.disabled, device.enabled, grid.decisions,
                  room.started, room.stopped, room.connection.created, room.connection.updated, room.connection.destroyed,
                  room.track.published, room.track.unpublished, room.spotlight.changed]
