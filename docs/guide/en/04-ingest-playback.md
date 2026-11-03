@@ -6,7 +6,6 @@ How to get video and audio from a sender (encoder, camera, browser) into a strea
 
 - Rationale: [ADR-0006 stream task](../../dev/adr/0006-stream-hub.md), [ADR-0012 WebRTC](../../dev/adr/0012-webrtc.md), [ADR-0014 relay](../../dev/adr/0014-relay.md), [ADR-0004 codecs and patents](../../dev/adr/0004-codecs-patents.md)
 - Related pages: [3. Configuration](03-configuration.md), [5. Recording](05-recording.md), [6. Inputs and outputs](06-inputs-outputs.md), [8. Captions](08-captions.md), [9. Cluster and grid](09-cluster-grid.md), [12. Security](12-security.md), [14. Codecs and patents](14-codecs-and-patents.md), [15. API and SDKs](15-api-and-sdks.md)
-- Implementation: `crates/senca-node/src/rtmp.rs`, `srt.rs`, `webrtc.rs`, `capture.rs`, `http.rs`, `live.rs`, `packager.rs`, `rtsp_serve.rs`, `api/streams.rs`
 
 ## 4.1 Overview
 
@@ -79,7 +78,7 @@ Response (excerpt):
                     {"track": 1, "codec": "aac", "sample_rate": 48000, "channels": 1}]}
 ```
 
-`epoch` increases each time a sender reconnects to the same stream (§4.16).
+`epoch` increases each time a sender reconnects to the same stream (§4.17).
 
 ## 4.3 Stream fields
 
@@ -95,7 +94,7 @@ Used by creation (`POST /streams`) and update (`PATCH /streams/{id}`, `If-Match`
 | `hls.container` | `ts` | `ts`, `fmp4` | Segment container. Recordings use the same container |
 | `recording.enabled` | `false` | | Record automatically when publishing starts ([5. Recording](05-recording.md)) |
 | `recording.retention_days` | `null` | 1–36500 | Retention for automatic recordings (`null` = forever) |
-| `snapshots` | `null` | `interval_secs` 1–86400, `keep` 1–10000 | Save a still image at a fixed interval (§4.15) |
+| `snapshots` | `null` | `interval_secs` 1–86400, `keep` 1–10000 | Save a still image at a fixed interval (§4.16) |
 | `limits.max_viewers` | `null` | | Stored, but not enforced by the current node |
 | `limits.max_ingress_bps` | `null` | | Same as above |
 | `metadata` | `{}` | Up to 32 entries; keys 1–64 characters; values up to 1024 characters | Free-form string tags |
@@ -300,7 +299,7 @@ Example (fMP4, LL-HLS, `segment_ms` 2000):
 
 ## 4.10 Try it: send with RTMP, watch with HLS
 
-These steps were run against a local node while writing this page.
+These steps have been checked against a local node.
 
 ```sh
 # 1. Create a stream
@@ -380,7 +379,7 @@ The ALPN selects what runs on a connection.
 
 - With `--quic`, HTTP and HTTPS responses carry `Alt-Svc: h3=":PORT"; ma=86400`, so browsers can switch to HTTP/3.
 - The certificate is the node's `--tls-cert`/`--tls-key` (the same as TCP HTTPS).
-- Experimental: MoQ is an Internet-Draft and the version is pinned to draft-22 (`crates/senca-moq/DRAFT.md`). Clients offering
+- MoQ is an Internet-Draft, so the version is pinned to draft-22. Clients offering
   other versions are refused during ALPN / `wt-available-protocols` negotiation.
 
 ### Subscribing (watching over MoQ)

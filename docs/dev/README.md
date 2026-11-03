@@ -13,3 +13,4 @@ These documents are for people who develop and maintain SENCA. For how to use SE
 | [adr/](adr) | 設計の決定（ADR） / Architecture decision records |
 | [spec/](spec)・[requirements/](requirements) | 仕様と追加要件 / Specification and requirements |
 | [conformance/](conformance) | 適合台帳と性能の記録 / Conformance ledger and performance notes |
+| [notes/](notes) | 利用者ガイドから移した開発者向けのメモ（検証の詳細・既知の不具合・テストの内容） / Developer notes moved out of the user guide (verification details, known issues, test contents) |

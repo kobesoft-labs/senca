@@ -2,40 +2,44 @@
 
 [English](README.md) | 日本語
 
-ライブ配信・録画・リアルタイム通信のためのメディアサーバー（Rust）。1 台でも、何台ものノードを束ねたグリッドでも動く。
+SENCA は、ライブ配信・録画・リアルタイム通信のためのメディアサーバーです（Rust 製）。1 台のノードでも、
+複数のノードをまとめたグリッドでも動作します。グリッドでは、ノードの資源に応じてワークロードを配置し、
+ノードに障害が起きても動作を続けます。
 
-> **状態: v0.0.0（実験的）。** 機能は揃ってきたが、出荷 gate（24 時間の fuzz、72 時間の連続試験、暗号・認可の独立レビュー、
-> 署名付きの配布）をまだ通していない。本番には使わないこと。手順は [docs/dev/RELEASE.md](docs/dev/RELEASE.md)。
+> **バージョン: v0.0.0。** リリースの手順と、リリース前に行う確認は [docs/dev/RELEASE.md](docs/dev/RELEASE.md) にあります。
 
-## できること
+## 主な機能
 
-- **受ける**: RTMP/RTMPS（Enhanced RTMP: AV1・VP9・H.265）、SRT（listener・caller、AES）、WHIP（WebRTC）、RTSP pull、
-  RTMP・SRT・HLS の pull、キャプチャ機器
-- **配る**: HLS（TS・fMP4・LL-HLS）、RTMP・SRT・RTSP の play、WHEP、署名付きの再生 URL、ノード間の中継（写し）
-- **録る**: 録画と配信の分岐、障害からの回収、VOD、MP4 の書き出し、予約、保持期間
-- **加工する**: パイプライン（復号・合成・板書補正・音声ミキサー・符号化）、制作の操作（シーン・トランジション）、
+- **取り込み（インジェスト）**: RTMP/RTMPS（Enhanced RTMP: AV1・VP9・H.265）、SRT（listener・caller、AES 暗号化）、
+  WHIP（WebRTC）、RTSP pull、RTMP・SRT・HLS の pull、キャプチャデバイス
+- **配信**: HLS（TS・fMP4・LL-HLS）、RTMP・SRT・RTSP の play、WHEP、署名付きの再生 URL、ノード間の中継（ミラー）
+- **録画**: ライブ配信と並行した録画、障害後の録画の復旧、VOD、MP4 の書き出し、予約録画、保持期間
+- **加工**: パイプライン（デコード・合成・板書補正・音声ミキサー・エンコード）、配信制作の操作（シーン・トランジション）、
   静止画・サムネイル、字幕と翻訳（WebVTT）
-- **送り出す**: RTMP・SRT の push、PaaS 連携（クラウドの配信サービス）
+- **外部への送信**: RTMP・SRT の push、PaaS（クラウドの配信サービス）との連携
 - **リアルタイムの部屋**（ADR-0015）: SFU、サイマルキャスト、スポットライト、転送フィルター、DataChannel、
-  参加トークン（Ed25519）、出来事の SSE、E2EE の素通し、ブラウザー用 SDK（`apps/sdk-js`）
-- **メディアパイプライン**（ADR-0016）: 部屋の参加者を stream に書き出す、合成、録画、RTMP への送り出し、文字起こし
-- **グリッド**（ADR-0013）: ノードの資源（CPU・メモリ・帯域・GPU・キャプチャ機器）を数えて仕事を置く。ノード・GPU の
-  手動の割り当て、優先度、ノード・装置が止まったときの移動と段階的な縮退、戻ったときの復帰
-- **分散**: 自前の Raft で制御面を複製、mTLS、所有権と fencing、ノード間の中継（ADR-0014）
+  参加トークン（Ed25519）、SSE によるイベント通知、E2EE のパススルー、ブラウザー用 SDK（`apps/sdk-js`）
+- **メディアパイプライン**（ADR-0016）: 部屋の参加者をストリームとして書き出し、合成、録画、RTMP での送信、文字起こし
+- **グリッド**（ADR-0013）: ノードの資源（CPU・メモリ・帯域・GPU・キャプチャデバイス）を集計してワークロードを配置します。
+  ノードや GPU の手動での割り当て、優先度、ノードやデバイスが停止したときの移動と段階的な縮退、復旧したときの再配置に対応します
+- **クラスター**: 独自実装の Raft による制御プレーンの複製、mTLS、ストリームの所有権と fencing、ノード間の中継（ADR-0014）
 - **管理**: REST API（OpenAPI: [docs/api/openapi.yaml](docs/api/openapi.yaml)）、SSE、管理画面（`apps/console`）、
   TypeScript・Rust の API クライアント（`apps/sdk-js`・`crates/senca-client`）
-- **QUIC**（`--quic`）: HTTP/3 での管理 API・署名付き HLS、MoQ（draft-22、native QUIC と WebTransport）での
-  ライブの購読（hang の catalog と CMAF）と CMAF の送出
+- **QUIC**（`--quic`）: HTTP/3 での管理 API・署名付き HLS、MoQ（draft-22、ネイティブ QUIC と WebTransport）による
+  ライブの購読（hang の catalog と CMAF）と CMAF の配信
 
 ## 特許とコーデック
 
-H.264/H.265 の符号化・復号は、GPU の製造元の SDK（NVIDIA NVENC/NVDEC、Intel oneVPL、AMD AMF、VA-API）を
-実行時に読み込んで行う（隔離した codec worker の中）。ソフトウェアの H.264/H.265/AAC のコーデックは同梱しない。
-GPU が無ければ、その変換は `503 CAPACITY_UNAVAILABLE` になる（受けた H.264/AAC をそのまま配る・録るのはできる）。
-ロイヤリティフリーのコーデック（AV1: dav1d・SVT-AV1、VP8/VP9: libvpx、Opus: libopus）はソフトウェアで扱う。
-コンテンツの配信に伴う使用料の扱いは、利用者が自分で確かめること。詳しくは [ADR-0004](docs/dev/adr/0004-codecs-patents.md)。
+H.264/H.265 のエンコード・デコードは、GPU メーカーの SDK（NVIDIA NVENC/NVDEC、Intel oneVPL、AMD AMF、VA-API）を
+実行時に読み込んで行います。処理は隔離された codec worker の中で動きます。H.264/H.265/AAC のソフトウェアコーデックは
+同梱していません。GPU がない環境では、これらの変換は `503 CAPACITY_UNAVAILABLE` になります。受信した H.264/AAC を
+そのまま配信・録画することは、GPU がなくてもできます。
 
-## 使ってみる
+ロイヤリティフリーのコーデック（AV1: dav1d・SVT-AV1、VP8/VP9: libvpx、Opus: libopus）はソフトウェアで処理します。
+コンテンツの配信にともなうライセンス料の扱いは、利用者ご自身で確認してください。
+詳しくは [ADR-0004](docs/dev/adr/0004-codecs-patents.md) を参照してください。
+
+## はじめかた
 
 ```sh
 cargo build --release -p senca-node -p senca-codec-worker
@@ -44,21 +48,22 @@ cargo build --release -p senca-node -p senca-codec-worker
 cat ./data/control/bootstrap-admin-token   # 管理 API のトークン
 ```
 
-- コンテナ: `Dockerfile`・`compose.yaml`（[ADR-0008](docs/dev/adr/0008-container-deployment.md)）
-- 分散: `--cluster-config`（[ADR-0009](docs/dev/adr/0009-cluster.md)・[ADR-0013](docs/dev/adr/0013-grid.md)）
+- コンテナで動かす: `Dockerfile`・`compose.yaml`（[ADR-0008](docs/dev/adr/0008-container-deployment.md)）
+- クラスターで動かす: `--cluster-config`（[ADR-0009](docs/dev/adr/0009-cluster.md)・[ADR-0013](docs/dev/adr/0013-grid.md)）
 
-## 文書
+## ドキュメント
 
-**利用の手引き: [docs/guide/ja](docs/guide/ja/README.md)**（導入・設定・配信・録画・グリッド・部屋・メディアパイプライン・API と SDK）
+**利用ガイド: [docs/guide/ja](docs/guide/ja/README.md)**（導入・設定・配信・録画・グリッド・部屋・メディアパイプライン・API と SDK）
 
 | | |
 |---|---|
-| 仕様・要件 | [docs/dev/spec](docs/dev/spec)・[docs/dev/requirements](docs/dev/requirements) |
-| 設計の決定 | [docs/dev/adr](docs/dev/adr) |
 | API | [docs/api/openapi.yaml](docs/api/openapi.yaml)、部屋のシグナリング [docs/realtime/signaling.md](docs/realtime/signaling.md) |
-| 進み具合 | [docs/dev/ROADMAP.md](docs/dev/ROADMAP.md)、適合台帳 [docs/dev/conformance](docs/dev/conformance) |
-| 開発 | [docs/dev/DEVELOPMENT.md](docs/dev/DEVELOPMENT.md)、リリース [docs/dev/RELEASE.md](docs/dev/RELEASE.md)、依存のライセンス [docs/licenses](docs/licenses) |
+| SDK | [apps/sdk-js](apps/sdk-js/README.md)・[crates/senca-client](crates/senca-client/README.md) |
+| 仕様・要件 | [docs/dev/spec](docs/dev/spec)・[docs/dev/requirements](docs/dev/requirements) |
+| 設計の決定記録（ADR） | [docs/dev/adr](docs/dev/adr) |
+| 開発の状況 | [docs/dev/ROADMAP.md](docs/dev/ROADMAP.md)、適合台帳 [docs/dev/conformance](docs/dev/conformance) |
+| 開発者向け | [docs/dev/DEVELOPMENT.md](docs/dev/DEVELOPMENT.md)、リリース [docs/dev/RELEASE.md](docs/dev/RELEASE.md)、依存ライブラリのライセンス [docs/licenses](docs/licenses) |
 
 ## ライセンス
 
-[Apache License 2.0](LICENSE)。[NOTICE](NOTICE) も参照。
+[Apache License 2.0](LICENSE) です。[NOTICE](NOTICE) もあわせて参照してください。

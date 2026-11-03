@@ -5,9 +5,8 @@ English | [日本語](README.ja.md)
 A media server for live streaming, recording and real-time communication, written in Rust.
 It runs on a single node or as a grid of many nodes that places work by resources and keeps running when nodes fail.
 
-> **Status: v0.0.0 (experimental).** The feature set is broad, but the release gate has not been passed yet
-> (24-hour fuzzing, 72-hour soak test, independent review of the cryptographic and authorization code, signed builds).
-> Do not use it in production. See [docs/dev/RELEASE.md](docs/dev/RELEASE.md) (Japanese).
+> **Version: v0.0.0.** The release process and the checks done before a release are described in
+> [docs/dev/RELEASE.en.md](docs/dev/RELEASE.en.md).
 
 ## Features
 
@@ -60,10 +59,10 @@ rooms, media pipelines, API and SDKs). The same guide in Japanese is in [docs/gu
 | | |
 |---|---|
 | API | [docs/api/openapi.yaml](docs/api/openapi.yaml), room signaling [docs/realtime/signaling.en.md](docs/realtime/signaling.en.md) |
-| SDKs | [apps/sdk-js](apps/sdk-js/README.md), [crates/senca-client](crates/senca-client/README.md) |
+| SDKs | [apps/sdk-js](apps/sdk-js/README.en.md), [crates/senca-client](crates/senca-client/README.en.md) |
 | Design records, specification, requirements (Japanese) | [docs/dev/adr](docs/dev/adr), [docs/dev/spec](docs/dev/spec), [docs/dev/requirements](docs/dev/requirements) |
 | Progress (Japanese) | [docs/dev/ROADMAP.md](docs/dev/ROADMAP.md), conformance ledger [docs/dev/conformance](docs/dev/conformance) |
-| Development (Japanese) | [docs/dev/DEVELOPMENT.md](docs/dev/DEVELOPMENT.md), [docs/dev/RELEASE.md](docs/dev/RELEASE.md), dependency licenses [docs/licenses](docs/licenses) |
+| Development | [docs/dev/DEVELOPMENT.en.md](docs/dev/DEVELOPMENT.en.md), [docs/dev/RELEASE.en.md](docs/dev/RELEASE.en.md), dependency licenses [docs/licenses](docs/licenses) |
 
 ## License
 

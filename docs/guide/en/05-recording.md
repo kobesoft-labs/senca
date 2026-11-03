@@ -6,7 +6,6 @@ Record streams, play recordings back as VOD, export them as MP4 or HLS, and use 
 
 - Rationale: [ADR-0005 recording format and index](../../dev/adr/0005-recording.md), [ADR-0006 stream task](../../dev/adr/0006-stream-hub.md)
 - Related pages: [4. Ingest and playback](04-ingest-playback.md), [9. Cluster and grid](09-cluster-grid.md), [13. Operations](13-operations.md), [14. Codecs and patents](14-codecs-and-patents.md), [15. API and SDKs](15-api-and-sdks.md)
-- Implementation: `crates/senca-node/src/recorder.rs`, `recovery.rs`, `export.rs`, `thumbnail.rs`, `scheduler.rs`, `api/recordings.rs`, `api/schedules.rs`, `crates/senca-record`, `crates/senca-control/src/schedule.rs`
 
 `API`, `TOKEN` and `H` in the examples are the same as in [4. Ingest and playback](04-ingest-playback.md).
 
@@ -45,7 +44,7 @@ Recordings being deleted (internal state `deleting`) are not shown in lists or l
 | `gaps` | Gaps as `[{at, reason, dropped}]`; `reason` is `publisher_reconnect` or `queue_overflow` |
 | `thumbnail` | Whether a thumbnail exists |
 
-Note: in the current implementation, `gaps` is shown as empty for recordings written since the node started, until the node is
+Note: at present, `gaps` is shown as an empty list for recordings created since the node started, until the node is
 restarted (the gaps are recorded in the index).
 
 ## 5.3 Automatic recording (starts on publish)

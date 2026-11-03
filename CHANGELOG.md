@@ -6,30 +6,30 @@
 
 - `--quic ADDR`: a QUIC v1 listener on one UDP port (off by default; uses `--tls-cert`/`--tls-key`), driven by one task
   over the sans-io `senca-quic` endpoint
-  ／ `--quic ADDR`: 一つの UDP ポートの QUIC v1 の受け口（既定は無効。`--tls-cert`・`--tls-key` を使う）。sans-io の
-  `senca-quic` の endpoint を一つのタスクで回す
+  ／ `--quic ADDR`: 1 つの UDP ポートで QUIC v1 の接続を受け付けます（既定は無効。`--tls-cert`・`--tls-key` を使用）。
+  sans-io の `senca-quic` の endpoint を 1 つのタスクで処理します
 - HTTP/3 (ALPN `h3`): the same routes as TCP HTTP (`/api/v1`, signed HLS including LL-HLS blocking reloads, WHIP/WHEP,
   `/healthz`); SSE and `/signaling` answer 501. TCP HTTP responses advertise `Alt-Svc: h3=":PORT"`
-  ／ HTTP/3（ALPN `h3`）: TCP の HTTP と同じ経路（`/api/v1`・LL-HLS のブロッキング・リロードを含む署名付き HLS・WHIP/WHEP・
-  `/healthz`）。SSE と `/signaling` は 501。TCP の HTTP の応答に `Alt-Svc: h3=":ポート"`
+  ／ HTTP/3（ALPN `h3`）: TCP の HTTP と同じルート（`/api/v1`、LL-HLS のブロッキングリロードを含む署名付き HLS、WHIP/WHEP、
+  `/healthz`）に対応します。SSE と `/signaling` は 501 を返します。TCP の HTTP の応答には `Alt-Svc: h3=":ポート"` を付けます
 - MoQ draft-22 subscriptions (native QUIC `moqt-22` and WebTransport `/moq`): every live stream is the namespace
   `senca/live/{stream_id}` with a hang `catalog.json` (CMAF init, codec description) and CMAF tracks (one fragment per
   object, one group per GOP), fed from the stream hub or a relay mirror; authorized by the playback signature
   (`exp`/`sig` as an AUTHORIZATION TOKEN, native PATH or WebTransport URL query). Playback URLs gain `moq`;
   capabilities gain `output.moq` and `output.http3`
-  ／ MoQ draft-22 の購読（native QUIC の `moqt-22` と WebTransport の `/moq`）: ライブの stream はすべて namespace
-  `senca/live/{stream_id}`、hang の `catalog.json`（CMAF の init・codec の description）と CMAF の track（object 一つが
-  fragment 一つ、GOP ごとに group）。stream の hub か中継のミラーから作る。認可は再生の署名（`exp`・`sig` を
-  AUTHORIZATION TOKEN・native の PATH・WebTransport の URL の query で）。再生 URL に `moq`、capabilities に
-  `output.moq`・`output.http3`
+  ／ MoQ draft-22 の購読（ネイティブ QUIC の `moqt-22` と WebTransport の `/moq`）: すべてのライブストリームを namespace
+  `senca/live/{stream_id}` として公開します。内容は hang の `catalog.json`（CMAF の init、コーデックの description）と
+  CMAF のトラック（1 object が 1 fragment、GOP ごとに 1 group）です。ストリームの hub または中継のミラーから生成します。
+  認可には再生の署名を使います（`exp`・`sig` を AUTHORIZATION TOKEN、ネイティブの PATH、または WebTransport の URL の
+  クエリで渡します）。再生 URL に `moq`、capabilities に `output.moq`・`output.http3` を追加しました
 - MoQ publishing: `PUBLISH_NAMESPACE senca/live/{stream_id}` with the stream key as AUTHORIZATION TOKEN; the node
   subscribes to the catalog and CMAF tracks and becomes the stream's publisher (`cmaf` container only)
-  ／ MoQ の送出: publish 鍵を AUTHORIZATION TOKEN に入れた `PUBLISH_NAMESPACE senca/live/{stream_id}`。ノードが catalog と
-  CMAF の track を購読して stream の送り手になる（容器は `cmaf` だけ）
+  ／ MoQ での配信（送信）: ストリームキーを AUTHORIZATION TOKEN に入れて `PUBLISH_NAMESPACE senca/live/{stream_id}` を
+  送ります。ノードは catalog と CMAF のトラックを購読し、そのストリームの配信者になります（コンテナは `cmaf` のみ）
 - `senca-moq`: draft-22 FILL_PARAMETERS answered with a fill stream (`Session::fill_object`/`fill_finish`), and an
   optional `description` in catalog renditions
-  ／ `senca-moq`: draft-22 の FILL_PARAMETERS に fill の stream で応える（`Session::fill_object`・`fill_finish`）、
-  catalog の rendition に `description`
+  ／ `senca-moq`: draft-22 の FILL_PARAMETERS に fill の stream で応答します（`Session::fill_object`・`fill_finish`）。
+  catalog の rendition に省略可能な `description` を追加しました
 - `tools/interop/node_quic.sh`: aioquic (HTTP/3), moq-dev `moq export fmp4`/`fetch`, Chrome (HTTP/3 and WebTransport)
   ／ `tools/interop/node_quic.sh`: aioquic（HTTP/3）、moq-dev の `moq export fmp4`・`fetch`、Chrome（HTTP/3・WebTransport）
 
@@ -37,21 +37,23 @@
   node they connect to (edge) and joined to the room's node (home) over the inter-node relay. Presence and tracks are synced as
   full snapshots, media is subscribed as `@room/<room>/<track>`, app messages go directly to the recipients' nodes. When the home
   dies, an edge with participants becomes the new home.
-  ／ ノードをまたぐ部屋のカスケード: 部屋の設定 `cascade: true`（または `--rooms-cascade`）で、参加者はつないだノード（edge）で
-  受け、部屋の配置先（home）とノード間の中継でつながります。在室とトラックは全量で同期し、メディアは `@room/<部屋>/<トラック>`
-  の購読、アプリのメッセージは受け手のノードへ直接送ります。home が落ちると、参加者のいる edge が新しい home になります。
+  ／ ノードをまたぐ部屋のカスケード: 部屋の設定 `cascade: true`（または `--rooms-cascade`）を有効にすると、参加者は接続した
+  ノード（edge）で処理され、部屋の配置先のノード（home）とノード間の中継で接続されます。在室情報とトラックはスナップショット全体で
+  同期し、メディアは `@room/<部屋>/<トラック>` として購読します。アプリのメッセージは宛先の参加者がいるノードへ直接送ります。
+  home が停止すると、参加者のいる edge が新しい home になります。
 - senca-relay: versioned, bounded App frame (`0x0f`, capability `APP`) for integration messages (`send_app`, `take_app_messages`).
-  ／ senca-relay: 統合側のメッセージのための、版つき・上限つきの App 枠（`0x0f`、capability `APP`）。
+  ／ senca-relay: 連携用メッセージのための、バージョン付き・サイズ上限付きの App フレーム（`0x0f`、capability `APP`）を追加しました（`send_app`・`take_app_messages`）。
 - Auth webhook in the node: room setting `auth_webhook_url` or `--rooms-auth-webhook`, `--rooms-auth-mode after_token|only`,
   signed with `--rooms-webhook-secret-file`, destinations checked by the egress policy. Rooms without a URL are admitted by token.
-  ／ ノードの認証 Webhook: 部屋の設定 `auth_webhook_url` か `--rooms-auth-webhook`、`--rooms-auth-mode after_token|only`、
-  `--rooms-webhook-secret-file` で署名、宛先は egress の方針で検査。URL の無い部屋はトークンで認めます。
+  ／ ノードの認証 Webhook: 部屋の設定 `auth_webhook_url` または `--rooms-auth-webhook` で指定し、`--rooms-auth-mode after_token|only`
+  で方式を選びます。リクエストは `--rooms-webhook-secret-file` の鍵で署名し、宛先は egress ポリシーで検査します。URL が未設定の
+  部屋は、トークンだけで参加を認めます。
 - Event webhook: `--rooms-event-webhook` delivers room events (signed, at least once, retries, dead letters shown in
   `GET /api/v1/nodes`); SSE is unchanged.
-  ／ イベント Webhook: `--rooms-event-webhook` で部屋の出来事を送ります（署名つき・少なくとも 1 回・送り直し・諦めた件数は
-  `GET /api/v1/nodes` に表示）。SSE は今までどおりです。
+  ／ イベント Webhook: `--rooms-event-webhook` で部屋のイベントを送信します（署名付き、少なくとも 1 回の配送、再送あり。
+  配送をあきらめた件数（dead letter）は `GET /api/v1/nodes` に表示）。SSE は従来どおりです。
 - Interop test `tools/interop/cluster_rooms.sh` (3 nodes, Chrome, home node failure, mock webhook receiver).
-  ／ 相互接続試験 `tools/interop/cluster_rooms.sh`（3 台、Chrome、home のノードの障害、Webhook の模擬の受け手）。
+  ／ 相互接続テスト `tools/interop/cluster_rooms.sh`（3 ノード、Chrome、home ノードの障害、Webhook のモック受信側）。
 
 ### Security / セキュリティ
 
@@ -83,7 +85,7 @@
   所有者へリダイレクトされず 404 になります
 - Draining nodes refuse new RTMP, SRT and WHIP publishers (WHIP is redirected with 307 to a node that is not draining);
   connected sessions are kept
-  ／ drain 中のノードは新しい RTMP・SRT・WHIP の送り手を拒否します（WHIP は drain 中でないノードへ 307）。接続済みの送り手は継続します
+  ／ drain 中のノードは、新しい RTMP・SRT・WHIP の配信者を拒否します（WHIP は drain 中でないノードへ 307 でリダイレクト）。接続済みのセッションは継続します
 - Heartbeats report measured CPU, memory and network usage from `/proc`, shown as `usage` in `GET /api/v1/grid`.
   Devices are re-probed every 10 s (fresh codec worker Hello, capture device list) and devices that disappear raise
   `device.down` automatically (`device.up` when back); the manual disable flag stays separate
@@ -104,40 +106,38 @@
 
 ## v0.0.0 — 2026-11-03
 
-First public snapshot. **Experimental**: the release gate in docs/dev/RELEASE.md (long fuzzing, soak test,
-independent security review, signed builds) has not been passed. Not for production use.
+First public snapshot.
 
-最初の公開。**実験的**: docs/dev/RELEASE.md の出荷 gate（長時間の fuzz、連続試験、独立したセキュリティレビュー、
-署名付きの配布）は通していない。本番には使わないこと。
+最初の公開版です。
 
 ### Included / 含まれるもの
 
 - Ingest: RTMP/RTMPS (Enhanced RTMP), SRT, WHIP, RTSP/RTMP/SRT/HLS pull, capture devices
-  ／ 受信: RTMP/RTMPS（Enhanced RTMP）、SRT、WHIP、RTSP・RTMP・SRT・HLS の pull、キャプチャ機器
+  ／ 取り込み: RTMP/RTMPS（Enhanced RTMP）、SRT、WHIP、RTSP・RTMP・SRT・HLS の pull、キャプチャデバイス
 - Delivery: HLS (TS, fMP4, LL-HLS), RTMP/SRT/RTSP play, WHEP, signed URLs, relay mirrors across nodes
-  ／ 配信: HLS（TS・fMP4・LL-HLS）、RTMP・SRT・RTSP の play、WHEP、署名付き URL、ノード間の中継の写し
-- Recording, VOD, MP4 export, schedules, crash recovery ／ 録画・VOD・MP4 の書き出し・予約・障害からの回収
+  ／ 配信: HLS（TS・fMP4・LL-HLS）、RTMP・SRT・RTSP の play、WHEP、署名付き URL、ノード間の中継のミラー
+- Recording, VOD, MP4 export, schedules, crash recovery ／ 録画・VOD・MP4 の書き出し・予約録画・障害後の復旧
 - Pipelines and production controls, snapshots, captions and translation
-  ／ パイプラインと制作の操作、静止画、字幕と翻訳
+  ／ パイプラインと配信制作の操作、静止画、字幕と翻訳
 - Codecs: H.264/H.265 through GPU vendor SDKs only; AV1, VP8/VP9 and Opus in software
-  ／ コーデック: H.264/H.265 は GPU の SDK だけ、AV1・VP8/VP9・Opus はソフトウェア
-- Clustering: in-house Raft, mTLS, ownership with fencing ／ 分散: 自前の Raft、mTLS、所有権と fencing
+  ／ コーデック: H.264/H.265 は GPU メーカーの SDK のみ、AV1・VP8/VP9・Opus はソフトウェア
+- Clustering: in-house Raft, mTLS, ownership with fencing ／ クラスター: 独自実装の Raft、mTLS、所有権と fencing
 - Grid: resource-aware placement, manual pins, priorities, failover with degradation and restore
-  ／ グリッド: 資源を数えた配置、手動の割り当て、優先度、縮退を伴う移動と復帰
+  ／ グリッド: 資源に応じた配置、手動の割り当て、優先度、縮退を伴うフェイルオーバーと復帰
 - Realtime rooms (SFU, simulcast, spotlight, forwarding filters, DataChannels, join tokens)
   ／ リアルタイムの部屋（SFU・サイマルキャスト・スポットライト・転送フィルター・DataChannel・参加トークン）
 - Media pipelines for rooms (export, composite, record, live connector, transcription)
-  ／ 部屋のメディアパイプライン（書き出し・合成・録画・送り出し・文字起こし）
+  ／ 部屋のメディアパイプライン（書き出し・合成・録画・ライブ配信サービスへの送信・文字起こし）
 - REST API (OpenAPI), SSE, web console, browser SDK, TypeScript and Rust API clients
-  ／ REST API（OpenAPI）、SSE、管理画面、ブラウザーの SDK、TypeScript・Rust の API クライアント
+  ／ REST API（OpenAPI）、SSE、管理画面、ブラウザー用 SDK、TypeScript・Rust の API クライアント
 - QUIC v1, HTTP/3, WebTransport and MoQ as libraries (not yet wired into the node)
-  ／ QUIC v1・HTTP/3・WebTransport・MoQ の部品（ノードへの組み込みはこれから）
+  ／ QUIC v1・HTTP/3・WebTransport・MoQ のライブラリ（この時点ではノードに組み込まれていません）
 
-### Not verified yet / まだ確かめていないこと
+### Not verified yet / 未検証の項目
 
 - GPU codecs on real hardware, capture hardware, iOS/Android sender apps
-  ／ 実機の GPU のコーデック、キャプチャ機器、iOS・Android の送り手のアプリ
+  ／ 実機 GPU でのコーデック、キャプチャデバイス、iOS・Android の配信アプリ
 - Browsers other than Chrome, TURN paths ／ Chrome 以外のブラウザー、TURN の経路
 - Room cascading across nodes, auth webhook for rooms in the node
   ／ ノードをまたぐ部屋のカスケード、ノードでの部屋の認証 Webhook
-- Real cloud PaaS accounts (tested against mocks only) ／ 実際のクラウドの PaaS（模擬の API でのみ確認）
+- Real cloud PaaS accounts (tested against mocks only) ／ 実際のクラウド PaaS のアカウント（モックの API でのみ確認）

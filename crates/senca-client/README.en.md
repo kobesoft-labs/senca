@@ -70,7 +70,7 @@ Each resource is reached through `client.<resource>()` (the mapping between meth
 - **Errors**: `Error::Api(ApiError)` carries the problem+json `code` (`ProblemCode`; unknown values become `Unknown` with `raw_code`), `title`,
   `status`, `retryable`, `request_id`, `details` and `retry_after`. The other variants are `Connect`, `Transport`, `Timeout`, `Decode`,
   `InvalidUrl` and `InvalidArgument`.
-- **Retries** (`RetryPolicy`: 3 retries by default, starting at 200 ms and doubling up to 10 seconds, ±20 % jitter, never shorter than `Retry-After`):
+- **Retries** (`RetryPolicy`: up to 3 retries by default, starting at 200 ms and doubling up to 10 seconds, ±20 % jitter, never shorter than `Retry-After`):
   requests that could not connect; timeouts and send/receive errors of idempotent requests (GET, DELETE and POST with an Idempotency-Key);
   and responses with `retryable: true` or 429, 502, 503, 504. PATCH is retried only when the server says it had no effect (`retryable`, 429, 503).
 - **Models**: `src/models.rs` is generated from openapi.yaml (`python3 crates/senca-client/gen/gen_models.py`). Unknown fields in responses
@@ -84,11 +84,5 @@ Each resource is reached through `client.<resource>()` (the mapping between meth
 CARGO_TARGET_DIR=... cargo test -p senca-client
 ```
 
-- Unit tests (URLs, problems, retry intervals, SSE parsing, the three states of Patch fields, the operationId table)
-- `tests/mock.rs`: a server that answers from a script, covering retries on 503 (Retry-After), POST retries with the same key, errors that
-  are not retried, giving up at the limit, cursor pages, SSE reconnection (Last-Event-ID) and resync
-- `tests/node.rs`: starts a real senca-node (`SENCA_NODE_BIN`; otherwise `debug/senca-node` in the same target; otherwise it builds one) and
-  checks creation, Idempotency resends (same ID and `Idempotency-Replayed`, 409 for a different body), SSE `stream.created`, paging with
-  `limit=1`, get, update with If-Match, 412 for a stale ETag, 428 without If-Match, 400 for unknown fields, deletion (412 for an old version,
-  then 404), 401, token scopes (403), secrets, nodes, the grid, and rooms (create, list with `limit=1`, get, update with If-Match and 412,
-  join tokens, the participant list (empty), stats, 404 after deletion; the node is started with `--webrtc-udp`)
+There are unit tests, tests against a mock server (`tests/mock.rs`) and tests against a real senca-node (`tests/node.rs`).
+What each of them checks is described in [docs/dev/notes/senca-client-tests.md](../../docs/dev/notes/senca-client-tests.md).

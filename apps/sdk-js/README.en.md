@@ -181,12 +181,9 @@ npm run build                            # type check with tsc, writes types/ an
 tools/interop/sdk_js.sh                  # all of the above + a real senca-node + three pages in Chrome on Docker (against both rooms_server and senca-node)
 ```
 
-The room test in `tools/interop/sdk_js.sh`: three pages (alice publishes three simulcast layers) join using only the SDK, decode each
-other's video (framesDecoded from `session.stats()`), round-trip `#chat` both over the DataChannel and addressed (via signaling), carol selects
-alice's layer `r2` -> `r0` and checks that the decoded width goes from 1280 to 320, and then each page calls `close()` in turn, checking that
-the remaining participants receive `participant.left` and that the room ends up empty.
+What `tools/interop/sdk_js.sh` checks is described in [docs/dev/notes/sdk-js-interop.md](../../docs/dev/notes/sdk-js-interop.md).
 
-## Limitations and missing features
+## Limitations
 
 - **Changing your own metadata**: signaling v1 has no message for a client to change its metadata. Change it from the application server
   with `senca.rooms.participants(room).updateMetadata(connectionId, metadata)` (participants receive `connection.updated`).
@@ -196,4 +193,4 @@ the remaining participants receive `participant.left` and that the room ends up 
 - **E2EE**: `e2ee: true` only checks against the room setting. SFrame encryption and decryption (Encoded Transform) are not in the SDK.
 - **No trickle ICE is sent** (the server is ICE-lite and learns the address from the client's connectivity checks).
 - One `publish()` carries at most one video and one audio track (screen sharing needs a separate `publish()`, or a separate session with the same `bundleId`).
-- Chrome is the only browser tested (ov-chrome on Docker). Firefox and Safari are untested.
+- The browser the SDK is tested with is Chrome (ov-chrome on Docker). Firefox and Safari are not tested at present.

@@ -5,12 +5,12 @@ This page lists every option, the JSON format, the cluster configuration, enviro
 the data directory.
 
 - Related pages: [2. Quickstart](02-quickstart.md), [9. Cluster and grid](09-cluster-grid.md), [12. Security](12-security.md), [13. Operations](13-operations.md)
-- Source of truth: `crates/senca-node/src/config.rs` (`senca-node --help` prints a summary)
+- `senca-node --help` also prints the list of options.
 
 ## 3.1 Rules
 
-- Options are written as `--name value`; the `--name=value` form is not accepted. Only `--capture-synthetic`,
-  `--verify-recordings` and `--log-json` take no value.
+- Options are written as `--name value`; the `--name=value` form is not accepted. The options that take no value
+  are `--capture-synthetic`, `--verify-recordings`, `--log-json` and `--rooms-cascade`.
 - An unknown option is an error (exit code 2, usage printed). An invalid configuration never starts the node;
   nothing is applied partially.
 - If `--config FILE` is present, that JSON is loaded first and the other command-line options are then applied on
@@ -47,7 +47,7 @@ independently of the listen addresses.
 | `--public-http-url` | `http://127.0.0.1:8080` | `hls` and `whep` in playback URLs; `ingest.whip_url` |
 | `--public-rtmp-url` | `rtmp://127.0.0.1:1935` | `ingest.rtmp_url` (`{URL}/live`); `rtmp` in playback URLs (`{URL}/play/{id}?...`) |
 | `--public-srt-url` | none | `ingest.srt_url` (used verbatim). Omitted when unset |
-| `--public-rtsp-url` | none | `rtsp` in playback URLs (`{URL}/live/{id}?...`). Omitted when unset. Not listed by `--help` |
+| `--public-rtsp-url` | none | `rtsp` in playback URLs (`{URL}/live/{id}?...`). Omitted when unset |
 
 Set these whenever you change ports from the defaults, or when clients reach the node through a reverse proxy or
 from outside a container.
@@ -81,7 +81,7 @@ See [12. Security](12-security.md).
 | `--codec-workers` | N | `0` (= number of CPUs) | Number of codec worker processes for one-shot jobs (snapshots, thumbnails and the like) |
 | `--codec-worker-bin` | FILE | `senca-codec-worker` next to `senca-node` | The codec worker executable. If it cannot be found, transcoding returns 503 |
 | `--codec-lib-dir` | DIR | none | Directory searched first for codec shared libraries. Passed to the codec and capture workers as `SENCA_CODEC_LIB_DIR` (several directories may be joined with `:`). See [2.3](02-quickstart.md#23-codec-libraries) |
-| `--capture-synthetic` | — | off | Expose a synthetic test capture device (passes `--synthetic` to the capture worker). Not listed by `--help` |
+| `--capture-synthetic` | — | off | Expose a synthetic test capture device (passes `--synthetic` to the capture worker) |
 
 ### Web pages
 
@@ -279,7 +279,7 @@ Contents of `--data-dir`. The node creates what it needs.
 |---|---|
 | `node-id` | This node's ID (128-bit, hex). Created once and never changed |
 | `audit.log` | Audit log (one JSON object per line, append-only) |
-| `control/log` | Single-node control-state log (`len:u32be | crc32:u32be | JSON` records, each fsynced) |
+| `control/log` | Single-node control-state log (append-only, each record fsynced) |
 | `control/snapshot.json` | Single-node control-state snapshot. Rewritten when the log exceeds 1000 records, after which the log is emptied |
 | `control/raft/` | Raft storage in a cluster (`hardstate`, `snap-*.snap`, `log/*.seg`). `control/log` is not used in a cluster |
 | `control/secret-key` | Key that seals stored secrets (32 bytes, mode 0600). Created on first start if missing. In a cluster, one node's key becomes the cluster-wide key, wrapped with the cluster secret and replicated |
