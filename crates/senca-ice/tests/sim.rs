@@ -590,7 +590,8 @@ fn ice_lite_server() {
         sim.run_until(Duration::from_secs(40), |s| s.peers[1].agent.state()
             == IceState::Failed)
     );
-    assert!(sim.now - t >= Duration::from_secs(25));
+    // 期限は最後に受けた検査から 30 秒。検査は 4〜6 秒ごとなので、黙ってからは 24〜30 秒
+    assert!(sim.now - t >= Duration::from_secs(23), "{:?}", sim.now - t);
 }
 
 #[test]
