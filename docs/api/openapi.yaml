@@ -305,9 +305,8 @@ paths:
         - **部屋の核の出来事**（ADR-0015。合意ログに載らず、部屋を置いたノードの購読者にだけ流れる）: `room.started`（部屋の核が部屋を開いた）・`room.stopped`・
           `room.connection.created`・`room.connection.updated`・`room.connection.destroyed`・`room.track.published`・`room.track.unpublished`・`room.spotlight.changed`。
           これらは SSE の `id` を持たない（`Last-Event-ID` の再開の対象外、取りこぼしは黙って飛ばす）。`data` に `event_id`（出来事の ID）と `node`（ノードの ID）があり、
-          `data.data` は部屋の核の出来事 `{type, data}`（`type` は核での名前 `room.created`・`connection.created` など）。テナントで絞り、`node:admin` でも他テナントのものは流さない。
-          部屋を消したとき（`DELETE /rooms/{id}`・自動の部屋の掃除）の `room.stopped` と、そのとき切った参加者の `room.connection.destroyed` は流れない
-          （部屋の核が出来事を出す時点で制御状態から部屋が消えていて、テナントが分からないため捨てる。実装の不備）。`room.stopped` が流れるのは部屋が別のノードへ移ったときだけ。
+          `data.data` は出来事の中身（部屋の核の `data`）。テナントで絞り、`node:admin` でも他テナントのものは流さない。
+          部屋を消したとき（`DELETE /rooms/{id}`・自動の部屋の掃除）も `room.stopped` と、そのとき切った参加者の `room.connection.destroyed` が流れる。
         - `Last-Event-ID` が今の位置より前なら、最初に `event: resync`（`id` は今の位置、`data: {}`）を送る（保持を持たないので必ず再同期になる）。
         - 取りこぼし（購読の遅れ）では `event: resync`（`data: {}`）を送って閉じる。
 
@@ -1572,8 +1571,7 @@ paths:
         検査の順: 本文の形（400 `INVALID_REQUEST`・415）→ `id`（1〜128 文字の英数字と `-_.:@`、400）→ `settings`（400）→ `metadata`（JSON で 8 KiB まで、400）
         → `placement`（400、`PlacementSpec`。`node` はノードの ID か名前で、応答では ID に直る。`degrade` は 400）→ 同じ ID の部屋（**どのテナントのものでも** 409）。
         テナントあたり 10000 部屋まで（超えると 403 `QUOTA_EXCEEDED`）。
-        `settings` の検査は形（未知のフィールド・型・enum）と `max_participants`（1〜10000）だけ。他の範囲（`RoomSettings` の説明）は API では検査せず、
-        部屋の核が部屋を開くときに検査する（違反すると部屋が開かれず、参加者・統計などは 404 のまま。実装の不備）。
+        `settings` は部屋の核と同じ検査をする（形・範囲。違反は 400 で、`details.errors` に欄ごとの理由）。
       x-senca-scope: stream:write
       parameters:
         - $ref: '#/components/parameters/IdempotencyKey'
@@ -1931,8 +1929,7 @@ paths:
       summary: メディアパイプラインの一覧
       description: |
         テナントのメディアパイプライン。ID の昇順。
-        `room` で部屋を絞る（実装の handler は読むが、**今は一覧の共通の検査が `room` を知らないクエリとして 400 にする**。実装の不備。
-        直るまでは全件を取って `room` で絞る）。`room` の値は URL の復号をしない（英数字と `-_.` の ID だけ正しく絞れる）。
+        `room` で部屋を絞る（値は URL の復号をしてから比べる）。
       x-senca-scope: stream:read
       parameters:
         - $ref: '#/components/parameters/RoomFilter'
@@ -1978,7 +1975,7 @@ paths:
         検査の順: `If-Match`（428・412）→ 本文の形（400・415）→ あるか（404）→ 世代（412）→ 作成と同じ中身の検査（400）。
         `stopped` にする・`composite` を外す・`egress` を変えると、前の定義の子（合成のパイプライン・送り出しの出力）を消す（動かすなら係が作り直す）。
         書き出した stream はそのまま（`participants` を減らしても、外れた参加者の stream は残る）。
-        仕様との差: 作成と違い、更新では name の重複を検査しない（同じ名前のメディアパイプラインが作れてしまう。実装の不備）。
+        name を変えるときも、テナントの中の重複を検査する（409）。
       x-senca-scope: stream:write
       parameters:
         - $ref: '#/components/parameters/IfMatchRequired'
@@ -2257,7 +2254,7 @@ components:
       required: true
       schema: { type: string, pattern: '^"[0-9]+"$' }
     ETagNotOnReplay:
-      description: '`"{generation}"`。Idempotency-Key の再送の応答には付かない（覚えるのは状態コード・本文・Location だけ。実装の不備）。'
+      description: '`"{generation}"`。Idempotency-Key の再送の応答にも、覚えた値を付ける。'
       required: false
       schema: { type: string, pattern: '^"[0-9]+"$' }
     Location:
@@ -2328,7 +2325,7 @@ components:
     BadRequest:
       description: |
         `INVALID_REQUEST`（本文・クエリ・ヘッダーの形）または `INVALID_CONFIG`（値の範囲・組み合わせ）
-        Idempotency-Key の再送で覚えた失敗を返すときは Content-Type が `application/json` になり、`request_id` が無い（実装の不備）。
+        Idempotency-Key の再送で覚えた失敗を返すときも `application/problem+json` で、`request_id` は再送の要求のものになる。
       headers: { X-Request-Id: { $ref: '#/components/headers/X-Request-Id' } }
       content:
         application/problem+json:
@@ -2346,7 +2343,7 @@ components:
     Forbidden:
       description: |
         `FORBIDDEN`（権限が足りない）または `QUOTA_EXCEEDED`（上限）
-        Idempotency-Key の再送で覚えた失敗を返すときは Content-Type が `application/json` になり、`request_id` が無い（実装の不備）。
+        Idempotency-Key の再送で覚えた失敗を返すときも `application/problem+json` で、`request_id` は再送の要求のものになる。
       headers: { X-Request-Id: { $ref: '#/components/headers/X-Request-Id' } }
       content:
         application/problem+json:
@@ -2356,7 +2353,7 @@ components:
     NotFound:
       description: |
         `NOT_FOUND`（無い、または他テナント）
-        Idempotency-Key の再送で覚えた失敗を返すときは Content-Type が `application/json` になり、`request_id` が無い（実装の不備）。
+        Idempotency-Key の再送で覚えた失敗を返すときも `application/problem+json` で、`request_id` は再送の要求のものになる。
       headers: { X-Request-Id: { $ref: '#/components/headers/X-Request-Id' } }
       content:
         application/problem+json:
@@ -2372,7 +2369,7 @@ components:
     Conflict:
       description: |
         `CONFLICT`（状態・一意性・上限の衝突）または `IDEMPOTENCY_CONFLICT`
-        Idempotency-Key の再送で覚えた失敗を返すときは Content-Type が `application/json` になり、`request_id` が無い（実装の不備）。
+        Idempotency-Key の再送で覚えた失敗を返すときも `application/problem+json` で、`request_id` は再送の要求のものになる。
       headers: { X-Request-Id: { $ref: '#/components/headers/X-Request-Id' } }
       content:
         application/problem+json:
@@ -2394,7 +2391,7 @@ components:
     UnsupportedMediaType:
       description: |
         `UNSUPPORTED_MEDIA_TYPE`（Content-Type が application/json でない）
-        Idempotency-Key の再送で覚えた失敗を返すときは Content-Type が `application/json` になり、`request_id` が無い（実装の不備）。
+        Idempotency-Key の再送で覚えた失敗を返すときも `application/problem+json` で、`request_id` は再送の要求のものになる。
       headers: { X-Request-Id: { $ref: '#/components/headers/X-Request-Id' } }
       content:
         application/problem+json:
@@ -4363,6 +4360,6 @@ components:
         code: { $ref: '#/components/schemas/ProblemCode' }
         request_id:
           type: string
-          description: '`X-Request-Id` と同じ。Idempotency-Key の再送で返した覚えたエラーには無い（実装の不備）。'
+          description: '`X-Request-Id` と同じ（Idempotency-Key の再送では、再送の要求の ID）。'
         retryable: { type: boolean }
         details: { description: 'code ごとの補足（例: 本文の解析エラーは `{reason}`、予約の衝突は `{limit, overlaps}`）' }

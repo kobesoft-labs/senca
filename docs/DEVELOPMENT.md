@@ -1,5 +1,7 @@
 # 開発の約束
 
+[English](DEVELOPMENT.en.md) | 日本語
+
 ## 全体
 
 - Rust のモノレポ（`crates/*`）。edition 2024。`cargo test --workspace` と `cargo clippy --workspace --all-targets -- -D warnings` が通ること。

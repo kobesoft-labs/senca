@@ -1,5 +1,7 @@
 # リアルタイムの部屋: シグナリング v1
 
+日本語 | [English](signaling.en.md)
+
 - 関係: ADR-0015（リアルタイムの部屋）、ADR-0012（WebRTC）、ADR-0013（グリッド）、ADR-0014（中継）
 - 実装: `crates/senca-rooms`（`signaling.rs` が型、`service.rs` が状態機械）、`crates/senca-ws`（WebSocket）
 - 相互接続の試験: `tools/interop/rooms.sh`（Chrome 3 ページ）、`crates/senca-rooms/tests/e2e.rs`（senca-webrtc 同士）
@@ -152,6 +154,7 @@ SFU の送信トラックの送り元を替えて流す（受け手には 1 本�
 | `forbidden` | 4403 | 別の部屋のトークン、役割・client_id がトークンと合わない、許可の無い種類を送る |
 | `room_not_found` | 4404 | 部屋が無く、自動で作らない設定 |
 | `room_full` | 4503 | 部屋・ノードの上限（ノードに `overflow_redirect` があれば `redirect`） |
+| `capacity_unavailable` | 4503 | 部屋を置けるノードが今は無い（グリッドが置き場所を決められない。senca-node） |
 | `role_violation` | 4403 | `recvonly` が送る m 行を出した |
 | `e2ee_mismatch` | 4422 | `connect.e2ee` と部屋の `e2ee` が違う |
 | `unsupported_codec` | 4422 | 部屋のコーデックと違う |
@@ -230,7 +233,11 @@ SENCA の署名鍵（Ed25519 = `EdDSA`、P-256 = `ES256`）で署名する。`PO
 ```
 
 `type`: `room.created`・`room.updated`・`room.destroyed`・`connection.created`・`connection.updated`・`connection.destroyed`・
-`track.published`・`track.unpublished`・`spotlight.changed`。
+`track.published`・`track.unpublished`・`spotlight.changed`（部屋の核の名前）。
+
+senca-node の SSE では名前を `room.started`（= `room.created`）・`room.stopped`（= `room.destroyed`）・`room.connection.*`・
+`room.track.*`・`room.spotlight.changed` にし、`data` に中身を入れる（`room.updated` は制御の変更のイベントが出す）。
+senca-node は今のところ Webhook を送らない（SSE だけ）。認証 Webhook も使わない（参加はトークンで認める）。
 
 Webhook は**少なくとも 1 回**（受け手は `id` で重複を除く）。2xx で完了。408・429・5xx・接続の失敗・10 秒の時間切れは
 1, 2, 4, … 秒（±20 %、最大 1 時間）で送り直し、10 回で諦める（dead letter）。その他の 4xx はすぐ諦める。
@@ -277,6 +284,9 @@ E2EE の部屋（SFrame）では SFU は中身を見ずに配る。サーバー�
 そのトラックは同じ枠に割り当てる。ノード間で運ぶのは、そのノードの購読者が要る層だけ（自動で選ぶ購読者がいれば全部の層、
 固定の層だけならその層）。キーフレームの要求・アプリの message も中継する。
 部屋がこのノードで受けられないとき（グリッドの配置・上限）は `redirect {location}` で別のノードへ。
+senca-node では、最初の `connect` の前（部屋が別のノードにある）の案内は `redirect` を送ってから close 4300 で閉じる
+（`disconnect` は送らない）。`connect` が 10 秒届かなければ close 4408 で閉じる。
+今の senca-node はノードをまたぐカスケードを有効にしていない（部屋は 1 つのノードに置き、参加者はそこへ案内する）。
 
 ## 14. 例
 

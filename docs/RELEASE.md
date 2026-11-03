@@ -1,5 +1,7 @@
 # リリースの手順と出荷 gate
 
+[English](RELEASE.en.md) | 日本語
+
 仕様 9.5（SBOM・依存ライセンス・署名付き release・再現可能な build）、15.2（AC-01・AC-12・AC-21・AC-25）、
 15.3（セキュリティ出荷 gate）、REQ-007 AC-R7-03、REQ-010 R10-6 を、手で回せる手順と道具にしたもの。
 道具は `tools/fuzz/`・`tools/release/`・`tools/loadgen/`・`tools/soak/`。結果の置き場所は `out/`（git に入れない）。

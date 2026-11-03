@@ -1,14 +1,11 @@
 # SENCA
 
+[English](README.md) | 日本語
+
 ライブ配信・録画・リアルタイム通信のためのメディアサーバー（Rust）。1 台でも、何台ものノードを束ねたグリッドでも動く。
 
 > **状態: v0.0.0（実験的）。** 機能は揃ってきたが、出荷 gate（24 時間の fuzz、72 時間の連続試験、暗号・認可の独立レビュー、
 > 署名付きの配布）をまだ通していない。本番には使わないこと。手順は [docs/RELEASE.md](docs/RELEASE.md)。
-
-*English summary: SENCA is a media server for live streaming, recording and real-time communication, written in Rust.
-It runs on a single node or as a self-healing grid. H.264/H.265 are handled only through GPU vendor SDKs
-(NVENC/NVDEC, oneVPL, AMF, VA-API) loaded at run time; no software H.264/H.265/AAC codec is shipped.
-Documentation is in Japanese. Status: experimental (v0.0.0).*
 
 ## できること
 
@@ -50,6 +47,8 @@ cat ./data/control/bootstrap-admin-token   # 管理 API のトークン
 - 分散: `--cluster-config`（[ADR-0009](docs/adr/0009-cluster.md)・[ADR-0013](docs/adr/0013-grid.md)）
 
 ## 文書
+
+**利用の手引き: [docs/guide/ja](docs/guide/ja/README.md)**（導入・設定・配信・録画・グリッド・部屋・メディアパイプライン・API と SDK）
 
 | | |
 |---|---|

@@ -1,5 +1,7 @@
 # @senca/sdk（apps/sdk-js）
 
+[English](README.en.md) | 日本語
+
 SENCA のクライアント SDK（JavaScript・TypeScript）。
 
 - **リアルタイムの部屋**（ブラウザー）: `Senca.connect()` で部屋に入り、公開・受信・メッセージ・層の選択・統計を扱う。
@@ -158,7 +160,7 @@ await senca.rooms.participants('daily').updateMetadata(connectionId, { name: 'Al
 `capabilities()`・`devices()`・`grid()`・`events()`。仕様のすべての操作に SDK のメソッドがある（`test/rest.test.mjs` が
 `operations.gen.js` と突き合わせる）。まだ SDK に無い操作は `senca.request(method, path, opts)` で呼べる。
 
-- **再試行**: 通信の失敗・408・429・502・503・504・problem の `retryable: true` を、`Retry-After` と指数バックオフ（既定 3 回）で送り直す。
+- **再試行**: 通信の失敗・408・429・502・503・504・problem の `retryable: true` を、`Retry-After` と指数バックオフで送り直す（既定は最初の要求を含めて 3 回まで）。
   本文を作ったかもしれない失敗は GET・DELETE と Idempotency-Key 付きの POST だけ送り直す（PATCH は 429・503 だけ）。
 - **誤り**: problem+json は `ApiError`（`status`・`code`・`title`・`requestId`・`retryable`・`retryAfterMs`・`details`・`problem`）。
   通信の失敗は `status: 0`・`code: 'NETWORK_ERROR' | 'TIMEOUT'`。
@@ -169,7 +171,7 @@ await senca.rooms.participants('daily').updateMetadata(connectionId, { name: 'Al
 ```
 npm test                                 # = node --test "test/*.test.mjs"（偽の WebSocket・RTCPeerConnection・fetch、オフライン）
 SENCA_URL=... SENCA_TOKEN=... node --test test/live/node.live.mjs   # 本物のノードに対して
-npm run build                            # tsc で型の検査、types/・API.md を作る（TypeScript 5.x が要る: npm i -D typescript か TSC=...）
+npm run build                            # tsc で型の検査、types/・API.md を作る（TypeScript 5.x は devDependencies にある: npm install。別の tsc は TSC=...）
 tools/interop/sdk_js.sh                  # 上の全部 + 本物の senca-node + Docker の Chrome 3 ページ（rooms_server と senca-node の両方）
 ```
 
