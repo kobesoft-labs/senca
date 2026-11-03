@@ -138,6 +138,21 @@ pub(crate) fn write_sample_entry(buf: &mut Vec<u8>, c: &CodecConfig, track_id: u
             child(buf, b"av1C", &c.record);
             end_box(buf, p);
         }
+        Codec::Vp8 => {
+            // VP Codec ISO Media File Format Binding: vp08 と vpcC（profile 0、8 bit、4:2:0）
+            let v = require_video(c)?;
+            let p = visual_entry(buf, b"vp08", &v)?;
+            let r = &c.record[..];
+            let body: Vec<u8> = if r.len() >= 12 && r[0..4] == [1, 0, 0, 0] {
+                r.to_vec()
+            } else if r.is_empty() {
+                vec![1, 0, 0, 0, 0, 10, 0x82, 1, 1, 1, 0, 0]
+            } else {
+                return Err(Mp4Error::BadConfig("vpcC"));
+            };
+            child(buf, b"vpcC", &body);
+            end_box(buf, p);
+        }
         Codec::Vp9 => {
             let v = require_video(c)?;
             let p = visual_entry(buf, b"vp09", &v)?;
@@ -461,6 +476,20 @@ mod tests {
             }
             let _ = parse_sample_entry(*b"mp4a", &buf[8..i.max(8)]);
         }
+    }
+
+    #[test]
+    fn vp8_entry_roundtrip() {
+        let c = CodecConfig {
+            codec: Codec::Vp8,
+            generation: 0,
+            record: Bytes::new(),
+            video: Some(senca_core::media::VideoParams { width: 640, height: 480, ..Default::default() }),
+            audio: None,
+        };
+        let mut b = Vec::new();
+        write_sample_entry(&mut b, &c, 1).unwrap();
+        assert!(b.windows(4).any(|w| w == b"vp08") && b.windows(4).any(|w| w == b"vpcC"));
     }
 
     #[test]

@@ -34,6 +34,24 @@ pub fn enrich(c: &mut CodecConfig) {
                 v.height = sh.max_frame_height;
             }
         }
+        Codec::Opus if c.record.is_empty() => {
+            // WebRTC の Opus には OpusHead が無い（SDP の opus/48000/2 だけ）。RFC 7845 の OpusHead を作る
+            // （fMP4 の dOps・Ogg に要る）。pre-skip は libopus の 48 kHz の既定の 312。
+            let ch = c.audio.as_ref().map(|a| a.channels).filter(|&n| n > 0).unwrap_or(2);
+            let mut h = b"OpusHead".to_vec();
+            h.push(1);
+            h.push(ch.min(2));
+            h.extend_from_slice(&312u16.to_le_bytes());
+            h.extend_from_slice(&48_000u32.to_le_bytes());
+            h.extend_from_slice(&0i16.to_le_bytes());
+            h.push(0);
+            c.record = bytes::Bytes::from(h);
+            let a = c.audio.get_or_insert_with(Default::default);
+            a.channels = ch.min(2);
+            if a.sample_rate == 0 {
+                a.sample_rate = 48_000;
+            }
+        }
         _ => {}
     }
 }

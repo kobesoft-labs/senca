@@ -331,6 +331,10 @@ pub(crate) struct Track {
     pub relay_out: BTreeMap<String, Vec<String>>,
     /// 別のノードのトラック: 今求めている層（`None` は求めていない）。
     pub relay_in: Option<Vec<String>>,
+    /// 層ごとの今の設定（後から購読した相手に、最初の AU と一緒に渡す）。
+    pub configs: HashMap<TrackId, CodecConfig>,
+    /// まだ設定を渡していない購読の相手。
+    pub relay_cfg_pending: BTreeSet<String>,
 }
 
 #[derive(Debug)]
@@ -1073,6 +1077,8 @@ impl RoomService {
                     group: mid,
                     layers: Vec::new(),
                     relay_out: BTreeMap::new(),
+                    configs: HashMap::new(),
+                    relay_cfg_pending: BTreeSet::new(),
                     relay_in: None,
                 },
             );
@@ -1197,21 +1203,32 @@ impl RoomService {
                     }
                 }
                 if let Some(tid) = room.layer_map.get(&(key.0, track)).cloned()
-                    && let Some(t) = room.tracks.get(&tid)
-                    && !t.relay_out.is_empty()
+                    && let Some(t) = room.tracks.get_mut(&tid)
                 {
+                    if let Some(c) = &config {
+                        t.configs.insert(track, c.clone());
+                    }
                     let rid = t.layers.iter().find(|l| l.1 == track).and_then(|l| l.0.clone());
+                    let mut sent_cfg = Vec::new();
                     for (node, rids) in &t.relay_out {
                         if rids.is_empty() || rid.as_ref().is_some_and(|r| rids.contains(r)) {
+                            // 後から購読した相手には、今の設定を最初の AU と一緒に渡す（途中から受けても組み立てられる）
+                            let cfg = if t.relay_cfg_pending.contains(node) { config.clone().or_else(|| t.configs.get(&track).cloned()) } else { config.clone() };
+                            if cfg.is_some() {
+                                sent_cfg.push(node.clone());
+                            }
                             out.actions.push_back(Action::Relay(RelayAction::Forward {
                                 node: node.clone(),
                                 room_id: room.id.clone(),
                                 track_id: tid.clone(),
                                 rid: rid.clone(),
                                 au: au.clone(),
-                                config: config.clone(),
+                                config: cfg,
                             }));
                         }
+                    }
+                    for n in sent_cfg {
+                        t.relay_cfg_pending.remove(&n);
                     }
                 }
                 room.sfu.on_access_unit(now, key.0, track, &au, config.as_ref());
@@ -1699,6 +1716,8 @@ impl RoomService {
                 layers,
                 relay_out: BTreeMap::new(),
                 relay_in: None,
+                configs: HashMap::new(),
+                relay_cfg_pending: BTreeSet::new(),
             },
         );
         let n = ServerMessage::Notify(Notify::TrackAdded { track: info });
@@ -1750,6 +1769,7 @@ impl RoomService {
         match rids {
             Some(r) => {
                 t.relay_out.insert(node.to_string(), r.clone());
+                t.relay_cfg_pending.insert(node.to_string());
                 for (lr, lt) in &t.layers {
                     if r.is_empty() || lr.as_ref().is_some_and(|x| r.contains(x)) {
                         self.out.actions.push_back(Action::RequestKeyframe { conn, track: *lt });
@@ -1758,6 +1778,7 @@ impl RoomService {
             }
             None => {
                 t.relay_out.remove(node);
+                t.relay_cfg_pending.remove(node);
             }
         }
         let _ = now;
