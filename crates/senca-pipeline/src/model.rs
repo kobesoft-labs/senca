@@ -661,6 +661,8 @@ pub struct SnapshotParamsSpec {
     /// 前回の保存からの変化（割合）。
     pub change_fraction: f64,
     pub jpeg_quality: u8,
+    /// ノードが残す枚数（パイプラインの部品ごと。超えたら古いものから消す）。解析には使わない。
+    pub keep: u32,
 }
 
 impl Default for SnapshotParamsSpec {
@@ -672,6 +674,7 @@ impl Default for SnapshotParamsSpec {
             stable_frames: 3,
             change_fraction: 0.004,
             jpeg_quality: 85,
+            keep: 1000,
         }
     }
 }

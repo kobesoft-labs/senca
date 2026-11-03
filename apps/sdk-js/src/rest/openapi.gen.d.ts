@@ -1,5 +1,5 @@
 // 生成物: apps/sdk-js/scripts/gen_types.py が docs/api/openapi.yaml から作る。手で直さない。
-// 管理 API v1 の components.schemas（132 個）。
+// 管理 API v1 の components.schemas（133 個）。
 
 export type Capabilities = {
   api_version: "v1";
@@ -21,7 +21,7 @@ export type Capabilities = {
     srt: boolean;
     whip: boolean;
   };
-  /** 使える入力の種類 */
+  /** 使用できる入力の種類 */
   inputs?: string[];
   /** このノードの ID */
   node: string;
@@ -32,15 +32,15 @@ export type Capabilities = {
     };
     /** HTTP/3（`--quic`） */
     http3?: boolean;
-    /** MoQ（draft-22）の購読と送出（`--quic`） */
+    /** MoQ（draft-22）による購読と配信（`--quic`） */
     moq?: boolean;
     rtmp_play: boolean;
     whep: boolean;
   };
-  /** 使える出力の種類 */
+  /** 使用できる出力の種類 */
   outputs?: string[];
   paas_providers?: string[];
-  /** パイプライン（codec worker が動いているとき） */
+  /** パイプラインが使えるか（コーデック worker が動いているとき） */
   pipelines?: boolean;
   recordings: {
     export: string[];
@@ -54,38 +54,38 @@ export type Capabilities = {
 };
 
 /**
- * 字幕と翻訳（R6-4）。配信中の音声を `asr_endpoint` に送って文字にし、`targets` の言語へ翻訳して、ライブ HLS に WebVTT の字幕を足す。
- * 検査: `asr_provider`・`translate_provider` の値、`asr_endpoint`・`translate_endpoint` が URL として読めること、言語は `language` と `targets` 合わせて英数字と `-` の 1〜8 文字（`targets` は 8 個まで）。違えば 400（`INVALID_CONFIG`）。
- * `asr_credential_ref`・`translate_credential_ref` は `secret:{name}` の形で、テナントに秘密値があること（無ければ 400）。参照している秘密値は消せない（409）。
+ * 字幕と翻訳の設定です。配信中の音声を `asr_endpoint` に送って文字に起こし、`targets` の言語へ翻訳して、ライブ HLS に WebVTT の字幕を追加します。
+ * 検査: `asr_provider`・`translate_provider` の値、`asr_endpoint`・`translate_endpoint` が URL として解釈できること、言語（`language` と `targets`）が英数字と `-` の 1〜8 文字であること（`targets` は 8 個まで）。違反すると 400（`INVALID_CONFIG`）です。
+ * `asr_credential_ref`・`translate_credential_ref` は `secret:{name}` の形式で、テナントにその秘密値が登録されている必要があります（無ければ 400）。参照されている秘密値は削除できません（409）。
  */
 export type CaptionSettings = {
   asr_credential_ref?: CredentialRef;
-  /** 送り先の URL（例: `https://api.openai.com/v1`、社内の whisper サーバー） */
+  /** 送信先の URL（例: `https://api.openai.com/v1`、社内の whisper サーバー） */
   asr_endpoint: string;
   asr_model?: string | null;
   /** openai = OpenAI 互換の `/audio/transcriptions`、whisper_cpp = whisper.cpp のサーバー */
   asr_provider: "openai" | "whisper_cpp";
-  /** 話している言語（ISO 639-1） */
+  /** 話されている言語（ISO 639-1） */
   language?: string;
   /** 翻訳先の言語 */
   targets?: string[];
   translate_credential_ref?: CredentialRef;
   translate_endpoint?: string | null;
   translate_model?: string | null;
-  /** 翻訳（省けば翻訳しない）。書くなら translate_endpoint が要る */
+  /** 翻訳サービス（省略すると翻訳しません）。指定する場合は translate_endpoint が必要です */
   translate_provider?: "anthropic" | "deepl" | "openai" | null;
 };
 
-/** royalty_free は H.264・H.265・AAC を理由付きで拒否する（REQ-007）。royalty_free では hls.container は fmp4 にする。 */
+/** royalty_free は H.264・H.265・AAC を理由付きで拒否します。royalty_free では hls.container を fmp4 にしてください。 */
 export type CodecProfile = "any" | "royalty_free";
 
-/** `secret:{name}`（`POST /secrets` で登録した秘密値の名前）。無い秘密値・形の違いは 400。 */
+/** `secret:{name}`（`POST /secrets` で登録した秘密値の名前）。存在しない秘密値や形式の誤りは 400 です。 */
 export type CredentialRef = string | null;
 
 export type DegradeLevel = {
-  /** この段で止めるグラフの部品の id（グラフに無ければ 400）。下流は入力がすべて止まれば止まる。段は積み重なる（段 2 は段 1 の分も止める） */
+  /** この段階で停止する処理ノードの id（グラフに無ければ 400）。下流の処理ノードは、入力がすべて停止すると停止します。段階は累積します（段階 2 では段階 1 の分も停止します） */
   disable: PipelineNodeId[];
-  /** 段の名前（例: `no_translation`・`audio_only`）。`full`（段 0 の名前）と重複は不可 */
+  /** 段階の名前（例: `no_translation`・`audio_only`）。`full`（段階 0 の名前）や他の段階と同じ名前は使えません */
   label: string;
 };
 
@@ -93,7 +93,7 @@ export type DeviceHealth = {
   device: string;
   /** disable は false、enable は true */
   enabled: boolean;
-  /** ノードの ID（名前で指定しても ID で返す） */
+  /** ノードの ID（名前で指定した場合も ID で返します） */
   node: string;
 };
 
@@ -112,36 +112,36 @@ export type DeviceStatus = {
 export type Devices = {
   nodes: Array<{
     /**
-     * このノードのキャプチャ機器（REQ-004、隔離した `senca-capture-worker` に問い合わせる。入力の `protocol: device` で使う）。
-     * worker が無い・失敗したときは `{available: false, reason}`、ランタイムが無ければ null。
+     * このノードのキャプチャ機器です（分離された `senca-capture-worker` に問い合わせます。入力の `protocol: device` で使います）。
+     * worker が無い場合や失敗した場合は `{available: false, reason}`、ランタイムが無ければ null です。
      */
     capture: {
-      /** バックエンド（V4L2・ALSA・DeckLink・合成）ごとの可否 */
+      /** バックエンド（V4L2・ALSA・DeckLink・合成）ごとの利用可否 */
       backends: Array<Record<string, unknown>>;
-      /** 機器（`id` を入力の `url: device:{id}` に書く） */
+      /** 機器の一覧（`id` を入力の `url: device:{id}` に指定します） */
       devices: Array<Record<string, unknown>>;
       version: number;
     } | {
       available: false;
       reason: string;
     } | null;
-    /** コーデック worker のプールが動いていなければ `providers` は空、`sandbox` は null。 */
+    /** コーデック worker のプールが動いていなければ、`providers` は空、`sandbox` は null です。 */
     devices: DeviceStatus;
     node: string;
   }>;
 };
 
-/** 転送フィルター（`docs/realtime/signaling.md` の 8 章）。`rules` は「AND の組」の OR。`block` は一致したものを配らない、`allow` は一致したものだけ配る。 */
+/** 転送フィルター（`docs/realtime/signaling.md` の 8 章）。`rules` は「AND 条件の組」の OR です。`block` は一致したものを配信せず、`allow` は一致したものだけを配信します。 */
 export type ForwardingFilter = {
   action: "block" | "allow";
   rules: ForwardingRule[][];
 };
 
 export type ForwardingRule = {
-  /** 送り手の属性: `connection_id`・`client_id`・`bundle_id`・`kind`・`metadata.<key>`（key は 1〜64 文字。値が文字列・数・真偽のとき） */
+  /** 配信者の属性: `connection_id`・`client_id`・`bundle_id`・`kind`・`metadata.<key>`（key は 1〜64 文字。値が文字列・数値・真偽値のとき） */
   field: string;
   operator: "is_in" | "is_not_in";
-  /** `kind` なら `audio`・`video` */
+  /** `kind` の場合は `audio`・`video` */
   values: string[];
 };
 
@@ -154,26 +154,26 @@ export type Gap = {
 
 export type Grid = {
   nodes: Array<{
-    /** 仕事に貸せる分（`--capacity-cpu-millis`・`--capacity-memory-mb`・`--net-mbps`、既定は実機の 90%・85%・10000） */
+    /** ワークロードに割り当てられる量（`--capacity-cpu-millis`・`--capacity-memory-mb`・`--net-mbps`。既定は実機の 90%・85%・10000） */
     capacity: Resources;
     capture: Array<{
-      /** 運用者が手で止めた（止めたときだけ現れる） */
+      /** 運用者が手動で無効にした（無効のときだけ含まれます） */
       disabled?: boolean;
       healthy: boolean;
-      /** 機器の ID（`GET /devices` の `capture.devices[].id`、例: `synthetic:0`） */
+      /** 機器の ID（`GET /devices` の `capture.devices[].id`。例: `synthetic:0`） */
       id: string;
-      /** 機器の種類（機器の一覧の `backend`、例: `synthetic`・`v4l2`） */
+      /** 機器の種類（機器の一覧の `backend`。例: `synthetic`・`v4l2`） */
       kind: string;
     }>;
     draining: boolean;
     gpus: Array<{
       decode_reserved: number;
       decode_sessions: number;
-      /** 運用者が手で止めていない（`disable`・`enable`）。仕事を置くのは healthy かつ enabled の装置だけ */
+      /** 運用者が手動で無効にしていないかどうか（`disable`・`enable`）。ワークロードは healthy かつ enabled の装置にだけ配置します */
       enabled: boolean;
       encode_reserved: number;
       encode_sessions: number;
-      /** 測った健康（心拍で変わる） */
+      /** 計測による健全性（ハートビートで更新されます） */
       healthy: boolean;
       /** `{provider}:{装置の番号}`（例: `nvidia:0`） */
       id: string;
@@ -181,36 +181,36 @@ export type Grid = {
       vendor: string;
     }>;
     id: string;
-    /** `--label` の値と、予約のラベル `senca.io/name`（ノードの名前） */
+    /** `--label` の値と、予約済みのラベル `senca.io/name`（ノードの名前） */
     labels: { [key: string]: string };
-    /** 最後の心拍（配置係のノードだけが知っている。違えば null） */
+    /** 最後のハートビート（スケジューラーのノードだけが把握しており、それ以外では null） */
     last_heartbeat: Timestamp | null;
     /** ノードの名前（`GET /nodes` に無ければ null） */
     name: string | null;
-    /** 割り当てた仕事の要求（今の段）の和 */
+    /** 割り当てたワークロードの要求（現在の段階）の合計 */
     reserved: Resources;
-    /** control = Raft の投票者、media = 仕事を動かす（仕事は media にだけ置く） */
+    /** control = Raft の投票者、media = ワークロードを実行する（ワークロードは media のノードにだけ配置します） */
     roles: Array<"control" | "media">;
-    /** 心拍が届いている（5 秒途絶えると false） */
+    /** ハートビートが届いているかどうか（5 秒途絶えると false） */
     up: boolean;
-    /** 最後の心拍の実測の使用量（CPU は /proc/stat の差、メモリは /proc/meminfo の MemTotal − MemAvailable、帯域はループバックを除く /proc/net/dev の差）。配置係のノードだけが知っている。違えば null。配置は予約（reserved）で数え、この値は使わない */
+    /** 最後のハートビートで報告された実際の使用量（CPU は /proc/stat の差分、メモリは /proc/meminfo の MemTotal − MemAvailable、帯域はループバックを除く /proc/net/dev の差分）。スケジューラーのノードだけが把握しており、それ以外では null です。配置は予約（reserved）で計算し、この値は使いません */
     usage: Resources | null;
-    /** このノードに割り当てた仕事の数 */
+    /** このノードに割り当てたワークロードの数 */
     workloads: number;
   }>;
-  /** 応答したノードが配置係（リーダー）ならその ID、違えば null */
+  /** 応答したノードがスケジューラー（リーダー）であればその ID、そうでなければ null */
   scheduler: string | null;
   workloads: Array<{
     device: string | null;
-    /** 資源から導いた仕事の ID（`input:{id}`・`output:{id}`・`pipeline:{id}`・`room:{id}`） */
+    /** 資源から求めたワークロードの ID（`input:{id}`・`output:{id}`・`pipeline:{id}`・`room:{id}`） */
     id: string;
     /** 入力は `ingest`（`device` は `capture`）、出力は `egress`、パイプラインは `pipeline`、部屋は `room` */
     kind: "ingest" | "room" | "pipeline" | "recording" | "transcode" | "capture" | "relay" | "media_pipeline" | "egress";
-    /** 今の縮退の段（0 = full） */
+    /** 現在の縮退の段階（0 = full） */
     level: number | null;
     level_label: string | null;
     node: string | null;
-    /** `placement.node`・`placement.device` で手動で割り当てた */
+    /** `placement.node`・`placement.device` で手動で割り当てたかどうか */
     pinned: boolean;
     priority: PlacementPriority;
     reason: GridReason | null;
@@ -219,15 +219,15 @@ export type Grid = {
   }>;
 };
 
-/** 割り当て・決定の理由（`code` で種類を選ぶ。`node_down` は `node`、`device_down` は `device`、`preempted` は `by` を持つ）。 */
+/** 割り当て・決定の理由（`code` で種類を表します。`node_down` は `node`、`device_down` は `device`、`preempted` は `by` を持ちます）。 */
 export type GridReason = {
-  /** 追い出した仕事の ID */
+  /** 退去させたワークロードの ID */
   by?: string;
   /**
-   * placed = 普通に置いた、no_capacity = 資源が足りず縮退した段で置いた・縮退した、node_down = ノードが止まった・消えた、device_down = 装置が故障した（手で止めたときも）、
-   * draining = ノードの排出で移した、constraint_changed = 条件・ラベルが変わって合わなくなった、preempted = 高い優先度の仕事のために縮退・追い出しされた、
-   * overcommitted = ノードの容量が減って収まらなくなった、capacity_returned = 資源が戻ったので元の段へ戻した、pin_returned = 手動の割り当ての対象が戻ったので戻した、
-   * pin_target_down = 手動の割り当て（strict）の対象が止まっている。
+   * placed = 通常どおり配置した、no_capacity = 資源が足りず縮退した段階で配置した・縮退した、node_down = ノードが停止した・削除された、device_down = 装置が故障した（手動で無効にした場合も含む）、
+   * draining = ノードの drain で移動した、constraint_changed = 条件・ラベルが変わって合わなくなった、preempted = 優先度の高いワークロードのために縮退・退去させられた、
+   * overcommitted = ノードの容量が減って収まらなくなった、capacity_returned = 資源が戻ったので元の段階へ戻した、pin_returned = 手動の割り当て先が戻ったので戻した、
+   * pin_target_down = 手動の割り当て先（strict）が停止している。
    */
   code: "placed" | "no_capacity" | "node_down" | "device_down" | "draining" | "constraint_changed" | "preempted" | "overcommitted" | "capacity_returned" | "pin_returned" | "pin_target_down";
   device?: string;
@@ -241,14 +241,14 @@ export type HlsSettings = {
 };
 
 export type Ingest = {
-  /** RTMP の publish 先（`{public-rtmp-url}/live`）。stream name に stream_key を使う。 */
+  /** RTMP の publish 先（`{public-rtmp-url}/live`）。stream name には stream_key を使います。 */
   rtmp_url: string;
   srt_streamid_format?: "publish:{stream_key}";
   /** `--public-srt-url` を設定したとき */
   srt_url?: string;
-  /** publish 鍵。作成・作り直しの応答でだけ値が入る（それ以外は null）。 */
+  /** publish 鍵。作成時と再発行時の応答でだけ値が入ります（それ以外は null）。 */
   stream_key: string | null;
-  /** Idempotency-Key の再送で鍵を伏せたとき */
+  /** Idempotency-Key による再送で鍵を伏せたとき */
   stream_key_redacted?: true;
   /** `--public-http-url` を設定したとき */
   whip_url?: string;
@@ -265,7 +265,7 @@ export type Input = {
   placement: PlacementSpecView | null;
   placement_status: PlacementStatus;
   protocol: "rtmp_pull" | "rtsp_pull" | "srt_pull" | "hls_pull" | "device";
-  /** このノードでの実行の様子。`enabled: false`、実行をまだ始めていない、またはこのノードに割り当てられていなければ null（分散のときは、割り当てたノード `placement_status.node` に問い合わせる）。作成・PATCH の応答では、実行の作り直しが非同期なので前の実行のもの（または null）のことがある。 */
+  /** このノードでの実行の状態。`enabled: false` の場合、実行がまだ始まっていない場合、またはこのノードに割り当てられていない場合は null です（クラスターでは、割り当てたノード `placement_status.node` に問い合わせてください）。作成・PATCH の応答では、実行の作り直しが非同期で行われるため、以前の実行の状態（または null）のことがあります。 */
   status: IoStatus | null;
   stream: string;
   url: string;
@@ -275,12 +275,12 @@ export type InputCreate = {
   credential_ref?: CredentialRef;
   enabled?: boolean | null;
   options?: IoOptions;
-  /** 配置の指定（`degrade` は使えない） */
+  /** 配置の指定（`degrade` は使えません） */
   placement?: PlacementSpec | null;
   protocol: "rtmp_pull" | "rtsp_pull" | "srt_pull" | "hls_pull" | "device";
   /**
-   * 取りに行く URL。スキームは protocol で決まる（rtmp_pull: `rtmp`・`rtmps`、rtsp_pull: `rtsp`・`rtsps`、srt_pull: `srt`、hls_pull: `http`・`https`、device: `device:{機器 ID}`（300 文字まで））。
-   * ホストが要る。空白・制御文字は不可。資格情報（`user:pass@`）は入れられない（`credential_ref` を使う）。
+   * 取得元の URL。スキームは protocol によって決まります（rtmp_pull: `rtmp`・`rtmps`、rtsp_pull: `rtsp`・`rtsps`、srt_pull: `srt`、hls_pull: `http`・`https`、device: `device:{機器 ID}`（300 文字まで））。
+   * ホストが必要です。空白・制御文字は使えません。資格情報（`user:pass@`）は含められません（`credential_ref` を使います）。
    */
   url: string;
 };
@@ -290,37 +290,37 @@ export type InputList = {
   next_cursor: string | null;
 };
 
-/** プロトコルごとの設定（例: RTSP の `transport: tcp|udp`、device の `width`・`height`・`fps`・`codec`・`bitrate_bps`・`audio_device`・`audio_codec`）。16 個まで、キー 64 文字・値 256 文字まで。 */
+/** プロトコルごとの設定（例: rtsp_pull の `allow_basic: "true"`・`tls_spki_sha256`（rtsps で証明書の公開鍵を固定します。SHA-256 の base64 か 16 進）、device の `width`・`height`・`fps`・`codec`・`bitrate_bps`・`audio_device`・`audio_codec`）。16 個まで、キーは 64 文字・値は 256 文字までです。RTSP は TCP interleaved で接続します。 */
 export type IoOptions = { [key: string]: string };
 
-/** 書いたフィールドだけ置き換える。`credential_ref: null` で参照を外す、`placement: null` で配置の指定を外す（配置係に任せる）。他の null は「変えない」。 */
+/** 指定したフィールドだけを置き換えます。`credential_ref: null` で参照を、`placement: null` で配置の指定を削除します（スケジューラーに任せます）。他のフィールドの null は「変更しない」の意味です。 */
 export type IoPatch = {
   credential_ref?: CredentialRef;
   enabled?: boolean | null;
   options?: IoOptions | null;
-  /** 配置の指定を丸ごと置き換える（部分の変更は無い。`degrade` は使えない）。null で外す */
+  /** 配置の指定の全体を置き換えます（一部だけの変更はできません。`degrade` は使えません）。null で削除します */
   placement?: PlacementSpec | null;
   url?: string | null;
 };
 
-/** このノードでの実行の様子（制御状態には保存しない）。 */
+/** このノードでの実行の状態です（制御状態には保存されません）。 */
 export type IoStatus = {
-  /** 送った・受けたバイト数（目安） */
+  /** 送受信したバイト数（目安） */
   bytes: number;
   /** 接続に成功した回数 */
   connects: number;
-  /** 最後の失敗の理由（宛先の拒否は「… は許されていない宛先です」）。成功しても消えない */
+  /** 最後の失敗の理由（接続先が拒否された場合は「… は許されていない宛先です」）。その後成功しても消えません */
   last_error: string | null;
-  /** 今の state になった時刻 */
+  /** 現在の state になった時刻 */
   since: string | null;
   /**
-   * starting = 実行を始めた、provisioning = PaaS の資源を用意している、waiting_input = 出力で配信を待っている、connecting = 接続中、
-   * active = 送受信している、backoff = 失敗の後の待ち（1〜60 秒の指数バックオフ）、error = 失敗した（すぐ backoff になる）、ended = VOD の HLS を読み終えた（`hls_pull` だけ）。
+   * starting = 実行を開始した、provisioning = PaaS の資源を準備している、waiting_input = 出力が配信の開始を待っている、connecting = 接続中、
+   * active = 送受信している、backoff = 失敗の後の待機中（1〜60 秒の指数バックオフ）、error = 失敗した（すぐに backoff になる）、ended = VOD の HLS を最後まで読んだ（`hls_pull` だけ）。
    */
   state: "starting" | "provisioning" | "waiting_input" | "connecting" | "active" | "backoff" | "error" | "ended";
 };
 
-/** ノードのラベル（`--label`、予約の `senca.io/name`）の条件。`op` で種類を選ぶ。キー・値は 1〜128 文字で制御文字を含めない。 */
+/** ノードのラベル（`--label`、予約済みの `senca.io/name`）の条件です。`op` で種類を指定します。キーと値は 1〜128 文字で、制御文字を含めることはできません。 */
 export type LabelSelector = {
   key: string;
   op: "eq";
@@ -331,22 +331,35 @@ export type LabelSelector = {
   values: string[];
 };
 
-/** standard = HLS、low = LL-HLS、interactive = WebRTC・MoQ */
+/** standard = HLS、low = LL-HLS（part は min(500 ms, segment_ms / 4)）、interactive = WebRTC・MoQ 向け（LL-HLS の part は 200 ms、出だしの待ちと送りの溜まりを小さくする） */
 export type LatencyProfile = "standard" | "low" | "interactive";
 
 export type Limits = {
+  /** 入力のビットレートの上限（直近 3 秒の平均）。5 秒続けて超えたら送り手を切り、10 秒は新しい送り手を断る */
   max_ingress_bps?: number | null;
+  /** ノードごとの同時の視聴者の上限（最近プレイリストを取得した HLS のクライアントと、RTMP・SRT・RTSP・WHEP・MoQ の接続の合計）。超える新しい視聴は断る（HLS・WHEP・RTSP は 503） */
   max_viewers?: number | null;
 };
 
 export type LiveInfo = {
   bitrate_bps: number;
-  /** 再接続ごとに増える */
+  /** 再接続のたびに増えます */
   epoch: number;
   started_at: Timestamp;
   tracks: Array<Record<string, unknown>>;
   /** rtmp・srt など */
   transport: string;
+  /** このノードの視聴者の数（`limits.max_viewers` で数えるもの）。`hls` は最近プレイリストを取得した別々の HLS のクライアント */
+  viewers?: {
+    hls?: number;
+    moq?: number;
+    rtmp?: number;
+    rtsp?: number;
+    srt?: number;
+    total?: number;
+    webrtc?: number;
+  };
+  /** hub の購読の数（中継・録画以外の内部の購読も含む目安） */
   viewers_hint: number;
 };
 
@@ -361,14 +374,14 @@ export type LivePlayback = {
     rtmp: string;
     /** `{public-rtsp-url}/live/{id}?exp=&sig=`（`--public-rtsp-url` を設定したときだけ） */
     rtsp?: string;
-    /** `{http}/whep/{id}?exp=&sig=`（`--webrtc-udp` を設定しないノードでは null） */
+    /** `{http}/whep/{id}?exp=&sig=`（`--webrtc-udp` を設定していないノードでは null） */
     whep: string | null;
   };
 };
 
 export type MediaPipeline = {
   artifacts: MediaPipelineArtifacts;
-  /** 資格情報は `secret:{name}` の参照で、値は返さない */
+  /** 資格情報は `secret:{name}` で参照し、値は返しません */
   captions: CaptionSettings | null;
   composite: MediaPipelineComposite | null;
   created_at: Timestamp;
@@ -377,15 +390,15 @@ export type MediaPipeline = {
   export_participants: boolean;
   generation: number;
   id: string;
-  /** 部屋の設定 `recording` から作ったもの（ID は `room-rec.{部屋}`。API からは変えられない・消せない） */
+  /** 部屋の設定 `recording` から作られたものかどうか（ID は `room-rec.{部屋の ID}`。API から変更・削除はできません） */
   managed?: boolean;
   name: MediaPipelineName;
   participants: MediaPipelineParticipants;
   recording: MediaPipelineRecording | null;
   room: string;
   /**
-   * このノードでの実行の様子。部屋をこのノードに置いていない・`stopped`・係がまだ見回っていない（作った直後）なら null
-   * （分散のときは部屋を置いたノードに問い合わせる）。止めた・消した直後の 1 秒ほどは前の様子が残ることがある。
+   * このノードでの実行の状態。部屋がこのノードに配置されていない場合、`stopped` の場合、作成直後でまだ確認が行われていない場合は null です
+   * （クラスターでは、部屋を配置したノードに問い合わせてください）。停止・削除の直後の 1 秒ほどは、以前の状態が残ることがあります。
    */
   status: MediaPipelineStatus | null;
   updated_at: Timestamp;
@@ -395,14 +408,14 @@ export type MediaPipeline = {
 export type MediaPipelineArtifacts = {
   /** `composite` が無ければ null */
   composite: MediaPipelineCompositeArtifacts | null;
-  /** 書き出した参加者ごとの stream（`metadata.media_pipeline` がこの ID の stream。今いない参加者のものも残る）。ID の昇順 */
+  /** 書き出した参加者ごとの stream（`metadata.media_pipeline` がこの ID の stream。現在いない参加者のものも残ります）。ID の昇順 */
   participant_streams: MediaPipelineParticipantStream[];
 };
 
 /**
- * 合成（会議の 1 本の映像・音声）。書かなかったフィールドは既定値（応答ではすべて入る）。映像のある参加者を並べ、音声はすべて混ぜて Opus 96 kbit/s にする。
- * `grid` は格子（列数は人数の平方根の切り上げ）、`speaker` は最初に書き出した参加者を上に大きく、残りを下の 1/4 の帯に並べる（話者の検出はまだ合成に届かない）。
- * H.264・H.265 は GPU が要る。GOP は `fps` の 2 倍。
+ * 合成の設定です（会議全体を 1 本の映像・音声にします）。指定しなかったフィールドは既定値になります（応答ではすべて含まれます）。映像のある参加者を並べ、音声はすべてミックスして Opus 96 kbit/s にします。
+ * `grid` は格子状（列数は人数の平方根の切り上げ）、`speaker` は最初に書き出した参加者を上に大きく表示し、残りを下の 1/4 の帯に並べます（話者の検出結果は、まだ合成に使っていません）。
+ * H.264・H.265 には GPU が必要です。GOP は `fps` の 2 倍です。
  */
 export type MediaPipelineComposite = {
   bitrate_kbps?: number;
@@ -413,38 +426,38 @@ export type MediaPipelineComposite = {
   width?: number;
 };
 
-/** 合成の子の資源の ID（メディアパイプラインの ID から決まる。まだ作っていなくても ID は出る） */
+/** 合成の子の資源の ID（メディアパイプラインの ID から決まります。まだ作成していなくても ID は表示されます） */
 export type MediaPipelineCompositeArtifacts = {
-  /** `egress` の順の送り出しの出力の ID（`GET /outputs/{id}`） */
+  /** `egress` の順に並んだ外部配信の出力の ID（`GET /outputs/{id}`） */
   outputs: string[];
-  /** 合成のパイプラインの ID（`GET /pipelines/{id}`。映像のある参加者が流れ始めるまでは無いことがある） */
+  /** 合成のパイプラインの ID（`GET /pipelines/{id}`。映像のある参加者が流れ始めるまでは存在しないことがあります） */
   pipeline: string;
   /** 合成の stream の ID（`GET /streams/{id}`） */
   stream: string;
 };
 
 export type MediaPipelineCreate = {
-  /** 文字起こし・翻訳（AWS の media insights pipeline 相当）。参加者ごとの stream の `captions` になる（省略・null は付けない） */
+  /** 文字起こし・翻訳（AWS の media insights pipeline に相当）。参加者ごとの stream の `captions` として設定されます（省略または null の場合は設定しません） */
   captions?: CaptionSettings | null;
-  /** 合成（省略・null は合成しない） */
+  /** 合成（省略または null の場合は合成しません） */
   composite?: MediaPipelineComposite | null;
-  /** 省略・null は running */
+  /** 省略または null の場合は running */
   desired_state?: MediaPipelineState | null;
-  /** 送り出し（`composite` が要る） */
+  /** 外部への配信（`composite` が必要） */
   egress?: MediaPipelineEgress[];
-  /** 参加者ごとの stream を残す（AWS の media stream pipeline 相当）。false でも合成のために書き出す（`recording.participants`・`captions` は使えない） */
+  /** 参加者ごとの stream を成果物として残します（AWS の media stream pipeline に相当）。false の場合も合成のために書き出しますが、`recording.participants`・`captions` は使えません */
   export_participants?: boolean | null;
   name: MediaPipelineName;
   participants?: MediaPipelineParticipants;
-  /** 録画（省略・null は録らない） */
+  /** 録画（省略または null の場合は録画しません） */
   recording?: MediaPipelineRecording | null;
   /** 部屋の ID（テナントの部屋。無ければ 400） */
   room: string;
 };
 
 /**
- * 送り出し（AWS の media live connector pipeline 相当）。合成の stream の出力（`Output`）として作る。形と検査は `OutputCreate` と同じ
- * （`paas` には `credential_ref` が要る）。応答では null・空のフィールドは欄が無い。
+ * 外部への配信の設定です（AWS の media live connector pipeline に相当）。合成の stream の出力（`Output`）として作成します。形式と検査は `OutputCreate` と同じです
+ * （`paas` には `credential_ref` が必要です）。応答では、null や空のフィールドは省かれます。
  */
 export type MediaPipelineEgress = {
   credential_ref?: CredentialRef;
@@ -452,7 +465,7 @@ export type MediaPipelineEgress = {
   protocol: "rtmp_push" | "srt_push" | "paas";
   /** `paas` で必須 */
   provider?: "cloudflare_stream" | "aws_ivs" | "aws_medialive" | null;
-  /** `paas` 以外で必須。rtmp_push: `rtmp`・`rtmps`、srt_push: `srt`。資格情報は入れられない。 */
+  /** `paas` 以外で必須。rtmp_push: `rtmp`・`rtmps`、srt_push: `srt`。資格情報は含められません。 */
   url?: string | null;
 };
 
@@ -461,20 +474,20 @@ export type MediaPipelineList = {
   next_cursor: string | null;
 };
 
-/** テナント内で一意（作成のとき）。1〜40 文字の英数字と `-_.`（`.` で始まらない）。子の stream・パイプラインの名前の頭に使う */
+/** テナント内で一意（作成時）。1〜40 文字の英数字と `-_.`（`.` で始まらないこと）。子の stream・パイプラインの名前の先頭に使われます */
 export type MediaPipelineName = string;
 
 export type MediaPipelineParticipantStream = {
-  /** stream の名前（`{name}-{参加者}-{ID の頭 6 文字}`） */
+  /** stream の名前（`{name}-{参加者}-{ID の先頭 6 文字}`） */
   name: string;
   /** stream の ID */
   stream: string;
 };
 
-/** 書き出す参加者の `client_id`（参加トークンの `client_id`）。空なら全員（`client_id` の無い参加者は `connection_id` で区別する） */
+/** 書き出す参加者の `client_id`（参加トークンの `client_id`）。空なら全員（`client_id` の無い参加者は `connection_id` で区別します） */
 export type MediaPipelineParticipants = string[];
 
-/** 書いたフィールドだけ置き換える。`composite`・`recording`・`captions` の null は外す、他の null は「変えない」。`egress` は列ごと置き換える。 */
+/** 指定したフィールドだけを置き換えます。`composite`・`recording`・`captions` の null は設定の削除、他のフィールドの null は「変更しない」の意味です。`egress` は配列全体を置き換えます。 */
 export type MediaPipelinePatch = {
   captions?: CaptionSettings | null;
   composite?: MediaPipelineComposite | null;
@@ -487,34 +500,34 @@ export type MediaPipelinePatch = {
 };
 
 /**
- * 録画（AWS の media capture pipeline 相当）。書き出した stream の自動録画（`RecordingPolicy`）を有効にする。録画は普通の録画の API（`GET /recordings?stream=...`）で読む。
- * 録画の設定は stream を作るときに決まる（後から `recording` を変えても、作った stream には効かない）。
+ * 録画の設定です（AWS の media capture pipeline に相当）。書き出した stream の自動録画（`RecordingPolicy`）を有効にします。録画は通常の録画の API（`GET /recordings?stream=...`）で取得します。
+ * 録画の設定は stream の作成時に決まります（後から `recording` を変更しても、作成済みの stream には反映されません）。
  */
 export type MediaPipelineRecording = {
-  /** 合成の stream を録る（`composite` が要る） */
+  /** 合成の stream を録画します（`composite` が必要） */
   composite?: boolean;
-  /** 参加者ごとの stream を録る（`export_participants: true` が要る） */
+  /** 参加者ごとの stream を録画します（`export_participants: true` が必要） */
   participants?: boolean;
-  /** 保持日数（省けば録画の既定。応答では省いたとき欄が無い） */
+  /** 保持日数（省略すると録画の既定値。省略した場合は応答にも項目がありません） */
   retention_days?: number | null;
 };
 
-/** running = 部屋を置いたノードの係が動かす、stopped = 止める（子の合成・送り出しを消す。書き出した stream・録画は残る） */
+/** running = 部屋を配置したノードが実行する、stopped = 停止する（子の合成・外部配信を削除します。書き出した stream と録画は残ります） */
 export type MediaPipelineState = "running" | "stopped";
 
-/** このノードでの実行の様子（制御状態には保存しない）。 */
+/** このノードでの実行の状態です（制御状態には保存されません）。 */
 export type MediaPipelineStatus = {
-  /** `speaker` の並びで今大きく映している参加者（`client_id`、無ければ `connection_id`）。決まる前・`grid` では null */
+  /** `speaker` の並びで現在大きく表示している参加者（`client_id`、無ければ `connection_id`）。決まる前と `grid` では null */
   active_speaker?: string | null;
-  /** 合成の図に入っている参加者の数（`composite` が無い、または映像のある参加者が流れ始めていなければ null） */
+  /** 合成のグラフに入っている参加者の数（`composite` が無い場合、または映像のある参加者がまだ流れ始めていない場合は null） */
   composite_members: number | null;
-  /** 今書き出している参加者 */
+  /** 現在書き出している参加者 */
   participants: Array<{
     /** `client_id`（無ければ `connection_id`） */
     participant: string;
     /** 書き出し先の stream の ID */
     stream: string;
-    /** 映像を送っているか */
+    /** 映像を送信しているかどうか */
     video: boolean;
   }>;
 };
@@ -525,20 +538,48 @@ export type Node = {
   draining: boolean;
   id: string;
   labels: { [key: string]: string };
-  /** 配信中の stream 数（他ノードは今は 0） */
+  /** 配信中の stream の数（他のノードについては現在常に 0） */
   live_streams: number;
   name: string;
   registered_at: Timestamp;
-  /** ノード間の中継（ADR-0014）の様子。応答したノード自身（`self: true`）で、クラスタを組んでいるときだけ値がある（単一ノード・他ノードは null）。 */
+  /** ノード間の中継（ADR-0014）の状態。応答したノード自身（`self: true`）で、クラスターを構成しているときだけ値が入ります（単一ノードや他のノードでは null）。 */
   relay: RelayStatus | null;
-  /** 部屋の係の様子（カスケードの部屋ごとの役割・中継の購読の数・イベント Webhook の送り箱）。応答したノード自身で、WebRTC が動いているときだけ値がある */
-  rooms?: Record<string, unknown> | null;
-  /** 応答したノード自身か */
+  /** このノードのリアルタイムの部屋の状態（カスケードの役割・イベント Webhook の配送）。応答したノード自身で、WebRTC（`--webrtc-udp`）が有効なときだけ値が入ります（それ以外は null）。 */
+  rooms?: NodeRoomsStatus | null;
+  /** 応答したノード自身かどうか */
   self: boolean;
 };
 
 export type NodeList = {
   items: Node[];
+};
+
+export type NodeRoomsStatus = {
+  /** イベント Webhook の配送の状況（`--rooms-event-webhook` を設定したときだけ） */
+  event_webhook?: {
+    /** 再送をあきらめたイベントの数 */
+    dead_letters: number;
+    delivered: number;
+    /** 待ち行列があふれて捨てたイベントの数 */
+    dropped: number;
+    pending: number;
+    /** 直近にあきらめたイベントの ID（新しい順、最大 20） */
+    recent_dead_letters: string[];
+  };
+  /** ほかのノードへ送っている部屋のトラックの数 */
+  relay_downstreams: number;
+  /** ほかのノードから受けている部屋のトラックの数 */
+  relay_upstreams: number;
+  /** このノードにある部屋のインスタンス（カスケードしている部屋） */
+  rooms: Array<{
+    /** `edge` のとき、home のノード（不明なら null） */
+    home: string | null;
+    /** ノードごとの参加者の数 */
+    peers: { [key: string]: number };
+    /** `home` は部屋の配置先のノード、`edge` は参加者がつないだ別のノード */
+    role: "home" | "edge";
+    room: string;
+  }>;
 };
 
 export type Output = {
@@ -553,9 +594,9 @@ export type Output = {
   placement_status: PlacementStatus;
   protocol: "rtmp_push" | "srt_push" | "paas";
   provider: "cloudflare_stream" | "aws_ivs" | "aws_medialive" | null;
-  /** SENCA が PaaS に作った資源（後片付けに使う） */
+  /** SENCA が PaaS に作成した資源（後片付けに使います） */
   provider_resource: string | null;
-  /** このノードでの実行の様子。`enabled: false`、実行をまだ始めていない、またはこのノードに割り当てられていなければ null（分散のときは、割り当てたノード `placement_status.node` に問い合わせる）。作成・PATCH の応答では、実行の作り直しが非同期なので前の実行のもの（または null）のことがある。 */
+  /** このノードでの実行の状態。`enabled: false` の場合、実行がまだ始まっていない場合、またはこのノードに割り当てられていない場合は null です（クラスターでは、割り当てたノード `placement_status.node` に問い合わせてください）。作成・PATCH の応答では、実行の作り直しが非同期で行われるため、以前の実行の状態（または null）のことがあります。 */
   status: IoStatus | null;
   stream: string;
   url: string | null;
@@ -565,12 +606,12 @@ export type OutputCreate = {
   credential_ref?: CredentialRef;
   enabled?: boolean | null;
   options?: IoOptions;
-  /** 配置の指定（`degrade` は使えない）。指定が無ければ、配信を受けたノードを好む */
+  /** 配置の指定（`degrade` は使えません）。指定が無ければ、配信を受信したノードを優先します */
   placement?: PlacementSpec | null;
   protocol: "rtmp_push" | "srt_push" | "paas";
   /** `paas` で必須（`credential_ref` も必須） */
   provider?: "cloudflare_stream" | "aws_ivs" | "aws_medialive" | null;
-  /** `paas` 以外で必須。rtmp_push: `rtmp`・`rtmps`、srt_push: `srt`。資格情報は入れられない。 */
+  /** `paas` 以外で必須。rtmp_push: `rtmp`・`rtmps`、srt_push: `srt`。資格情報は含められません。 */
   url?: string | null;
 };
 
@@ -581,27 +622,27 @@ export type OutputList = {
 
 export type Participant = {
   bundle_id: string;
-  /** 無ければ省く */
+  /** 無ければ省きます */
   client_id?: string;
   connection_id: string;
   joined_at?: Timestamp;
   metadata: RoomMetadata;
-  /** 他のノードにいる参加者（カスケード）のノード */
+  /** 他のノードにいる参加者（カスケード）の場合、そのノード */
   node?: string;
-  /** WebRTC（ICE・DTLS）がつながっているか（他のノードの参加者は true） */
+  /** WebRTC（ICE・DTLS）が接続済みかどうか（他のノードの参加者は true） */
   peer_connected: boolean;
   role: "sendrecv" | "sendonly" | "recvonly";
   /** シグナリングの経路（remote は他のノードの参加者） */
   signaling: "websocket" | "datachannel" | "remote";
   /** 受信の枠（他のノードの参加者は空） */
   subscriptions: RoomSlot[];
-  /** 送っているトラック */
+  /** 送信しているトラック */
   tracks: RoomTrack[];
 };
 
 export type ParticipantList = {
   items: Participant[];
-  /** 続きを読む `cursor`（続きがあるときだけ値、無ければ null） */
+  /** 続きを取得するための `cursor`（続きがあるときだけ値が入り、無ければ null） */
   next_cursor?: string | null;
 };
 
@@ -615,29 +656,29 @@ export type Pipeline = {
   generation: number;
   graph: PipelineGraph;
   id: string;
-  /** 直近の失敗（例: `codec worker が動いていません`）。動き出すと null に戻る */
+  /** 直近の失敗（例: `codec worker が動いていません`）。実行が始まると null に戻ります */
   last_error: string | null;
-  /** 実行していなければ null、実行中は `audio_mix` の部品の id → 直近のメーター（ミキサーが無い・まだ通知が無ければ `{}`）。 */
+  /** 実行していなければ null です。実行中は `audio_mix` の処理ノードの id → 直近のメーターです（ミキサーが無い場合や、まだ通知が無い場合は `{}`）。 */
   meters: PipelineMeters | null;
   name: string;
   /**
-   * このノードでの実行の様子。starting = セッションを開いている（`desired_state: running` でまだ実行を始めていないときも）、running = 動いている、
-   * error = 失敗して作り直しを待っている（`last_error`、1〜32 秒のバックオフ）、stopped = 止まっている。
+   * このノードでの実行の状態。starting = セッションを開いている（`desired_state: running` で、まだ実行を始めていない場合も含む）、running = 実行中、
+   * error = 失敗して作り直しを待っている（`last_error`、1〜32 秒のバックオフ）、stopped = 停止している。
    */
   observed_state: "starting" | "running" | "error" | "stopped";
   /** 配置の指定。指定が無ければ null */
   placement: PlacementSpecView | null;
   placement_status: PlacementStatus;
-  /** 実行中の計画（worker が開いたセッションのもの）。動いていなければ null（検証の計画は `POST /pipelines/{id}/validate`）。 */
+  /** 実行中の計画（worker が開いたセッションのもの）。実行中でなければ null です（検証時の計画は `POST /pipelines/{id}/validate` で取得します）。 */
   plan: PipelinePlan | null;
-  /** 直近の状態の通知。まだ無ければ null。 */
+  /** 直近の状態の通知。まだ無ければ null です。 */
   status: PipelineStatus | null;
   updated_at: Timestamp;
 };
 
 /**
- * 操作（senca-pipeline の `Control`、`op` で種類を選ぶ。知らない項目は 400）。`node` は対象の部品の id（`compose` または `audio_mix`）。
- * `prepare`・`commit`・`rollback` は型としては読めるが、この API では 400（グラフの変更は `PATCH /pipelines/{id}`）。
+ * 操作です（`op` で種類を指定します。未知の項目は 400）。`node` は対象の処理ノードの id（`compose` または `audio_mix`）です。
+ * `prepare`・`commit`・`rollback` は形式としては受け付けますが、この API では 400 です（グラフの変更には `PATCH /pipelines/{id}` を使います）。
  */
 export type PipelineControl = {
   node: string;
@@ -698,7 +739,7 @@ export type PipelineControl = {
 
 export type PipelineControlResult = {
   ok: true;
-  /** 操作の返事（今の操作では空のオブジェクト） */
+  /** 操作への応答（現在の操作ではすべて空のオブジェクト） */
   reply: Record<string, unknown>;
 };
 
@@ -706,14 +747,14 @@ export type PipelineCreate = {
   desired_state?: "running" | "stopped" | null;
   graph: PipelineGraph;
   name: StreamName;
-  /** 配置の指定と縮退の段 */
+  /** 配置の指定と縮退の段階 */
   placement?: PlacementSpec | null;
 };
 
 /**
- * パイプラインの定義（senca-pipeline の `Graph`、`crates/senca-pipeline/src/model.rs`）。有向非巡回グラフで、知らない項目は拒否する。大きさは 16 MiB まで（ただし HTTP 層の本文の上限 1 MiB が先にかかる）。
- * 部品（`nodes`）は `type` で種類を選ぶ。入力の参照は `"部品"` または `"部品.ポート"`（`source` のポートは `video`・`audio` で省けない、`compose` は `program`（既定）・`preview`、他は `out`）。
- * 部品ごとの設定のすべては crate の文書（`cargo doc -p senca-pipeline`）を見る。ここでは種類と必須の項目だけを書く。値の範囲は検証（`POST /pipelines/{id}/validate`）で調べる。
+ * パイプラインの定義です。有向非巡回グラフで、未知の項目は拒否します。サイズは 16 MiB までです（ただし、HTTP 層の本文の上限 1 MiB が先に適用されます）。
+ * 処理ノード（`nodes` の各要素）は `type` で種類を指定します。入力は `"処理ノード"` または `"処理ノード.ポート"` の形式で参照します（`source` のポートは `video`・`audio` で、省略できません。`compose` は `program`（既定）・`preview`、それ以外は `out`）。
+ * 処理ノードごとの設定の詳細はガイドの「7. パイプライン」（`docs/guide/ja/07-pipelines.md`）を参照してください。ここでは種類と必須の項目だけを記載します。値の範囲は検証（`POST /pipelines/{id}/validate`）で確認できます。
  */
 export type PipelineGraph = {
   nodes: PipelineNode[];
@@ -721,15 +762,15 @@ export type PipelineGraph = {
   version: 1;
 };
 
-/** 検証の失敗（400・503 の `details.issues` の要素）。 */
+/** 検証で見つかった問題（400・503 の `details.issues` の要素）。 */
 export type PipelineIssue = {
   code: "MALFORMED" | "INVALID_PARAM" | "DUPLICATE_ID" | "UNKNOWN_REFERENCE" | "TYPE_MISMATCH" | "CYCLE" | "UNCONSUMED_OUTPUT" | "POLICY_REJECTED" | "UNSUPPORTED_CODEC" | "CAPACITY_UNAVAILABLE" | "LIMIT_EXCEEDED";
   message: string;
-  /** 問題の部品の id */
+  /** 問題のある処理ノードの id */
   node?: string;
 };
 
-/** シーンのレイヤー（senca-pipeline の `LayerSpec`: source・image・color のどれか、x・y・width・height、crop・fit・z・opacity・corner_radius・border・visible・filter） */
+/** シーンのレイヤー（source・image・color のいずれか、x・y・width・height、crop・fit・z・opacity・corner_radius・border・visible・filter） */
 export type PipelineLayer = Record<string, unknown>;
 
 export type PipelineList = {
@@ -737,12 +778,12 @@ export type PipelineList = {
   next_cursor: string | null;
 };
 
-/** `audio_mix` の部品の id → 直近のメーター（`Event::Meters`: `inputs`・`master` の peak/rms dBFS、`limiter_reduction_db`）。 */
+/** `audio_mix` の処理ノードの id → 直近のメーター（`inputs`・`master` の peak/rms dBFS、`limiter_reduction_db`）。 */
 export type PipelineMeters = { [key: string]: {
   event: "meters";
 } };
 
-/** 部品。`type` ごとの必須の項目だけを書く（他の項目は crate の文書）。`id` は英数字・`_`・`-` の 1〜64 文字でグラフ内で一意。 */
+/** 処理ノードです。`type` ごとの必須の項目だけを記載します（他の項目はガイドの「7. パイプライン」を参照）。`id` は英数字・`_`・`-` からなる 1〜64 文字で、グラフ内で一意です。 */
 export type PipelineNode = {
   audio?: PipelineSourceTrack;
   id: PipelineNodeId;
@@ -786,7 +827,7 @@ export type PipelineNode = {
   type: "audio_mix";
 } | {
   bitrate_kbps: number;
-  /** av1・vp9・vp8・opus・h264・h265 など（使えるものはコーデック worker の能力と方針で決まる） */
+  /** av1・vp9・vp8・opus・h264・h265 など（使えるものはコーデック worker の能力と方針で決まります） */
   codec: string;
   id: PipelineNodeId;
   input: string;
@@ -798,7 +839,7 @@ export type PipelineNode = {
 } | {
   id: PipelineNodeId;
   inputs: string[];
-  /** 出力先の stream の ID（テナントのもの。パイプラインが送り手になる） */
+  /** 出力先の stream の ID（テナントのもの。パイプラインが配信者になります） */
   stream: string;
   type: "sink";
 };
@@ -816,20 +857,20 @@ export type PipelineOptions = {
   latency_ms?: number;
   missing_timeout_ms?: number;
   overflow?: "drop" | "block";
-  /** 状態・メーターの更新の間隔（0 で出さない） */
+  /** 状態・メーターを通知する間隔（0 で通知しない） */
   status_interval_ms?: number;
 };
 
-/** 書いたフィールドだけ置き換える（null は「変えない」。ただし `placement: null` は配置の指定を外す）。 */
+/** 指定したフィールドだけを置き換えます（null は「変更しない」の意味です。ただし `placement: null` は配置の指定を削除します）。 */
 export type PipelinePatch = {
   desired_state?: "running" | "stopped" | null;
   graph?: PipelineGraph | null;
   name?: StreamName | null;
-  /** 配置の指定を丸ごと置き換える（部分の変更は無い）。null で外す。書かなければ今の指定を新しい `graph` で検査し直す（縮退の段の `disable` が新しいグラフに無ければ 400） */
+  /** 配置の指定の全体を置き換えます（一部だけの変更はできません）。null で削除します。指定しなければ、現在の指定を新しい `graph` で検査し直します（縮退の段階の `disable` が新しいグラフに無ければ 400） */
   placement?: PlacementSpec | null;
 };
 
-/** 実行の計画（処理の形・必要な資源・追加の遅延）。 */
+/** 実行の計画（処理の構成・必要な資源・追加の遅延）。 */
 export type PipelinePlan = {
   nodes: Array<{
     added_latency_ms: number;
@@ -846,7 +887,7 @@ export type PipelinePlan = {
     provider?: string;
     type: PipelineNodeType;
   }>;
-  /** 実行の順（トポロジカル順） */
+  /** 実行の順序（トポロジカル順） */
   order: string[];
   sinks: Array<{
     id: string;
@@ -880,16 +921,16 @@ export type PipelineSourceTrack = {
 };
 
 /**
- * パイプラインの直近の通知（senca-pipeline の `Event`、`event` で種類を選ぶ）。
- * `event: status`（`status_interval_ms` ごと）は `sources`（入力ごとの state `waiting`・`live`・`stalled`・`ended`、AU 数、タリー `on_program`/`on_preview`）、
- * `compose`（シーン・トランジション中か・スレートを出している入力）、`encoders`（フレーム数・誤り）を持つ。
- * メーター（`event: meters`）は `meters` に入り、ここにはそれ以外の直近の通知が残る（世代・誤りの通知のこともある）。
+ * パイプラインからの直近の通知です（`event` で種類を表します）。
+ * `event: status`（`status_interval_ms` ごと）には、`sources`（入力ごとの state `waiting`・`live`・`stalled`・`ended`、AU 数、タリー `on_program`/`on_preview`）、
+ * `compose`（シーン、トランジション中かどうか、スレートを表示している入力）、`encoders`（フレーム数・エラー）が含まれます。
+ * メーター（`event: meters`）は `meters` に入り、ここにはそれ以外の直近の通知が入ります（世代やエラーの通知のこともあります）。
  */
 export type PipelineStatus = {
   compose: Array<Record<string, unknown>>;
   encoders: Array<Record<string, unknown>>;
   event: "status";
-  /** 実行中のグラフの世代（worker の中の番号。パイプラインの generation とは別） */
+  /** 実行中のグラフの世代（worker 内部の番号で、パイプラインの generation とは別のもの） */
   generation: number;
   session_us: number;
   sources: Array<{
@@ -909,33 +950,33 @@ export type PipelineValidation = {
   plan: PipelinePlan;
 };
 
-/** 優先度（low < normal < high < critical）。資源が足りないとき、低い仕事から縮退・追い出しする。 */
+/** 優先度（low < normal < high < critical）。資源が足りないときは、優先度の低いワークロードから縮退・退去させます。 */
 export type PlacementPriority = "low" | "normal" | "high" | "critical";
 
 /**
- * 配置の指定（ADR-0013）。省略・null なら配置係に任せる（優先度 normal、spread）。検査の失敗は 400（`INVALID_CONFIG`、未知のフィールド・型の違いは `INVALID_REQUEST`）:
- * `node` が無い、文字列が空・128 文字超・制御文字を含む、`labels` が 17 個以上、`values` が空・33 個以上、`degrade` を入力・出力に書いた、
- * `degrade` が 9 段以上・段の名前が `full` か重複・`disable` が空・グラフに無い部品。
+ * 配置の指定です（ADR-0013）。省略または null の場合はスケジューラーに任せます（優先度 normal、spread）。検査に失敗すると 400 です（`INVALID_CONFIG`。未知のフィールドや型の誤りは `INVALID_REQUEST`）。失敗する条件:
+ * `node` が存在しない、文字列が空・128 文字を超える・制御文字を含む、`labels` が 17 個以上、`values` が空または 33 個以上、入力・出力に `degrade` を指定した、
+ * `degrade` が 9 段階以上、段階の名前が `full` または重複している、`disable` が空、グラフに無い処理ノードを指定した。
  */
 export type PlacementSpec = {
-  /** 組の名前。同じ組の仕事は同じノードに置かない */
+  /** グループの名前。同じグループのワークロードは同じノードに配置しません */
   anti_affinity?: string | null;
-  /** 縮退の段（**パイプラインだけ**、よい順）。資源が足りないとき、段を下げて（部品を止めて）動かし続ける。資源が戻れば元の段へ戻す */
+  /** 縮退の段階（**パイプライン専用**。品質の高い順）。資源が足りないときは段階を下げて（処理ノードを停止して）実行を続けます。資源が戻れば元の段階へ戻します */
   degrade?: DegradeLevel[];
-  /** 手動の割り当て。装置の ID（GPU・キャプチャ機器、`GET /grid`）。`node` が無ければ、その装置を持つノードのどれか */
+  /** 手動の割り当て。装置の ID（GPU・キャプチャ機器、`GET /grid`）。`node` が無ければ、その装置を持つノードのいずれかに配置します */
   device?: string | null;
-  /** すべてに合うノードにだけ置く */
+  /** すべての条件に合うノードにだけ配置します */
   labels?: LabelSelector[];
-  /** 手動の割り当て。ノードの ID か名前（`GET /nodes`）。保存するときは ID に直す（応答は ID） */
+  /** 手動の割り当て。ノードの ID または名前（`GET /nodes`）。保存時に ID に変換します（応答では ID） */
   node?: string | null;
-  /** 手動の割り当て先が止まったとき。prefer = 他へ移し、戻ったら（冷却の後に）戻す、strict = 止めたまま（`placement_status.state: unschedulable`） */
+  /** 手動の割り当て先が停止したときの動作。prefer = 他のノードへ移し、割り当て先が戻ったら（クールダウンの後に）戻す、strict = 停止したままにする（`placement_status.state: unschedulable`） */
   pin_policy?: "strict" | "prefer";
   priority?: PlacementPriority;
-  /** spread = 余裕の多いノードへ、binpack = 詰める */
+  /** spread = 余裕の多いノードへ分散する、binpack = 詰めて配置する */
   strategy?: "spread" | "binpack";
 };
 
-/** 保存した配置の指定（`node` は ID に直したもの）。無い項目・空の配列は省く。`pin_policy`・`priority`・`strategy` は既定値でも出る。 */
+/** 保存された配置の指定（`node` は ID に変換したもの）。値の無い項目と空の配列は省きます。`pin_policy`・`priority`・`strategy` は既定値でも含まれます。 */
 export type PlacementSpecView = {
   anti_affinity?: string;
   degrade?: DegradeLevel[];
@@ -948,31 +989,31 @@ export type PlacementSpecView = {
 };
 
 /**
- * 配置の結果（グリッドの割り当て）。`state` で形が変わる:
- * - `not_scheduled`: 仕事になっていない（入力・出力の `enabled: false`、パイプラインの `desired_state: stopped`）。
- * - `running`・`degraded`: 割り当てた（`degraded` は縮退の段 `level` が 1 以上）。割り当てたノードだけが動かす（実際の実行の様子は `status`・`observed_state`）。
- * - `pending`: 置き場所を探している（作成・変更の直後。配置係は約 1 秒ごと、資源の変更のたびに計画する）。
- * - `unschedulable`: 置けるノードが無い（`reasons` に理由ごとのノード）。
+ * 配置の結果（グリッドでの割り当て）です。`state` によって形が変わります。
+ * - `not_scheduled`: ワークロードになっていない（入力・出力が `enabled: false`、パイプラインが `desired_state: stopped`）。
+ * - `running`・`degraded`: 割り当て済み（`degraded` は縮退の段階 `level` が 1 以上）。割り当てたノードだけが実行します（実際の実行状態は `status`・`observed_state` で確認します）。
+ * - `pending`: 配置先を探している（作成・変更の直後。スケジューラーは約 1 秒ごとと、資源が変わるたびに計画します）。
+ * - `unschedulable`: 配置できるノードが無い（`reasons` に理由ごとのノード）。
  */
 export type PlacementStatus = {
   state: "not_scheduled";
 } | {
-  /** 使う GPU の ID */
+  /** 使用する GPU の ID */
   device: string | null;
-  /** 今の縮退の段（0 = full、i は `placement.degrade[i-1]`） */
+  /** 現在の縮退の段階（0 = full、i は `placement.degrade[i-1]`） */
   level: number;
-  /** 段の名前（段 0 は `full`） */
+  /** 段階の名前（段階 0 は `full`） */
   level_label: string;
   /** 割り当てたノードの ID */
   node: string;
   /** そのノードの名前 */
   node_name: string | null;
   reason: GridReason;
-  /** このノードに置いた時刻 */
+  /** このノードに配置した時刻 */
   since: Timestamp;
   state: "running" | "degraded";
 } | {
-  /** 置けない理由（`unschedulable` のとき。`pending` は null） */
+  /** 配置できない理由（`unschedulable` のとき。`pending` では null） */
   reasons: RejectCount[] | null;
   state: "pending" | "unschedulable";
 };
@@ -999,12 +1040,12 @@ export type PlaybackRequest = {
   ttl_secs?: number | null;
 };
 
-/** RFC 9457 の problem details（仕様 10.4）。内部の詳細や秘密は入れない。 */
+/** RFC 9457 の problem details です。内部の詳細や秘密は含めません。 */
 export type Problem = {
   code: ProblemCode;
-  /** code ごとの補足（例: 本文の解析エラーは `{reason}`、予約の衝突は `{limit, overlaps}`） */
+  /** code ごとの補足情報（例: 本文の解析エラーは `{reason}`、予約の衝突は `{limit, overlaps}`） */
   details?: unknown;
-  /** `X-Request-Id` と同じ（Idempotency-Key の再送では、再送の要求の ID）。 */
+  /** `X-Request-Id` と同じ値（Idempotency-Key による再送では、再送した要求の ID）。 */
   request_id?: string;
   retryable: boolean;
   status: number;
@@ -1025,15 +1066,15 @@ export type Recording = {
   legal_hold: boolean;
   name: string | null;
   retention_until: string | null;
-  /** 予約で作った録画なら予約の ID */
+  /** 予約で作成した録画であれば予約の ID */
   schedule: string | null;
   segments: number | null;
   started_at: Timestamp;
-  /** 削除中（deleting）の録画は API から見えない（404）。 */
+  /** 削除中（deleting）の録画は API から見えません（404）。 */
   state: "recording" | "finalized" | "interrupted";
-  /** 元の stream の ID（stream を消しても残る） */
+  /** 元の stream の ID（stream を削除しても残ります） */
   stream: string;
-  /** `GET /recordings/{id}/thumbnail` があるか */
+  /** `GET /recordings/{id}/thumbnail` があるかどうか */
   thumbnail: boolean;
 };
 
@@ -1048,15 +1089,15 @@ export type RecordingList = {
 };
 
 export type RecordingPatch = {
-  /** 解除には recording:delete が要る */
+  /** 解除には recording:delete が必要です */
   legal_hold?: boolean;
   name?: string;
-  /** RFC 3339。null で無期限。 */
+  /** RFC 3339。null は無期限。 */
   retention_until?: string | null;
 };
 
 export type RecordingPolicy = {
-  /** publish が始まったら自動で録画する */
+  /** publish が始まったら自動で録画します */
   enabled?: boolean;
   /** 保持日数（null は無期限） */
   retention_days?: number | null;
@@ -1070,49 +1111,49 @@ export type RecordingStart = {
 export type Recurrence = {
   count?: number | null;
   freq: "daily" | "weekly";
-  /** IANA 名（例: Asia/Tokyo）。壁時計の時刻で繰り返す */
+  /** IANA のタイムゾーン名（例: Asia/Tokyo）。現地時刻で繰り返します */
   timezone: string;
-  /** 繰り返しの終わり（含まない、UTC ミリ秒） */
+  /** 繰り返しの終了（この時刻を含まない、UTC ミリ秒） */
   until_ms?: number | null;
   /** weekly の曜日（0 = 日曜） */
   weekdays?: number[];
 };
 
 export type RejectCount = {
-  /** そのノードの ID（8 個まで） */
+  /** 該当するノードの ID（8 個まで） */
   examples: string[];
-  /** この理由で受けられないノードの数 */
+  /** この理由で受け入れられないノードの数 */
   nodes: number;
-  /** ノードが仕事を受けられない理由（`contended` は単独なら収まるが、優先度の同じか高い仕事で埋まっている） */
+  /** ノードがワークロードを受け入れられない理由（`contended` は、単独なら収まるが、優先度が同じか高いワークロードで埋まっている状態） */
   reason: "node_down" | "not_media" | "draining" | "pinned_elsewhere" | "pin_target_down" | "labels" | "anti_affinity" | "no_device" | "capture" | "cpu" | "memory" | "net_in" | "net_out" | "gpu_encode" | "gpu_decode" | "gpu_memory" | "contended";
 };
 
 export type RelayStatus = {
-  /** 中継で受けている写しの stream の ID */
+  /** 中継で受信しているミラーの stream の ID */
   mirrors: string[];
   /** 中継の接続（相手のノードごと） */
   peers: Array<{
-    /** この接続で送っている stream の数 */
+    /** この接続で送信している stream の数 */
     downstreams: number;
-    /** どちらかが接続を閉じようとしている */
+    /** どちらかが接続を閉じようとしているかどうか */
     going_away: boolean;
-    /** 相手のクラスタのノード番号（クラスタ設定の `peers[].id`。API のノード ID とは別） */
+    /** 相手のノードのクラスター内の番号（クラスター設定の `peers[].id`。API のノード ID とは別のもの） */
     node: number;
-    /** 送った AU 1 つ当たりの見出しのバイト数（枠の見出し・制御の枠を含む） */
+    /** 送信した AU 1 つあたりのヘッダーのバイト数（フレームのヘッダー・制御フレームを含む） */
     overhead_per_au: number;
-    /** RTT（平滑化、ミリ秒）。まだ測っていなければ null */
+    /** RTT（平滑化した値、ミリ秒）。まだ計測していなければ null */
     rtt_ms: number | null;
-    /** 受けた AU の数 */
+    /** 受信した AU の数 */
     rx_aus: number;
-    /** 直近の受けの速さ（bit/s） */
+    /** 直近の受信速度（bit/s） */
     rx_bps: number;
     rx_bytes: number;
-    /** 送った AU の数 */
+    /** 送信した AU の数 */
     tx_aus: number;
-    /** 直近の送りの速さ（bit/s） */
+    /** 直近の送信速度（bit/s） */
     tx_bps: number;
     tx_bytes: number;
-    /** この接続で受けている stream の数 */
+    /** この接続で受信している stream の数 */
     upstreams: number;
   }>;
 };
@@ -1126,7 +1167,7 @@ export type Resources = {
 };
 
 export type Room = {
-  /** 参加トークンの発行で自動に作った部屋（誰もいないまま `empty_timeout_secs` 経つと消える） */
+  /** 参加トークンの発行で自動作成された部屋かどうか（誰もいない状態で `empty_timeout_secs` が経過すると削除されます） */
   auto: boolean;
   created_at: Timestamp;
   generation: number;
@@ -1136,22 +1177,22 @@ export type Room = {
   placement: PlacementSpecView | null;
   placement_status: PlacementStatus;
   settings: RoomSettings;
-  /** つなぐ先（`GET /signaling` の WebSocket）。部屋を別のノードに置いたらそのノードの URL。このノードの `--public-http-url` が無く、別のノードにも置いていなければ null */
+  /** 接続先（`GET /signaling` の WebSocket）。部屋を別のノードに配置した場合はそのノードの URL です。このノードに `--public-http-url` が設定されておらず、別のノードにも配置していなければ null */
   signaling_url: string | null;
   updated_at: Timestamp;
 };
 
 export type RoomCreate = {
-  /** 省けば作る（24 文字の 16 進） */
+  /** 省略すると生成します（24 文字の 16 進数） */
   id?: RoomId;
   metadata?: RoomMetadata;
-  /** 配置の指定（`degrade` は使えない） */
+  /** 配置の指定（`degrade` は使えません） */
   placement?: PlacementSpec | null;
-  /** 部屋の設定（省略・null は既定値） */
+  /** 部屋の設定（省略または null の場合は既定値） */
   settings?: RoomSettings | null;
 };
 
-/** 部屋の ID（1〜128 文字の英数字と `-_.:@`、テナントをまたいで一意） */
+/** 部屋の ID（1〜128 文字の英数字と `-_.:@`。テナントをまたいで一意） */
 export type RoomId = string;
 
 export type RoomLayerStats = {
@@ -1166,26 +1207,26 @@ export type RoomList = {
 };
 
 export type RoomMessage = {
-  /** 送るもの（JSON で 64 KiB まで）。`label` があれば文字列 */
+  /** 送信する内容（JSON で 64 KiB まで）。`label` がある場合は文字列 */
   data: unknown;
-  /** DataChannel のラベル（`#` で始まる）。無ければシグナリングの `push` */
+  /** DataChannel のラベル（`#` で始まります）。無ければシグナリングの `push` で送ります */
   label?: string | null;
-  /** 送る相手の connection_id（空なら全員） */
+  /** 送信先の connection_id（空なら全員） */
   to?: string[];
 };
 
 export type RoomMessageResult = {
-  /** 送った相手の数 */
+  /** 送信した相手の数 */
   delivered: number;
 };
 
-/** 部屋・参加者の metadata（任意の JSON、JSON にして 8 KiB まで）。参加者の metadata は他の参加者に見える */
+/** 部屋・参加者の metadata（任意の JSON。JSON にして 8 KiB まで）。参加者の metadata は他の参加者にも見えます */
 export type RoomMetadata = unknown;
 
 export type RoomParticipantStats = {
-  /** 受け手への推定帯域 */
+  /** 受信者への推定帯域 */
   bandwidth_bps: number;
-  /** クライアントが送った getStats の要約（無ければ省く） */
+  /** クライアントが送信した getStats の要約（無ければ省きます） */
   client?: Record<string, unknown>;
   connection_id: string;
   forwarded_bytes: number;
@@ -1199,85 +1240,85 @@ export type RoomParticipantStats = {
   received_bytes: number;
   retransmitted_packets: number;
   rtt_ms: number;
-  /** この参加者へ送っている量 */
+  /** この参加者へ送信している量 */
   send_bitrate_bps: number;
   subscriptions: Array<{
     mid: string;
-    /** 今配っている層（層の無いトラック・まだなら null） */
+    /** 現在配信している層（層の無いトラックや、まだ配信していない場合は null） */
     rid: string | null;
     state: "empty" | "active" | "paused";
     track_id: string | null;
   }>;
 };
 
-/** 書いたフィールドだけ変える。`settings` は JSON Merge Patch（項目の null で既定に戻す）。`settings`・`metadata` の null は「変えない」、`placement: null` は配置の指定を外す。 */
+/** 指定したフィールドだけを変更します。`settings` は JSON Merge Patch です（項目の値の null で既定値に戻ります）。`settings`・`metadata` の null は「変更しない」の意味で、`placement: null` は配置の指定を削除します。 */
 export type RoomPatch = {
   metadata?: RoomMetadata;
-  /** 配置の指定を丸ごと置き換える（`degrade` は使えない）。null で外す */
+  /** 配置の指定の全体を置き換えます（`degrade` は使えません）。null で削除します */
   placement?: PlacementSpec | null;
-  /** 変える設定の項目だけを書く（JSON Merge Patch。書かない項目は残り、項目の値の null はその項目を既定値に戻す） */
+  /** 変更する設定の項目だけを書きます（JSON Merge Patch。書かない項目はそのまま残り、項目の値の null はその項目を既定値に戻します） */
   settings?: RoomSettings | null;
 };
 
-/** 参加者に許すこと（省けばすべて）。 */
+/** 参加者に許可する操作（省略するとすべて許可）。 */
 export type RoomPermissions = {
-  /** 使ってよい DataChannel のラベルの型（`#*` で全部） */
+  /** 使用を許可する DataChannel のラベルのパターン（`#*` ですべて） */
   data?: string[];
-  /** 送ってよいトラックの種類 */
+  /** 送信を許可するトラックの種類 */
   publish?: Array<"audio" | "video">;
-  /** 他の参加者のトラックを受けてよいか */
+  /** 他の参加者のトラックを受信してよいか */
   subscribe?: boolean;
 };
 
 /**
- * 部屋の設定。応答では既定値を埋めた全体を返す（`max_video_bitrate_kbps`・`spotlight`・`forwarding_filter` は無ければ省く）。
- * API で検査するのは形と `max_participants` だけ（範囲の他の制約は部屋の核が部屋を開くときに検査する。`POST /rooms` の説明）。
+ * 部屋の設定です。応答では既定値を補った全体を返します（`max_video_bitrate_kbps`・`spotlight`・`forwarding_filter` は値が無ければ省きます）。
+ * API で検査するのは形式と `max_participants` だけです（それ以外の範囲の制約は、部屋を開くときに検査します。`POST /rooms` の説明を参照）。
  */
 export type RoomSettings = {
   audio_codec?: "opus";
-  /** 使ってよい DataChannel のラベルの型（`#` で始まる。末尾の `*` は前方一致） */
+  /** 使用を許可する DataChannel のラベルのパターン（`#` で始まります。末尾の `*` は前方一致） */
   data_labels?: string[];
-  /** E2EE（SFrame）の部屋。SFU は中身を見ずに配り、合成・合成の録画はできない */
+  /** E2EE（SFrame）の部屋。SFU は中身を見ずに転送するため、合成や合成の録画はできません */
   e2ee?: boolean;
-  /** 誰もいなくなってから消すまでの秒数（参加トークンで自動に作った部屋だけ） */
+  /** 誰もいなくなってから削除するまでの秒数（参加トークンの発行で自動作成された部屋だけが対象） */
   empty_timeout_secs?: number;
-  /** 部屋全体の転送フィルター（購読者ごとのフィルターと両方を満たすものだけ配る） */
+  /** 部屋全体の転送フィルター（購読者ごとのフィルターと、両方の条件を満たすものだけを配信します） */
   forwarding_filter?: ForwardingFilter | null;
-  /** 参加者の上限（ノードをまたぐ参加者も数える） */
+  /** 参加者の上限（他のノードにいる参加者も数えます） */
   max_participants?: number;
-  /** 送り手に勧める映像の上限（kbit/s） */
+  /** 配信者に推奨する映像のビットレートの上限（kbit/s） */
   max_video_bitrate_kbps?: number | null;
-  /** 録画の方針。`per_participant`・`composite` なら部屋の録画のメディアパイプライン（`managed: true`）を作る。`composite` は `e2ee` と併用できない（422） */
+  /** 録画の方針。`per_participant`・`composite` にすると、部屋の録画のメディアパイプライン（`managed: true`）を作ります。`composite` は `e2ee` と併用できません（422） */
   recording?: "none" | "per_participant" | "composite";
   spotlight?: RoomSpotlight | null;
-  /** 部屋の映像のコーデック（SFU は変換しないので全員が同じ） */
+  /** 部屋の映像のコーデック（SFU は変換しないため、全員が同じコーデックを使います） */
   video_codec?: "vp8" | "vp9" | "h264" | "av1";
 };
 
-/** 受信の枠（クライアントの受ける m 行 1 つ）と、そこに今流しているトラック。 */
+/** 受信の枠（クライアントが受信する m 行 1 つ）と、そこに現在流しているトラックです。 */
 export type RoomSlot = {
   client_id?: string;
   connection_id?: string;
   kind: "audio" | "video";
   mid: string;
-  /** active = 配っている、paused = 割り当てているが配っていない、empty = 空き */
+  /** active = 配信中、paused = 割り当て済みだが配信していない、empty = 空き */
   state: "empty" | "active" | "paused";
   track_id?: string;
 };
 
-/** スポットライト（話している人を注目し、注目の外の映像を下げる）。 */
+/** スポットライト（話している人に注目し、それ以外の人の映像の品質を下げます）。 */
 export type RoomSpotlight = {
-  /** 注目した送り手の層（無ければ帯域で自動） */
+  /** 注目した配信者の層（無ければ帯域に応じて自動で選びます） */
   focus_rid?: string;
-  /** 注目する話者の数（受け手は自分を除いてこの人数） */
+  /** 注目する話者の数（受信者から見て、自分を除いたこの人数） */
   number: number;
-  /** lowest = 注目の外は一番低い層、off = 配らない（枠は `paused`） */
+  /** lowest = 注目していない人は最も低い層で配信する、off = 配信しない（受信の枠は `paused`） */
   unfocused?: "lowest" | false;
 };
 
 export type RoomStats = {
   at: Timestamp;
-  /** 部屋を置いたノードにつないだ参加者 */
+  /** 部屋を配置したノードに接続した参加者 */
   participants: RoomParticipantStats[];
   room_id: RoomId;
 };
@@ -1287,31 +1328,31 @@ export type RoomToken = {
   room_id: RoomId;
   /** `Room.signaling_url` と同じ */
   signaling_url: string | null;
-  /** 参加トークン（JWT）。Idempotency-Key の再送では null */
+  /** 参加トークン（JWT）。Idempotency-Key による再送では null */
   token: string | null;
-  /** Idempotency-Key の再送で値を伏せたとき */
+  /** Idempotency-Key による再送で値を伏せたとき */
   token_redacted?: true;
 };
 
 export type RoomTokenRequest = {
-  /** 同じ値の接続どうしは互いのトラックを受けない */
+  /** 同じ値を持つ接続どうしは、互いのトラックを受信しません */
   bundle_id?: string | null;
-  /** あれば `connect.client_id` はこれと同じでなければならない（転送フィルターの条件になる） */
+  /** 指定すると、`connect.client_id` はこれと同じ値でなければなりません（転送フィルターの条件に使われます） */
   client_id?: string | null;
-  /** 参加者の metadata（他の参加者に見える） */
+  /** 参加者の metadata（他の参加者にも見えます） */
   metadata?: RoomMetadata;
   permissions?: RoomPermissions | null;
-  /** 許す役割の上限（`sendrecv` のトークンはどの役割でも参加できる） */
+  /** 許可する役割の上限（`sendrecv` のトークンではどの役割でも参加できます） */
   role: "sendrecv" | "sendonly" | "recvonly";
   /** 有効期間（秒） */
   ttl_secs?: number | null;
 };
 
 export type RoomTrack = {
-  /** 送り手の接続 */
+  /** 配信者の接続 */
   connection_id: string;
   kind: "audio" | "video";
-  /** サイマルキャストの層（低い順）。サイマルキャストでなければ省く */
+  /** サイマルキャストの層（低い順）。サイマルキャストでなければ省きます */
   rids?: string[];
   track_id: string;
 };
@@ -1335,7 +1376,7 @@ export type Schedule = {
   stream: string;
 };
 
-/** record = 窓の間録画、live = 窓の間だけ publish を受け付ける、snapshot = 窓の間一定間隔で静止画 */
+/** record = 期間中に録画する、live = 期間中だけ publish を受け付ける、snapshot = 期間中に一定間隔で静止画を撮る */
 export type ScheduleAction = "record" | "live" | "snapshot";
 
 export type ScheduleCheck = {
@@ -1346,15 +1387,15 @@ export type ScheduleCheck = {
     id: string;
     start_at: Timestamp;
   }>;
-  /** 重なりがあり、入力を共有するか */
+  /** 重なりがあり、入力を共有するかどうか */
   shared_input: boolean;
 };
 
 export type ScheduleCreate = {
   action: ScheduleAction;
-  /** RFC 3339。start_at より後、窓は 24 時間まで、未来 */
+  /** RFC 3339。start_at より後で未来の時刻。期間は 24 時間まで */
   end_at: string;
-  /** 既定 60000。実行時刻を過ぎてもこの間なら途中から実行 */
+  /** 既定 60000。実行時刻を過ぎても、この時間内であれば途中から実行します */
   grace_ms?: number | null;
   name?: string | null;
   /** 既定 0 */
@@ -1363,7 +1404,7 @@ export type ScheduleCreate = {
   pre_roll_ms?: number | null;
   recurrence?: Recurrence | null;
   retention_days?: number | null;
-  /** action が snapshot のときだけ（必須） */
+  /** action が snapshot のときだけ指定します（その場合は必須） */
   snapshot_interval_secs?: number | null;
   /** RFC 3339 */
   start_at: string;
@@ -1403,8 +1444,8 @@ export type ScheduleRunList = {
 export type ScheduleState = "pending" | "running" | "completed" | "missed" | "canceled" | "failed";
 
 /**
- * `publish` は送り出しの権限: `POST /whip/{stream}` の `Authorization: Bearer` に、publish 鍵の代わりに `publish` を持つ同じテナントの API トークン・JWT を使える。
- * `subscribe` は `POST /streams/{id}/playback-url`。
+ * `publish` は送信の権限です。`POST /whip/{stream}` の `Authorization: Bearer` に、publish 鍵の代わりに `publish` を持つ同じテナントの API トークン・JWT を使えます。
+ * `subscribe` は `POST /streams/{id}/playback-url` に使います。
  */
 export type Scope = "stream:read" | "stream:write" | "publish" | "subscribe" | "recording:read" | "recording:delete" | "tenant:admin" | "node:admin";
 
@@ -1412,29 +1453,33 @@ export type Secret = {
   created_at: Timestamp;
   id: string;
   name: string;
-  /** `credential_ref` に書く値 */
+  /** `credential_ref` に指定する値 */
   ref: string;
 };
 
 export type SecretCreate = {
   name: StreamName;
-  /** 1〜8192 バイト（UTF-8）。応答には出ない */
+  /** 1〜8192 バイト（UTF-8）。応答には含まれません */
   value: string;
 };
 
 export type SecretList = {
   items: Secret[];
-  /** 常に null（ページングは無い） */
+  /** 常に null（ページングはありません） */
   next_cursor: null;
 };
 
 export type SnapshotList = {
   items: Array<{
-    /** JPEG の大きさ */
+    /** JPEG のサイズ */
     bytes: number;
+    /** 前回の保存からの変化の割合（パイプラインの静止画のみ） */
+    changed_fraction?: number;
     height: number;
     id: string;
-    /** 撮った理由 */
+    /** `snapshot_on_change` の処理ノードの ID（パイプラインの静止画のみ） */
+    node?: string;
+    /** 撮影した理由 */
     reason: "interval" | "schedule" | "board_change";
     taken_at: Timestamp;
     width: number;
@@ -1447,20 +1492,20 @@ export type SnapshotPolicy = {
 };
 
 export type SseEventData = {
-  /** 種類ごとの中身（秘密は含まない）。部屋の核の出来事は `{type, data}` */
+  /** 種類ごとの内容（秘密は含みません）。部屋のイベントは `{type, data}` */
   data: Record<string, unknown>;
-  /** 部屋の核の出来事の ID（部屋の核の出来事だけ。SSE の `id` は無い） */
+  /** 部屋のイベントの ID（部屋のイベントだけ。SSE の `id` はありません） */
   event_id?: string;
-  /** 出来事を出したノードの ID（部屋の核の出来事だけ） */
+  /** イベントを発生させたノードの ID（部屋のイベントだけ） */
   node?: string;
   occurred_at: Timestamp;
-  /** 資源の ID（部屋の出来事は部屋の ID、`grid.decisions` は空） */
+  /** 資源の ID（部屋のイベントは部屋の ID、`grid.decisions` は空） */
   resource_id: string;
   type: "stream.created" | "stream.updated" | "stream.deleted" | "stream.owner" | "recording.updated" | "recording.deleted" | "schedule.created" | "schedule.updated" | "schedule.deleted" | "schedule.run" | "node.updated" | "input.updated" | "input.deleted" | "output.updated" | "output.deleted" | "secret.created" | "secret.deleted" | "pipeline.updated" | "pipeline.deleted" | "room.updated" | "room.deleted" | "media_pipeline.updated" | "media_pipeline.deleted" | "node.down" | "node.up" | "device.down" | "device.up" | "device.disabled" | "device.enabled" | "grid.decisions" | "room.started" | "room.stopped" | "room.connection.created" | "room.connection.updated" | "room.connection.destroyed" | "room.track.published" | "room.track.unpublished" | "room.spotlight.changed";
 };
 
 export type Stream = {
-  /** 字幕と翻訳の設定（無ければ null）。資格情報は `secret:{name}` の参照で、値は返さない。 */
+  /** 字幕と翻訳の設定（無ければ null）。資格情報は `secret:{name}` で参照し、値は返しません。 */
   captions: CaptionSettings | null;
   codec_profile: CodecProfile;
   created_at: Timestamp;
@@ -1474,7 +1519,7 @@ export type Stream = {
   live: LiveInfo | null;
   metadata: Metadata;
   name: string;
-  /** 仕様 10.4 の provisioning・draining・degraded・failed は今は出さない。 */
+  /** 観測した配信の状態です。 */
   observed_state: "waiting_input" | "live" | "stopped";
   recording: RecordingPolicy;
   snapshots: SnapshotPolicy | null;
@@ -1501,7 +1546,7 @@ export type StreamList = {
 
 export type StreamName = string;
 
-/** 書いたフィールドだけ置き換える。`snapshots: null` は静止画の方針を、`captions: null` は字幕を消す。他のフィールドの null は「変えない」。 */
+/** 指定したフィールドだけを置き換えます。`snapshots: null` は静止画の方針を、`captions: null` は字幕の設定を削除します。他のフィールドの null は「変更しない」の意味です。 */
 export type StreamPatch = {
   captions?: CaptionSettings | null;
   codec_profile?: CodecProfile;
@@ -1523,14 +1568,14 @@ export type Token = {
   id: string;
   name: string;
   scopes: Scope[];
-  /** 値。発行の応答でだけ入る（一覧では null）。 */
+  /** トークンの値。発行時の応答でだけ値が入ります（一覧では null）。 */
   token: string | null;
-  /** Idempotency-Key の再送で値を伏せたとき */
+  /** Idempotency-Key による再送で値を伏せたとき */
   token_redacted?: true;
 };
 
 export type TokenCreate = {
-  /** RFC 3339（未来） */
+  /** RFC 3339（未来の時刻） */
   expires_at?: string | null;
   name: string;
   scopes: Scope[];
@@ -1557,7 +1602,7 @@ export type VodPlayback = {
   playback: {
     /** `{http}/s/{exp}/{sig}/vod/{id}/index.m3u8` */
     hls: string;
-    /** 今は常に null */
+    /** 現在は常に null */
     mp4: null;
   };
 };

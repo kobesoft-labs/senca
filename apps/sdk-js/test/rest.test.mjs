@@ -218,6 +218,7 @@ const COVERAGE = {
   createSecret: (c) => c.secrets.create, listSecrets: (c) => c.secrets.list, deleteSecret: (c) => c.secrets.delete,
   createPipeline: (c) => c.pipelines.create, listPipelines: (c) => c.pipelines.list, getPipeline: (c) => c.pipelines.get, patchPipeline: (c) => c.pipelines.update,
   deletePipeline: (c) => c.pipelines.delete, validatePipeline: (c) => c.pipelines.validate, controlPipeline: (c) => c.pipelines.control,
+  listPipelineSnapshots: (c) => c.pipelines.snapshots.list, getPipelineSnapshotById: (c) => c.pipelines.snapshots.get, deletePipelineSnapshot: (c) => c.pipelines.snapshots.delete,
   createRoom: (c) => c.rooms.create, listRooms: (c) => c.rooms.list, getRoom: (c) => c.rooms.get, patchRoom: (c) => c.rooms.update, deleteRoom: (c) => c.rooms.delete,
   issueRoomToken: (c) => c.rooms.createToken, postRoomMessage: (c) => c.rooms.sendMessage, getRoomStats: (c) => c.rooms.stats,
   listRoomParticipants: (c) => c.rooms.participants('r').list, getRoomParticipant: (c) => c.rooms.participants('r').get,
@@ -251,6 +252,7 @@ test('操作のパスと SDK の要求のパスが一致する（代表）', asy
   await expect('listOutputs', () => c.outputs.list('s1').first(), { id: 's1' });
   await expect('patchInput', () => c.inputs.update('i1', {}, { ifMatch: 1 }), { id: 'i1' });
   await expect('controlPipeline', () => c.pipelines.control('p1', { op: 'take', node: 'mix' }), { id: 'p1' });
+  await expect('deletePipelineSnapshot', () => c.pipelines.snapshots.delete('p1', 'sn1'), { id: 'p1', sid: 'sn1' });
   await expect('disableDevice', () => c.nodes.devices.disable('n1', 'nvidia:0'), { id: 'n1', dev: 'nvidia%3A0' });
   await expect('listScheduleRuns', () => c.schedules.runs('sc1'), { id: 'sc1' });
   await expect('deleteStreamSnapshot', () => c.streams.snapshots.delete('s1', 'sn1'), { id: 's1', sid: 'sn1' });

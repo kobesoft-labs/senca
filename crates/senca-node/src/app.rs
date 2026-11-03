@@ -66,6 +66,19 @@ pub struct App {
     pub room_events: tokio::sync::broadcast::Sender<crate::rooms::RoomEventOut>,
     /// 要求の量の上限（IP・主体・認証の失敗・接続の開始）。
     pub limits: crate::ratelimit::RateLimits,
+    /// 視聴者の数（`limits.max_viewers`。ノードごと）。
+    pub viewers: Arc<crate::viewers::Viewers>,
+}
+
+/// 再生（RTMP・SRT・RTSP の play、WHEP）を始められない理由。
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum PlayError {
+    /// 署名の誤り・期限切れ。
+    Forbidden,
+    /// 配信していない（stream が無い・所有者が分からない）。
+    NotLive,
+    /// 視聴者が `limits.max_viewers` に達している。
+    TooManyViewers,
 }
 
 impl App {
@@ -103,6 +116,7 @@ impl App {
             pipelines: crate::pipelines::PipelineManager::default(),
             captions_running: Mutex::new(HashMap::new()),
             rtc: std::sync::OnceLock::new(),
+            viewers: Default::default(),
         });
         *app.me.lock().unwrap() = Arc::downgrade(&app);
         if let Ok(h) = tokio::runtime::Handle::try_current() {
@@ -356,14 +370,15 @@ impl App {
         Ok(p)
     }
 
-    /// 予約に「live」があれば、その窓の間だけ publish を許す。
+    /// 予約に「live」があれば、その窓の間だけ publish を許す。見るのはこれから動く予約（`pending`・`running`）だけで、
+    /// 終わった（`completed`・`missed`・`failed`）・取り消した予約は、時間帯の外の配信を止めない。
     fn publish_allowed(&self, s: &Stream) -> bool {
         let core = self.control.lock().unwrap();
         let lives: Vec<&Schedule> = core
             .state
             .schedules
             .values()
-            .filter(|x| x.stream == s.id && x.action == ScheduleAction::Live && !matches!(x.state, ScheduleState::Canceled))
+            .filter(|x| x.stream == s.id && x.action == ScheduleAction::Live && matches!(x.state, ScheduleState::Pending | ScheduleState::Running))
             .collect();
         if lives.is_empty() {
             return true;
@@ -379,8 +394,9 @@ impl App {
             .any(|r| r.stream == stream && r.state == RecordingState::Recording && r.schedule.is_none())
     }
 
-    /// RTMP play（SRT・RTSP の play、WHEP も）: キーは署名付きの `{stream_id}?exp=..&sig=..`（publish 鍵では見られない）。
-    pub fn subscribe_rtmp_play(&self, key: &str) -> Option<Subscription> {
+    /// 再生のキー `{stream_id}?exp=..&sig=..`（署名付きの再生 URL と同じ署名。publish 鍵では見られない）を確かめ、
+    /// stream id を返す。RTMP・SRT・RTSP の play と WHEP で共通（MoQ は `moq.rs` が同じ署名を見る）。
+    pub fn verify_play_key(&self, key: &str) -> Result<String, PlayError> {
         let (id, q) = key.split_once('?').unwrap_or((key, ""));
         let mut exp = None;
         let mut sig = None;
@@ -391,12 +407,55 @@ impl App {
                 sig = Some(v);
             }
         }
-        let (exp, sig) = (exp?, sig?);
+        let (Some(exp), Some(sig)) = (exp, sig) else { return Err(PlayError::Forbidden) };
         if crate::util::now_ms() / 1000 > exp || !self.verify_signature("live", id, exp, sig) {
-            return None;
+            return Err(PlayError::Forbidden);
         }
-        let hub = self.source_hub(id)?;
-        Some(hub.subscribe())
+        Ok(id.to_string())
+    }
+
+    /// stream の視聴の上限と、HLS の客を視聴中と見なす長さ。
+    fn viewer_limits(&self, id: &str) -> (Option<u32>, u64, bool) {
+        let core = self.control.lock().unwrap();
+        match core.state.streams.get(id) {
+            Some(s) => (s.limits.max_viewers, crate::viewers::hls_active_ms(s.hls.segment_ms), s.latency_profile == LatencyProfile::Interactive),
+            None => (None, crate::viewers::hls_active_ms(2000), false),
+        }
+    }
+
+    /// まだ視聴者を受けられるか（数えない。SRT の受け入れの判断用）。
+    pub fn viewer_room(&self, id: &str) -> bool {
+        let (max, active, _) = self.viewer_limits(id);
+        self.viewers.has_room(id, max, active)
+    }
+
+    /// stream が `latency_profile: interactive` か。
+    pub fn interactive(&self, id: &str) -> bool {
+        self.viewer_limits(id).2
+    }
+
+    /// 接続を持つ再生（RTMP・SRT・RTSP の play、WHEP）を始める: キーを確かめ、視聴者を 1 人数えて、hub を購読する
+    /// （このノードに無ければ中継の写しから）。購読を手放すと視聴者の数が減る。`kind` は `viewers::SESSION_KINDS` のどれか。
+    pub fn subscribe_play(&self, key: &str, kind: &'static str) -> Result<Subscription, PlayError> {
+        let id = self.verify_play_key(key)?;
+        let (max, active, interactive) = self.viewer_limits(&id);
+        let guard = self.viewers.try_session(&id, kind, max, active).ok_or(PlayError::TooManyViewers)?;
+        let hub = self.source_hub(&id).ok_or(PlayError::NotLive)?;
+        let mut sub = hub.subscribe().with_viewer(guard);
+        sub.interactive = interactive;
+        Ok(sub)
+    }
+
+    /// MoQ の購読者 1 人を数える（同じセッションの catalog・映像・音声の購読は 1 人。印は呼び手が持つ）。
+    pub fn moq_viewer(&self, id: &str) -> Option<crate::viewers::ViewerGuard> {
+        let (max, active, _) = self.viewer_limits(id);
+        self.viewers.try_session(id, "moq", max, active)
+    }
+
+    /// HLS のプレイリストの取得を視聴として記録する。新しい客で上限に達していれば false（503 にする）。
+    pub fn hls_viewer(&self, id: &str, peer: &str, user_agent: Option<&str>) -> bool {
+        let (max, active, _) = self.viewer_limits(id);
+        self.viewers.hls_touch(id, crate::viewers::hls_client_key(peer, user_agent), max, active)
     }
 
     /// stream の hub。このノードに無く、別のノードが持っていれば中継の写しを作る（ADR-0014）。
@@ -416,7 +475,11 @@ impl App {
     pub fn live_info(&self, id: &str) -> Option<Value> {
         let hub = self.hubs.lock().unwrap().get(id).cloned()?;
         let l = hub.shared.live.lock().unwrap().clone()?;
-        serde_json::to_value(l).ok()
+        let mut v = serde_json::to_value(l).ok()?;
+        // このノードの視聴者の数（接続を持つ視聴と、最近の HLS の客）
+        let (_, active, _) = self.viewer_limits(id);
+        v["viewers"] = self.viewers.counts(id, active);
+        Some(v)
     }
 
     pub fn live_cache(&self, id: &str) -> Option<Arc<LiveCache>> {
@@ -435,6 +498,7 @@ impl App {
         if let Some(h) = h {
             tokio::spawn(async move { h.shutdown().await });
         }
+        self.viewers.forget(id);
         let _ = std::fs::remove_dir_all(self.cfg.data_dir.join("snapshots").join(id));
     }
 
@@ -477,7 +541,9 @@ impl App {
         self.propose(Command::PutRecording { recording: rec.clone() })?;
         let hub = self.hub(s);
         let id = rec.id.clone();
-        let res = tokio::runtime::Handle::current().block_on(hub.start_recording(&id, not_before_ms));
+        // 予約の録画は窓の終わりまで続ける（配信が途中で終わっても閉じない）
+        let keep_across_end = rec.schedule.is_some();
+        let res = tokio::runtime::Handle::current().block_on(hub.start_recording(&id, not_before_ms, keep_across_end));
         if let Err(e) = res {
             self.log(&format!("recording {id} could not start: {e}"));
             let mut r = rec.clone();
@@ -487,7 +553,8 @@ impl App {
             let _ = self.propose(Command::PutRecording { recording: r });
             return Err(Problem::internal());
         }
-        self.rec_info.lock().unwrap().insert(rec.id.clone(), RecInfo::default());
+        // 書き手の通知（セグメント・欠落）が先に来ていることがあるので、上書きしない
+        self.rec_info.lock().unwrap().entry(rec.id.clone()).or_default();
         Ok(rec)
     }
 
@@ -562,6 +629,12 @@ impl App {
                 i.segments += 1;
                 i.bytes += segment.bytes;
             }
+            RecorderEvent::Gap { recording, at_ms, reason, dropped } => {
+                // 録画中にも欠落を見せる（索引に書いたものと同じ）
+                let mut m = self.rec_info.lock().unwrap();
+                let i = m.entry(recording).or_default();
+                i.gaps.push(json!({ "at": crate::util::rfc3339(at_ms), "reason": reason, "dropped": dropped }));
+            }
             RecorderEvent::Stopped { recording, ended_at_ms, state } => {
                 let st = if state == "finalized" { RecordingState::Finalized } else { RecordingState::Interrupted };
                 self.finish_recording(&recording, ended_at_ms, st);
@@ -617,8 +690,8 @@ impl App {
         std::fs::read(self.cfg.data_dir.join("recordings").join(id).join("thumbnail.jpg")).ok().map(Bytes::from)
     }
 
-    pub fn export_mp4(&self, id: &str) -> Result<Bytes, Problem> {
-        crate::export::mp4(self, id)
+    pub fn export_mp4(&self, id: &str, start_ms: Option<i64>, end_ms: Option<i64>) -> Result<Bytes, Problem> {
+        crate::export::mp4(self, id, start_ms, end_ms)
     }
 
     // ---- 再生 ----

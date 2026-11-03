@@ -65,6 +65,9 @@ pub const OPERATIONS: &[(&str, &str)] = &[
     ("deletePipeline", "Pipelines::delete"),
     ("validatePipeline", "Pipelines::validate"),
     ("controlPipeline", "Pipelines::control"),
+    ("listPipelineSnapshots", "Pipelines::snapshots"),
+    ("getPipelineSnapshotById", "Pipelines::snapshot_by_id"),
+    ("deletePipelineSnapshot", "Pipelines::delete_snapshot"),
     ("getLivePlaylist", "SencaClient::fetch_signed"),
     ("getLiveObject", "SencaClient::fetch_signed"),
     ("getVodPlaylist", "SencaClient::fetch_signed"),
@@ -141,6 +144,7 @@ mod tests {
         let _ = (crate::Secrets::create, crate::Secrets::list, crate::Secrets::delete);
         let _ = (crate::Pipelines::create, crate::Pipelines::list, crate::Pipelines::get, crate::Pipelines::delete);
         let _ = (crate::Pipelines::validate, crate::Pipelines::control);
+        let _ = (crate::Pipelines::snapshots, crate::Pipelines::snapshot_by_id, crate::Pipelines::delete_snapshot);
         let _ = (crate::rooms::Rooms::create, crate::rooms::Rooms::list, crate::rooms::Rooms::get, crate::rooms::Rooms::delete);
         let _ = (crate::rooms::Rooms::issue_token, crate::rooms::Rooms::send_message, crate::rooms::Rooms::stats);
         let _ = (crate::rooms::Rooms::participants, crate::rooms::Rooms::participant, crate::rooms::Rooms::update_participant);

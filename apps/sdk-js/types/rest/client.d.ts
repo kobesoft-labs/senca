@@ -206,6 +206,15 @@ export class Secrets {
 export class Pipelines extends Collection<import("./openapi.gen.js").Pipeline, import("./openapi.gen.js").PipelineCreate, import("./openapi.gen.js").PipelinePatch> {
     /** @internal @param {Http} http */
     constructor(http: Http);
+    /** `snapshot_on_change`（板書の変化）で保存した静止画。 */
+    snapshots: {
+        /** @param {string} id @param {CallOptions} [o] @returns {Promise<import('./openapi.gen.js').SnapshotList['items']>} */
+        list: (id: string, o?: CallOptions) => Promise<import("./openapi.gen.js").SnapshotList["items"]>;
+        /** @param {string} id @param {string} sid @param {CallOptions} [o] @returns {Promise<Blob>} */
+        get: (id: string, sid: string, o?: CallOptions) => Promise<Blob>;
+        /** @param {string} id @param {string} sid @param {CallOptions} [o] */
+        delete: (id: string, sid: string, o?: CallOptions) => Promise<void>;
+    };
     /** グラフを検証する（保存前のグラフも）。 @param {string} id @param {import('./openapi.gen.js').PipelineGraph} graph @param {CallOptions} [o] @returns {Promise<import('./openapi.gen.js').PipelineValidation>} */
     validate(id: string, graph: import("./openapi.gen.js").PipelineGraph, o?: CallOptions): Promise<import("./openapi.gen.js").PipelineValidation>;
     /** 動いているパイプラインを操作する（スイッチャーの take など）。 @param {string} id @param {import('./openapi.gen.js').PipelineControl} op @param {CreateOptions} [o] @returns {Promise<import('./openapi.gen.js').PipelineControlResult>} */

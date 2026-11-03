@@ -41,11 +41,9 @@ Recordings being deleted (internal state `deleting`) are not shown in lists or l
 | `legal_hold` | Legal hold. While true, neither deletion nor the retention sweep removes the recording |
 | `schedule` | ID of the schedule that made the recording, if any |
 | `duration_ms`, `segments`, `bytes` | Totals from the index |
-| `gaps` | Gaps as `[{at, reason, dropped}]`; `reason` is `publisher_reconnect` or `queue_overflow` |
+| `gaps` | Gaps as `[{at, reason, dropped}]`; `reason` is `publisher_reconnect` or `queue_overflow`. Shown while recording too, as soon as a gap happens |
 | `thumbnail` | Whether a thumbnail exists |
 
-Note: at present, `gaps` is shown as an empty list for recordings created since the node started, until the node is
-restarted (the gaps are recorded in the index).
 
 ## 5.3 Automatic recording (starts on publish)
 
@@ -152,6 +150,15 @@ curl -s -o rec.mp4 "$API/recordings/$RID/export.mp4" -H "Authorization: Bearer $
 - A recording in progress gets 409, an empty recording 409. The file is built in memory, so recordings whose segments exceed 4 GiB in total get 413 `PAYLOAD_TOO_LARGE`.
 - Scheduled recordings are trimmed to the schedule's start and end (`not_before_ms` and `not_after_ms` in the index); the start is
   widened back to the preceding keyframe. Pre-roll and post-roll stay in the VOD but are not included in the MP4.
+- `start` and `end` (RFC 3339 times) export only that range. For a scheduled recording, the overlap with the schedule's range is
+  exported. The start is widened back to the preceding keyframe (there is no re-encoding). Times are wall-clock times mapped through
+  each segment's start time, so they stay accurate across sections joined after a reconnect.
+
+  ```sh
+  curl -s -o part.mp4 "$API/recordings/$RID/export.mp4?start=2026-11-04T01:00:00Z&end=2026-11-04T01:10:00Z" -H "Authorization: Bearer $TOKEN"
+  ```
+
+  A malformed time, `end` not after `start`, or any query other than `start` and `end` gives 400; a range with nothing recorded gives 409.
 - Sections separated by reconnects are joined back-to-back (the time gap is removed).
 - In a cluster, send the request to the API of the node that made the recording (export and thumbnails read local files).
 
@@ -175,7 +182,8 @@ When the sender drops and reconnects within the grace (with the same key, possib
 3. The VOD playlist gets `#EXT-X-DISCONTINUITY`. It is still one recording.
 4. MP4 export joins the sections without the gap.
 
-A reconnect after the grace is a new broadcast; with automatic recording a new recording starts.
+A reconnect after the grace is a new broadcast; with automatic recording a new recording starts. A scheduled recording continues
+in the same recording as long as the reconnect is within the schedule window (the gap and discontinuity are recorded as above; §5.12).
 
 ## 5.10 Interruption and recovery
 
@@ -287,10 +295,12 @@ A recurring schedule returns to `pending` after each occurrence ends (`completed
 
 ### Caveats
 
-- **When the broadcast ends, the scheduled recording is finalized too.** If the sender drops in the middle of the window and the grace
-  expires, that occurrence's recording becomes `finalized`, and no new recording starts if the sender returns within the same window.
-  Start a recording manually if needed.
-- **A single `live` schedule makes publishing outside its windows fail.** The check is "is there any `live` schedule that is not
-  `canceled`", and finished (`completed`, `missed`, `failed`) schedules count. To allow free publishing after a one-off `live`
-  schedule has ended, delete or cancel it.
-- Cancelling a running schedule does not stop a recording or still-image saving that has already started. Stop the recording with `POST /recordings/{id}/stop`.
+- **A scheduled recording lasts until the end of its window.** If the broadcast ends in the middle of the window (the grace expires),
+  the recording is not finalized; when the sender returns within the same window, recording continues in the same recording. The
+  interruption is recorded as a gap (`reason: publisher_reconnect`) and the VOD gets `#EXT-X-DISCONTINUITY` (§5.9). If the sender does
+  not return, the recording is finalized at the end of the window.
+- **`live` schedules refuse publishing only while a schedule is still to run (`pending`) or running (`running`).** While such a `live`
+  schedule exists, publishing outside its windows is refused. Finished (`completed`, `missed`, `failed`) and canceled schedules do not
+  block publishing. A recurring schedule returns to `pending` until all occurrences are done, so publishing between occurrences is refused.
+- **Cancelling (`state: "canceled"`) or deleting a running schedule stops that occurrence's recording and still-image saving.** The
+  recording is finalized and the run's `state` becomes `canceled` (with a `reason`). In a cluster, the node that made the recording stops it.

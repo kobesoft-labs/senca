@@ -46,10 +46,32 @@ The single-node `control/log` is a sequence of `len:u32be | crc32:u32be | JSON` 
 
 ## 既知の不具合 / Known issues
 
-- 録画の `gaps` は、ノードの起動後に作成した録画では再起動まで空で表示されます。`App::recording_info` は `rec_info` のキャッシュを
-  優先して返しますが、`RecorderEvent::Appended` では `gaps` を更新していないためです（`crates/senca-node/src/app.rs`）。
-- For recordings created since the node started, `gaps` is shown as empty until restart: `App::recording_info` returns the cached
-  `rec_info` first, and `RecorderEvent::Appended` does not update `gaps` (`crates/senca-node/src/app.rs`).
+- （解消）録画中の `gaps` が再起動まで空だった件は、書き手が欠落を索引に書いたときに `RecorderEvent::Gap` を出し、`rec_info` に足すように
+  しました。欠落の後の最初のセグメントには、書き手が不連続の印を付けます（配信が終わってから予約の録画に送り手が戻った場合を含む）。
+- (Resolved) `gaps` being empty until restart: the recorder now emits `RecorderEvent::Gap` when it writes a gap to the index, and
+  `rec_info` is updated. The recorder also marks the first segment after a gap as a discontinuity (including a sender returning to
+  a scheduled recording after the broadcast ended).
+
+## 実装のメモ / Implementation notes
+
+- 視聴者の数（`crates/senca-node/src/viewers.rs`）: 接続を持つ視聴は `ViewerGuard` を購読（`hub::Subscription`）か MoQ の `SubRef`
+  に持たせ、手放すと数が減ります。HLS は `(IP, User-Agent)` の印と最後の取得の時刻で近似します。上限はノードごとで、クラスター全体の
+  合計ではありません。写しのノードが所有者から字幕を取るときの要求（`x-senca-relay-proxy`）は数えません。
+- Viewer counting (`crates/senca-node/src/viewers.rs`): connection-based viewers hold a `ViewerGuard` inside their subscription
+  (`hub::Subscription`) or MoQ `SubRef`; dropping it decrements. HLS is approximated by an `(IP, User-Agent)` key and the last fetch
+  time. Limits are per node, not a cluster-wide total. Caption fetches from mirror nodes (`x-senca-relay-proxy`) are not counted.
+- 入力のビットレートの上限（`hub.rs` の `IngressMeter`）: AU の payload の大きさを 1 秒の箱で数え、直近 3 秒の平均を秒が変わるたびに比べます。
+  切った送り手は `evicted`・`evicted_why` で `Publisher::access_unit` が誤りを返し、接続の側が閉じます。
+- Ingest limit (`IngressMeter` in `hub.rs`): AU payload bytes in 1-second buckets, the 3-second average is compared on every second
+  boundary. The evicted publisher gets an error from `Publisher::access_unit` (`evicted`, `evicted_why`) and its connection closes.
+- 予約の録画は hub の `persistent` に入り、配信の終わり（猶予切れ）でも閉じません。窓の終わりの停止（`StopRecording`）、取り消し・削除の
+  後始末（`scheduler::cleanup_canceled`）で閉じます。
+- Scheduled recordings are kept in the hub's `persistent` list and survive end-of-stream; they close at the window end
+  (`StopRecording`) or via `scheduler::cleanup_canceled` after a cancel or delete.
+- `POST /streams/{id}/plan` の H.264 → AV1 の変換は hub には実装していません（ハードウェアの復号が無い開発機では試せないため、計画を
+  実際の動作に合わせました）。変換はパイプラインの `decode`・`encode` で行えます。
+- The hub does not implement an H.264 → AV1 transcode for `royalty_free` (it cannot be tested without hardware decoding on the
+  development machine), so the plan was made to match the actual behavior. Pipelines (`decode`, `encode`) can do the conversion.
 
 ## 利用者ガイドの各ページに対応するソース / Source files behind the user guide pages
 
@@ -58,3 +80,4 @@ The single-node `control/log` is a sequence of `len:u32be | crc32:u32be | JSON` 
 | 3. 設定 / Configuration | `crates/senca-node/src/config.rs` |
 | 4. 取り込みと再生 / Ingest and playback | `crates/senca-node/src/rtmp.rs`・`srt.rs`・`webrtc.rs`・`capture.rs`・`http.rs`・`live.rs`・`packager.rs`・`rtsp_serve.rs`・`api/streams.rs`。MoQ の draft の固定 / MoQ draft pinning: `crates/senca-moq/DRAFT.md` |
 | 5. 録画 / Recording | `crates/senca-node/src/recorder.rs`・`recovery.rs`・`export.rs`・`thumbnail.rs`・`scheduler.rs`・`api/recordings.rs`・`api/schedules.rs`、`crates/senca-record`、`crates/senca-control/src/schedule.rs` |
+| 4.3 視聴者と入力の上限 / Viewer and ingest limits | `crates/senca-node/src/viewers.rs`・`hub.rs`（`IngressMeter`）・`http.rs`・`moq.rs` |

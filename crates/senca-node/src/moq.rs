@@ -331,6 +331,8 @@ struct SubRef {
     track: Arc<str>,
     start: Location,
     end: Option<Location>,
+    /// 視聴者の印（同じセッションの購読で共有する。最後の購読が消えると数が減る）。
+    viewer: Arc<crate::viewers::ViewerGuard>,
 }
 
 /// 一つの stream の変換と購読者。
@@ -668,6 +670,17 @@ impl MoqPeer {
             self.session.request_error(req, RequestErrorCode::DOES_NOT_EXIST, "no such track");
             return;
         }
+        // 視聴者の数（limits.max_viewers）: このセッションの 2 本目以降の購読は同じ 1 人
+        let viewer = match f.subs.iter().find(|s| s.peer == key).map(|s| s.viewer.clone()) {
+            Some(v) => v,
+            None => match app.moq_viewer(&id) {
+                Some(g) => Arc::new(g),
+                None => {
+                    self.session.request_error(req, RequestErrorCode::EXCESSIVE_LOAD, "too many viewers");
+                    return;
+                }
+            },
+        };
         let largest = f.largest(name);
         if self.session.subscribe_ok(req, largest, Bytes::new()).is_err() {
             return;
@@ -718,7 +731,7 @@ impl MoqPeer {
         }
         let track: Arc<str> = name.into();
         f.idle_since = None;
-        f.subs.push(SubRef { peer: key, req, track, start, end });
+        f.subs.push(SubRef { peer: key, req, track, start, end, viewer });
         self.subs.insert(req, id);
     }
 

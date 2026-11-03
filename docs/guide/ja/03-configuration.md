@@ -3,7 +3,7 @@
 `senca-node` の設定は、コマンドラインのオプションか、`--config FILE` で指定する JSON ファイルで行います。
 このページでは、すべてのオプション、設定ファイルの形式、クラスターの設定、環境変数、データディレクトリの内容を説明します。
 
-- 関連するページ: [2. クイックスタート](02-quickstart.md)、[9. クラスタとグリッド](09-cluster-grid.md)、[12. セキュリティ](12-security.md)、[13. 運用](13-operations.md)
+- 関連するページ: [2. クイックスタート](02-quickstart.md)、[9. クラスターとグリッド](09-cluster-grid.md)、[12. セキュリティ](12-security.md)、[13. 運用](13-operations.md)
 - オプションの一覧は `senca-node --help` でも表示できます。
 
 ## 3.1 基本的な規則
@@ -211,7 +211,7 @@ Webhook の宛先は、`--egress-allow` のポリシーで検査します（プ�
 ## 3.4 クラスターの設定
 
 クラスターの設定は、`--cluster-config FILE`（または `--config` の `cluster`）で指定します。未知のキーはエラーになります。
-クラスターの使い方は [9. クラスタとグリッド](09-cluster-grid.md) を参照してください。
+クラスターの使い方は [9. クラスターとグリッド](09-cluster-grid.md) を参照してください。
 
 ### ClusterConfig
 
@@ -227,7 +227,7 @@ Webhook の宛先は、`--egress-allow` のポリシーで検査します（プ�
 | `relay_listen` | いいえ | ADDR | ノード間の中継の待ち受けアドレス。既定は `listen` のポート + 1 |
 
 `tls_ca`・`tls_cert`・`tls_key` は、3 つすべてを指定するか、すべて省略してください。省略した場合、ノード間の通信は平文になります
-（[12. セキュリティ](12-security.md#127-クラスタの-mtls)）。
+（[12. セキュリティ](12-security.md#127-クラスターの-mtls)）。
 
 ### ClusterPeer（`peers[]`）
 

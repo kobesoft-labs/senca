@@ -118,7 +118,7 @@ the events for changes. The event catalog is in [15. Management API and SDKs](15
 
 ## 13.6 Recovery after a crash
 
-Recordings are recovered on every start (`recovery.rs`):
+Recordings are recovered on every start:
 
 1. Deletions that were in progress are completed.
 2. Each `recordings/*/index.jsonl` is read. An index without an `end` line (an unfinished recording) has any
@@ -132,12 +132,11 @@ Recordings are recovered on every start (`recovery.rs`):
 5. With `--verify-recordings`, the SHA-256 of every indexed segment is checked and mismatches are logged.
 
 Segments recorded before the crash remain playable as VOD and exportable from an `interrupted` recording.
+For example, if the node is killed with SIGKILL during a recording and restarted, the recording becomes `interrupted`
+and the segments recorded so far remain. A node stopped with SIGTERM closes the recording as `finalized`.
 
 The single-node control log (`control/log`) is read with a half-written trailing record truncated. A corrupted
 record in the middle prevents startup; nothing is discarded silently.
-
-Verified: killing the node with SIGKILL during a recording and restarting it left the recording `interrupted` with
-its three segments intact; stopping with SIGTERM left it `finalized`.
 
 ## 13.7 Backups
 
@@ -163,7 +162,7 @@ its three segments intact; stopping with SIGTERM left it `finalized`.
 
 ## 13.8 Upgrades
 
-SENCA is v0.0.0 and makes no promise of data compatibility between versions. What is known about the current formats:
+Data compatibility between versions is currently not guaranteed. What is known about the current formats:
 
 - The control log stores commands as JSON tagged with an `op` name. Many control-state fields fall back to defaults
   when missing, but an older binary cannot read an `op` it does not know and will not start
@@ -171,7 +170,7 @@ SENCA is v0.0.0 and makes no promise of data compatibility between versions. Wha
 - A recording index carries `schema` (currently 1) on its `begin` line. Recovery leaves indexes with an unknown
   schema untouched (`left untouched`) and then also skips orphan quarantine.
 - `senca-node` and `senca-codec-worker` talk a versioned protocol. **Always upgrade both together.**
-- Running nodes of different versions in one cluster has not been tested.
+- Running nodes of different versions in one cluster is not supported.
 
 Procedure for a single node:
 
@@ -215,7 +214,7 @@ On SIGTERM or SIGINT (`Ctrl-C`) the node shuts down in this order:
 5. Logs `bye` and exits with code 0.
 
 - Publisher and viewer connections end when the process exits.
-- There is no shutdown timeout of its own (in tests it completed within a few to a few tens of milliseconds).
+- The node has no shutdown timeout of its own (shutdown normally completes almost immediately).
   `docker stop` sends SIGKILL after 10 s by default. After SIGKILL or a power loss, the next start recovers
   ([13.6](#136-recovery-after-a-crash)).
 
@@ -235,8 +234,7 @@ when the limit is unknown; decode is at least 16). See `capacity` and `gpus` in 
 
 ### What the grid counts
 
-The grid places work by adding up fixed **estimates (reservations)** per workload
-(`crates/senca-control/src/workloads.rs`), not observed usage.
+The grid places work by adding up fixed **estimates (reservations)** per workload, not observed usage.
 
 | Workload | CPU | Memory | Bandwidth |
 |---|---|---|---|
@@ -255,9 +253,9 @@ The grid places work by adding up fixed **estimates (reservations)** per workloa
 - The recorder queue size comes from `--record-queue` ([3. Configuration](03-configuration.md)). A slow disk can
   overflow it, which records gaps in recordings (live delivery is not affected).
 
-### Measured numbers
+### Reference figures
 
 On a single development machine (8 threads, loopback), 4 publishers × 200 HLS viewers (about 4 Mbit/s each) for 60 s
 delivered 877 Mbit/s with a segment fetch p99 of 11.9 ms and no errors
-([performance.md](../../dev/conformance/performance.md), Japanese). This checks the tooling and shows trends; it is not a
-guarantee. Load tests in the reference environment and the 72-hour soak are still to be done.
+([performance.md](../../dev/conformance/performance.md), Japanese). These figures show trends
+for reference; they are not a performance guarantee.

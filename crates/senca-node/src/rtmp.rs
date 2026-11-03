@@ -14,6 +14,8 @@ const READ_BUF: usize = 64 * 1024;
 const IDLE_TIMEOUT: Duration = Duration::from_secs(30);
 /// play の送信待ちがこれを超えたら遅い購読者として次のキーフレームまで落とす。
 const MAX_PENDING_OUT: usize = 8 << 20;
+/// `latency_profile: interactive` の stream では小さく保つ（遅れをためずに次のキーフレームへ飛ぶ）。
+const MAX_PENDING_OUT_INTERACTIVE: usize = 1 << 20;
 
 pub async fn serve<S>(app: Arc<App>, mut sock: S, peer: String)
 where
@@ -47,7 +49,8 @@ where
                             Err(RecvError::Lagged(n)) => { sub.lagged(n); continue; }
                             Err(RecvError::Closed) => { let _ = sess.end_play(*sid); let out = sess.take_output(); let _ = sock.write_all(&out).await; return Ok(()); }
                         }
-                        if sess.pending_output() > MAX_PENDING_OUT { sub.lagged(1); }
+                        let limit = if sub.interactive { MAX_PENDING_OUT_INTERACTIVE } else { MAX_PENDING_OUT };
+                        if sess.pending_output() > limit { sub.lagged(1); }
                         continue;
                     }
                 }
@@ -97,6 +100,9 @@ where
                                     PublishError::Busy => ("NetStream.Publish.BadName", "stream is already being published"),
                                     PublishError::Stopped => ("NetStream.Publish.BadName", "stream is stopped"),
                                     PublishError::Draining => ("NetStream.Publish.Rejected", "this node is draining; publish to another node"),
+                                    PublishError::Rejected(ref why) if why.contains("ingress bitrate") => {
+                                        ("NetStream.Publish.Rejected", "ingress bitrate limit exceeded; retry later")
+                                    }
                                     PublishError::Rejected(_) => ("NetStream.Publish.Rejected", "publish rejected"),
                                 };
                                 app.log(&format!("rtmp publish rejected peer={peer}: {e:?}"));
@@ -131,15 +137,19 @@ where
                         if !key.contains('?') && !tc_query.is_empty() {
                             key = format!("{key}?{tc_query}");
                         }
-                        match app.subscribe_rtmp_play(&key) {
-                            Some(mut sub) => {
+                        match app.subscribe_play(&key, "rtmp") {
+                            Ok(mut sub) => {
                                 sess.accept_play(stream_id).map_err(|e| e.to_string())?;
                                 for ev in sub.initial() {
                                     send_play(&mut sess, stream_id, &ev, &mut sub)?;
                                 }
                                 player = Some((stream_id, sub));
                             }
-                            None => {
+                            Err(crate::app::PlayError::TooManyViewers) => {
+                                app.log(&format!("rtmp play rejected peer={peer}: too many viewers"));
+                                sess.reject_play(stream_id, "NetStream.Play.Failed", "too many viewers").map_err(|e| e.to_string())?;
+                            }
+                            Err(_) => {
                                 sess.reject_play(stream_id, "NetStream.Play.StreamNotFound", "not found").map_err(|e| e.to_string())?;
                             }
                         }

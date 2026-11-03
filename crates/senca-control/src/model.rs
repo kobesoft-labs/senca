@@ -10,9 +10,9 @@ pub enum LatencyProfile {
     /// 通常の HLS（セグメント 2 秒前後）。
     #[default]
     Standard,
-    /// LL-HLS。
+    /// LL-HLS（part は min(500 ms, セグメント / 4)）。
     Low,
-    /// WebRTC・MoQ。
+    /// 対話向け（WebRTC・MoQ で見る前提）。LL-HLS の part を 200 ms にし、出だしの待ちと送りの溜まりを小さくする。
     Interactive,
 }
 
@@ -334,7 +334,9 @@ pub struct Input {
     pub credential_ref: Option<String>,
     #[serde(default = "default_true")]
     pub enabled: bool,
-    /// RTSP の転送（"udp" / "tcp"）など、プロトコルごとの設定。
+    /// プロトコルごとの設定（文字列）。rtsp_pull: `allow_basic`（`true` で Basic 認証を許す）・`tls_spki_sha256`
+    /// （rtsps の公開鍵の固定）。device: `codec`・`width`・`height`・`fps`・`bitrate_bps`・`audio_device` など。
+    /// RTSP は TCP interleaved だけで受ける（UDP の転送の設定は無い）。
     #[serde(default)]
     pub options: BTreeMap<String, String>,
     pub created_at_ms: i64,

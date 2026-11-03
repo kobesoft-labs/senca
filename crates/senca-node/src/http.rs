@@ -227,7 +227,7 @@ pub(crate) async fn route(app: &Arc<App>, h: &RequestHead, body: Bytes, peer: &s
         _ => {}
     }
     if let Some(rest) = path.strip_prefix("/s/") {
-        return signed(app, rest, h).await;
+        return signed(app, rest, h, peer).await;
     }
     if path.starts_with("/whip") || path.starts_with("/whep") {
         if h.method == Method::Post
@@ -252,7 +252,7 @@ pub(crate) async fn route(app: &Arc<App>, h: &RequestHead, body: Bytes, peer: &s
 }
 
 /// `/s/{exp}/{sig}/{kind}/{id}/{file}`
-async fn signed(app: &Arc<App>, rest: &str, h: &RequestHead) -> Reply {
+async fn signed(app: &Arc<App>, rest: &str, h: &RequestHead, peer: &str) -> Reply {
     let segs: Vec<&str> = rest.split('/').collect();
     let [exp, sig, kind, id, file] = segs.as_slice() else { return Reply::status(404) };
     if file.is_empty() || file.contains("..") {
@@ -280,7 +280,7 @@ async fn signed(app: &Arc<App>, rest: &str, h: &RequestHead) -> Reply {
             tokio::time::sleep(std::time::Duration::from_millis(50)).await;
         }
         if hub.shared.cache.playlist(false).is_some() {
-            return cors(live(app, id, file, h).await);
+            return cors(live(app, id, file, h, peer, rest).await);
         }
     }
     let elsewhere = match *kind {
@@ -293,14 +293,27 @@ async fn signed(app: &Arc<App>, rest: &str, h: &RequestHead) -> Reply {
         return cors(Reply::status(307).header("Location", format!("{base}/s/{rest}{q}")));
     }
     match *kind {
-        "live" => cors(live(app, id, file, h).await),
+        "live" => cors(live(app, id, file, h, peer, rest).await),
         "vod" => cors(vod(app, id, file, h)),
         _ => Reply::status(404),
     }
 }
 
-async fn live(app: &Arc<App>, stream: &str, file: &str, h: &RequestHead) -> Reply {
+/// 字幕のファイル（`master.m3u8`・`sub_{lang}.m3u8`・`sub_{lang}_{n}.vtt`）か。
+fn is_caption_file(file: &str) -> bool {
+    file == "master.m3u8" || (file.starts_with("sub_") && (file.ends_with(".m3u8") || file.ends_with(".vtt")))
+}
+
+/// `rest` は `/s/` の後ろ（`{exp}/{sig}/live/{stream}/{file}`）。
+async fn live(app: &Arc<App>, stream: &str, file: &str, h: &RequestHead, peer: &str, rest: &str) -> Reply {
     let Some(cache) = app.live_cache(stream) else { return Reply::status(404) };
+    // 視聴者の数（limits.max_viewers）: プレイリストを取りに来た新しい客を数え、上限なら断る
+    if (file == "index.m3u8" || file == "master.m3u8")
+        && h.headers.get_str(crate::relay::PROXY_HEADER).is_none()
+        && !app.hls_viewer(stream, peer, h.headers.get_str("user-agent"))
+    {
+        return Reply::status(503).header("Retry-After", "5");
+    }
     if file == "index.m3u8" {
         // LL-HLS のブロッキング・リロード
         let q = senca_http::pct::parse_query(h.query().unwrap_or("")).unwrap_or_default();
@@ -336,6 +349,17 @@ async fn live(app: &Arc<App>, stream: &str, file: &str, h: &RequestHead) -> Repl
     }
     if let Some((b, ct)) = cache.extra(file) {
         return Reply::new(200, ct, b).header("Cache-Control", "no-cache");
+    }
+    // 中継の写しは字幕を作らない: 所有者のノードから取ってくる（同じ署名のパス）
+    if is_caption_file(file)
+        && h.headers.get_str(crate::relay::PROXY_HEADER).is_none()
+        && let Some(r) = app.relay.get()
+        && r.is_mirror(stream)
+    {
+        return match r.caption_file(app, stream, &format!("/s/{rest}")).await {
+            Some((b, ct)) => Reply::new(200, ct, b).header("Cache-Control", "no-cache"),
+            None => Reply::status(404),
+        };
     }
     match cache.object(file) {
         Some(b) => {

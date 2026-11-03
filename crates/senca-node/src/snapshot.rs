@@ -56,20 +56,29 @@ fn dir(app: &App, stream: &str) -> std::path::PathBuf {
     app.cfg.data_dir.join("snapshots").join(stream)
 }
 
+/// パイプラインの `snapshot_on_change` の静止画の置き場所（`{data-dir}/pipeline-snapshots/{pipeline}/`）。
+pub fn pipeline_dir(app: &App, pipeline: &str) -> std::path::PathBuf {
+    app.cfg.data_dir.join("pipeline-snapshots").join(pipeline)
+}
+
 /// 保存する（`reason`: interval / schedule / board_change）。古いものは `keep` を超えたら消す。
 pub fn store(app: &App, stream: &str, img: &senca_image::I420Frame, reason: &str, keep: u32) -> Result<String, String> {
-    let d = dir(app, stream);
-    std::fs::create_dir_all(&d).map_err(|e| e.to_string())?;
-    let id = senca_core::Id128::random().map_err(|e| e.to_string())?.to_string();
     let jpg = encode(img, ImageFormat::Jpeg).ok_or("jpeg")?;
-    crate::store::write_atomic(&d.join(format!("{id}.jpg")), &jpg).map_err(|e| e.to_string())?;
     let meta = json!({ "taken_at": crate::util::rfc3339(crate::util::now_ms()), "reason": reason, "width": img.width(), "height": img.height(), "bytes": jpg.len() });
+    store_jpeg(&dir(app, stream), &jpg, meta, None, keep)
+}
+
+/// JPEG とその説明を `d` に保存し、古いものから `keep` 枚まで残す（`group` があれば、説明の `node` が同じものの中で数える）。
+pub fn store_jpeg(d: &std::path::Path, jpg: &[u8], meta: Value, group: Option<&str>, keep: u32) -> Result<String, String> {
+    std::fs::create_dir_all(d).map_err(|e| e.to_string())?;
+    let id = senca_core::Id128::random().map_err(|e| e.to_string())?.to_string();
+    crate::store::write_atomic(&d.join(format!("{id}.jpg")), jpg).map_err(|e| e.to_string())?;
     crate::store::write_atomic(&d.join(format!("{id}.json")), meta.to_string().as_bytes()).map_err(|e| e.to_string())?;
     // 古いものから消す
-    let mut items = list(app, stream);
+    let mut items: Vec<Value> = list_in(d).into_iter().filter(|v| group.is_none_or(|g| v["node"].as_str() == Some(g))).collect();
     while items.len() > keep as usize {
         if let Some(id) = items.first().and_then(|v| v["id"].as_str()).map(str::to_string) {
-            delete(app, stream, &id);
+            delete_in(d, &id);
         }
         items.remove(0);
     }
@@ -77,8 +86,13 @@ pub fn store(app: &App, stream: &str, img: &senca_image::I420Frame, reason: &str
 }
 
 pub fn list(app: &App, stream: &str) -> Vec<Value> {
+    list_in(&dir(app, stream))
+}
+
+/// `d` の静止画の一覧（古い順）。
+pub fn list_in(d: &std::path::Path) -> Vec<Value> {
     let mut v = Vec::new();
-    if let Ok(rd) = std::fs::read_dir(dir(app, stream)) {
+    if let Ok(rd) = std::fs::read_dir(d) {
         for e in rd.flatten() {
             let n = e.file_name().to_string_lossy().to_string();
             if let Some(id) = n.strip_suffix(".json")
@@ -99,11 +113,15 @@ fn valid_id(id: &str) -> bool {
 }
 
 pub fn get(app: &App, stream: &str, id: &str) -> Option<(&'static str, Bytes)> {
+    get_in(&dir(app, stream), id)
+}
+
+pub fn get_in(d: &std::path::Path, id: &str) -> Option<(&'static str, Bytes)> {
     if !valid_id(id) {
         return None;
     }
     for (ext, ct) in [("jpg", "image/jpeg"), ("png", "image/png")] {
-        if let Ok(b) = std::fs::read(dir(app, stream).join(format!("{id}.{ext}"))) {
+        if let Ok(b) = std::fs::read(d.join(format!("{id}.{ext}"))) {
             return Some((ct, Bytes::from(b)));
         }
     }
@@ -111,10 +129,13 @@ pub fn get(app: &App, stream: &str, id: &str) -> Option<(&'static str, Bytes)> {
 }
 
 pub fn delete(app: &App, stream: &str, id: &str) -> bool {
+    delete_in(&dir(app, stream), id)
+}
+
+pub fn delete_in(d: &std::path::Path, id: &str) -> bool {
     if !valid_id(id) {
         return false;
     }
-    let d = dir(app, stream);
     let mut found = false;
     for ext in ["jpg", "png", "json"] {
         found |= std::fs::remove_file(d.join(format!("{id}.{ext}"))).is_ok();

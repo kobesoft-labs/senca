@@ -1,6 +1,7 @@
 //! パイプラインの API（REQ-002・REQ-005・REQ-008）。
 //! POST /pipelines・GET /pipelines・GET/PATCH/DELETE /pipelines/{id}・POST /pipelines/{id}/validate・
-//! POST /pipelines/{id}/control（オペレーターの操作）
+//! POST /pipelines/{id}/control（オペレーターの操作）・GET /pipelines/{id}/snapshots（板書の変化の静止画）・
+//! GET/DELETE /pipelines/{id}/snapshots/{snapshot_id}
 
 use super::{ApiResponse, ApiResult, Ctx, etag, new_id, paginate};
 use crate::util::rfc3339;
@@ -174,7 +175,33 @@ pub fn delete(ctx: &Ctx, id: &str) -> ApiResult {
     ctx.require(Scope::StreamWrite)?;
     ctx.app.propose(Command::DeletePipeline { tenant: ctx.tenant().into(), id: id.into() })?;
     ctx.app.pipelines_reconcile();
+    // 板書の変化の静止画も消す（このノードに置いた分）
+    let _ = std::fs::remove_dir_all(crate::snapshot::pipeline_dir(ctx.app, id));
     ctx.app.audit(ctx, "pipeline.delete", id);
+    Ok(ApiResponse::empty(204))
+}
+
+/// `snapshot_on_change` が保存した静止画の一覧（古い順。`node` に部品の id）。
+pub fn snapshots_list(ctx: &Ctx, id: &str) -> ApiResult {
+    ctx.require(Scope::StreamRead)?;
+    get_p(ctx, id)?;
+    let items = crate::snapshot::list_in(&crate::snapshot::pipeline_dir(ctx.app, id));
+    Ok(ApiResponse::json(200, &json!({ "items": items })))
+}
+
+pub fn snapshot_get(ctx: &Ctx, id: &str, sid: &str) -> ApiResult {
+    ctx.require(Scope::StreamRead)?;
+    get_p(ctx, id)?;
+    let (mime, b) = crate::snapshot::get_in(&crate::snapshot::pipeline_dir(ctx.app, id), sid).ok_or_else(Problem::not_found)?;
+    Ok(ApiResponse::bytes(200, mime, b))
+}
+
+pub fn snapshot_delete(ctx: &Ctx, id: &str, sid: &str) -> ApiResult {
+    ctx.require(Scope::StreamWrite)?;
+    get_p(ctx, id)?;
+    if !crate::snapshot::delete_in(&crate::snapshot::pipeline_dir(ctx.app, id), sid) {
+        return Err(Problem::not_found());
+    }
     Ok(ApiResponse::empty(204))
 }
 

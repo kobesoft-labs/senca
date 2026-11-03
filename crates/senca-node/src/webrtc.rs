@@ -480,7 +480,15 @@ pub async fn http(app: &Arc<App>, rtc: &Rtc, h: &senca_http::RequestHead, body: 
                 return plain(415, "Content-Type は application/sdp");
             }
             let q = h.query().unwrap_or("");
-            let Some(mut sub) = app.subscribe_rtmp_play(&format!("{stream}?{q}")) else { return plain(403, "forbidden") };
+            let mut sub = match app.subscribe_play(&format!("{stream}?{q}"), "webrtc") {
+                Ok(s) => s,
+                Err(crate::app::PlayError::TooManyViewers) => {
+                    let mut r = plain(503, "too many viewers");
+                    r.headers.push(("Retry-After".into(), "5".into()));
+                    return r;
+                }
+                Err(_) => return plain(403, "forbidden"),
+            };
             let init = sub.initial();
             let kinds: Vec<(MediaKind, Codec)> = init
                 .iter()

@@ -2,45 +2,43 @@
 
 [English](../en/15-api-and-sdks.md)
 
-SENCA のノードは HTTP の管理 API（`/api/v1`）で操作する。管理画面（`/console/`）も同じ API を使う。この章は API の共通の決まり、
-OpenAPI の文書、イベント（SSE）、JavaScript の SDK（`@senca/sdk`）と Rust のクライアント（`senca-client`）をまとめる。
+SENCA のノードは、HTTP の管理 API（`/api/v1`）で操作します。管理画面（`/console/`）も同じ API を使っています。
+この章では、API の共通ルール、OpenAPI の定義、イベント（SSE）、JavaScript の SDK（`@senca/sdk`）、Rust のクライアント（`senca-client`）を説明します。
 
-- 定義: [`docs/api/openapi.yaml`](../../api/openapi.yaml)（実装の挙動を書いたもの。`tools/interop/openapi.sh` が経路表・権限・応答と突き合わせる）
-- 実装: `crates/senca-node/src/api/`（振り分けと共通の契約は `api/mod.rs`）、`crates/senca-node/src/events.rs`（SSE）、
-  `crates/senca-control/src/auth.rs`・`jwt.rs`・`problem.rs`
-- 個別の資源: 配信と再生は [04-ingest-playback.md](04-ingest-playback.md)、録画は [05-recording.md](05-recording.md)、入力・出力は
-  [06-inputs-outputs.md](06-inputs-outputs.md)、パイプラインは [07-pipelines.md](07-pipelines.md)、ノードとグリッドは
-  [09-cluster-grid.md](09-cluster-grid.md)、部屋は [10-rooms.md](10-rooms.md)、メディアパイプラインは [11-media-pipelines.md](11-media-pipelines.md)
+- API の定義: [`docs/api/openapi.yaml`](../../api/openapi.yaml)（ノードの実際の動作に合わせて記述しています）
+- リソースごとの説明: 配信と再生は [4. 取り込みと再生](04-ingest-playback.md)、録画は [5. 録画](05-recording.md)、入力・出力は
+  [6. 入力と出力](06-inputs-outputs.md)、パイプラインは [7. パイプライン](07-pipelines.md)、ノードとグリッドは
+  [9. クラスターとグリッド](09-cluster-grid.md)、部屋は [10. リアルタイムの部屋](10-rooms.md)、メディアパイプラインは [11. メディアパイプライン](11-media-pipelines.md)
 
-## 1. 共通の決まり
+## 1. 共通のルール
 
 ### 1.1 基本
 
 | 項目 | 値 |
 |---|---|
-| base path | `/api/v1`（`--http` で指定した待ち受け。`--https` を付ければ TLS でも同じ） |
+| ベースパス | `/api/v1`（`--http` で指定したアドレスで待ち受けます。`--https` を指定すれば TLS でも同じパスです） |
 | 本文 | JSON（UTF-8）。時刻は UTC の RFC 3339（`2026-10-25T00:00:00.000Z`） |
-| 本文の上限 | 1 MiB（HTTP 層。超えると text/plain の 413 を返して接続を閉じる。problem+json ではない） |
-| 応答の見出し | すべてに `X-Request-Id` と `Cache-Control: no-store` |
-| `X-Request-Id` | 要求の `X-Request-Id` が 64 文字以内の英数字と `-` `_` `.` ならそれを使う。違えば `req_...` を作る |
-| パス | 空の区切り（`//`）・`.`・`..` を含むパスは 404 |
-| メソッド | 知られた資源に定義の無いメソッド（HEAD を含む）は 405（`METHOD_NOT_ALLOWED`）。知らないパスは 404 |
-| CORS | `/api/v1` は CORS の見出しを返さない。ブラウザーからは同じ origin（管理画面など）か、アプリのサーバーを通して呼ぶ |
+| 本文の上限 | 1 MiB（HTTP 層で検査します。超えると text/plain の 413 を返して接続を閉じます。problem+json ではありません） |
+| 応答ヘッダー | すべての応答に `X-Request-Id` と `Cache-Control: no-store` が付きます |
+| `X-Request-Id` | リクエストの `X-Request-Id` が 64 文字以内の英数字と `-` `_` `.` であればその値を使います。そうでなければ `req_...` を生成します |
+| パス | 空の区切り（`//`）・`.`・`..` を含むパスは 404 です |
+| メソッド | 既知のリソースに定義されていないメソッド（HEAD を含む）は 405（`METHOD_NOT_ALLOWED`）です。未知のパスは 404 です |
+| CORS | `/api/v1` は CORS ヘッダーを返しません。ブラウザーからは、同じオリジン（管理画面など）か、アプリのサーバーを経由して呼び出してください |
 
 ### 1.2 認証
 
-すべての `/api/v1`（`/capabilities` を含む）に `Authorization: Bearer <値>` が要る。`/healthz`・`/readyz`・署名付きの再生パス
-（`/s/...`）は要らない。
+すべての `/api/v1`（`/capabilities` を含む）に `Authorization: Bearer <値>` ヘッダーが必要です。`/healthz`・`/readyz`・署名付きの再生パス
+（`/s/...`）には不要です。
 
-- 値が **`senca_` で始まれば API トークン**、それ以外は **JWT**。値は 8192 バイトまで。
-- 失敗は 401（`AUTH_FAILED`、`WWW-Authenticate: Bearer`）。理由（期限切れ・知らないトークンなど）は応答に出さず、ノードのログに書く。
+- 値が **`senca_` で始まれば API トークン**、それ以外は **JWT** として扱います。値は 8192 バイトまでです。
+- 認証に失敗すると 401（`AUTH_FAILED`、`WWW-Authenticate: Bearer`）を返します。失敗の理由（期限切れ・未知のトークンなど）は応答に含めず、ノードのログに記録します。
 
 **API トークン**
 
-- 最初のノードが起動したとき、トークンが 1 つも無ければ `tenant:admin` と `node:admin` を持つトークン（名前 `bootstrap-admin`、
-  テナント `default`、期限なし）を作り、値を `{data-dir}/control/bootstrap-admin-token`（mode 0600）に書く。クラスターでは
-  ID の最も小さいノードが作る。
-- 以後は `POST /api/v1/tokens`（`tenant:admin`）で作る。値（`token`）は作成の応答でだけ返る。保存するのはハッシュだけ。
+- 最初のノードの起動時にトークンが 1 つも無ければ、`tenant:admin` と `node:admin` を持つトークン（名前 `bootstrap-admin`、
+  テナント `default`、期限なし）を作成し、値を `{data-dir}/control/bootstrap-admin-token`（パーミッション 0600）に書き出します。クラスターでは
+  ID が最も小さいノードが作成します。
+- それ以降のトークンは `POST /api/v1/tokens`（`tenant:admin`）で作成します。値（`token`）が返るのは作成時の応答だけです。サーバーにはハッシュだけを保存します。
 
 ```
 TOKEN=$(cat data/control/bootstrap-admin-token)
@@ -49,89 +47,89 @@ curl -s -X POST http://127.0.0.1:8080/api/v1/tokens \
   -d '{"name":"ci","scopes":["stream:read","stream:write"],"expires_at":"2027-01-01T00:00:00Z"}'
 ```
 
-| フィールド | 決まり |
+| フィールド | ルール |
 |---|---|
-| `name` | 1〜64 文字（違えば 400 `INVALID_CONFIG`） |
-| `scopes` | 1 つ以上。知らない権限は 400。**自分が持たない権限は渡せない**（403 `FORBIDDEN`） |
-| `expires_at` | 任意。RFC 3339。過去なら 400。期限を過ぎたトークンは 401 |
+| `name` | 1〜64 文字（違反すると 400 `INVALID_CONFIG`） |
+| `scopes` | 1 つ以上。未知の権限は 400 です。**自分が持っていない権限は付与できません**（403 `FORBIDDEN`） |
+| `expires_at` | 任意。RFC 3339。過去の時刻は 400 です。期限を過ぎたトークンでの認証は 401 になります |
 
-- 一覧・取得は値を返さない。`DELETE /tokens/{id}` で失効する。テナントの**最後の `tenant:admin` トークンは消せない**（409 `CONFLICT`）。
-- トークンの扱い（保管・入れ替え）は [12-security.md](12-security.md)。
+- 一覧と取得ではトークンの値を返しません。`DELETE /tokens/{id}` で失効させます。テナントで**最後の `tenant:admin` トークンは削除できません**（409 `CONFLICT`）。
+- トークンの扱い（保管・入れ替え）は [12. セキュリティ](12-security.md) を見てください。
 
-**JWT**（外部の認証基盤のトークンをそのまま使う）
+**JWT**（外部の認証基盤のトークンをそのまま使う場合）
 
 ```
 senca-node --jwks /etc/senca/jwks.json --jwt-issuer https://idp.example/ --jwt-audience senca [--jwt-tenant-claim tenant]
 ```
 
-- 鍵は**ローカルの JWKS ファイルだけ**（トークンの中身で URL を取りに行かない）。`--jwks` には `--jwt-issuer` と `--jwt-audience` が必須。
-- 算法: EdDSA（Ed25519）・ES256・RS256（RSA は 2048 ビット以上）。算法は鍵が決め、ヘッダーの `alg` が鍵と違えば拒否。
-  JWKS の鍵は `kid` が必須、`use` があれば `sig`。`alg=none`・HS 系・`crit` 付きは拒否。
-- 検査: `kid` が JWKS にあること、`exp` が必須、`nbf`、`iss` の一致、`aud` の一致（文字列か配列）。時計のずれは 60 秒まで許す。
-- テナントはクレーム `tenant`（`--jwt-tenant-claim` で名前を変える）。無い・空なら拒否。主体は `sub`。
-- 権限は `scope`（空白区切り）か `scp`（文字列か配列）。知らない権限は黙って捨てる。
+- 検証鍵は**ローカルの JWKS ファイルからだけ**読み込みます（トークンの内容をもとに URL へ鍵を取りに行くことはありません）。`--jwks` には `--jwt-issuer` と `--jwt-audience` が必須です。
+- アルゴリズム: EdDSA（Ed25519）・ES256・RS256（RSA は 2048 ビット以上）。アルゴリズムは鍵で決まり、ヘッダーの `alg` が鍵と合わなければ拒否します。
+  JWKS の鍵には `kid` が必須で、`use` があれば `sig` である必要があります。`alg=none`・HS 系・`crit` 付きのトークンは拒否します。
+- 検査する内容: `kid` が JWKS にあること、`exp`（必須）、`nbf`、`iss` の一致、`aud` の一致（文字列または配列）。時計のずれは 60 秒まで許容します。
+- テナントはクレーム `tenant`（`--jwt-tenant-claim` で名前を変更できます）で決まります。無い、または空なら拒否します。主体（subject）は `sub` です。
+- 権限は `scope`（空白区切り）または `scp`（文字列または配列）から読みます。未知の権限は無視します。
 
 ### 1.3 権限とテナント
 
 | 権限 | 主な操作 |
 |---|---|
-| `stream:read` | 配信・予約・入力・出力・パイプライン・部屋・メディアパイプラインの読み取り、`POST /streams/{id}/plan`、`POST /schedules/check`、`POST /pipelines/{id}/validate`、**SSE** |
-| `stream:write` | 上の資源の作成・更新・削除、鍵の作り直し、録画の開始・停止・`PATCH /recordings/{id}`、部屋の参加トークン・参加者の操作・message |
+| `stream:read` | ストリーム・予約・入力・出力・パイプライン・部屋・メディアパイプラインの読み取り、`POST /streams/{id}/plan`、`POST /schedules/check`、`POST /pipelines/{id}/validate`、**SSE** |
+| `stream:write` | 上のリソースの作成・更新・削除、鍵の再発行、録画の開始・停止・`PATCH /recordings/{id}`、部屋の参加トークンの発行・参加者の操作・メッセージ送信 |
 | `subscribe` | `POST /streams/{id}/playback-url`（ライブの署名付き URL） |
 | `recording:read` | 録画の一覧・取得・VOD の URL・サムネイル・MP4 の書き出し |
 | `recording:delete` | `DELETE /recordings/{id}` |
-| `tenant:admin` | トークン・秘密値（`/secrets`）。**`node:admin` 以外のすべてを含む** |
-| `node:admin` | テナントの外の運用: `/nodes`・`/devices`・`/grid`・drain・装置の停止と再開、SSE のテナントを持たないイベント |
-| `publish` | WHIP の送出（`POST /whip/{stream_id}` に stream key の代わりに使える。同じテナントの stream だけ） |
+| `tenant:admin` | トークン・秘密値（`/secrets`）の管理。**`node:admin` 以外のすべての権限を含みます** |
+| `node:admin` | テナントをまたぐ運用操作: `/nodes`・`/devices`・`/grid`・ドレイン・デバイスの停止と再開、SSE のテナントに属さないイベント |
+| `publish` | WHIP での配信（`POST /whip/{stream_id}` で stream key の代わりに使えます。同じテナントの stream だけ） |
 
-- 操作ごとの権限は OpenAPI の拡張 `x-senca-scope` にある（`null` は認証だけ。`GET /capabilities` がそれ）。足りなければ 403
-  （`FORBIDDEN`、title に要る権限の名前）。
-- **テナントは認証から決まる**（API トークンはそれを作った主体のテナント、JWT はテナントのクレーム）。本文でテナントを指定する欄は無い。
-  他テナントの資源は 404 に見える。新しいテナントは JWT のテナントのクレームで作る（API トークンは自分のテナントにしか作れない）。
+- 操作ごとに必要な権限は、OpenAPI の拡張フィールド `x-senca-scope` に記載しています（`null` は認証だけが必要という意味で、`GET /capabilities` が該当します）。
+  権限が足りなければ 403（`FORBIDDEN`。title に必要な権限の名前が入ります）です。
+- **テナントは認証情報から決まります**（API トークンは作成者のテナント、JWT はテナントのクレーム）。本文でテナントを指定するフィールドはありません。
+  他のテナントのリソースは 404 に見えます。新しいテナントは JWT のテナントのクレームで作ります（API トークンは自分のテナントにしか作れません）。
 
 ### 1.4 本文の検査
 
-- 本文のある要求は `Content-Type: application/json`（`; charset=...` は可）でなければ 415（`UNSUPPORTED_MEDIA_TYPE`）。
-- **未知のフィールドは 400**（`INVALID_REQUEST`、`details.reason` に解析の誤り）。型の誤りも同じ。黙って無視しない。
-- 値の検査（範囲・組み合わせ・参照先）の誤りは多くが 400 `INVALID_CONFIG`。
+- 本文のあるリクエストは、`Content-Type: application/json`（`; charset=...` は可）でなければ 415（`UNSUPPORTED_MEDIA_TYPE`）です。
+- **未知のフィールドは 400** です（`INVALID_REQUEST`。`details.reason` に解析エラーの内容が入ります）。型の誤りも同じです。黙って無視することはしません。
+- 値の検査（範囲・組み合わせ・参照先）のエラーは、多くが 400 `INVALID_CONFIG` です。
 
 ### 1.5 Idempotency-Key
 
-POST に `Idempotency-Key` を付けると、24 時間は同じ要求に同じ答えを返す。作成の再送で二重に作らないために使う。
+POST に `Idempotency-Key` ヘッダーを付けると、24 時間は同じリクエストに同じ応答を返します。作成のリクエストを再送したときに、リソースが二重に作られるのを防ぐために使います。
 
-- 鍵は 1〜255 文字の表示可能な ASCII（空白なし）。違えば 400。鍵の範囲はテナントごと。
-- 同じ要求かどうかは、メソッド・パス・クエリ・本文の SHA-256 で見る（見出しは見ない）。**同じ鍵で別の要求**、または別の主体が
-  同じ鍵を使うと 409（`IDEMPOTENCY_CONFLICT`）。
-- 再送の応答は、覚えた状態コード・本文・`Location`・`ETag` に **`Idempotency-Replayed: true`** を付けたもの。
-- **4xx も覚える**（同じ鍵の再送は同じ誤りを返す）。**5xx は覚えない**（再送すれば実行し直す）。256 KiB を超える応答は覚えない。
-- 覚える本文から秘密を消す: `stream_key`・`token`・`secret` は `null` に、代わりに `stream_key_redacted: true` などを入れる。
-  つまり**秘密は最初の応答でだけ見える**。再送で得た応答から値は取れない。
-- 同じ鍵の処理はノードの中で直列にする（同時の再送でも 1 回だけ実行する）。
+- キーは 1〜255 文字の表示可能な ASCII（空白なし）です。違反すると 400 です。キーの有効範囲はテナントごとです。
+- 同じリクエストかどうかは、メソッド・パス・クエリ・本文の SHA-256 で判定します（ヘッダーは見ません）。**同じキーで別のリクエスト**を送るか、別の主体が
+  同じキーを使うと 409（`IDEMPOTENCY_CONFLICT`）です。
+- 再送への応答は、保存した状態コード・本文・`Location`・`ETag` に **`Idempotency-Replayed: true`** を付けたものです。
+- **4xx の応答も保存します**（同じキーで再送すると同じエラーが返ります）。**5xx は保存しません**（再送すると処理をやり直します）。256 KiB を超える応答は保存しません。
+- 保存する本文からは秘密情報を消します。`stream_key`・`token`・`secret` を `null` にし、代わりに `stream_key_redacted: true` などを入れます。
+  つまり、**秘密情報は最初の応答でしか見られません**。再送で得た応答から値を取り出すことはできません。
+- 同じキーのリクエストは、ノード内で順番に処理します（同時に再送しても、処理は 1 回だけ実行されます）。
 
-### 1.6 ETag・If-Match（楽観的排他）
+### 1.6 ETag と If-Match（楽観的排他制御）
 
-- 資源の応答（作成・取得・更新）の `ETag` は `"{generation}"`（例 `"3"`）。`W/"3"` も受け付ける。
-- **PATCH は `If-Match` が必須**。無いと 428（`PRECONDITION_REQUIRED`）、形が違う・古いと 412（`PRECONDITION_FAILED`）。
-- DELETE の `If-Match` は任意で、`/streams`・`/recordings`・`/schedules` だけが検査する（付ければ古いと 412）。入力・出力・秘密値・
-  パイプライン・部屋・メディアパイプライン・トークンの DELETE は見ない。
+- リソースの応答（作成・取得・更新）の `ETag` は `"{generation}"`（例 `"3"`）です。`W/"3"` の形式も受け付けます。
+- **PATCH には `If-Match` が必須です**。無いと 428（`PRECONDITION_REQUIRED`）、形式が違うか古いと 412（`PRECONDITION_FAILED`）です。
+- DELETE の `If-Match` は任意で、検査するのは `/streams`・`/recordings`・`/schedules` だけです（付けた場合、古ければ 412）。入力・出力・秘密値・
+  パイプライン・部屋・メディアパイプライン・トークンの DELETE では `If-Match` を検査しません。
 
 ```
-# 取得 → If-Match で更新
+# 取得してから If-Match を付けて更新する
 ETAG=$(curl -s -D - -o /dev/null -H "Authorization: Bearer $TOKEN" http://127.0.0.1:8080/api/v1/streams/$ID | awk -F': ' 'tolower($1)=="etag"{print $2}' | tr -d '\r')
 curl -s -X PATCH http://127.0.0.1:8080/api/v1/streams/$ID \
   -H "Authorization: Bearer $TOKEN" -H 'Content-Type: application/json' -H "If-Match: $ETAG" \
   -d '{"metadata":{"owner":"studio-a"}}'
 ```
 
-412 が返ったら、読み直してから変更を当て直す。
+412 が返ったら、リソースを取得し直してから変更をやり直してください。
 
-### 1.7 一覧と頁
+### 1.7 一覧とページング
 
-- 一覧は `{"items": [...], "next_cursor": "..." | null}`。順序は ID の昇順。
-- クエリは `limit`（1〜1000、既定 100）と `cursor`（前の応答の `next_cursor`）。範囲外の `limit` は 400。
-- 一覧の**知らないクエリは 400**。絞り込みは決まったものだけ: `GET /recordings` の `stream`・`state`、`GET /schedules` の
+- 一覧の応答は `{"items": [...], "next_cursor": "..." | null}` です。並び順は ID の昇順です。
+- クエリは `limit`（1〜1000、既定 100）と `cursor`（前の応答の `next_cursor`）です。範囲外の `limit` は 400 です。
+- 一覧で**未知のクエリパラメーターは 400** です。使える絞り込みは次のものだけです: `GET /recordings` の `stream`・`state`、`GET /schedules` の
   `stream`・`state`、`GET /media-pipelines` の `room`。
-- `next_cursor` が `null` なら最後の頁。頁の無い一覧もある（`GET /secrets` は全件で `next_cursor: null`、`GET /nodes` は `items` だけ）。
+- `next_cursor` が `null` なら最後のページです。ページングの無い一覧もあります（`GET /secrets` は全件を返し `next_cursor: null`、`GET /nodes` は `items` だけ）。
 
 ```
 curl -s -H "Authorization: Bearer $TOKEN" 'http://127.0.0.1:8080/api/v1/streams?limit=50'
@@ -140,7 +138,7 @@ curl -s -H "Authorization: Bearer $TOKEN" 'http://127.0.0.1:8080/api/v1/streams?
 
 ### 1.8 エラー（problem+json）
 
-誤りは `Content-Type: application/problem+json`（RFC 9457 の形）で返す。
+エラーは `Content-Type: application/problem+json`（RFC 9457 の形式）で返します。
 
 ```json
 {
@@ -153,44 +151,44 @@ curl -s -H "Authorization: Bearer $TOKEN" 'http://127.0.0.1:8080/api/v1/streams?
 }
 ```
 
-- `title` は日本語の説明。プログラムでは `code` で分ける。`details` は code ごとの補足（無ければ省く）。
-- `retryable` が真なら、同じ要求を送り直してよい。503・429・504 で `retryable` のときは `Retry-After` が付く
-  （429 は次に通るまでの秒数、それ以外は 1）。
-- 量の上限（429）は、どの `/api/v1` の操作でも返ることがある（[12. セキュリティ](12-security.md)）。
-- `/api/v1` 以外の版（`/api/v2/...` など）は 422 `UNSUPPORTED_PROTOCOL_VERSION`（`details.supported: ["v1"]`）。
-- 問い合わせには `request_id`（= `X-Request-Id`）を添える。
+- `title` は日本語の説明です。プログラムでは `code` で判別してください。`details` はコードごとの補足情報です（無ければ省略します）。
+- `retryable` が true なら、同じリクエストを再送してかまいません。503・429・504 で `retryable` が true のときは `Retry-After` が付きます
+  （429 では次に通るまでの秒数、それ以外は 1）。
+- 量の上限（429）は、どの `/api/v1` の操作でも返ることがあります（[12. セキュリティ](12-security.md)）。
+- `/api/v1` 以外の版（`/api/v2/...` など）は 422 `UNSUPPORTED_PROTOCOL_VERSION`（`details.supported: ["v1"]`）です。
+- 問い合わせの際は `request_id`（= `X-Request-Id`）を添えてください。
 
-| `code` | 状態 | `retryable` | 主な場面 |
+| `code` | ステータス | `retryable` | 主な場面 |
 |---|---|---|---|
-| `INVALID_CONFIG` | 400 | 否 | 値の検査の誤り（範囲・組み合わせ・参照先） |
-| `INVALID_REQUEST` | 400 | 否 | 本文の解析の誤り・未知のフィールド・知らないクエリ・`limit` の範囲・Idempotency-Key の形 |
-| `UNSUPPORTED_PROTOCOL_VERSION` | 422 | 否 | `/api/v1` 以外の版のパス |
-| `UNSUPPORTED_CODEC` | 422 | 否 | 静止画の復号（`GET /streams/{id}/snapshot`）、部屋の核からの 422、E2EE の部屋・書き出した stream でのサーバーの処理（`details.reason: "e2ee"`） |
-| `UNSUPPORTED_MEDIA_TYPE` | 415 | 否 | `Content-Type` が `application/json` でない |
-| `AUTH_FAILED` | 401 | 否 | 認証の失敗 |
-| `FORBIDDEN` | 403 | 否 | 権限が足りない、持たない権限をトークンに渡そうとした |
-| `NOT_FOUND` | 404 | 否 | 無い、他テナントの資源、知らないパス |
-| `METHOD_NOT_ALLOWED` | 405 | 否 | 資源に無いメソッド |
-| `CONFLICT` | 409 | 否 | 状態と合わない（使用中の秘密値の削除、最後の管理者トークンの削除など） |
-| `IDEMPOTENCY_CONFLICT` | 409 | 否 | 同じ Idempotency-Key で別の要求 |
-| `PRECONDITION_FAILED` | 412 | 否 | `If-Match` が古い・形が違う |
-| `PRECONDITION_REQUIRED` | 428 | 否 | PATCH に `If-Match` が無い |
-| `QUOTA_EXCEEDED` | 403 | 否 | 上限（同じ stream の同時の録画は 8 本など） |
-| `RATE_LIMITED` | 429 | 是 | 要求の量の上限を超えた（`details.limit` は `ip`・`token`・`auth_failures`・`connect`） |
-| `CAPACITY_UNAVAILABLE` | 503 | 多くは是 | クラスターの提案を受け付けられない（リーダーの交代・混雑）、部屋が別のノードにある、`--webrtc-udp` が無い、codec worker が無い（このときは否） |
-| `INPUT_TIMEOUT` | 504 | 是 | 今の画を頼んだが、配信のキーフレームが 5 秒以内に届かない |
-| `OWNERSHIP_LOST` | 409 | 否 | クラスターで、配信を別のノードが受けている stream の録画の開始・今の画（`details.owner_api` のノードに頼み直す） |
-| `PAYLOAD_TOO_LARGE` | 413 | 否 | 録画が大きすぎて MP4 に書き出せない、合意ログのコマンドが大きすぎる |
-| `INTERNAL_ERROR` | 500 | 是 | 制御状態の永続化の失敗など |
+| `INVALID_CONFIG` | 400 | false | 値の検査エラー（範囲・組み合わせ・参照先） |
+| `INVALID_REQUEST` | 400 | false | 本文の解析エラー・未知のフィールド・未知のクエリ・`limit` の範囲外・Idempotency-Key の形式 |
+| `UNSUPPORTED_PROTOCOL_VERSION` | 422 | false | `/api/v1` 以外の版のパス |
+| `UNSUPPORTED_CODEC` | 422 | false | 静止画のデコード（`GET /streams/{id}/snapshot`）、部屋の処理からの 422、E2EE の部屋と、そこから書き出した stream でのサーバーの処理（`details.reason: "e2ee"`） |
+| `UNSUPPORTED_MEDIA_TYPE` | 415 | false | `Content-Type` が `application/json` でない |
+| `AUTH_FAILED` | 401 | false | 認証の失敗 |
+| `FORBIDDEN` | 403 | false | 権限が足りない、持っていない権限をトークンに付与しようとした |
+| `NOT_FOUND` | 404 | false | 存在しない、他のテナントのリソース、未知のパス |
+| `METHOD_NOT_ALLOWED` | 405 | false | リソースに無いメソッド |
+| `CONFLICT` | 409 | false | 現在の状態と矛盾する（使用中の秘密値の削除、最後の管理者トークンの削除など） |
+| `IDEMPOTENCY_CONFLICT` | 409 | false | 同じ Idempotency-Key で別のリクエスト |
+| `PRECONDITION_FAILED` | 412 | false | `If-Match` が古い、または形式が違う |
+| `PRECONDITION_REQUIRED` | 428 | false | PATCH に `If-Match` が無い |
+| `QUOTA_EXCEEDED` | 403 | false | 上限に達した（同じストリームで同時に録画できるのは 8 本まで、など） |
+| `RATE_LIMITED` | 429 | true | 要求の量の上限を超えた（`details.limit` は `ip`・`token`・`auth_failures`・`connect`） |
+| `CAPACITY_UNAVAILABLE` | 503 | 多くは true | クラスターが変更の提案を受け付けられない（リーダーの交代・混雑）、部屋が別のノードにある、`--webrtc-udp` が無い、codec worker が無い（このときは false） |
+| `INPUT_TIMEOUT` | 504 | true | 静止画を求めたが、配信のキーフレームが 5 秒以内に届かない |
+| `OWNERSHIP_LOST` | 409 | false | クラスターで、配信を別のノードが受信している stream の録画の開始・静止画（`details.owner_api` のノードに頼み直します） |
+| `PAYLOAD_TOO_LARGE` | 413 | false | 録画が大きすぎて MP4 に書き出せない、合意ログのコマンドが大きすぎる |
+| `INTERNAL_ERROR` | 500 | true | 制御状態の保存の失敗など |
 
-`retryable` の既定は表のとおり（`RATE_LIMITED`・`CAPACITY_UNAVAILABLE`・`INPUT_TIMEOUT`・`INTERNAL_ERROR` が真）で、個々の誤りが
-上書きすることがある。`type` は `urn:senca:error:{code を小文字・ハイフンにしたもの}`。
+`retryable` の既定値は表のとおりです（`RATE_LIMITED`・`CAPACITY_UNAVAILABLE`・`INPUT_TIMEOUT`・`INTERNAL_ERROR` が true）。個々のエラーで
+上書きされることがあります。`type` は `urn:senca:error:{code を小文字にし、_ をハイフンにしたもの}` です。
 
-## 2. OpenAPI の文書
+## 2. OpenAPI の定義
 
-[`docs/api/openapi.yaml`](../../api/openapi.yaml)（OpenAPI 3.1）がすべての操作・スキーマ・状態コードを持つ。説明は日本語。
+[`docs/api/openapi.yaml`](../../api/openapi.yaml)（OpenAPI 3.1）に、すべての操作・スキーマ・ステータスコードを記述しています。説明は日本語です。
 
-- ノードは OpenAPI の文書を配らない。リポジトリのファイルを OpenAPI 3.1 に対応した閲覧器で開く。例（Docker の Swagger UI）:
+- ノードは OpenAPI の定義ファイルを配信しません。リポジトリのファイルを、OpenAPI 3.1 に対応したビューアーで開いてください。例（Docker の Swagger UI）:
 
   ```
   docker run --rm -p 127.0.0.1:8081:8080 -e SWAGGER_JSON=/spec/openapi.yaml \
@@ -198,19 +196,17 @@ curl -s -H "Authorization: Bearer $TOKEN" 'http://127.0.0.1:8080/api/v1/streams?
   # http://127.0.0.1:8081/ を開く
   ```
 
-  `/api/v1` は CORS の見出しを返さないので、閲覧器の「試す」から別 origin のノードへは送れない。試すのは curl か SDK で。
-- 拡張:
-  - `x-senca-scope`: その操作に要る権限（`null` は認証だけ）
-  - `x-senca-undefined-method-status: 405`: 書いていないメソッドの扱い
+  `/api/v1` は CORS ヘッダーを返さないため、ビューアーの「Try it out」から別オリジンのノードへリクエストを送ることはできません。試すときは curl か SDK を使ってください。
+- 拡張フィールド:
+  - `x-senca-scope`: その操作に必要な権限（`null` は認証だけが必要）
+  - `x-senca-undefined-method-status: 405`: 定義されていないメソッドへの応答
   - `x-senca-event-data`: SSE の `data` のスキーマ（`SseEventData`）
-- 各操作の説明に「仕様との差」がある。まとめは文書の冒頭（operation 資源が無い、`PATCH /streams/{id}` は 200 など）。
-- JS の SDK（`apps/sdk-js/scripts/gen_types.py`）と Rust のクライアント（`crates/senca-client/gen/gen_models.py`）の型はこの文書から生成する。
-- 確かめ方: `tools/interop/openapi.sh` が (a) `api/mod.rs` の経路表・handler の権限と文書の過不足、(b) 実際にノードを起動して全操作を送り、
-  状態コードが文書にあり本文がスキーマに合うことを見る。
+- 現在対応していない機能（非同期処理の operation リソースなど）は、定義ファイルの冒頭にまとめています。
+- JavaScript の SDK と Rust のクライアントの型は、この定義ファイルから生成しています。
 
 ## 3. イベント（SSE）
 
-`GET /api/v1/events` は Server-Sent Events（`text/event-stream`）で変更を流す。権限は `stream:read`。
+`GET /api/v1/events` は、変更を Server-Sent Events（`text/event-stream`）で配信します。必要な権限は `stream:read` です。
 
 ```
 curl -sN -H "Authorization: Bearer $TOKEN" http://127.0.0.1:8080/api/v1/events
@@ -222,26 +218,26 @@ id: 42
 data: {"type":"stream.created","resource_id":"...","occurred_at":"2026-11-03T01:02:03.000Z","data":{"name":"studio-a"}}
 ```
 
-- **制御のイベント**: 合意した（単一ノードでは保存した）制御のコマンドから作る。SSE の `id` は制御ログの位置（applied index、整数）。
-  `data` は `{type, resource_id, occurred_at, data}`。`occurred_at` は送った時刻。
-- **テナントで絞る**: 自分のテナントのイベントだけが流れる。テナントを持たないイベント（ノード・グリッド・`stream.owner`）は
-  `node:admin` を持つ主体にだけ流れる。
-- **種類で絞る機能はサーバーに無い**。SDK はクライアントの側で捨てる（§4・§5）。
-- 15 秒ごとにコメント行（keepalive）を送る。
-- 401・403 は他の API と同じ problem+json（403 の title は「権限 stream:read が必要です」）。
+- **制御のイベント**: 合意された（単一ノードでは保存された）制御のコマンドから作られます。SSE の `id` は制御ログ上の位置（適用済みのインデックス、整数）です。
+  `data` は `{type, resource_id, occurred_at, data}` です。`occurred_at` は送信した時刻です。
+- **テナントによる絞り込み**: 自分のテナントのイベントだけが届きます。テナントに属さないイベント（ノード・グリッド・`stream.owner`）は、
+  `node:admin` を持つ主体にだけ届きます。
+- **イベントの種類で絞り込む機能はサーバーにはありません**。SDK はクライアント側で不要なイベントを捨てます（§4・§5）。
+- 15 秒ごとにコメント行（keep-alive）を送ります。
+- 401・403 は、他の API と同じく problem+json で返します（403 の title は「権限 stream:read が必要です」）。
 
 ### 3.1 Last-Event-ID と resync
 
-ノードは直近のイベントを残しています（既定 4096 件、`--events-retain`。単一ノードでは再起動の後も、制御ログの写しより後の分を読み直します）。
+ノードは直近のイベントを残しています（既定 4096 件、`--events-retain`。単一ノードでは、再起動の後も制御ログの写しより後の分を読み直します）。
 
-- `id` は、適用したコマンドの数です。クラスターでは、どのノードでも同じイベントは同じ `id` になります。
-  そのため、別のノードへつなぎ直しても、同じ `Last-Event-ID` で続きを受け取れます。
-- `Last-Event-ID` を付けてつなぎ直すと、その位置より後のイベントのうち、ノードが残している分を先に送り、その後に新しいイベントを流します。
-- 位置が残している範囲より古いときは、最初に `event: resync`（`id` は今の位置、`data: {}`）を送り、そのまま新しいイベントを流し続けます。
-  `Last-Event-ID` が無ければ、つないだ後のイベントだけが流れます。
-- クラスターで、つないだノードの適用が `Last-Event-ID` に追いついていなければ、3 秒まで待ちます。
-- 読むのが遅れて通知があふれたときは、残している分から続きを送ります。それも無ければ `event: resync` を送って**接続を閉じます**。
-- `resync` を受けたら、一覧の API で状態を読み直してから、受けた `id` を `Last-Event-ID` にしてつなぎ直します。
+- `id` は、適用したコマンドの数です。クラスターでは、同じイベントはどのノードでも同じ `id` になるため、別のノードへ再接続しても、
+  同じ `Last-Event-ID` で続きを受け取れます。
+- `Last-Event-ID` を付けて再接続すると、その位置より後のイベントのうちノードが残している分を先に送り、その後に新しいイベントを送ります。
+- 位置が残している範囲より古いときは、最初に `event: resync`（`id` は現在の位置、`data: {}`）を送り、そのまま新しいイベントを送り続けます。
+  `Last-Event-ID` が無ければ、接続した後のイベントだけを送ります。
+- クラスターで、接続したノードの適用が `Last-Event-ID` に追いついていなければ、3 秒まで待ちます。
+- 読み取りが遅れて通知があふれたときは、残している分から続きを送ります。それも無ければ `event: resync` を送って**接続を閉じます**。
+- `resync` を受け取ったら、一覧の API で状態を取得し直してから、受け取った `id` を `Last-Event-ID` にして再接続してください。
 
 ### 3.2 イベントの一覧
 
@@ -252,7 +248,7 @@ data: {"type":"stream.created","resource_id":"...","occurred_at":"2026-11-03T01:
 | `stream.created` | あり | `{name}` |
 | `stream.updated` | あり | `{generation}` |
 | `stream.deleted` | あり | `{}` |
-| `stream.owner` | なし（`node:admin`） | `{node}`（配信の持ち主のノードが替わった。[09-cluster-grid.md](09-cluster-grid.md)） |
+| `stream.owner` | なし（`node:admin`） | `{node}`（ストリームを担当するノードが替わった。[9. クラスターとグリッド](09-cluster-grid.md)） |
 | `recording.updated` | あり | `{stream, state, generation}` |
 | `recording.deleted` | あり | `{}` |
 | `schedule.created`・`schedule.updated`・`schedule.deleted` | あり | `{}` |
@@ -264,18 +260,18 @@ data: {"type":"stream.created","resource_id":"...","occurred_at":"2026-11-03T01:
 | `secret.deleted` | あり | `{}` |
 | `pipeline.updated` | あり | `{name, desired_state}` |
 | `pipeline.deleted` | あり | `{}` |
-| `room.updated` | あり | `{auto}`（部屋の作成・自動の作成・更新） |
+| `room.updated` | あり | `{auto}`（部屋の作成・自動作成・更新） |
 | `room.deleted` | あり | `{}` |
 | `media_pipeline.updated` | あり | `{room, desired_state}`（作成・更新） |
 | `media_pipeline.deleted` | あり | `{}` |
 | `node.down`・`node.up` | なし（`node:admin`） | `{}`（`resource_id` はノードの ID） |
-| `device.down`・`device.up` | なし（`node:admin`） | `{device}`（測った健康の変化） |
-| `device.disabled`・`device.enabled` | なし（`node:admin`） | `{device}`（手での停止・再開） |
+| `device.down`・`device.up` | なし（`node:admin`） | `{device}`（ヘルスチェックで検出した状態の変化） |
+| `device.disabled`・`device.enabled` | なし（`node:admin`） | `{device}`（手動での停止・再開） |
 | `grid.decisions` | なし（`node:admin`） | `{decisions}`（配置の決定。`resource_id` は空） |
 
-部屋の出来事（[10-rooms.md](10-rooms.md)、ADR-0015）:
+部屋のイベント（[10. リアルタイムの部屋](10-rooms.md)、[ADR-0015](../../dev/adr/0015-realtime-rooms.md)）:
 
-| 種類 | 部屋の核での名前 | `data.data` |
+| 種類 | 部屋の内部での名前 | `data.data` |
 |---|---|---|
 | `room.started` | `room.created` | `{settings, auto_created}` |
 | `room.stopped` | `room.destroyed` | `{reason}` |
@@ -286,11 +282,12 @@ data: {"type":"stream.created","resource_id":"...","occurred_at":"2026-11-03T01:
 | `room.track.unpublished` | `track.unpublished` | `{track_id, connection_id}` |
 | `room.spotlight.changed` | `spotlight.changed` | `{focused}` |
 
-- 部屋の出来事は合意ログに載らない。**SSE の `id` を持たない**ので `Last-Event-ID` の再開の対象外で、取りこぼしは黙って飛ばす。
-- **部屋を置いたノードにつないだ購読者にだけ流れる**。クラスターで全部の部屋の出来事を見るには、各ノードの `/api/v1/events` を購読する。
-- `data` は `{type, resource_id（部屋の ID）, event_id（出来事の ID。重複を除くのに使う）, node（出したノードの ID）, occurred_at, data}`。
-  内側の `data` は上の表の中身だけ（部屋の核の名前の `type` は入らない）。
-- テナントで絞る。`node:admin` でも他テナントの部屋の出来事は流れない。部屋の設定の変更は制御のイベント `room.updated` が出す。
+- 部屋のイベントは合意ログに記録されません。**SSE の `id` を持たない**ため `Last-Event-ID` による再開の対象外で、取りこぼしたイベントは再送されません。
+- **部屋のイベントは、そのイベントが起きたノードに接続している購読者にだけ届きます**（カスケードの扱いは [10. リアルタイムの部屋](10-rooms.md) を参照）。
+  クラスターで全部の部屋のイベントを受け取るには、各ノードの `/api/v1/events` を購読してください。
+- `data` は `{type, resource_id（部屋の ID）, event_id（イベントの ID。重複の除去に使います）, node（イベントを出したノードの ID）, occurred_at, data}` です。
+  内側の `data` には上の表の内容だけが入ります（部屋の内部での名前の `type` は入りません）。
+- テナントで絞り込みます。`node:admin` でも、他のテナントの部屋のイベントは届きません。部屋の設定の変更は、制御のイベント `room.updated` で通知されます。
 
 ```
 event: room.connection.created
@@ -299,12 +296,12 @@ data: {"type":"room.connection.created","resource_id":"daily","event_id":"...","
 
 ## 4. JavaScript の SDK（`@senca/sdk`）
 
-`apps/sdk-js`。ブラウザーのリアルタイムの部屋（`Senca.connect()`）と、ブラウザー・Node.js 20 以上の管理 API（`SencaClient`）を持つ。
-実行時の依存は無く、ソースは JSDoc の型を付けた ES modules（ビルドせずに動く）。型定義は `types/`、API の一覧は
-[`apps/sdk-js/API.md`](../../../apps/sdk-js/API.md)、詳しい説明は [`apps/sdk-js/README.md`](../../../apps/sdk-js/README.md)。
+`apps/sdk-js` にあります。ブラウザーで使うリアルタイムの部屋（`Senca.connect()`）と、ブラウザー・Node.js 20 以上で使う管理 API のクライアント（`SencaClient`）を含みます。
+実行時の依存パッケージは無く、ソースは JSDoc で型を付けた ES modules です（ビルドせずに動きます）。型定義は `types/`、API の一覧は
+[`apps/sdk-js/API.md`](../../../apps/sdk-js/API.md)、詳しい説明は [`apps/sdk-js/README.md`](../../../apps/sdk-js/README.md) にあります。
 
-- npm の公開はまだ無い（版は 0.0.0）。リポジトリから入れる（例 `npm install /path/to/senca/apps/sdk-js`）。
-- 入口: `@senca/sdk`（全部）、`@senca/sdk/rest`（管理 API だけ）、`@senca/sdk/protocol`（シグナリングの型）。
+- npm には公開していません。リポジトリからインストールしてください（例 `npm install /path/to/senca/apps/sdk-js`）。
+- エントリーポイント: `@senca/sdk`（すべて）、`@senca/sdk/rest`（管理 API だけ）、`@senca/sdk/protocol`（シグナリングの型）。
 
 ### 4.1 管理 API（`SencaClient`）
 
@@ -317,13 +314,13 @@ const s = await senca.streams.create({ name: 'studio-a' });     // Idempotency-K
 for await (const x of senca.streams.list({ limit: 100 })) console.log(x.name);   // cursor を自動でたどる
 
 const cur = await senca.streams.get(s.id);
-await senca.streams.update(s.id, { metadata: { a: 'b' } }, { ifMatch: cur });     // ETag・generation・資源のどれでも
-await senca.streams.modify(s.id, (c) => ({ metadata: { ...c.metadata, n: '1' } })); // 412 なら読み直してやり直す（既定 3 回）
+await senca.streams.update(s.id, { metadata: { a: 'b' } }, { ifMatch: cur });     // ETag・generation・リソースのどれでも指定できる
+await senca.streams.modify(s.id, (c) => ({ metadata: { ...c.metadata, n: '1' } })); // 412 なら取得し直してやり直す（既定 3 回）
 
 try {
   await senca.streams.update(s.id, { name: 'x' }, { ifMatch: 1 });
 } catch (e) {
-  if (e instanceof ApiError && e.code === 'PRECONDITION_FAILED') { /* 他の人が先に書いた */ }
+  if (e instanceof ApiError && e.code === 'PRECONDITION_FAILED') { /* 他のクライアントが先に更新した */ }
 }
 ```
 
@@ -331,28 +328,28 @@ try {
 
 | 項目 | 既定 | 意味 |
 |---|---|---|
-| `baseUrl` | （必須） | `https://node.example`（`/api/v1` を足す）か `https://node.example/api/v1` |
-| `token` | なし | API トークンか JWT。関数なら要求のたびに呼ぶ |
-| `retry` | `true` | 送り直しの方針（`maxAttempts` 3（最初を含む）・`initialDelayMs` 200・`maxDelayMs` 5000・`factor` 2・`jitter` 0.2）。`false` で送り直さない |
-| `timeoutMs` | 30000 | 1 回の要求の時間切れ（SSE には使わない） |
-| `headers` | `{}` | すべての要求に付ける見出し |
-| `idempotency` | `true` | POST に自動で Idempotency-Key（UUID v4）を付ける |
-| `fetch` | `globalThis.fetch` | 差し替え用 |
+| `baseUrl` | （必須） | `https://node.example`（`/api/v1` を補います）または `https://node.example/api/v1` |
+| `token` | なし | API トークンまたは JWT。関数を渡すと、リクエストのたびに呼び出します |
+| `retry` | `true` | 再試行の設定（`maxAttempts` 3（初回を含む）・`initialDelayMs` 200・`maxDelayMs` 5000・`factor` 2・`jitter` 0.2）。`false` で再試行しません |
+| `timeoutMs` | 30000 | 1 回のリクエストのタイムアウト（SSE には適用しません） |
+| `headers` | `{}` | すべてのリクエストに付けるヘッダー |
+| `idempotency` | `true` | POST に Idempotency-Key（UUID v4）を自動で付けます |
+| `fetch` | `globalThis.fetch` | fetch の実装を差し替えるときに使います |
 
-- 資源: `streams`（`rotateKey`・`playbackUrl`・`startRecording`・`plan`・`snapshot`・`snapshots.list/get/delete`）・
+- リソース: `streams`（`rotateKey`・`playbackUrl`・`startRecording`・`plan`・`snapshot`・`snapshots.list/get/delete`）・
   `recordings`（`stop`・`playbackUrl`・`thumbnail`・`exportMp4`。作成は `streams.startRecording`）・`schedules`（`check`・`runs`）・
   `tokens`・`inputs`・`outputs`（`create(streamId, body)`・`list(streamId)`）・`secrets`・`pipelines`（`validate`・`control`）・
   `nodes`（`drain`・`undrain`・`devices.disable/enable`）・`rooms`（`createToken`・`participants(id).list/get/updateMetadata/disconnect`・
-  `sendMessage`・`stats`）・`mediaPipelines`（`list({room})`・`start`・`stop`）。クライアントの `capabilities()`・`devices()`・
-  `grid()`・`events()`。型の無い要求は `senca.request(method, path, opts)`。
-- 共通のメソッド: `create`・`list`（`Paginator`、`for await` で全件）・`listPage`（1 頁）・`get`・`update`（`ifMatch` 必須。無いと
+  `sendMessage`・`stats`）・`mediaPipelines`（`list({room})`・`start`・`stop`）。クライアント自体のメソッドとして `capabilities()`・`devices()`・
+  `grid()`・`events()` があります。型の無いリクエストは `senca.request(method, path, opts)` で送れます。
+- 共通のメソッド: `create`・`list`（`Paginator`。`for await` で全件を取得）・`listPage`（1 ページ）・`get`・`update`（`ifMatch` が必須。無いと
   `TypeError`）・`modify`・`delete`（`ifMatch` は任意）。
-- **送り直し**: 通信の失敗・408・429・502・503・504・`retryable: true` の problem を、`Retry-After` と指数バックオフで送り直す。
-  応答が無かった失敗は GET・DELETE・PUT・Idempotency-Key 付きの POST だけ送り直す。PATCH は 429・503 だけ。
-- **誤り**: problem+json は `ApiError`（`status`・`code`・`title`・`type`・`requestId`・`retryable`・`retryAfterMs`・`details`・`problem`）。
-  通信の失敗は `status: 0`、`code: 'NETWORK_ERROR' | 'TIMEOUT'`。
-- 補助: `SencaClient.etagOf(resource)`、`SencaClient.newIdempotencyKey()`（プロセスをまたいで同じ鍵で送り直すとき）、
-  `SencaClient.operations`（operationId → method・path・権限の表）。
+- **再試行**: 通信の失敗・408・429・502・503・504・`retryable: true` の problem を、`Retry-After` と指数バックオフに従って再試行します。
+  応答が無かった失敗を再試行するのは、GET・DELETE・PUT・Idempotency-Key 付きの POST だけです。PATCH は 429・503 のときだけ再試行します。
+- **エラー**: problem+json は `ApiError`（`status`・`code`・`title`・`type`・`requestId`・`retryable`・`retryAfterMs`・`details`・`problem`）になります。
+  通信の失敗は `status: 0`、`code: 'NETWORK_ERROR' | 'TIMEOUT'` です。
+- 補助機能: `SencaClient.etagOf(resource)`、`SencaClient.newIdempotencyKey()`（プロセスをまたいで同じキーで再送するとき）、
+  `SencaClient.operations`（operationId → メソッド・パス・権限の表）。
 
 **SSE**
 
@@ -363,10 +360,10 @@ for await (const ev of senca.events({ types: ['stream.*', 'room.connection.*'], 
 }
 ```
 
-- `EventSource` は `Authorization` を送れないので `fetch` で読む。
-- `types` は完全一致か末尾 `*` の前方一致で、クライアントの側で絞る。`resync` は絞っても必ず流す。
-- 切れたら最後の `id` を `Last-Event-ID` にしてつなぎ直す（1 秒から倍々、最大 30 秒。`reconnect: false` で付け直さない）。
-  401・403・404 はつなぎ直さずに `ApiError` で終わる。
+- `EventSource` は `Authorization` ヘッダーを送れないため、`fetch` で読み取ります。
+- `types` は完全一致か末尾 `*` の前方一致で、クライアント側で絞り込みます。`resync` は絞り込みに関係なく必ず届きます。
+- 接続が切れたら、最後の `id` を `Last-Event-ID` にして再接続します（1 秒から倍々で、最大 30 秒。`reconnect: false` で再接続しません）。
+  401・403・404 では再接続せず、`ApiError` で終了します。
 
 ### 4.2 リアルタイムの部屋（`Senca.connect()`、ブラウザー）
 
@@ -377,7 +374,7 @@ const camera = await navigator.mediaDevices.getUserMedia({ video: { width: 1280,
 const session = await Senca.connect({
   url: signalingUrl,                 // REST の RoomToken.signaling_url
   room: 'daily',
-  token: () => fetch('/my-backend/room-token').then((r) => r.text()),   // 再接続のたびに取り直す
+  token: () => fetch('/my-backend/room-token').then((r) => r.text()),   // 再接続のたびに取得し直す
   publish: { stream: camera, simulcast: true },
   dataChannels: ['#chat'],
 });
@@ -387,27 +384,18 @@ for await (const track of session.remoteTracks()) {
 }
 ```
 
-- 参加トークンはアプリのサーバーが `POST /api/v1/rooms/{id}/tokens`（`senca.rooms.createToken(room, {role, client_id, metadata})`）で作り、
-  `token` と `signaling_url` をブラウザーへ渡す。管理 API のトークンをブラウザーに渡さない。
-- `Session` は `participants`・`tracks`（その場で変わる Map）、`events()`・`remoteTracks()`・`messages()`（非同期の列）、`waitFor()`、
-  `publish()`・`send()`・`stats()`・`close()` を持つ。シグナリング v1 の SDP・受信の枠・再交渉・ping・ICE restart・再接続
-  （0.5 秒から倍々で最大 10 秒、10 回まで）・redirect は SDK の中で扱う。
-- 誤りは `SencaError`（`code`・`fatal`・`closeCode`・`request`）。
-- 部屋の機能と限界は [10-rooms.md](10-rooms.md)、プロトコルは [docs/realtime/signaling.md](../../realtime/signaling.md)。
-
-### 4.3 試験
-
-```
-cd apps/sdk-js && npm test        # 単体（偽の WebSocket・RTCPeerConnection・fetch、オフライン）
-npm run build                     # tsc で型を検査し、types/・API.md を作る（TypeScript 5.x）
-npm run gen                       # openapi.yaml が変わったら型を作り直す
-tools/interop/sdk_js.sh           # 本物の senca-node と Docker の Chrome 3 ページまで
-```
+- 参加トークンは、アプリのサーバーが `POST /api/v1/rooms/{id}/tokens`（`senca.rooms.createToken(room, {role, client_id, metadata})`）で発行し、
+  `token` と `signaling_url` をブラウザーへ渡します。管理 API のトークンをブラウザーに渡さないでください。
+- `Session` は、`participants`・`tracks`（随時更新される Map）、`events()`・`remoteTracks()`・`messages()`（非同期イテレーター）、`waitFor()`、
+  `publish()`・`send()`・`stats()`・`close()` を持ちます。シグナリング v1 の SDP、受信の枠、再ネゴシエーション、ping、ICE restart、再接続
+  （0.5 秒から倍々で最大 10 秒、10 回まで）、redirect は SDK の内部で処理します。
+- エラーは `SencaError`（`code`・`fatal`・`closeCode`・`request`）です。
+- 部屋の機能と制約は [10. リアルタイムの部屋](10-rooms.md)、プロトコルは [docs/realtime/signaling.md](../../realtime/signaling.md) を見てください。
 
 ## 5. Rust のクライアント（`senca-client`）
 
-`crates/senca-client`。tokio の非同期クライアント。HTTP/1.1 は `senca-http`、TLS は `senca-tls` で、外部の HTTP クライアントに依らない。
-詳しくは [`crates/senca-client/README.md`](../../../crates/senca-client/README.md)。crates.io の公開はまだ無いので、path か git で依存に入れる。
+`crates/senca-client` にある、tokio ベースの非同期クライアントです。HTTP/1.1 と TLS には SENCA 自身の `senca-http`・`senca-tls` を使い、外部の HTTP クライアントには依存しません。
+詳しくは [`crates/senca-client/README.md`](../../../crates/senca-client/README.md) を見てください。crates.io には公開していないため、path か git で依存関係に追加します。
 
 ```rust
 use senca_client::{EventsOptions, ListOptions, ProblemCode, SencaClient, ServerEvent};
@@ -416,12 +404,12 @@ use senca_client::models::{StreamCreate, StreamPatch};
 let client = SencaClient::new("https://senca.example", std::env::var("SENCA_TOKEN")?)?;
 
 let s = client.streams().create(&StreamCreate { name: "studio-a".into(), ..Default::default() }).await?;
-let key = s.ingest.stream_key.clone();   // stream key はこの応答でだけ渡る
+let key = s.ingest.stream_key.clone();   // stream key はこの応答でしか受け取れない
 
 let patch = StreamPatch { name: Some("studio-b".into()), ..Default::default() };
-let s = match client.streams().update(&s.id, &patch, &s).await {   // 前の応答（ETag）をそのまま If-Match に
+let s = match client.streams().update(&s.id, &patch, &s).await {   // 前の応答（ETag）をそのまま If-Match に使う
     Ok(v) => v,
-    Err(e) if e.code() == Some(ProblemCode::PreconditionFailed) => { /* 読み直して再試行 */ todo!() }
+    Err(e) if e.code() == Some(ProblemCode::PreconditionFailed) => { /* 取得し直して再試行 */ todo!() }
     Err(e) => return Err(e.into()),
 };
 
@@ -434,14 +422,14 @@ let mut events = client.events(EventsOptions::default().types(["stream.*", "reco
 while let Some(ev) = events.next().await {
     match ev? {
         ServerEvent::Event(e) => println!("{} {}", e.event, e.data.resource_id),
-        ServerEvent::Resync { .. } => { /* 一覧を読み直す */ }
+        ServerEvent::Resync { .. } => { /* 一覧を取得し直す */ }
     }
 }
 
 client.streams().delete(&s.id, s.if_match()).await?;
 ```
 
-| 資源 | メソッド |
+| リソース | メソッド |
 |---|---|
 | `streams()` | `create`・`create_with`・`list`・`list_with`・`list_page`・`get`・`update`・`delete`・`rotate_key`・`playback_url`・`start_recording`・`plan`・`snapshot`・`snapshots`・`snapshot_by_id`・`delete_snapshot` |
 | `recordings()` | `list`・`list_with`（`ListOptions::stream`）・`list_page`・`get`・`update`・`delete`・`stop`・`playback_url`・`thumbnail`・`export_mp4` |
@@ -453,29 +441,27 @@ client.streams().delete(&s.id, s.if_match()).await?;
 | `nodes()` | `list`・`get`・`drain`・`undrain`・`disable_device`・`enable_device` |
 | `rooms()` | `create`・`create_with`・`list`・`list_with`・`list_page`・`get`・`update`・`delete`・`issue_token`・`send_message`・`stats`・`participants`・`participants_with`・`participant`・`update_participant`・`disconnect` |
 | `media_pipelines()` | `create`・`create_with`・`list`・`list_with`（`ListOptions::room`）・`list_page`・`get`・`update`・`set_state`・`delete` |
-| クライアント | `capabilities`・`grid`・`devices`・`events`・`healthz`・`readyz`・`fetch_signed`（署名付きの再生パス。307 をたどる）・`request_json`（型の無い要求） |
+| クライアント | `capabilities`・`grid`・`devices`・`events`・`healthz`・`readyz`・`fetch_signed`（署名付きの再生パス。307 をたどります）・`request_json`（型の無いリクエスト） |
 
-- **版**: `get`・`create`・`update` は `Versioned<T>`（`value`・`etag`・`replayed`・`request_id`。`Deref` で中身）。`update` の
-  `if_match` は `&Versioned<T>`・`IfMatch::Etag`・`IfMatch::Generation(n)`・`u64` のどれでも。
-- **Idempotency**: POST は毎回新しい鍵を付け、送り直しでも同じ鍵を使う。`create_with(.., RequestOptions::idempotency_key("..."))`
-  で鍵を決めれば、プロセスをまたいだ再送でも同じ答えになる（`Versioned::replayed` が真）。
-- **誤り**: `Error::Api(ApiError)`（`code`（`ProblemCode`。知らない値は `Unknown` と `raw_code`）・`title`・`status`・`retryable`・
-  `request_id`・`details`・`retry_after`）。他に `Connect`・`Transport`・`Timeout`・`Decode`・`InvalidUrl`・`InvalidArgument`。
-- **送り直し**（`RetryPolicy`）: 既定は最初の要求の後に最大 3 回、200 ms から倍々・上限 10 秒・±20 % のゆらぎ、`Retry-After` 以上待つ。
-  `ClientBuilder::retry(RetryPolicy::NONE)` で送り直さない。PATCH は `retryable`・429・503 のときだけ。
+- **バージョン情報付きの応答**: `get`・`create`・`update` は `Versioned<T>`（`value`・`etag`・`replayed`・`request_id`。`Deref` で中身を参照できます）を返します。`update` の
+  `if_match` には、`&Versioned<T>`・`IfMatch::Etag`・`IfMatch::Generation(n)`・`u64` のどれでも渡せます。
+- **Idempotency**: POST には毎回新しいキーを付け、再試行でも同じキーを使います。`create_with(.., RequestOptions::idempotency_key("..."))`
+  でキーを指定すれば、プロセスをまたいだ再送でも同じ応答が返ります（`Versioned::replayed` が true になります）。
+- **エラー**: `Error::Api(ApiError)`（`code`（`ProblemCode`。未知の値は `Unknown` と `raw_code`）・`title`・`status`・`retryable`・
+  `request_id`・`details`・`retry_after`）。ほかに `Connect`・`Transport`・`Timeout`・`Decode`・`InvalidUrl`・`InvalidArgument` があります。
+- **再試行**（`RetryPolicy`）: 既定では、最初のリクエストの後に最大 3 回、200 ms から倍々・上限 10 秒・±20 % のゆらぎで再試行し、`Retry-After` 以上の時間を待ちます。
+  `ClientBuilder::retry(RetryPolicy::NONE)` で再試行しなくなります。PATCH は `retryable`・429・503 のときだけ再試行します。
 - **SSE**: `EventsOptions`（`types`・`last_event_id`・`reconnect`（既定 true）・`initial_backoff` 1 秒・`max_backoff` 30 秒）。
-  切れたら `Last-Event-ID` を付けてつなぎ直す。401・403 ではつなぎ直さない。
-- **組み立て**: `SencaClient::builder(url).token(..).timeout(..)`（既定 30 秒）`.user_agent(..).root_certificates_pem(pem).build()`。
-  TLS の既定は OS の認証局。
-- **モデル**: `src/models.rs` は openapi.yaml からの生成物（`python3 crates/senca-client/gen/gen_models.py`）。応答の未知のフィールドは
-  読み飛ばし、知らない enum の値は `Unknown`。`*Patch` の null になりうる項目は `Option<Option<T>>`（`None` = 変えない、
-  `Some(None)` = null で消す）。
-- 試験: `cargo test -p senca-client`（`tests/node.rs` は本物の senca-node を起動して確かめる）。
+  接続が切れたら `Last-Event-ID` を付けて再接続します。401・403 では再接続しません。
+- **クライアントの構築**: `SencaClient::builder(url).token(..).timeout(..)`（既定 30 秒）`.user_agent(..).root_certificates_pem(pem).build()`。
+  TLS の既定では OS の認証局を使います。
+- **モデル**: `senca_client::models` の型は openapi.yaml から生成しています。応答に含まれる未知のフィールドは
+  読み飛ばし、未知の enum の値は `Unknown` になります。`*Patch` の null を取りうる項目は `Option<Option<T>>` です（`None` = 変更しない、
+  `Some(None)` = null を送って値を消す）。
 
-## 6. 関係
+## 6. 関連資料
 
-- 管理 API の契約の根拠: 仕様 SENCA-SRS-001 10 章、[REQ-002](../../dev/requirements/REQ-002-control-api-and-console.md)
-- クラスターでの書き込み（どのノードに送ってもよい。提案はリーダーへ回る）: [09-cluster-grid.md](09-cluster-grid.md)、[ADR-0009](../../dev/adr/0009-cluster.md)
-- 部屋と SSE の部屋の出来事: [10-rooms.md](10-rooms.md)、[ADR-0015](../../dev/adr/0015-realtime-rooms.md)
-- メディアパイプライン: [11-media-pipelines.md](11-media-pipelines.md)、[ADR-0016](../../dev/adr/0016-media-pipelines.md)
-- トークン・秘密の扱い: [12-security.md](12-security.md)、運用（ログ・監視）: [13-operations.md](13-operations.md)
+- クラスターでの書き込み（どのノードに送ってもかまいません。変更の提案はリーダーへ転送されます）: [9. クラスターとグリッド](09-cluster-grid.md)、[ADR-0009](../../dev/adr/0009-cluster.md)
+- 部屋と、SSE で届く部屋のイベント: [10. リアルタイムの部屋](10-rooms.md)、[ADR-0015](../../dev/adr/0015-realtime-rooms.md)
+- メディアパイプライン: [11. メディアパイプライン](11-media-pipelines.md)、[ADR-0016](../../dev/adr/0016-media-pipelines.md)
+- トークンと秘密情報の扱い: [12. セキュリティ](12-security.md)、運用（ログ・監視）: [13. 運用](13-operations.md)

@@ -13,8 +13,8 @@ use std::collections::BTreeMap;
 
 pub type Timestamp = String;
 
-/// `publish` は送り出しの権限: `POST /whip/{stream}` の `Authorization: Bearer` に、publish 鍵の代わりに `publish` を持つ同じテナントの API トークン・JWT を使える。
-/// `subscribe` は `POST /streams/{id}/playback-url`。
+/// `publish` は送信の権限です。`POST /whip/{stream}` の `Authorization: Bearer` に、publish 鍵の代わりに `publish` を持つ同じテナントの API トークン・JWT を使えます。
+/// `subscribe` は `POST /streams/{id}/playback-url` に使います。
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
 pub enum Scope {
     #[serde(rename = "stream:read")]
@@ -55,7 +55,7 @@ impl Scope {
     }
 }
 
-/// standard = HLS、low = LL-HLS、interactive = WebRTC・MoQ
+/// standard = HLS、low = LL-HLS（part は min(500 ms, segment_ms / 4)）、interactive = WebRTC・MoQ 向け（LL-HLS の part は 200 ms、出だしの待ちと送りの溜まりを小さくする）
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
 pub enum LatencyProfile {
     #[serde(rename = "standard")]
@@ -81,7 +81,7 @@ impl LatencyProfile {
     }
 }
 
-/// royalty_free は H.264・H.265・AAC を理由付きで拒否する（REQ-007）。royalty_free では hls.container は fmp4 にする。
+/// royalty_free は H.264・H.265・AAC を理由付きで拒否します。royalty_free では hls.container を fmp4 にしてください。
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
 pub enum CodecProfile {
     #[serde(rename = "any")]
@@ -106,7 +106,7 @@ impl CodecProfile {
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize, Default)]
 pub struct RecordingPolicy {
-    /// publish が始まったら自動で録画する
+    /// publish が始まったら自動で録画します
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub enabled: Option<bool>,
     /// 保持日数（null は無期限）
@@ -154,8 +154,10 @@ impl HlsSettingsContainer {
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize, Default)]
 pub struct Limits {
+    /// 入力のビットレートの上限（直近 3 秒の平均）。5 秒続けて超えたら送り手を切り、10 秒は新しい送り手を断る
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub max_ingress_bps: Option<u64>,
+    /// ノードごとの同時の視聴者の上限（最近プレイリストを取得した HLS のクライアントと、RTMP・SRT・RTSP・WHEP・MoQ の接続の合計）。超える新しい視聴は断る（HLS・WHEP・RTSP は 503）
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub max_viewers: Option<u64>,
 }
@@ -209,7 +211,7 @@ impl StreamCreateDesiredState {
     }
 }
 
-/// 書いたフィールドだけ置き換える。`snapshots: null` は静止画の方針を、`captions: null` は字幕を消す。他のフィールドの null は「変えない」。
+/// 指定したフィールドだけを置き換えます。`snapshots: null` は静止画の方針を、`captions: null` は字幕の設定を削除します。他のフィールドの null は「変更しない」の意味です。
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize, Default)]
 pub struct StreamPatch {
     #[serde(default, skip_serializing_if = "Option::is_none", with = "crate::double_option")]
@@ -236,17 +238,17 @@ pub struct StreamPatch {
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize, Default)]
 pub struct Ingest {
-    /// RTMP の publish 先（`{public-rtmp-url}/live`）。stream name に stream_key を使う。
+    /// RTMP の publish 先（`{public-rtmp-url}/live`）。stream name には stream_key を使います。
     pub rtmp_url: String,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub srt_streamid_format: Option<Value>,
     /// `--public-srt-url` を設定したとき
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub srt_url: Option<String>,
-    /// publish 鍵。作成・作り直しの応答でだけ値が入る（それ以外は null）。
+    /// publish 鍵。作成時と再発行時の応答でだけ値が入ります（それ以外は null）。
     #[serde(default)]
     pub stream_key: Option<String>,
-    /// Idempotency-Key の再送で鍵を伏せたとき
+    /// Idempotency-Key による再送で鍵を伏せたとき
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub stream_key_redacted: Option<Value>,
     /// `--public-http-url` を設定したとき
@@ -257,18 +259,41 @@ pub struct Ingest {
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize, Default)]
 pub struct LiveInfo {
     pub bitrate_bps: u64,
-    /// 再接続ごとに増える
+    /// 再接続のたびに増えます
     pub epoch: u64,
     pub started_at: Timestamp,
     pub tracks: Vec<Value>,
     /// rtmp・srt など
     pub transport: String,
+    /// このノードの視聴者の数（`limits.max_viewers` で数えるもの）。`hls` は最近プレイリストを取得した別々の HLS のクライアント
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub viewers: Option<LiveInfoViewers>,
+    /// hub の購読の数（中継・録画以外の内部の購読も含む目安）
     pub viewers_hint: u64,
+}
+
+/// このノードの視聴者の数（`limits.max_viewers` で数えるもの）。`hls` は最近プレイリストを取得した別々の HLS のクライアント
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, Default)]
+pub struct LiveInfoViewers {
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub hls: Option<u64>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub moq: Option<u64>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub rtmp: Option<u64>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub rtsp: Option<u64>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub srt: Option<u64>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub total: Option<u64>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub webrtc: Option<u64>,
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct Stream {
-    /// 字幕と翻訳の設定（無ければ null）。資格情報は `secret:{name}` の参照で、値は返さない。
+    /// 字幕と翻訳の設定（無ければ null）。資格情報は `secret:{name}` で参照し、値は返しません。
     #[serde(default)]
     pub captions: Option<CaptionSettings>,
     pub codec_profile: CodecProfile,
@@ -284,7 +309,7 @@ pub struct Stream {
     pub live: Option<LiveInfo>,
     pub metadata: Metadata,
     pub name: String,
-    /// 仕様 10.4 の provisioning・draining・degraded・failed は今は出さない。
+    /// 観測した配信の状態です。
     pub observed_state: StreamObservedState,
     pub recording: RecordingPolicy,
     #[serde(default)]
@@ -292,7 +317,7 @@ pub struct Stream {
     pub updated_at: Timestamp,
 }
 
-/// 仕様 10.4 の provisioning・draining・degraded・failed は今は出さない。
+/// 観測した配信の状態です。
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
 pub enum StreamObservedState {
     #[serde(rename = "waiting_input")]
@@ -318,20 +343,20 @@ impl StreamObservedState {
     }
 }
 
-/// 字幕と翻訳（R6-4）。配信中の音声を `asr_endpoint` に送って文字にし、`targets` の言語へ翻訳して、ライブ HLS に WebVTT の字幕を足す。
-/// 検査: `asr_provider`・`translate_provider` の値、`asr_endpoint`・`translate_endpoint` が URL として読めること、言語は `language` と `targets` 合わせて英数字と `-` の 1〜8 文字（`targets` は 8 個まで）。違えば 400（`INVALID_CONFIG`）。
-/// `asr_credential_ref`・`translate_credential_ref` は `secret:{name}` の形で、テナントに秘密値があること（無ければ 400）。参照している秘密値は消せない（409）。
+/// 字幕と翻訳の設定です。配信中の音声を `asr_endpoint` に送って文字に起こし、`targets` の言語へ翻訳して、ライブ HLS に WebVTT の字幕を追加します。
+/// 検査: `asr_provider`・`translate_provider` の値、`asr_endpoint`・`translate_endpoint` が URL として解釈できること、言語（`language` と `targets`）が英数字と `-` の 1〜8 文字であること（`targets` は 8 個まで）。違反すると 400（`INVALID_CONFIG`）です。
+/// `asr_credential_ref`・`translate_credential_ref` は `secret:{name}` の形式で、テナントにその秘密値が登録されている必要があります（無ければ 400）。参照されている秘密値は削除できません（409）。
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct CaptionSettings {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub asr_credential_ref: Option<CredentialRef>,
-    /// 送り先の URL（例: `https://api.openai.com/v1`、社内の whisper サーバー）
+    /// 送信先の URL（例: `https://api.openai.com/v1`、社内の whisper サーバー）
     pub asr_endpoint: String,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub asr_model: Option<String>,
     /// openai = OpenAI 互換の `/audio/transcriptions`、whisper_cpp = whisper.cpp のサーバー
     pub asr_provider: CaptionSettingsAsrProvider,
-    /// 話している言語（ISO 639-1）
+    /// 話されている言語（ISO 639-1）
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub language: Option<String>,
     /// 翻訳先の言語
@@ -343,7 +368,7 @@ pub struct CaptionSettings {
     pub translate_endpoint: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub translate_model: Option<String>,
-    /// 翻訳（省けば翻訳しない）。書くなら translate_endpoint が要る
+    /// 翻訳サービス（省略すると翻訳しません）。指定する場合は translate_endpoint が必要です
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub translate_provider: Option<CaptionSettingsTranslateProvider>,
 }
@@ -371,7 +396,7 @@ impl CaptionSettingsAsrProvider {
     }
 }
 
-/// 翻訳（省けば翻訳しない）。書くなら translate_endpoint が要る
+/// 翻訳サービス（省略すると翻訳しません）。指定する場合は translate_endpoint が必要です
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
 pub enum CaptionSettingsTranslateProvider {
     #[serde(rename = "anthropic")]
@@ -429,7 +454,7 @@ pub struct LivePlaybackPlayback {
     /// `{public-rtsp-url}/live/{id}?exp=&sig=`（`--public-rtsp-url` を設定したときだけ）
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub rtsp: Option<String>,
-    /// `{http}/whep/{id}?exp=&sig=`（`--webrtc-udp` を設定しないノードでは null）
+    /// `{http}/whep/{id}?exp=&sig=`（`--webrtc-udp` を設定していないノードでは null）
     #[serde(default)]
     pub whep: Option<String>,
 }
@@ -444,7 +469,7 @@ pub struct VodPlayback {
 pub struct VodPlaybackPlayback {
     /// `{http}/s/{exp}/{sig}/vod/{id}/index.m3u8`
     pub hls: String,
-    /// 今は常に null
+    /// 現在は常に null
     pub mp4: Value,
 }
 
@@ -586,17 +611,23 @@ pub struct SnapshotList {
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct SnapshotListItemsItem {
-    /// JPEG の大きさ
+    /// JPEG のサイズ
     pub bytes: u64,
+    /// 前回の保存からの変化の割合（パイプラインの静止画のみ）
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub changed_fraction: Option<f64>,
     pub height: u64,
     pub id: String,
-    /// 撮った理由
+    /// `snapshot_on_change` の処理ノードの ID（パイプラインの静止画のみ）
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub node: Option<String>,
+    /// 撮影した理由
     pub reason: SnapshotListItemsItemReason,
     pub taken_at: Timestamp,
     pub width: u64,
 }
 
-/// 撮った理由
+/// 撮影した理由
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
 pub enum SnapshotListItemsItemReason {
     #[serde(rename = "interval")]
@@ -632,12 +663,12 @@ pub struct RecordingStart {
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize, Default)]
 pub struct RecordingPatch {
-    /// 解除には recording:delete が要る
+    /// 解除には recording:delete が必要です
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub legal_hold: Option<bool>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub name: Option<String>,
-    /// RFC 3339。null で無期限。
+    /// RFC 3339。null は無期限。
     #[serde(default, skip_serializing_if = "Option::is_none", with = "crate::double_option")]
     pub retention_until: Option<Option<String>>,
 }
@@ -667,21 +698,21 @@ pub struct Recording {
     pub name: Option<String>,
     #[serde(default)]
     pub retention_until: Option<String>,
-    /// 予約で作った録画なら予約の ID
+    /// 予約で作成した録画であれば予約の ID
     #[serde(default)]
     pub schedule: Option<String>,
     #[serde(default)]
     pub segments: Option<u64>,
     pub started_at: Timestamp,
-    /// 削除中（deleting）の録画は API から見えない（404）。
+    /// 削除中（deleting）の録画は API から見えません（404）。
     pub state: RecordingState,
-    /// 元の stream の ID（stream を消しても残る）
+    /// 元の stream の ID（stream を削除しても残ります）
     pub stream: String,
-    /// `GET /recordings/{id}/thumbnail` があるか
+    /// `GET /recordings/{id}/thumbnail` があるかどうか
     pub thumbnail: bool,
 }
 
-/// 削除中（deleting）の録画は API から見えない（404）。
+/// 削除中（deleting）の録画は API から見えません（404）。
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
 pub enum RecordingState {
     #[serde(rename = "recording")]
@@ -720,7 +751,7 @@ pub struct RecordingList {
     pub next_cursor: Option<String>,
 }
 
-/// record = 窓の間録画、live = 窓の間だけ publish を受け付ける、snapshot = 窓の間一定間隔で静止画
+/// record = 期間中に録画する、live = 期間中だけ publish を受け付ける、snapshot = 期間中に一定間隔で静止画を撮る
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
 pub enum ScheduleAction {
     #[serde(rename = "record")]
@@ -785,9 +816,9 @@ pub struct Recurrence {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub count: Option<u64>,
     pub freq: RecurrenceFreq,
-    /// IANA 名（例: Asia/Tokyo）。壁時計の時刻で繰り返す
+    /// IANA のタイムゾーン名（例: Asia/Tokyo）。現地時刻で繰り返します
     pub timezone: String,
-    /// 繰り返しの終わり（含まない、UTC ミリ秒）
+    /// 繰り返しの終了（この時刻を含まない、UTC ミリ秒）
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub until_ms: Option<i64>,
     /// weekly の曜日（0 = 日曜）
@@ -820,9 +851,9 @@ impl RecurrenceFreq {
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct ScheduleCreate {
     pub action: ScheduleAction,
-    /// RFC 3339。start_at より後、窓は 24 時間まで、未来
+    /// RFC 3339。start_at より後で未来の時刻。期間は 24 時間まで
     pub end_at: String,
-    /// 既定 60000。実行時刻を過ぎてもこの間なら途中から実行
+    /// 既定 60000。実行時刻を過ぎても、この時間内であれば途中から実行します
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub grace_ms: Option<u64>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -837,7 +868,7 @@ pub struct ScheduleCreate {
     pub recurrence: Option<Recurrence>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub retention_days: Option<u64>,
-    /// action が snapshot のときだけ（必須）
+    /// action が snapshot のときだけ指定します（その場合は必須）
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub snapshot_interval_secs: Option<u64>,
     /// RFC 3339
@@ -940,7 +971,7 @@ pub struct ScheduleCheck {
     pub ok: Value,
     /// 同じ stream で時間が重なる録画予約（pre/post roll を含む）
     pub overlaps: Vec<ScheduleCheckOverlapsItem>,
-    /// 重なりがあり、入力を共有するか
+    /// 重なりがあり、入力を共有するかどうか
     pub shared_input: bool,
 }
 
@@ -953,7 +984,7 @@ pub struct ScheduleCheckOverlapsItem {
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize, Default)]
 pub struct TokenCreate {
-    /// RFC 3339（未来）
+    /// RFC 3339（未来の時刻）
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub expires_at: Option<String>,
     pub name: String,
@@ -968,10 +999,10 @@ pub struct Token {
     pub id: String,
     pub name: String,
     pub scopes: Vec<Scope>,
-    /// 値。発行の応答でだけ入る（一覧では null）。
+    /// トークンの値。発行時の応答でだけ値が入ります（一覧では null）。
     #[serde(default)]
     pub token: Option<String>,
-    /// Idempotency-Key の再送で値を伏せたとき
+    /// Idempotency-Key による再送で値を伏せたとき
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub token_redacted: Option<Value>,
 }
@@ -993,18 +1024,18 @@ pub struct Capabilities {
     pub codec_profiles: Vec<CodecProfile>,
     pub codecs: CapabilitiesCodecs,
     pub ingest: CapabilitiesIngest,
-    /// 使える入力の種類
+    /// 使用できる入力の種類
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub inputs: Option<Vec<String>>,
     /// このノードの ID
     pub node: String,
     pub output: CapabilitiesOutput,
-    /// 使える出力の種類
+    /// 使用できる出力の種類
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub outputs: Option<Vec<String>>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub paas_providers: Option<Vec<String>>,
-    /// パイプライン（codec worker が動いているとき）
+    /// パイプラインが使えるか（コーデック worker が動いているとき）
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub pipelines: Option<bool>,
     pub recordings: CapabilitiesRecordings,
@@ -1043,7 +1074,7 @@ pub struct CapabilitiesOutput {
     /// HTTP/3（`--quic`）
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub http3: Option<bool>,
-    /// MoQ（draft-22）の購読と送出（`--quic`）
+    /// MoQ（draft-22）による購読と配信（`--quic`）
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub moq: Option<bool>,
     pub rtmp_play: bool,
@@ -1073,24 +1104,85 @@ pub struct Node {
     pub draining: bool,
     pub id: String,
     pub labels: BTreeMap<String, String>,
-    /// 配信中の stream 数（他ノードは今は 0）
+    /// 配信中の stream の数（他のノードについては現在常に 0）
     pub live_streams: u64,
     pub name: String,
     pub registered_at: Timestamp,
-    /// ノード間の中継（ADR-0014）の様子。応答したノード自身（`self: true`）で、クラスタを組んでいるときだけ値がある（単一ノード・他ノードは null）。
+    /// ノード間の中継（ADR-0014）の状態。応答したノード自身（`self: true`）で、クラスターを構成しているときだけ値が入ります（単一ノードや他のノードでは null）。
     #[serde(default)]
     pub relay: Option<RelayStatus>,
-    /// 部屋の係の様子（カスケードの部屋ごとの役割・中継の購読の数・イベント Webhook の送り箱）。応答したノード自身で、WebRTC が動いているときだけ値がある
+    /// このノードのリアルタイムの部屋の状態（カスケードの役割・イベント Webhook の配送）。応答したノード自身で、WebRTC（`--webrtc-udp`）が有効なときだけ値が入ります（それ以外は null）。
     #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub rooms: Option<Value>,
-    /// 応答したノード自身か
+    pub rooms: Option<NodeRoomsStatus>,
+    /// 応答したノード自身かどうか
     #[serde(rename = "self")]
     pub is_self: bool,
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize, Default)]
+pub struct NodeRoomsStatus {
+    /// イベント Webhook の配送の状況（`--rooms-event-webhook` を設定したときだけ）
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub event_webhook: Option<NodeRoomsStatusEventWebhook>,
+    /// ほかのノードへ送っている部屋のトラックの数
+    pub relay_downstreams: u64,
+    /// ほかのノードから受けている部屋のトラックの数
+    pub relay_upstreams: u64,
+    /// このノードにある部屋のインスタンス（カスケードしている部屋）
+    pub rooms: Vec<NodeRoomsStatusRoomsItem>,
+}
+
+/// イベント Webhook の配送の状況（`--rooms-event-webhook` を設定したときだけ）
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, Default)]
+pub struct NodeRoomsStatusEventWebhook {
+    /// 再送をあきらめたイベントの数
+    pub dead_letters: u64,
+    pub delivered: u64,
+    /// 待ち行列があふれて捨てたイベントの数
+    pub dropped: u64,
+    pub pending: u64,
+    /// 直近にあきらめたイベントの ID（新しい順、最大 20）
+    pub recent_dead_letters: Vec<String>,
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct NodeRoomsStatusRoomsItem {
+    /// `edge` のとき、home のノード（不明なら null）
+    #[serde(default)]
+    pub home: Option<String>,
+    /// ノードごとの参加者の数
+    pub peers: BTreeMap<String, u64>,
+    /// `home` は部屋の配置先のノード、`edge` は参加者がつないだ別のノード
+    pub role: NodeRoomsStatusRoomsItemRole,
+    pub room: String,
+}
+
+/// `home` は部屋の配置先のノード、`edge` は参加者がつないだ別のノード
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
+pub enum NodeRoomsStatusRoomsItemRole {
+    #[serde(rename = "home")]
+    Home,
+    #[serde(rename = "edge")]
+    Edge,
+    /// この版の SDK が知らない値（サーバーが値を足したとき）。
+    #[serde(other)]
+    Unknown,
+}
+
+impl NodeRoomsStatusRoomsItemRole {
+    /// JSON での値（`Unknown` は `None`）。
+    pub fn as_str(self) -> Option<&'static str> {
+        match self {
+            NodeRoomsStatusRoomsItemRole::Home => Some("home"),
+            NodeRoomsStatusRoomsItemRole::Edge => Some("edge"),
+            NodeRoomsStatusRoomsItemRole::Unknown => None,
+        }
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, Default)]
 pub struct RelayStatus {
-    /// 中継で受けている写しの stream の ID
+    /// 中継で受信しているミラーの stream の ID
     pub mirrors: Vec<String>,
     /// 中継の接続（相手のノードごと）
     pub peers: Vec<RelayStatusPeersItem>,
@@ -1098,28 +1190,28 @@ pub struct RelayStatus {
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize, Default)]
 pub struct RelayStatusPeersItem {
-    /// この接続で送っている stream の数
+    /// この接続で送信している stream の数
     pub downstreams: u64,
-    /// どちらかが接続を閉じようとしている
+    /// どちらかが接続を閉じようとしているかどうか
     pub going_away: bool,
-    /// 相手のクラスタのノード番号（クラスタ設定の `peers[].id`。API のノード ID とは別）
+    /// 相手のノードのクラスター内の番号（クラスター設定の `peers[].id`。API のノード ID とは別のもの）
     pub node: u64,
-    /// 送った AU 1 つ当たりの見出しのバイト数（枠の見出し・制御の枠を含む）
+    /// 送信した AU 1 つあたりのヘッダーのバイト数（フレームのヘッダー・制御フレームを含む）
     pub overhead_per_au: f64,
-    /// RTT（平滑化、ミリ秒）。まだ測っていなければ null
+    /// RTT（平滑化した値、ミリ秒）。まだ計測していなければ null
     #[serde(default)]
     pub rtt_ms: Option<f64>,
-    /// 受けた AU の数
+    /// 受信した AU の数
     pub rx_aus: u64,
-    /// 直近の受けの速さ（bit/s）
+    /// 直近の受信速度（bit/s）
     pub rx_bps: u64,
     pub rx_bytes: u64,
-    /// 送った AU の数
+    /// 送信した AU の数
     pub tx_aus: u64,
-    /// 直近の送りの速さ（bit/s）
+    /// 直近の送信速度（bit/s）
     pub tx_bps: u64,
     pub tx_bytes: u64,
-    /// この接続で受けている stream の数
+    /// この接続で受信している stream の数
     pub upstreams: u64,
 }
 
@@ -1132,16 +1224,16 @@ pub struct Resources {
     pub net_out_mbps: u64,
 }
 
-/// 割り当て・決定の理由（`code` で種類を選ぶ。`node_down` は `node`、`device_down` は `device`、`preempted` は `by` を持つ）。
+/// 割り当て・決定の理由（`code` で種類を表します。`node_down` は `node`、`device_down` は `device`、`preempted` は `by` を持ちます）。
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct GridReason {
-    /// 追い出した仕事の ID
+    /// 退去させたワークロードの ID
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub by: Option<String>,
-    /// placed = 普通に置いた、no_capacity = 資源が足りず縮退した段で置いた・縮退した、node_down = ノードが止まった・消えた、device_down = 装置が故障した（手で止めたときも）、
-    /// draining = ノードの排出で移した、constraint_changed = 条件・ラベルが変わって合わなくなった、preempted = 高い優先度の仕事のために縮退・追い出しされた、
-    /// overcommitted = ノードの容量が減って収まらなくなった、capacity_returned = 資源が戻ったので元の段へ戻した、pin_returned = 手動の割り当ての対象が戻ったので戻した、
-    /// pin_target_down = 手動の割り当て（strict）の対象が止まっている。
+    /// placed = 通常どおり配置した、no_capacity = 資源が足りず縮退した段階で配置した・縮退した、node_down = ノードが停止した・削除された、device_down = 装置が故障した（手動で無効にした場合も含む）、
+    /// draining = ノードの drain で移動した、constraint_changed = 条件・ラベルが変わって合わなくなった、preempted = 優先度の高いワークロードのために縮退・退去させられた、
+    /// overcommitted = ノードの容量が減って収まらなくなった、capacity_returned = 資源が戻ったので元の段階へ戻した、pin_returned = 手動の割り当て先が戻ったので戻した、
+    /// pin_target_down = 手動の割り当て先（strict）が停止している。
     pub code: GridReasonCode,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub device: Option<String>,
@@ -1149,10 +1241,10 @@ pub struct GridReason {
     pub node: Option<String>,
 }
 
-/// placed = 普通に置いた、no_capacity = 資源が足りず縮退した段で置いた・縮退した、node_down = ノードが止まった・消えた、device_down = 装置が故障した（手で止めたときも）、
-/// draining = ノードの排出で移した、constraint_changed = 条件・ラベルが変わって合わなくなった、preempted = 高い優先度の仕事のために縮退・追い出しされた、
-/// overcommitted = ノードの容量が減って収まらなくなった、capacity_returned = 資源が戻ったので元の段へ戻した、pin_returned = 手動の割り当ての対象が戻ったので戻した、
-/// pin_target_down = 手動の割り当て（strict）の対象が止まっている。
+/// placed = 通常どおり配置した、no_capacity = 資源が足りず縮退した段階で配置した・縮退した、node_down = ノードが停止した・削除された、device_down = 装置が故障した（手動で無効にした場合も含む）、
+/// draining = ノードの drain で移動した、constraint_changed = 条件・ラベルが変わって合わなくなった、preempted = 優先度の高いワークロードのために縮退・退去させられた、
+/// overcommitted = ノードの容量が減って収まらなくなった、capacity_returned = 資源が戻ったので元の段階へ戻した、pin_returned = 手動の割り当て先が戻ったので戻した、
+/// pin_target_down = 手動の割り当て先（strict）が停止している。
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
 pub enum GridReasonCode {
     #[serde(rename = "placed")]
@@ -1204,15 +1296,15 @@ impl GridReasonCode {
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct RejectCount {
-    /// そのノードの ID（8 個まで）
+    /// 該当するノードの ID（8 個まで）
     pub examples: Vec<String>,
-    /// この理由で受けられないノードの数
+    /// この理由で受け入れられないノードの数
     pub nodes: u64,
-    /// ノードが仕事を受けられない理由（`contended` は単独なら収まるが、優先度の同じか高い仕事で埋まっている）
+    /// ノードがワークロードを受け入れられない理由（`contended` は、単独なら収まるが、優先度が同じか高いワークロードで埋まっている状態）
     pub reason: RejectCountReason,
 }
 
-/// ノードが仕事を受けられない理由（`contended` は単独なら収まるが、優先度の同じか高い仕事で埋まっている）
+/// ノードがワークロードを受け入れられない理由（`contended` は、単独なら収まるが、優先度が同じか高いワークロードで埋まっている状態）
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
 pub enum RejectCountReason {
     #[serde(rename = "node_down")]
@@ -1283,7 +1375,7 @@ impl RejectCountReason {
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize, Default)]
 pub struct Grid {
     pub nodes: Vec<GridNodesItem>,
-    /// 応答したノードが配置係（リーダー）ならその ID、違えば null
+    /// 応答したノードがスケジューラー（リーダー）であればその ID、そうでなければ null
     #[serde(default)]
     pub scheduler: Option<String>,
     pub workloads: Vec<GridWorkloadsItem>,
@@ -1291,30 +1383,30 @@ pub struct Grid {
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize, Default)]
 pub struct GridNodesItem {
-    /// 仕事に貸せる分（`--capacity-cpu-millis`・`--capacity-memory-mb`・`--net-mbps`、既定は実機の 90%・85%・10000）
+    /// ワークロードに割り当てられる量（`--capacity-cpu-millis`・`--capacity-memory-mb`・`--net-mbps`。既定は実機の 90%・85%・10000）
     pub capacity: Resources,
     pub capture: Vec<GridNodesItemCaptureItem>,
     pub draining: bool,
     pub gpus: Vec<GridNodesItemGpusItem>,
     pub id: String,
-    /// `--label` の値と、予約のラベル `senca.io/name`（ノードの名前）
+    /// `--label` の値と、予約済みのラベル `senca.io/name`（ノードの名前）
     pub labels: BTreeMap<String, String>,
-    /// 最後の心拍（配置係のノードだけが知っている。違えば null）
+    /// 最後のハートビート（スケジューラーのノードだけが把握しており、それ以外では null）
     #[serde(default)]
     pub last_heartbeat: Option<Timestamp>,
     /// ノードの名前（`GET /nodes` に無ければ null）
     #[serde(default)]
     pub name: Option<String>,
-    /// 割り当てた仕事の要求（今の段）の和
+    /// 割り当てたワークロードの要求（現在の段階）の合計
     pub reserved: Resources,
-    /// control = Raft の投票者、media = 仕事を動かす（仕事は media にだけ置く）
+    /// control = Raft の投票者、media = ワークロードを実行する（ワークロードは media のノードにだけ配置します）
     pub roles: Vec<GridNodesItemRolesItem>,
-    /// 心拍が届いている（5 秒途絶えると false）
+    /// ハートビートが届いているかどうか（5 秒途絶えると false）
     pub up: bool,
-    /// 最後の心拍の実測の使用量（CPU は /proc/stat の差、メモリは /proc/meminfo の MemTotal − MemAvailable、帯域はループバックを除く /proc/net/dev の差）。配置係のノードだけが知っている。違えば null。配置は予約（reserved）で数え、この値は使わない
+    /// 最後のハートビートで報告された実際の使用量（CPU は /proc/stat の差分、メモリは /proc/meminfo の MemTotal − MemAvailable、帯域はループバックを除く /proc/net/dev の差分）。スケジューラーのノードだけが把握しており、それ以外では null です。配置は予約（reserved）で計算し、この値は使いません
     #[serde(default)]
     pub usage: Option<Resources>,
-    /// このノードに割り当てた仕事の数
+    /// このノードに割り当てたワークロードの数
     pub workloads: u64,
 }
 
@@ -1322,18 +1414,18 @@ pub struct GridNodesItem {
 pub struct GridWorkloadsItem {
     #[serde(default)]
     pub device: Option<String>,
-    /// 資源から導いた仕事の ID（`input:{id}`・`output:{id}`・`pipeline:{id}`・`room:{id}`）
+    /// 資源から求めたワークロードの ID（`input:{id}`・`output:{id}`・`pipeline:{id}`・`room:{id}`）
     pub id: String,
     /// 入力は `ingest`（`device` は `capture`）、出力は `egress`、パイプラインは `pipeline`、部屋は `room`
     pub kind: GridWorkloadsItemKind,
-    /// 今の縮退の段（0 = full）
+    /// 現在の縮退の段階（0 = full）
     #[serde(default)]
     pub level: Option<u64>,
     #[serde(default)]
     pub level_label: Option<String>,
     #[serde(default)]
     pub node: Option<String>,
-    /// `placement.node`・`placement.device` で手動で割り当てた
+    /// `placement.node`・`placement.device` で手動で割り当てたかどうか
     pub pinned: bool,
     pub priority: PlacementPriority,
     #[serde(default)]
@@ -1345,13 +1437,13 @@ pub struct GridWorkloadsItem {
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize, Default)]
 pub struct GridNodesItemCaptureItem {
-    /// 運用者が手で止めた（止めたときだけ現れる）
+    /// 運用者が手動で無効にした（無効のときだけ含まれます）
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub disabled: Option<bool>,
     pub healthy: bool,
-    /// 機器の ID（`GET /devices` の `capture.devices[].id`、例: `synthetic:0`）
+    /// 機器の ID（`GET /devices` の `capture.devices[].id`。例: `synthetic:0`）
     pub id: String,
-    /// 機器の種類（機器の一覧の `backend`、例: `synthetic`・`v4l2`）
+    /// 機器の種類（機器の一覧の `backend`。例: `synthetic`・`v4l2`）
     pub kind: String,
 }
 
@@ -1359,11 +1451,11 @@ pub struct GridNodesItemCaptureItem {
 pub struct GridNodesItemGpusItem {
     pub decode_reserved: u64,
     pub decode_sessions: u64,
-    /// 運用者が手で止めていない（`disable`・`enable`）。仕事を置くのは healthy かつ enabled の装置だけ
+    /// 運用者が手動で無効にしていないかどうか（`disable`・`enable`）。ワークロードは healthy かつ enabled の装置にだけ配置します
     pub enabled: bool,
     pub encode_reserved: u64,
     pub encode_sessions: u64,
-    /// 測った健康（心拍で変わる）
+    /// 計測による健全性（ハートビートで更新されます）
     pub healthy: bool,
     /// `{provider}:{装置の番号}`（例: `nvidia:0`）
     pub id: String,
@@ -1470,7 +1562,7 @@ pub struct DeviceHealth {
     pub device: String,
     /// disable は false、enable は true
     pub enabled: bool,
-    /// ノードの ID（名前で指定しても ID で返す）
+    /// ノードの ID（名前で指定した場合も ID で返します）
     pub node: String,
 }
 
@@ -1486,10 +1578,10 @@ pub struct Devices {
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize, Default)]
 pub struct DevicesNodesItem {
-    /// このノードのキャプチャ機器（REQ-004、隔離した `senca-capture-worker` に問い合わせる。入力の `protocol: device` で使う）。
-    /// worker が無い・失敗したときは `{available: false, reason}`、ランタイムが無ければ null。
+    /// このノードのキャプチャ機器です（分離された `senca-capture-worker` に問い合わせます。入力の `protocol: device` で使います）。
+    /// worker が無い場合や失敗した場合は `{available: false, reason}`、ランタイムが無ければ null です。
     pub capture: Value,
-    /// コーデック worker のプールが動いていなければ `providers` は空、`sandbox` は null。
+    /// コーデック worker のプールが動いていなければ、`providers` は空、`sandbox` は null です。
     pub devices: DeviceStatus,
     pub node: String,
 }
@@ -1546,32 +1638,32 @@ impl TranscodeCapabilityDirection {
     }
 }
 
-/// `secret:{name}`（`POST /secrets` で登録した秘密値の名前）。無い秘密値・形の違いは 400。
+/// `secret:{name}`（`POST /secrets` で登録した秘密値の名前）。存在しない秘密値や形式の誤りは 400 です。
 pub type CredentialRef = Option<String>;
 
-/// プロトコルごとの設定（例: RTSP の `transport: tcp|udp`、device の `width`・`height`・`fps`・`codec`・`bitrate_bps`・`audio_device`・`audio_codec`）。16 個まで、キー 64 文字・値 256 文字まで。
+/// プロトコルごとの設定（例: rtsp_pull の `allow_basic: "true"`・`tls_spki_sha256`（rtsps で証明書の公開鍵を固定します。SHA-256 の base64 か 16 進）、device の `width`・`height`・`fps`・`codec`・`bitrate_bps`・`audio_device`・`audio_codec`）。16 個まで、キーは 64 文字・値は 256 文字までです。RTSP は TCP interleaved で接続します。
 pub type IoOptions = BTreeMap<String, String>;
 
-/// このノードでの実行の様子（制御状態には保存しない）。
+/// このノードでの実行の状態です（制御状態には保存されません）。
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct IoStatus {
-    /// 送った・受けたバイト数（目安）
+    /// 送受信したバイト数（目安）
     pub bytes: u64,
     /// 接続に成功した回数
     pub connects: u64,
-    /// 最後の失敗の理由（宛先の拒否は「… は許されていない宛先です」）。成功しても消えない
+    /// 最後の失敗の理由（接続先が拒否された場合は「… は許されていない宛先です」）。その後成功しても消えません
     #[serde(default)]
     pub last_error: Option<String>,
-    /// 今の state になった時刻
+    /// 現在の state になった時刻
     #[serde(default)]
     pub since: Option<String>,
-    /// starting = 実行を始めた、provisioning = PaaS の資源を用意している、waiting_input = 出力で配信を待っている、connecting = 接続中、
-    /// active = 送受信している、backoff = 失敗の後の待ち（1〜60 秒の指数バックオフ）、error = 失敗した（すぐ backoff になる）、ended = VOD の HLS を読み終えた（`hls_pull` だけ）。
+    /// starting = 実行を開始した、provisioning = PaaS の資源を準備している、waiting_input = 出力が配信の開始を待っている、connecting = 接続中、
+    /// active = 送受信している、backoff = 失敗の後の待機中（1〜60 秒の指数バックオフ）、error = 失敗した（すぐに backoff になる）、ended = VOD の HLS を最後まで読んだ（`hls_pull` だけ）。
     pub state: IoStatusState,
 }
 
-/// starting = 実行を始めた、provisioning = PaaS の資源を用意している、waiting_input = 出力で配信を待っている、connecting = 接続中、
-/// active = 送受信している、backoff = 失敗の後の待ち（1〜60 秒の指数バックオフ）、error = 失敗した（すぐ backoff になる）、ended = VOD の HLS を読み終えた（`hls_pull` だけ）。
+/// starting = 実行を開始した、provisioning = PaaS の資源を準備している、waiting_input = 出力が配信の開始を待っている、connecting = 接続中、
+/// active = 送受信している、backoff = 失敗の後の待機中（1〜60 秒の指数バックオフ）、error = 失敗した（すぐに backoff になる）、ended = VOD の HLS を最後まで読んだ（`hls_pull` だけ）。
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
 pub enum IoStatusState {
     #[serde(rename = "starting")]
@@ -1612,7 +1704,7 @@ impl IoStatusState {
     }
 }
 
-/// 優先度（low < normal < high < critical）。資源が足りないとき、低い仕事から縮退・追い出しする。
+/// 優先度（low < normal < high < critical）。資源が足りないときは、優先度の低いワークロードから縮退・退去させます。
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
 pub enum PlacementPriority {
     #[serde(rename = "low")]
@@ -1641,48 +1733,48 @@ impl PlacementPriority {
     }
 }
 
-/// ノードのラベル（`--label`、予約の `senca.io/name`）の条件。`op` で種類を選ぶ。キー・値は 1〜128 文字で制御文字を含めない。
+/// ノードのラベル（`--label`、予約済みの `senca.io/name`）の条件です。`op` で種類を指定します。キーと値は 1〜128 文字で、制御文字を含めることはできません。
 pub type LabelSelector = Value;
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize, Default)]
 pub struct DegradeLevel {
-    /// この段で止めるグラフの部品の id（グラフに無ければ 400）。下流は入力がすべて止まれば止まる。段は積み重なる（段 2 は段 1 の分も止める）
+    /// この段階で停止する処理ノードの id（グラフに無ければ 400）。下流の処理ノードは、入力がすべて停止すると停止します。段階は累積します（段階 2 では段階 1 の分も停止します）
     pub disable: Vec<PipelineNodeId>,
-    /// 段の名前（例: `no_translation`・`audio_only`）。`full`（段 0 の名前）と重複は不可
+    /// 段階の名前（例: `no_translation`・`audio_only`）。`full`（段階 0 の名前）や他の段階と同じ名前は使えません
     pub label: String,
 }
 
-/// 配置の指定（ADR-0013）。省略・null なら配置係に任せる（優先度 normal、spread）。検査の失敗は 400（`INVALID_CONFIG`、未知のフィールド・型の違いは `INVALID_REQUEST`）:
-/// `node` が無い、文字列が空・128 文字超・制御文字を含む、`labels` が 17 個以上、`values` が空・33 個以上、`degrade` を入力・出力に書いた、
-/// `degrade` が 9 段以上・段の名前が `full` か重複・`disable` が空・グラフに無い部品。
+/// 配置の指定です（ADR-0013）。省略または null の場合はスケジューラーに任せます（優先度 normal、spread）。検査に失敗すると 400 です（`INVALID_CONFIG`。未知のフィールドや型の誤りは `INVALID_REQUEST`）。失敗する条件:
+/// `node` が存在しない、文字列が空・128 文字を超える・制御文字を含む、`labels` が 17 個以上、`values` が空または 33 個以上、入力・出力に `degrade` を指定した、
+/// `degrade` が 9 段階以上、段階の名前が `full` または重複している、`disable` が空、グラフに無い処理ノードを指定した。
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize, Default)]
 pub struct PlacementSpec {
-    /// 組の名前。同じ組の仕事は同じノードに置かない
+    /// グループの名前。同じグループのワークロードは同じノードに配置しません
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub anti_affinity: Option<String>,
-    /// 縮退の段（**パイプラインだけ**、よい順）。資源が足りないとき、段を下げて（部品を止めて）動かし続ける。資源が戻れば元の段へ戻す
+    /// 縮退の段階（**パイプライン専用**。品質の高い順）。資源が足りないときは段階を下げて（処理ノードを停止して）実行を続けます。資源が戻れば元の段階へ戻します
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub degrade: Option<Vec<DegradeLevel>>,
-    /// 手動の割り当て。装置の ID（GPU・キャプチャ機器、`GET /grid`）。`node` が無ければ、その装置を持つノードのどれか
+    /// 手動の割り当て。装置の ID（GPU・キャプチャ機器、`GET /grid`）。`node` が無ければ、その装置を持つノードのいずれかに配置します
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub device: Option<String>,
-    /// すべてに合うノードにだけ置く
+    /// すべての条件に合うノードにだけ配置します
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub labels: Option<Vec<LabelSelector>>,
-    /// 手動の割り当て。ノードの ID か名前（`GET /nodes`）。保存するときは ID に直す（応答は ID）
+    /// 手動の割り当て。ノードの ID または名前（`GET /nodes`）。保存時に ID に変換します（応答では ID）
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub node: Option<String>,
-    /// 手動の割り当て先が止まったとき。prefer = 他へ移し、戻ったら（冷却の後に）戻す、strict = 止めたまま（`placement_status.state: unschedulable`）
+    /// 手動の割り当て先が停止したときの動作。prefer = 他のノードへ移し、割り当て先が戻ったら（クールダウンの後に）戻す、strict = 停止したままにする（`placement_status.state: unschedulable`）
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub pin_policy: Option<PlacementSpecPinPolicy>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub priority: Option<PlacementPriority>,
-    /// spread = 余裕の多いノードへ、binpack = 詰める
+    /// spread = 余裕の多いノードへ分散する、binpack = 詰めて配置する
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub strategy: Option<PlacementSpecStrategy>,
 }
 
-/// 手動の割り当て先が止まったとき。prefer = 他へ移し、戻ったら（冷却の後に）戻す、strict = 止めたまま（`placement_status.state: unschedulable`）
+/// 手動の割り当て先が停止したときの動作。prefer = 他のノードへ移し、割り当て先が戻ったら（クールダウンの後に）戻す、strict = 停止したままにする（`placement_status.state: unschedulable`）
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
 pub enum PlacementSpecPinPolicy {
     #[serde(rename = "strict")]
@@ -1705,7 +1797,7 @@ impl PlacementSpecPinPolicy {
     }
 }
 
-/// spread = 余裕の多いノードへ、binpack = 詰める
+/// spread = 余裕の多いノードへ分散する、binpack = 詰めて配置する
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
 pub enum PlacementSpecStrategy {
     #[serde(rename = "spread")]
@@ -1728,7 +1820,7 @@ impl PlacementSpecStrategy {
     }
 }
 
-/// 保存した配置の指定（`node` は ID に直したもの）。無い項目・空の配列は省く。`pin_policy`・`priority`・`strategy` は既定値でも出る。
+/// 保存された配置の指定（`node` は ID に変換したもの）。値の無い項目と空の配列は省きます。`pin_policy`・`priority`・`strategy` は既定値でも含まれます。
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct PlacementSpecView {
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -1746,11 +1838,11 @@ pub struct PlacementSpecView {
     pub strategy: PlacementSpecStrategy,
 }
 
-/// 配置の結果（グリッドの割り当て）。`state` で形が変わる:
-/// - `not_scheduled`: 仕事になっていない（入力・出力の `enabled: false`、パイプラインの `desired_state: stopped`）。
-/// - `running`・`degraded`: 割り当てた（`degraded` は縮退の段 `level` が 1 以上）。割り当てたノードだけが動かす（実際の実行の様子は `status`・`observed_state`）。
-/// - `pending`: 置き場所を探している（作成・変更の直後。配置係は約 1 秒ごと、資源の変更のたびに計画する）。
-/// - `unschedulable`: 置けるノードが無い（`reasons` に理由ごとのノード）。
+/// 配置の結果（グリッドでの割り当て）です。`state` によって形が変わります。
+/// - `not_scheduled`: ワークロードになっていない（入力・出力が `enabled: false`、パイプラインが `desired_state: stopped`）。
+/// - `running`・`degraded`: 割り当て済み（`degraded` は縮退の段階 `level` が 1 以上）。割り当てたノードだけが実行します（実際の実行状態は `status`・`observed_state` で確認します）。
+/// - `pending`: 配置先を探している（作成・変更の直後。スケジューラーは約 1 秒ごとと、資源が変わるたびに計画します）。
+/// - `unschedulable`: 配置できるノードが無い（`reasons` に理由ごとのノード）。
 pub type PlacementStatus = Value;
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
@@ -1761,12 +1853,12 @@ pub struct InputCreate {
     pub enabled: Option<bool>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub options: Option<IoOptions>,
-    /// 配置の指定（`degrade` は使えない）
+    /// 配置の指定（`degrade` は使えません）
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub placement: Option<PlacementSpec>,
     pub protocol: InputCreateProtocol,
-    /// 取りに行く URL。スキームは protocol で決まる（rtmp_pull: `rtmp`・`rtmps`、rtsp_pull: `rtsp`・`rtsps`、srt_pull: `srt`、hls_pull: `http`・`https`、device: `device:{機器 ID}`（300 文字まで））。
-    /// ホストが要る。空白・制御文字は不可。資格情報（`user:pass@`）は入れられない（`credential_ref` を使う）。
+    /// 取得元の URL。スキームは protocol によって決まります（rtmp_pull: `rtmp`・`rtmps`、rtsp_pull: `rtsp`・`rtsps`、srt_pull: `srt`、hls_pull: `http`・`https`、device: `device:{機器 ID}`（300 文字まで））。
+    /// ホストが必要です。空白・制御文字は使えません。資格情報（`user:pass@`）は含められません（`credential_ref` を使います）。
     pub url: String,
 }
 
@@ -1809,14 +1901,14 @@ pub struct OutputCreate {
     pub enabled: Option<bool>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub options: Option<IoOptions>,
-    /// 配置の指定（`degrade` は使えない）。指定が無ければ、配信を受けたノードを好む
+    /// 配置の指定（`degrade` は使えません）。指定が無ければ、配信を受信したノードを優先します
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub placement: Option<PlacementSpec>,
     pub protocol: OutputCreateProtocol,
     /// `paas` で必須（`credential_ref` も必須）
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub provider: Option<OutputCreateProvider>,
-    /// `paas` 以外で必須。rtmp_push: `rtmp`・`rtmps`、srt_push: `srt`。資格情報は入れられない。
+    /// `paas` 以外で必須。rtmp_push: `rtmp`・`rtmps`、srt_push: `srt`。資格情報は含められません。
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub url: Option<String>,
 }
@@ -1872,7 +1964,7 @@ impl OutputCreateProvider {
     }
 }
 
-/// 書いたフィールドだけ置き換える。`credential_ref: null` で参照を外す、`placement: null` で配置の指定を外す（配置係に任せる）。他の null は「変えない」。
+/// 指定したフィールドだけを置き換えます。`credential_ref: null` で参照を、`placement: null` で配置の指定を削除します（スケジューラーに任せます）。他のフィールドの null は「変更しない」の意味です。
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize, Default)]
 pub struct IoPatch {
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -1881,7 +1973,7 @@ pub struct IoPatch {
     pub enabled: Option<Option<bool>>,
     #[serde(default, skip_serializing_if = "Option::is_none", with = "crate::double_option")]
     pub options: Option<Option<IoOptions>>,
-    /// 配置の指定を丸ごと置き換える（部分の変更は無い。`degrade` は使えない）。null で外す
+    /// 配置の指定の全体を置き換えます（一部だけの変更はできません。`degrade` は使えません）。null で削除します
     #[serde(default, skip_serializing_if = "Option::is_none", with = "crate::double_option")]
     pub placement: Option<Option<PlacementSpec>>,
     #[serde(default, skip_serializing_if = "Option::is_none", with = "crate::double_option")]
@@ -1901,7 +1993,7 @@ pub struct Input {
     pub placement: Option<PlacementSpecView>,
     pub placement_status: PlacementStatus,
     pub protocol: InputCreateProtocol,
-    /// このノードでの実行の様子。`enabled: false`、実行をまだ始めていない、またはこのノードに割り当てられていなければ null（分散のときは、割り当てたノード `placement_status.node` に問い合わせる）。作成・PATCH の応答では、実行の作り直しが非同期なので前の実行のもの（または null）のことがある。
+    /// このノードでの実行の状態。`enabled: false` の場合、実行がまだ始まっていない場合、またはこのノードに割り当てられていない場合は null です（クラスターでは、割り当てたノード `placement_status.node` に問い合わせてください）。作成・PATCH の応答では、実行の作り直しが非同期で行われるため、以前の実行の状態（または null）のことがあります。
     #[serde(default)]
     pub status: Option<IoStatus>,
     pub stream: String,
@@ -1930,10 +2022,10 @@ pub struct Output {
     pub protocol: OutputCreateProtocol,
     #[serde(default)]
     pub provider: Option<OutputCreateProvider>,
-    /// SENCA が PaaS に作った資源（後片付けに使う）
+    /// SENCA が PaaS に作成した資源（後片付けに使います）
     #[serde(default)]
     pub provider_resource: Option<String>,
-    /// このノードでの実行の様子。`enabled: false`、実行をまだ始めていない、またはこのノードに割り当てられていなければ null（分散のときは、割り当てたノード `placement_status.node` に問い合わせる）。作成・PATCH の応答では、実行の作り直しが非同期なので前の実行のもの（または null）のことがある。
+    /// このノードでの実行の状態。`enabled: false` の場合、実行がまだ始まっていない場合、またはこのノードに割り当てられていない場合は null です（クラスターでは、割り当てたノード `placement_status.node` に問い合わせてください）。作成・PATCH の応答では、実行の作り直しが非同期で行われるため、以前の実行の状態（または null）のことがあります。
     #[serde(default)]
     pub status: Option<IoStatus>,
     pub stream: String,
@@ -1951,7 +2043,7 @@ pub struct OutputList {
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize, Default)]
 pub struct SecretCreate {
     pub name: StreamName,
-    /// 1〜8192 バイト（UTF-8）。応答には出ない
+    /// 1〜8192 バイト（UTF-8）。応答には含まれません
     pub value: String,
 }
 
@@ -1960,20 +2052,20 @@ pub struct Secret {
     pub created_at: Timestamp,
     pub id: String,
     pub name: String,
-    /// `credential_ref` に書く値
+    /// `credential_ref` に指定する値
     pub r#ref: String,
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize, Default)]
 pub struct SecretList {
     pub items: Vec<Secret>,
-    /// 常に null（ページングは無い）
+    /// 常に null（ページングはありません）
     pub next_cursor: Value,
 }
 
-/// パイプラインの定義（senca-pipeline の `Graph`、`crates/senca-pipeline/src/model.rs`）。有向非巡回グラフで、知らない項目は拒否する。大きさは 16 MiB まで（ただし HTTP 層の本文の上限 1 MiB が先にかかる）。
-/// 部品（`nodes`）は `type` で種類を選ぶ。入力の参照は `"部品"` または `"部品.ポート"`（`source` のポートは `video`・`audio` で省けない、`compose` は `program`（既定）・`preview`、他は `out`）。
-/// 部品ごとの設定のすべては crate の文書（`cargo doc -p senca-pipeline`）を見る。ここでは種類と必須の項目だけを書く。値の範囲は検証（`POST /pipelines/{id}/validate`）で調べる。
+/// パイプラインの定義です。有向非巡回グラフで、未知の項目は拒否します。サイズは 16 MiB までです（ただし、HTTP 層の本文の上限 1 MiB が先に適用されます）。
+/// 処理ノード（`nodes` の各要素）は `type` で種類を指定します。入力は `"処理ノード"` または `"処理ノード.ポート"` の形式で参照します（`source` のポートは `video`・`audio` で、省略できません。`compose` は `program`（既定）・`preview`、それ以外は `out`）。
+/// 処理ノードごとの設定の詳細はガイドの「7. パイプライン」（`docs/guide/ja/07-pipelines.md`）を参照してください。ここでは種類と必須の項目だけを記載します。値の範囲は検証（`POST /pipelines/{id}/validate`）で確認できます。
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize, Default)]
 pub struct PipelineGraph {
     pub nodes: Vec<PipelineNode>,
@@ -2000,7 +2092,7 @@ pub struct PipelineOptions {
     pub missing_timeout_ms: Option<u64>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub overflow: Option<PipelineOptionsOverflow>,
-    /// 状態・メーターの更新の間隔（0 で出さない）
+    /// 状態・メーターを通知する間隔（0 で通知しない）
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub status_interval_ms: Option<u64>,
 }
@@ -2049,7 +2141,7 @@ impl PipelineOptionsOverflow {
     }
 }
 
-/// 部品。`type` ごとの必須の項目だけを書く（他の項目は crate の文書）。`id` は英数字・`_`・`-` の 1〜64 文字でグラフ内で一意。
+/// 処理ノードです。`type` ごとの必須の項目だけを記載します（他の項目はガイドの「7. パイプライン」を参照）。`id` は英数字・`_`・`-` からなる 1〜64 文字で、グラフ内で一意です。
 pub type PipelineNode = Value;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
@@ -2117,12 +2209,12 @@ pub struct PipelineSourceTrack {
     pub width: Option<i64>,
 }
 
-/// 検証の失敗（400・503 の `details.issues` の要素）。
+/// 検証で見つかった問題（400・503 の `details.issues` の要素）。
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct PipelineIssue {
     pub code: PipelineIssueCode,
     pub message: String,
-    /// 問題の部品の id
+    /// 問題のある処理ノードの id
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub node: Option<String>,
 }
@@ -2176,11 +2268,11 @@ impl PipelineIssueCode {
     }
 }
 
-/// 実行の計画（処理の形・必要な資源・追加の遅延）。
+/// 実行の計画（処理の構成・必要な資源・追加の遅延）。
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize, Default)]
 pub struct PipelinePlan {
     pub nodes: Vec<PipelinePlanNodesItem>,
-    /// 実行の順（トポロジカル順）
+    /// 実行の順序（トポロジカル順）
     pub order: Vec<String>,
     pub sinks: Vec<PipelinePlanSinksItem>,
     pub totals: PipelinePlanTotals,
@@ -2290,7 +2382,7 @@ pub struct PipelineCreate {
     pub desired_state: Option<PipelineCreateDesiredState>,
     pub graph: PipelineGraph,
     pub name: StreamName,
-    /// 配置の指定と縮退の段
+    /// 配置の指定と縮退の段階
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub placement: Option<PlacementSpec>,
 }
@@ -2317,7 +2409,7 @@ impl PipelineCreateDesiredState {
     }
 }
 
-/// 書いたフィールドだけ置き換える（null は「変えない」。ただし `placement: null` は配置の指定を外す）。
+/// 指定したフィールドだけを置き換えます（null は「変更しない」の意味です。ただし `placement: null` は配置の指定を削除します）。
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize, Default)]
 pub struct PipelinePatch {
     #[serde(default, skip_serializing_if = "Option::is_none", with = "crate::double_option")]
@@ -2326,18 +2418,18 @@ pub struct PipelinePatch {
     pub graph: Option<Option<PipelineGraph>>,
     #[serde(default, skip_serializing_if = "Option::is_none", with = "crate::double_option")]
     pub name: Option<Option<StreamName>>,
-    /// 配置の指定を丸ごと置き換える（部分の変更は無い）。null で外す。書かなければ今の指定を新しい `graph` で検査し直す（縮退の段の `disable` が新しいグラフに無ければ 400）
+    /// 配置の指定の全体を置き換えます（一部だけの変更はできません）。null で削除します。指定しなければ、現在の指定を新しい `graph` で検査し直します（縮退の段階の `disable` が新しいグラフに無ければ 400）
     #[serde(default, skip_serializing_if = "Option::is_none", with = "crate::double_option")]
     pub placement: Option<Option<PlacementSpec>>,
 }
 
-/// パイプラインの直近の通知（senca-pipeline の `Event`、`event` で種類を選ぶ）。
-/// `event: status`（`status_interval_ms` ごと）は `sources`（入力ごとの state `waiting`・`live`・`stalled`・`ended`、AU 数、タリー `on_program`/`on_preview`）、
-/// `compose`（シーン・トランジション中か・スレートを出している入力）、`encoders`（フレーム数・誤り）を持つ。
-/// メーター（`event: meters`）は `meters` に入り、ここにはそれ以外の直近の通知が残る（世代・誤りの通知のこともある）。
+/// パイプラインからの直近の通知です（`event` で種類を表します）。
+/// `event: status`（`status_interval_ms` ごと）には、`sources`（入力ごとの state `waiting`・`live`・`stalled`・`ended`、AU 数、タリー `on_program`/`on_preview`）、
+/// `compose`（シーン、トランジション中かどうか、スレートを表示している入力）、`encoders`（フレーム数・エラー）が含まれます。
+/// メーター（`event: meters`）は `meters` に入り、ここにはそれ以外の直近の通知が入ります（世代やエラーの通知のこともあります）。
 pub type PipelineStatus = Value;
 
-/// `audio_mix` の部品の id → 直近のメーター（`Event::Meters`: `inputs`・`master` の peak/rms dBFS、`limiter_reduction_db`）。
+/// `audio_mix` の処理ノードの id → 直近のメーター（`inputs`・`master` の peak/rms dBFS、`limiter_reduction_db`）。
 pub type PipelineMeters = BTreeMap<String, PipelineMetersValue>;
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize, Default)]
@@ -2352,31 +2444,31 @@ pub struct Pipeline {
     pub generation: u64,
     pub graph: PipelineGraph,
     pub id: String,
-    /// 直近の失敗（例: `codec worker が動いていません`）。動き出すと null に戻る
+    /// 直近の失敗（例: `codec worker が動いていません`）。実行が始まると null に戻ります
     #[serde(default)]
     pub last_error: Option<String>,
-    /// 実行していなければ null、実行中は `audio_mix` の部品の id → 直近のメーター（ミキサーが無い・まだ通知が無ければ `{}`）。
+    /// 実行していなければ null です。実行中は `audio_mix` の処理ノードの id → 直近のメーターです（ミキサーが無い場合や、まだ通知が無い場合は `{}`）。
     #[serde(default)]
     pub meters: Option<PipelineMeters>,
     pub name: String,
-    /// このノードでの実行の様子。starting = セッションを開いている（`desired_state: running` でまだ実行を始めていないときも）、running = 動いている、
-    /// error = 失敗して作り直しを待っている（`last_error`、1〜32 秒のバックオフ）、stopped = 止まっている。
+    /// このノードでの実行の状態。starting = セッションを開いている（`desired_state: running` で、まだ実行を始めていない場合も含む）、running = 実行中、
+    /// error = 失敗して作り直しを待っている（`last_error`、1〜32 秒のバックオフ）、stopped = 停止している。
     pub observed_state: PipelineObservedState,
     /// 配置の指定。指定が無ければ null
     #[serde(default)]
     pub placement: Option<PlacementSpecView>,
     pub placement_status: PlacementStatus,
-    /// 実行中の計画（worker が開いたセッションのもの）。動いていなければ null（検証の計画は `POST /pipelines/{id}/validate`）。
+    /// 実行中の計画（worker が開いたセッションのもの）。実行中でなければ null です（検証時の計画は `POST /pipelines/{id}/validate` で取得します）。
     #[serde(default)]
     pub plan: Option<PipelinePlan>,
-    /// 直近の状態の通知。まだ無ければ null。
+    /// 直近の状態の通知。まだ無ければ null です。
     #[serde(default)]
     pub status: Option<PipelineStatus>,
     pub updated_at: Timestamp,
 }
 
-/// このノードでの実行の様子。starting = セッションを開いている（`desired_state: running` でまだ実行を始めていないときも）、running = 動いている、
-/// error = 失敗して作り直しを待っている（`last_error`、1〜32 秒のバックオフ）、stopped = 止まっている。
+/// このノードでの実行の状態。starting = セッションを開いている（`desired_state: running` で、まだ実行を始めていない場合も含む）、running = 実行中、
+/// error = 失敗して作り直しを待っている（`last_error`、1〜32 秒のバックオフ）、stopped = 停止している。
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
 pub enum PipelineObservedState {
     #[serde(rename = "starting")]
@@ -2454,40 +2546,40 @@ impl PipelineTransitionKind {
     }
 }
 
-/// シーンのレイヤー（senca-pipeline の `LayerSpec`: source・image・color のどれか、x・y・width・height、crop・fit・z・opacity・corner_radius・border・visible・filter）
+/// シーンのレイヤー（source・image・color のいずれか、x・y・width・height、crop・fit・z・opacity・corner_radius・border・visible・filter）
 pub type PipelineLayer = Value;
 
-/// 操作（senca-pipeline の `Control`、`op` で種類を選ぶ。知らない項目は 400）。`node` は対象の部品の id（`compose` または `audio_mix`）。
-/// `prepare`・`commit`・`rollback` は型としては読めるが、この API では 400（グラフの変更は `PATCH /pipelines/{id}`）。
+/// 操作です（`op` で種類を指定します。未知の項目は 400）。`node` は対象の処理ノードの id（`compose` または `audio_mix`）です。
+/// `prepare`・`commit`・`rollback` は形式としては受け付けますが、この API では 400 です（グラフの変更には `PATCH /pipelines/{id}` を使います）。
 pub type PipelineControl = Value;
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize, Default)]
 pub struct PipelineControlResult {
     pub ok: Value,
-    /// 操作の返事（今の操作では空のオブジェクト）
+    /// 操作への応答（現在の操作ではすべて空のオブジェクト）
     pub reply: Value,
 }
 
-/// 部屋の ID（1〜128 文字の英数字と `-_.:@`、テナントをまたいで一意）
+/// 部屋の ID（1〜128 文字の英数字と `-_.:@`。テナントをまたいで一意）
 pub type RoomId = String;
 
-/// 部屋・参加者の metadata（任意の JSON、JSON にして 8 KiB まで）。参加者の metadata は他の参加者に見える
+/// 部屋・参加者の metadata（任意の JSON。JSON にして 8 KiB まで）。参加者の metadata は他の参加者にも見えます
 pub type RoomMetadata = Value;
 
-/// スポットライト（話している人を注目し、注目の外の映像を下げる）。
+/// スポットライト（話している人に注目し、それ以外の人の映像の品質を下げます）。
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize, Default)]
 pub struct RoomSpotlight {
-    /// 注目した送り手の層（無ければ帯域で自動）
+    /// 注目した配信者の層（無ければ帯域に応じて自動で選びます）
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub focus_rid: Option<String>,
-    /// 注目する話者の数（受け手は自分を除いてこの人数）
+    /// 注目する話者の数（受信者から見て、自分を除いたこの人数）
     pub number: u64,
-    /// lowest = 注目の外は一番低い層、off = 配らない（枠は `paused`）
+    /// lowest = 注目していない人は最も低い層で配信する、off = 配信しない（受信の枠は `paused`）
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub unfocused: Option<RoomSpotlightUnfocused>,
 }
 
-/// lowest = 注目の外は一番低い層、off = 配らない（枠は `paused`）
+/// lowest = 注目していない人は最も低い層で配信する、off = 配信しない（受信の枠は `paused`）
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
 pub enum RoomSpotlightUnfocused {
     #[serde(rename = "lowest")]
@@ -2512,10 +2604,10 @@ impl RoomSpotlightUnfocused {
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct ForwardingRule {
-    /// 送り手の属性: `connection_id`・`client_id`・`bundle_id`・`kind`・`metadata.<key>`（key は 1〜64 文字。値が文字列・数・真偽のとき）
+    /// 配信者の属性: `connection_id`・`client_id`・`bundle_id`・`kind`・`metadata.<key>`（key は 1〜64 文字。値が文字列・数値・真偽値のとき）
     pub field: String,
     pub operator: ForwardingRuleOperator,
-    /// `kind` なら `audio`・`video`
+    /// `kind` の場合は `audio`・`video`
     pub values: Vec<String>,
 }
 
@@ -2541,7 +2633,7 @@ impl ForwardingRuleOperator {
     }
 }
 
-/// 転送フィルター（`docs/realtime/signaling.md` の 8 章）。`rules` は「AND の組」の OR。`block` は一致したものを配らない、`allow` は一致したものだけ配る。
+/// 転送フィルター（`docs/realtime/signaling.md` の 8 章）。`rules` は「AND 条件の組」の OR です。`block` は一致したものを配信せず、`allow` は一致したものだけを配信します。
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct ForwardingFilter {
     pub action: ForwardingFilterAction,
@@ -2570,36 +2662,36 @@ impl ForwardingFilterAction {
     }
 }
 
-/// 部屋の設定。応答では既定値を埋めた全体を返す（`max_video_bitrate_kbps`・`spotlight`・`forwarding_filter` は無ければ省く）。
-/// API で検査するのは形と `max_participants` だけ（範囲の他の制約は部屋の核が部屋を開くときに検査する。`POST /rooms` の説明）。
+/// 部屋の設定です。応答では既定値を補った全体を返します（`max_video_bitrate_kbps`・`spotlight`・`forwarding_filter` は値が無ければ省きます）。
+/// API で検査するのは形式と `max_participants` だけです（それ以外の範囲の制約は、部屋を開くときに検査します。`POST /rooms` の説明を参照）。
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize, Default)]
 pub struct RoomSettings {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub audio_codec: Option<RoomSettingsAudioCodec>,
-    /// 使ってよい DataChannel のラベルの型（`#` で始まる。末尾の `*` は前方一致）
+    /// 使用を許可する DataChannel のラベルのパターン（`#` で始まります。末尾の `*` は前方一致）
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub data_labels: Option<Vec<String>>,
-    /// E2EE（SFrame）の部屋。SFU は中身を見ずに配り、合成・合成の録画はできない
+    /// E2EE（SFrame）の部屋。SFU は中身を見ずに転送するため、合成や合成の録画はできません
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub e2ee: Option<bool>,
-    /// 誰もいなくなってから消すまでの秒数（参加トークンで自動に作った部屋だけ）
+    /// 誰もいなくなってから削除するまでの秒数（参加トークンの発行で自動作成された部屋だけが対象）
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub empty_timeout_secs: Option<u64>,
-    /// 部屋全体の転送フィルター（購読者ごとのフィルターと両方を満たすものだけ配る）
+    /// 部屋全体の転送フィルター（購読者ごとのフィルターと、両方の条件を満たすものだけを配信します）
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub forwarding_filter: Option<ForwardingFilter>,
-    /// 参加者の上限（ノードをまたぐ参加者も数える）
+    /// 参加者の上限（他のノードにいる参加者も数えます）
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub max_participants: Option<u64>,
-    /// 送り手に勧める映像の上限（kbit/s）
+    /// 配信者に推奨する映像のビットレートの上限（kbit/s）
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub max_video_bitrate_kbps: Option<u64>,
-    /// 録画の方針。`per_participant`・`composite` なら部屋の録画のメディアパイプライン（`managed: true`）を作る。`composite` は `e2ee` と併用できない（422）
+    /// 録画の方針。`per_participant`・`composite` にすると、部屋の録画のメディアパイプライン（`managed: true`）を作ります。`composite` は `e2ee` と併用できません（422）
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub recording: Option<RoomSettingsRecording>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub spotlight: Option<RoomSpotlight>,
-    /// 部屋の映像のコーデック（SFU は変換しないので全員が同じ）
+    /// 部屋の映像のコーデック（SFU は変換しないため、全員が同じコーデックを使います）
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub video_codec: Option<RoomSettingsVideoCodec>,
 }
@@ -2623,7 +2715,7 @@ impl RoomSettingsAudioCodec {
     }
 }
 
-/// 録画の方針。`per_participant`・`composite` なら部屋の録画のメディアパイプライン（`managed: true`）を作る。`composite` は `e2ee` と併用できない（422）
+/// 録画の方針。`per_participant`・`composite` にすると、部屋の録画のメディアパイプライン（`managed: true`）を作ります。`composite` は `e2ee` と併用できません（422）
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
 pub enum RoomSettingsRecording {
     #[serde(rename = "none")]
@@ -2649,7 +2741,7 @@ impl RoomSettingsRecording {
     }
 }
 
-/// 部屋の映像のコーデック（SFU は変換しないので全員が同じ）
+/// 部屋の映像のコーデック（SFU は変換しないため、全員が同じコーデックを使います）
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
 pub enum RoomSettingsVideoCodec {
     #[serde(rename = "vp8")]
@@ -2680,35 +2772,35 @@ impl RoomSettingsVideoCodec {
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize, Default)]
 pub struct RoomCreate {
-    /// 省けば作る（24 文字の 16 進）
+    /// 省略すると生成します（24 文字の 16 進数）
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub id: Option<RoomId>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub metadata: Option<RoomMetadata>,
-    /// 配置の指定（`degrade` は使えない）
+    /// 配置の指定（`degrade` は使えません）
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub placement: Option<PlacementSpec>,
-    /// 部屋の設定（省略・null は既定値）
+    /// 部屋の設定（省略または null の場合は既定値）
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub settings: Option<RoomSettings>,
 }
 
-/// 書いたフィールドだけ変える。`settings` は JSON Merge Patch（項目の null で既定に戻す）。`settings`・`metadata` の null は「変えない」、`placement: null` は配置の指定を外す。
+/// 指定したフィールドだけを変更します。`settings` は JSON Merge Patch です（項目の値の null で既定値に戻ります）。`settings`・`metadata` の null は「変更しない」の意味で、`placement: null` は配置の指定を削除します。
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize, Default)]
 pub struct RoomPatch {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub metadata: Option<RoomMetadata>,
-    /// 配置の指定を丸ごと置き換える（`degrade` は使えない）。null で外す
+    /// 配置の指定の全体を置き換えます（`degrade` は使えません）。null で削除します
     #[serde(default, skip_serializing_if = "Option::is_none", with = "crate::double_option")]
     pub placement: Option<Option<PlacementSpec>>,
-    /// 変える設定の項目だけを書く（JSON Merge Patch。書かない項目は残り、項目の値の null はその項目を既定値に戻す）
+    /// 変更する設定の項目だけを書きます（JSON Merge Patch。書かない項目はそのまま残り、項目の値の null はその項目を既定値に戻します）
     #[serde(default, skip_serializing_if = "Option::is_none", with = "crate::double_option")]
     pub settings: Option<Option<RoomSettings>>,
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize, Default)]
 pub struct Room {
-    /// 参加トークンの発行で自動に作った部屋（誰もいないまま `empty_timeout_secs` 経つと消える）
+    /// 参加トークンの発行で自動作成された部屋かどうか（誰もいない状態で `empty_timeout_secs` が経過すると削除されます）
     pub auto: bool,
     pub created_at: Timestamp,
     pub generation: u64,
@@ -2719,7 +2811,7 @@ pub struct Room {
     pub placement: Option<PlacementSpecView>,
     pub placement_status: PlacementStatus,
     pub settings: RoomSettings,
-    /// つなぐ先（`GET /signaling` の WebSocket）。部屋を別のノードに置いたらそのノードの URL。このノードの `--public-http-url` が無く、別のノードにも置いていなければ null
+    /// 接続先（`GET /signaling` の WebSocket）。部屋を別のノードに配置した場合はそのノードの URL です。このノードに `--public-http-url` が設定されておらず、別のノードにも配置していなければ null
     #[serde(default)]
     pub signaling_url: Option<String>,
     pub updated_at: Timestamp,
@@ -2732,16 +2824,16 @@ pub struct RoomList {
     pub next_cursor: Option<String>,
 }
 
-/// 参加者に許すこと（省けばすべて）。
+/// 参加者に許可する操作（省略するとすべて許可）。
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize, Default)]
 pub struct RoomPermissions {
-    /// 使ってよい DataChannel のラベルの型（`#*` で全部）
+    /// 使用を許可する DataChannel のラベルのパターン（`#*` ですべて）
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub data: Option<Vec<String>>,
-    /// 送ってよいトラックの種類
+    /// 送信を許可するトラックの種類
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub publish: Option<Vec<RoomPermissionsPublishItem>>,
-    /// 他の参加者のトラックを受けてよいか
+    /// 他の参加者のトラックを受信してよいか
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub subscribe: Option<bool>,
 }
@@ -2770,25 +2862,25 @@ impl RoomPermissionsPublishItem {
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct RoomTokenRequest {
-    /// 同じ値の接続どうしは互いのトラックを受けない
+    /// 同じ値を持つ接続どうしは、互いのトラックを受信しません
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub bundle_id: Option<String>,
-    /// あれば `connect.client_id` はこれと同じでなければならない（転送フィルターの条件になる）
+    /// 指定すると、`connect.client_id` はこれと同じ値でなければなりません（転送フィルターの条件に使われます）
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub client_id: Option<String>,
-    /// 参加者の metadata（他の参加者に見える）
+    /// 参加者の metadata（他の参加者にも見えます）
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub metadata: Option<RoomMetadata>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub permissions: Option<RoomPermissions>,
-    /// 許す役割の上限（`sendrecv` のトークンはどの役割でも参加できる）
+    /// 許可する役割の上限（`sendrecv` のトークンではどの役割でも参加できます）
     pub role: RoomTokenRequestRole,
     /// 有効期間（秒）
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub ttl_secs: Option<u64>,
 }
 
-/// 許す役割の上限（`sendrecv` のトークンはどの役割でも参加できる）
+/// 許可する役割の上限（`sendrecv` のトークンではどの役割でも参加できます）
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
 pub enum RoomTokenRequestRole {
     #[serde(rename = "sendrecv")]
@@ -2821,26 +2913,26 @@ pub struct RoomToken {
     /// `Room.signaling_url` と同じ
     #[serde(default)]
     pub signaling_url: Option<String>,
-    /// 参加トークン（JWT）。Idempotency-Key の再送では null
+    /// 参加トークン（JWT）。Idempotency-Key による再送では null
     #[serde(default)]
     pub token: Option<String>,
-    /// Idempotency-Key の再送で値を伏せたとき
+    /// Idempotency-Key による再送で値を伏せたとき
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub token_redacted: Option<Value>,
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct RoomTrack {
-    /// 送り手の接続
+    /// 配信者の接続
     pub connection_id: String,
     pub kind: RoomPermissionsPublishItem,
-    /// サイマルキャストの層（低い順）。サイマルキャストでなければ省く
+    /// サイマルキャストの層（低い順）。サイマルキャストでなければ省きます
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub rids: Option<Vec<String>>,
     pub track_id: String,
 }
 
-/// 受信の枠（クライアントの受ける m 行 1 つ）と、そこに今流しているトラック。
+/// 受信の枠（クライアントが受信する m 行 1 つ）と、そこに現在流しているトラックです。
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct RoomSlot {
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -2849,13 +2941,13 @@ pub struct RoomSlot {
     pub connection_id: Option<String>,
     pub kind: RoomPermissionsPublishItem,
     pub mid: String,
-    /// active = 配っている、paused = 割り当てているが配っていない、empty = 空き
+    /// active = 配信中、paused = 割り当て済みだが配信していない、empty = 空き
     pub state: RoomSlotState,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub track_id: Option<String>,
 }
 
-/// active = 配っている、paused = 割り当てているが配っていない、empty = 空き
+/// active = 配信中、paused = 割り当て済みだが配信していない、empty = 空き
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
 pub enum RoomSlotState {
     #[serde(rename = "empty")]
@@ -2884,24 +2976,24 @@ impl RoomSlotState {
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct Participant {
     pub bundle_id: String,
-    /// 無ければ省く
+    /// 無ければ省きます
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub client_id: Option<String>,
     pub connection_id: String,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub joined_at: Option<Timestamp>,
     pub metadata: RoomMetadata,
-    /// 他のノードにいる参加者（カスケード）のノード
+    /// 他のノードにいる参加者（カスケード）の場合、そのノード
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub node: Option<String>,
-    /// WebRTC（ICE・DTLS）がつながっているか（他のノードの参加者は true）
+    /// WebRTC（ICE・DTLS）が接続済みかどうか（他のノードの参加者は true）
     pub peer_connected: bool,
     pub role: RoomTokenRequestRole,
     /// シグナリングの経路（remote は他のノードの参加者）
     pub signaling: ParticipantSignaling,
     /// 受信の枠（他のノードの参加者は空）
     pub subscriptions: Vec<RoomSlot>,
-    /// 送っているトラック
+    /// 送信しているトラック
     pub tracks: Vec<RoomTrack>,
 }
 
@@ -2934,7 +3026,7 @@ impl ParticipantSignaling {
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize, Default)]
 pub struct ParticipantList {
     pub items: Vec<Participant>,
-    /// 続きを読む `cursor`（続きがあるときだけ値、無ければ null）
+    /// 続きを取得するための `cursor`（続きがあるときだけ値が入り、無ければ null）
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub next_cursor: Option<String>,
 }
@@ -2946,19 +3038,19 @@ pub struct ParticipantPatch {
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize, Default)]
 pub struct RoomMessage {
-    /// 送るもの（JSON で 64 KiB まで）。`label` があれば文字列
+    /// 送信する内容（JSON で 64 KiB まで）。`label` がある場合は文字列
     pub data: Value,
-    /// DataChannel のラベル（`#` で始まる）。無ければシグナリングの `push`
+    /// DataChannel のラベル（`#` で始まります）。無ければシグナリングの `push` で送ります
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub label: Option<String>,
-    /// 送る相手の connection_id（空なら全員）
+    /// 送信先の connection_id（空なら全員）
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub to: Option<Vec<String>>,
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize, Default)]
 pub struct RoomMessageResult {
-    /// 送った相手の数
+    /// 送信した相手の数
     pub delivered: u64,
 }
 
@@ -2973,9 +3065,9 @@ pub struct RoomLayerStats {
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize, Default)]
 pub struct RoomParticipantStats {
-    /// 受け手への推定帯域
+    /// 受信者への推定帯域
     pub bandwidth_bps: u64,
-    /// クライアントが送った getStats の要約（無ければ省く）
+    /// クライアントが送信した getStats の要約（無ければ省きます）
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub client: Option<Value>,
     pub connection_id: String,
@@ -2986,7 +3078,7 @@ pub struct RoomParticipantStats {
     pub received_bytes: u64,
     pub retransmitted_packets: u64,
     pub rtt_ms: u64,
-    /// この参加者へ送っている量
+    /// この参加者へ送信している量
     pub send_bitrate_bps: u64,
     pub subscriptions: Vec<RoomParticipantStatsSubscriptionsItem>,
 }
@@ -3001,7 +3093,7 @@ pub struct RoomParticipantStatsPublishedItem {
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct RoomParticipantStatsSubscriptionsItem {
     pub mid: String,
-    /// 今配っている層（層の無いトラック・まだなら null）
+    /// 現在配信している層（層の無いトラックや、まだ配信していない場合は null）
     #[serde(default)]
     pub rid: Option<String>,
     pub state: RoomSlotState,
@@ -3012,15 +3104,15 @@ pub struct RoomParticipantStatsSubscriptionsItem {
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize, Default)]
 pub struct RoomStats {
     pub at: Timestamp,
-    /// 部屋を置いたノードにつないだ参加者
+    /// 部屋を配置したノードに接続した参加者
     pub participants: Vec<RoomParticipantStats>,
     pub room_id: RoomId,
 }
 
-/// テナント内で一意（作成のとき）。1〜40 文字の英数字と `-_.`（`.` で始まらない）。子の stream・パイプラインの名前の頭に使う
+/// テナント内で一意（作成時）。1〜40 文字の英数字と `-_.`（`.` で始まらないこと）。子の stream・パイプラインの名前の先頭に使われます
 pub type MediaPipelineName = String;
 
-/// running = 部屋を置いたノードの係が動かす、stopped = 止める（子の合成・送り出しを消す。書き出した stream・録画は残る）
+/// running = 部屋を配置したノードが実行する、stopped = 停止する（子の合成・外部配信を削除します。書き出した stream と録画は残ります）
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
 pub enum MediaPipelineState {
     #[serde(rename = "running")]
@@ -3043,12 +3135,12 @@ impl MediaPipelineState {
     }
 }
 
-/// 書き出す参加者の `client_id`（参加トークンの `client_id`）。空なら全員（`client_id` の無い参加者は `connection_id` で区別する）
+/// 書き出す参加者の `client_id`（参加トークンの `client_id`）。空なら全員（`client_id` の無い参加者は `connection_id` で区別します）
 pub type MediaPipelineParticipants = Vec<String>;
 
-/// 合成（会議の 1 本の映像・音声）。書かなかったフィールドは既定値（応答ではすべて入る）。映像のある参加者を並べ、音声はすべて混ぜて Opus 96 kbit/s にする。
-/// `grid` は格子（列数は人数の平方根の切り上げ）、`speaker` は最初に書き出した参加者を上に大きく、残りを下の 1/4 の帯に並べる（話者の検出はまだ合成に届かない）。
-/// H.264・H.265 は GPU が要る。GOP は `fps` の 2 倍。
+/// 合成の設定です（会議全体を 1 本の映像・音声にします）。指定しなかったフィールドは既定値になります（応答ではすべて含まれます）。映像のある参加者を並べ、音声はすべてミックスして Opus 96 kbit/s にします。
+/// `grid` は格子状（列数は人数の平方根の切り上げ）、`speaker` は最初に書き出した参加者を上に大きく表示し、残りを下の 1/4 の帯に並べます（話者の検出結果は、まだ合成に使っていません）。
+/// H.264・H.265 には GPU が必要です。GOP は `fps` の 2 倍です。
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize, Default)]
 pub struct MediaPipelineComposite {
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -3118,23 +3210,23 @@ impl MediaPipelineCompositeVideoCodec {
     }
 }
 
-/// 録画（AWS の media capture pipeline 相当）。書き出した stream の自動録画（`RecordingPolicy`）を有効にする。録画は普通の録画の API（`GET /recordings?stream=...`）で読む。
-/// 録画の設定は stream を作るときに決まる（後から `recording` を変えても、作った stream には効かない）。
+/// 録画の設定です（AWS の media capture pipeline に相当）。書き出した stream の自動録画（`RecordingPolicy`）を有効にします。録画は通常の録画の API（`GET /recordings?stream=...`）で取得します。
+/// 録画の設定は stream の作成時に決まります（後から `recording` を変更しても、作成済みの stream には反映されません）。
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize, Default)]
 pub struct MediaPipelineRecording {
-    /// 合成の stream を録る（`composite` が要る）
+    /// 合成の stream を録画します（`composite` が必要）
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub composite: Option<bool>,
-    /// 参加者ごとの stream を録る（`export_participants: true` が要る）
+    /// 参加者ごとの stream を録画します（`export_participants: true` が必要）
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub participants: Option<bool>,
-    /// 保持日数（省けば録画の既定。応答では省いたとき欄が無い）
+    /// 保持日数（省略すると録画の既定値。省略した場合は応答にも項目がありません）
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub retention_days: Option<u64>,
 }
 
-/// 送り出し（AWS の media live connector pipeline 相当）。合成の stream の出力（`Output`）として作る。形と検査は `OutputCreate` と同じ
-/// （`paas` には `credential_ref` が要る）。応答では null・空のフィールドは欄が無い。
+/// 外部への配信の設定です（AWS の media live connector pipeline に相当）。合成の stream の出力（`Output`）として作成します。形式と検査は `OutputCreate` と同じです
+/// （`paas` には `credential_ref` が必要です）。応答では、null や空のフィールドは省かれます。
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct MediaPipelineEgress {
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -3145,39 +3237,39 @@ pub struct MediaPipelineEgress {
     /// `paas` で必須
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub provider: Option<OutputCreateProvider>,
-    /// `paas` 以外で必須。rtmp_push: `rtmp`・`rtmps`、srt_push: `srt`。資格情報は入れられない。
+    /// `paas` 以外で必須。rtmp_push: `rtmp`・`rtmps`、srt_push: `srt`。資格情報は含められません。
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub url: Option<String>,
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize, Default)]
 pub struct MediaPipelineCreate {
-    /// 文字起こし・翻訳（AWS の media insights pipeline 相当）。参加者ごとの stream の `captions` になる（省略・null は付けない）
+    /// 文字起こし・翻訳（AWS の media insights pipeline に相当）。参加者ごとの stream の `captions` として設定されます（省略または null の場合は設定しません）
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub captions: Option<CaptionSettings>,
-    /// 合成（省略・null は合成しない）
+    /// 合成（省略または null の場合は合成しません）
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub composite: Option<MediaPipelineComposite>,
-    /// 省略・null は running
+    /// 省略または null の場合は running
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub desired_state: Option<MediaPipelineState>,
-    /// 送り出し（`composite` が要る）
+    /// 外部への配信（`composite` が必要）
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub egress: Option<Vec<MediaPipelineEgress>>,
-    /// 参加者ごとの stream を残す（AWS の media stream pipeline 相当）。false でも合成のために書き出す（`recording.participants`・`captions` は使えない）
+    /// 参加者ごとの stream を成果物として残します（AWS の media stream pipeline に相当）。false の場合も合成のために書き出しますが、`recording.participants`・`captions` は使えません
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub export_participants: Option<bool>,
     pub name: MediaPipelineName,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub participants: Option<MediaPipelineParticipants>,
-    /// 録画（省略・null は録らない）
+    /// 録画（省略または null の場合は録画しません）
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub recording: Option<MediaPipelineRecording>,
     /// 部屋の ID（テナントの部屋。無ければ 400）
     pub room: String,
 }
 
-/// 書いたフィールドだけ置き換える。`composite`・`recording`・`captions` の null は外す、他の null は「変えない」。`egress` は列ごと置き換える。
+/// 指定したフィールドだけを置き換えます。`composite`・`recording`・`captions` の null は設定の削除、他のフィールドの null は「変更しない」の意味です。`egress` は配列全体を置き換えます。
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize, Default)]
 pub struct MediaPipelinePatch {
     #[serde(default, skip_serializing_if = "Option::is_none", with = "crate::double_option")]
@@ -3200,18 +3292,18 @@ pub struct MediaPipelinePatch {
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize, Default)]
 pub struct MediaPipelineParticipantStream {
-    /// stream の名前（`{name}-{参加者}-{ID の頭 6 文字}`）
+    /// stream の名前（`{name}-{参加者}-{ID の先頭 6 文字}`）
     pub name: String,
     /// stream の ID
     pub stream: String,
 }
 
-/// 合成の子の資源の ID（メディアパイプラインの ID から決まる。まだ作っていなくても ID は出る）
+/// 合成の子の資源の ID（メディアパイプラインの ID から決まります。まだ作成していなくても ID は表示されます）
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize, Default)]
 pub struct MediaPipelineCompositeArtifacts {
-    /// `egress` の順の送り出しの出力の ID（`GET /outputs/{id}`）
+    /// `egress` の順に並んだ外部配信の出力の ID（`GET /outputs/{id}`）
     pub outputs: Vec<String>,
-    /// 合成のパイプラインの ID（`GET /pipelines/{id}`。映像のある参加者が流れ始めるまでは無いことがある）
+    /// 合成のパイプラインの ID（`GET /pipelines/{id}`。映像のある参加者が流れ始めるまでは存在しないことがあります）
     pub pipeline: String,
     /// 合成の stream の ID（`GET /streams/{id}`）
     pub stream: String,
@@ -3223,20 +3315,20 @@ pub struct MediaPipelineArtifacts {
     /// `composite` が無ければ null
     #[serde(default)]
     pub composite: Option<MediaPipelineCompositeArtifacts>,
-    /// 書き出した参加者ごとの stream（`metadata.media_pipeline` がこの ID の stream。今いない参加者のものも残る）。ID の昇順
+    /// 書き出した参加者ごとの stream（`metadata.media_pipeline` がこの ID の stream。現在いない参加者のものも残ります）。ID の昇順
     pub participant_streams: Vec<MediaPipelineParticipantStream>,
 }
 
-/// このノードでの実行の様子（制御状態には保存しない）。
+/// このノードでの実行の状態です（制御状態には保存されません）。
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize, Default)]
 pub struct MediaPipelineStatus {
-    /// `speaker` の並びで今大きく映している参加者（`client_id`、無ければ `connection_id`）。決まる前・`grid` では null
+    /// `speaker` の並びで現在大きく表示している参加者（`client_id`、無ければ `connection_id`）。決まる前と `grid` では null
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub active_speaker: Option<String>,
-    /// 合成の図に入っている参加者の数（`composite` が無い、または映像のある参加者が流れ始めていなければ null）
+    /// 合成のグラフに入っている参加者の数（`composite` が無い場合、または映像のある参加者がまだ流れ始めていない場合は null）
     #[serde(default)]
     pub composite_members: Option<u64>,
-    /// 今書き出している参加者
+    /// 現在書き出している参加者
     pub participants: Vec<MediaPipelineStatusParticipantsItem>,
 }
 
@@ -3246,14 +3338,14 @@ pub struct MediaPipelineStatusParticipantsItem {
     pub participant: String,
     /// 書き出し先の stream の ID
     pub stream: String,
-    /// 映像を送っているか
+    /// 映像を送信しているかどうか
     pub video: bool,
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct MediaPipeline {
     pub artifacts: MediaPipelineArtifacts,
-    /// 資格情報は `secret:{name}` の参照で、値は返さない
+    /// 資格情報は `secret:{name}` で参照し、値は返しません
     #[serde(default)]
     pub captions: Option<CaptionSettings>,
     #[serde(default)]
@@ -3264,7 +3356,7 @@ pub struct MediaPipeline {
     pub export_participants: bool,
     pub generation: u64,
     pub id: String,
-    /// 部屋の設定 `recording` から作ったもの（ID は `room-rec.{部屋}`。API からは変えられない・消せない）
+    /// 部屋の設定 `recording` から作られたものかどうか（ID は `room-rec.{部屋の ID}`。API から変更・削除はできません）
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub managed: Option<bool>,
     pub name: MediaPipelineName,
@@ -3272,8 +3364,8 @@ pub struct MediaPipeline {
     #[serde(default)]
     pub recording: Option<MediaPipelineRecording>,
     pub room: String,
-    /// このノードでの実行の様子。部屋をこのノードに置いていない・`stopped`・係がまだ見回っていない（作った直後）なら null
-    /// （分散のときは部屋を置いたノードに問い合わせる）。止めた・消した直後の 1 秒ほどは前の様子が残ることがある。
+    /// このノードでの実行の状態。部屋がこのノードに配置されていない場合、`stopped` の場合、作成直後でまだ確認が行われていない場合は null です
+    /// （クラスターでは、部屋を配置したノードに問い合わせてください）。停止・削除の直後の 1 秒ほどは、以前の状態が残ることがあります。
     #[serde(default)]
     pub status: Option<MediaPipelineStatus>,
     pub updated_at: Timestamp,
@@ -3288,16 +3380,16 @@ pub struct MediaPipelineList {
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct SseEventData {
-    /// 種類ごとの中身（秘密は含まない）。部屋の核の出来事は `{type, data}`
+    /// 種類ごとの内容（秘密は含みません）。部屋のイベントは `{type, data}`
     pub data: Value,
-    /// 部屋の核の出来事の ID（部屋の核の出来事だけ。SSE の `id` は無い）
+    /// 部屋のイベントの ID（部屋のイベントだけ。SSE の `id` はありません）
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub event_id: Option<String>,
-    /// 出来事を出したノードの ID（部屋の核の出来事だけ）
+    /// イベントを発生させたノードの ID（部屋のイベントだけ）
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub node: Option<String>,
     pub occurred_at: Timestamp,
-    /// 資源の ID（部屋の出来事は部屋の ID、`grid.decisions` は空）
+    /// 資源の ID（部屋のイベントは部屋の ID、`grid.decisions` は空）
     pub resource_id: String,
     pub r#type: SseEventDataType,
 }
@@ -3508,14 +3600,14 @@ impl ProblemCode {
     }
 }
 
-/// RFC 9457 の problem details（仕様 10.4）。内部の詳細や秘密は入れない。
+/// RFC 9457 の problem details です。内部の詳細や秘密は含めません。
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct Problem {
     pub code: ProblemCode,
-    /// code ごとの補足（例: 本文の解析エラーは `{reason}`、予約の衝突は `{limit, overlaps}`）
+    /// code ごとの補足情報（例: 本文の解析エラーは `{reason}`、予約の衝突は `{limit, overlaps}`）
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub details: Option<Value>,
-    /// `X-Request-Id` と同じ（Idempotency-Key の再送では、再送の要求の ID）。
+    /// `X-Request-Id` と同じ値（Idempotency-Key による再送では、再送した要求の ID）。
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub request_id: Option<String>,
     pub retryable: bool,

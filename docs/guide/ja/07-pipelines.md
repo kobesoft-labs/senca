@@ -7,7 +7,7 @@
 ピクチャー・イン・ピクチャー、シーンの切り替え（スイッチャー）、トランスコードなどに使えます。
 
 - 設計の背景: [ADR-0004 コーデックと特許](../../dev/adr/0004-codecs-patents.md)、[ADR-0013 グリッド](../../dev/adr/0013-grid.md)（配置と縮退）
-- 関連するページ: [4. 取り込みと再生](04-ingest-playback.md)、[9. クラスタとグリッド](09-cluster-grid.md)、[14. コーデックと特許](14-codecs-and-patents.md)、[15. API と SDK](15-api-and-sdks.md)
+- 関連するページ: [4. 取り込みと再生](04-ingest-playback.md)、[9. クラスターとグリッド](09-cluster-grid.md)、[14. コーデックと特許](14-codecs-and-patents.md)、[15. API と SDK](15-api-and-sdks.md)
 
 例で使う `API`・`TOKEN`・`H` は [4. 取り込みと再生](04-ingest-playback.md) と同じです。
 
@@ -20,7 +20,7 @@
 - `source` は SENCA のストリームから AU（アクセスユニット）を読み込みます。`sink` は処理結果の AU を、出力先のストリームに**配信者として**送ります。
   出力先のストリームは通常のストリームと同じく、HLS・録画・出力・字幕の対象になります。
   出力先のストリームに別の配信者が接続していると、パイプラインは出力できません。
-- パイプラインはグリッドのワークロード（`pipeline:{id}`）です。入力のストリームを受信しているノードに優先して配置されます（[9. クラスタとグリッド](09-cluster-grid.md)）。
+- パイプラインはグリッドのワークロード（`pipeline:{id}`）です。入力のストリームを受信しているノードに優先して配置されます（[9. クラスターとグリッド](09-cluster-grid.md)）。
 - worker が異常終了したり処理に失敗したりすると `observed_state: error` になり、1・2・4…32 秒の間隔を置いて起動し直します。
 
 ## 7.2 API
@@ -195,8 +195,17 @@ AAC はデコードできません（`UNSUPPORTED_CODEC`）。
 
 ### `snapshot_on_change`（板書の変化を静止画に保存）
 
-`{input, params}`。生の映像を解析し、内容が変わってから落ち着いた時点で JPEG を保存します。保存先は**最初の `sink` のストリーム**の静止画です
-（`GET /streams/{id}/snapshots`、`reason: board_change`、`changed_fraction` 付き）。この方法で保存した静止画は、枚数の上限による削除の対象になりません。
+`{input, params}`。生の映像を解析し、内容が変わってから落ち着いた時点で JPEG を保存します。保存先は**パイプラインごとの場所**
+（`{data-dir}/pipeline-snapshots/{pipeline_id}/`）で、`sink` の無いグラフでも使えます。処理ノードごとに `params.keep` 枚まで残し、
+超えた分は古いものから削除します。パイプラインを削除すると、静止画も削除します（パイプラインを動かしていたノードの分）。
+
+| 操作 | API | 権限 | 結果 |
+|---|---|---|---|
+| 一覧 | `GET /pipelines/{id}/snapshots` | `stream:read` | `{"items":[{id, taken_at, reason: "board_change", node, width, height, bytes, changed_fraction}]}`（古い順。`node` は処理ノードの ID） |
+| 1 枚の取得 | `GET /pipelines/{id}/snapshots/{snapshot_id}` | `stream:read` | JPEG |
+| 削除 | `DELETE /pipelines/{id}/snapshots/{snapshot_id}` | `stream:write` | 204 |
+
+静止画は、パイプラインを動かしているノードのディスクに保存します。クラスターでは、そのノード（`placement_status.node_name`）の API で取得してください。
 
 | `params` の項目 | 既定 | 範囲 |
 |---|---|---|
@@ -206,6 +215,7 @@ AAC はデコードできません（`UNSUPPORTED_CODEC`）。
 | `stable_frames` | 3 | 1〜10000 |
 | `change_fraction` | 0.004 | 0 より大きく 1 より小さい値 |
 | `jpeg_quality` | 85 | 1〜100 |
+| `keep` | 1000 | 1〜10000（残す枚数） |
 
 ### `sink`（出力）
 
@@ -310,4 +320,4 @@ curl -s -X PATCH "$API/pipelines/$PID" "${H[@]}" -H "If-Match: $ETAG" -d '{
 - レベルが変わると、パイプラインを新しいグラフで起動し直します。結果は `placement_status` に表示されます（`state: degraded`、`level`、`level_label`）。
 - 各レベルで必要な資源（CPU・メモリ・GPU のセッション）は、処理ノードを外した後のグラフから見積もります。
 
-レベルの選ばれ方、優先度、デバイスの停止については [9. クラスタとグリッド](09-cluster-grid.md) を参照してください。
+レベルの選ばれ方、優先度、デバイスの停止については [9. クラスターとグリッド](09-cluster-grid.md) を参照してください。

@@ -128,6 +128,26 @@ wait $FR || true
 contiguous "$W/src.v" "$W/r3.v" 100 && pass "HLS via relay on node 3 = contiguous source run ($(wc -l < "$W/r3.v") frames)" || fail "HLS via relay ($(wc -l < "$W/r3.v"))"
 st=$(api 2 GET /nodes | python3 -c "import json,sys; d=json.load(sys.stdin); r=[n['relay'] for n in d['items'] if n['self']][0]; print(max(p['tx_aus'] for p in r['peers']) if r['peers'] else 0)")
 [ "${st:-0}" -gt 100 ] && pass "owner node 2 relayed AUs ($st)" || fail "relay stats on node 2: $st"
+# 字幕は所有者のノードで作る: 写しのノード（node 3）では、master.m3u8・字幕のプレイリスト・WebVTT を所有者から取り次ぐ
+CP=$(port)
+python3 "$ROOT/tools/interop/caption_mock.py" $CP 2> "$W/cmock.err" & CM=$!
+sleep 0.5
+CS=$(api 1 POST /streams -d "{\"name\":\"capt\",\"captions\":{\"asr_provider\":\"openai\",\"asr_endpoint\":\"http://127.0.0.1:$CP/v1\",\"language\":\"ja\"}}")
+CSID=$(echo "$CS" | json "['id']"); CKEY=$(echo "$CS" | json "['ingest']['stream_key']")
+"$FFMPEG" -v error -re -f lavfi -i testsrc2=size=320x240:rate=30 -f lavfi -i sine=frequency=500:sample_rate=48000 -t 20 \
+  -c:v libx264 -g 30 -c:a aac -f flv rtmp://127.0.0.1:${RTMPP[2]}/live/$CKEY & CPUB=$!
+sleep 3
+CU3=$(api 3 POST /streams/$CSID/playback-url | json "['playback']['hls']"); CB3=${CU3%index.m3u8}
+curl -s -o /dev/null "$CU3"
+sleep 12
+c=$(curl -s -o "$W/cmaster.m3u8" -w '%{http_code}' "${CB3}master.m3u8")
+[ "$c" = 200 ] && grep -q 'TYPE=SUBTITLES' "$W/cmaster.m3u8" && grep -q 'index.m3u8' "$W/cmaster.m3u8" \
+  && pass "captions: master.m3u8 served on the mirror node 3" || fail "captions: master on node 3: $c $(head -3 "$W/cmaster.m3u8")"
+curl -s "${CB3}sub_ja.m3u8" > "$W/csub.m3u8"
+ok=0; for f in $(grep '\.vtt' "$W/csub.m3u8"); do curl -s "${CB3}$f" | grep -q 'テスト' && ok=1; done
+[ $ok = 1 ] && pass "captions: WebVTT cues served on the mirror node 3" || fail "captions: no cues on node 3 ($(head -c 200 "$W/csub.m3u8"))"
+grep -q "mirroring stream $CSID" "$W/n3.log" && pass "captions: node 3 serves the stream from a relay mirror" || fail "captions: node 3 is not a mirror"
+kill $CPUB 2>/dev/null; wait $CPUB 2>/dev/null || true; kill $CM 2>/dev/null || true
 # 同じ stream を node 2 で配信し直し、node 3 の写しから見ている間に node 3 で受け直す → node 2 の送り手は切られ、node 3 の写しは本物に譲る
 "$FFMPEG" -v error -re -stream_loop 2 -i "$W/src.flv" -c copy -f flv rtmp://127.0.0.1:${RTMPP[2]}/live/$KEY & PUB=$!
 sleep 3

@@ -32,6 +32,12 @@ const MIRROR_IDLE: Duration = Duration::from_secs(30);
 const SEND_BUFFER: u32 = 512 << 10;
 /// 写しを作ってから最初の再生リストが出るまで待つ上限。
 pub const MIRROR_WARMUP: Duration = Duration::from_secs(6);
+/// 写しのノードが所有者から字幕のファイルを取るときに付ける印（所有者の側では視聴者に数えず、取り次ぎもしない）。
+pub const PROXY_HEADER: &str = "x-senca-relay-proxy";
+/// 取ってきた字幕を覚えておく長さ（プレイリスト・セグメント）と数。
+const CAPTION_TTL_PLAYLIST_MS: u64 = 1000;
+const CAPTION_TTL_SEGMENT_MS: u64 = 30_000;
+const CAPTION_CACHE_MAX: usize = 1024;
 
 struct Mirror {
     /// 作った順の番号（後片付けで新しい写しの印を消さない）。
@@ -54,6 +60,8 @@ pub struct Relay {
     pub endpoint: RelayEndpoint,
     mirrors: Mutex<HashMap<String, Mirror>>,
     next_gen: AtomicU64,
+    /// 所有者から取ってきた字幕のファイル（パス → (取った時刻, 本文, Content-Type)）。
+    captions: Mutex<HashMap<String, (u64, bytes::Bytes, &'static str)>>,
 }
 
 /// 中継の待ち受け（既定は Raft の待ち受けの次の番号）。
@@ -161,7 +169,13 @@ pub fn start(app: &Arc<App>, cc: &ClusterConfig, secret: String) -> Result<Arc<R
     let weak = Arc::downgrade(app);
     let resolver = Arc::new(move |stream: &str| weak.upgrade().and_then(|a| owner_raft_id(&a, stream)));
     let hub = RelayHub::new(endpoint.clone(), resolver, RelayHubConfig::default());
-    let relay = Arc::new(Relay { hub, endpoint: endpoint.clone(), mirrors: Mutex::new(HashMap::new()), next_gen: AtomicU64::new(1) });
+    let relay = Arc::new(Relay {
+        hub,
+        endpoint: endpoint.clone(),
+        mirrors: Mutex::new(HashMap::new()),
+        next_gen: AtomicU64::new(1),
+        captions: Mutex::new(HashMap::new()),
+    });
 
     // 待ち受け
     let listen = listen_addr(cc);
@@ -546,6 +560,45 @@ impl Relay {
             }
             self.stop_mirror(app, &sid).await;
         }
+    }
+
+    /// 字幕のファイルを所有者のノードから取る（`path` は `/s/{exp}/{sig}/live/{stream}/{file}`。署名はどのノードでも通る）。
+    /// 字幕は所有者のノードのメモリにだけあるので、写しのノードはこれで取り次ぐ。プレイリストは 1 秒、セグメントは 30 秒覚える。
+    /// 所有者のノードの公開 URL（`peers[].api`）は管理者が書いたものなので、外向きの接続の制限（egress）は掛けない。
+    pub async fn caption_file(&self, app: &Arc<App>, stream: &str, path: &str) -> Option<(bytes::Bytes, &'static str)> {
+        let ttl = if path.ends_with(".vtt") { CAPTION_TTL_SEGMENT_MS } else { CAPTION_TTL_PLAYLIST_MS };
+        let now = crate::util::mono_ms();
+        if let Some((t, b, ct)) = self.captions.lock().unwrap().get(path)
+            && now.saturating_sub(*t) < ttl
+        {
+            return Some((b.clone(), ct));
+        }
+        let base = app.owner_base(stream)?;
+        let any = ["0.0.0.0/0".to_string(), "::/0".to_string()];
+        let r = crate::httpc::request(
+            &any,
+            senca_http::Method::Get,
+            &format!("{}{path}", base.trim_end_matches('/')),
+            &[(PROXY_HEADER, "1".to_string())],
+            None,
+            1 << 20,
+            Duration::from_secs(3),
+        )
+        .await
+        .ok()?;
+        if r.status != 200 {
+            return None;
+        }
+        let ct = if path.ends_with(".vtt") { "text/vtt" } else { "application/vnd.apple.mpegurl" };
+        let mut c = self.captions.lock().unwrap();
+        if c.len() >= CAPTION_CACHE_MAX {
+            c.retain(|k, (t, _, _)| now.saturating_sub(*t) < if k.ends_with(".vtt") { CAPTION_TTL_SEGMENT_MS } else { CAPTION_TTL_PLAYLIST_MS });
+            if c.len() >= CAPTION_CACHE_MAX {
+                c.clear();
+            }
+        }
+        c.insert(path.to_string(), (now, r.body.clone(), ct));
+        Some((r.body, ct))
     }
 
     /// 中継の状態（GET /nodes の補足）。

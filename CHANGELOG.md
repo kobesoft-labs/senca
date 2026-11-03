@@ -54,6 +54,32 @@
   配送をあきらめた件数（dead letter）は `GET /api/v1/nodes` に表示）。SSE は従来どおりです。
 - Interop test `tools/interop/cluster_rooms.sh` (3 nodes, Chrome, home node failure, mock webhook receiver).
   ／ 相互接続テスト `tools/interop/cluster_rooms.sh`（3 ノード、Chrome、home ノードの障害、Webhook のモック受信側）。
+- Stream `limits.max_viewers` is enforced per node: HLS clients (source IP and User-Agent seen within 3 segment durations, at
+  least 10 s) plus RTMP/SRT/RTSP play, WHEP and MoQ sessions; new viewers over the limit get 503 (HLS, WHEP, RTSP),
+  `NetStream.Play.Failed` (RTMP), `SRT_REJX_OVERLOAD` (SRT) or `EXCESSIVE_LOAD` (MoQ). The stream's `live.viewers` shows the counts.
+  ／ ストリームの `limits.max_viewers` をノードごとに適用します。数えるのは HLS の客（送り元の IP と User-Agent。セグメント 3 本分、
+  10 秒以上の間）と、RTMP・SRT・RTSP の play、WHEP、MoQ の接続です。上限を超える新しい視聴は、503（HLS・WHEP・RTSP）、
+  `NetStream.Play.Failed`（RTMP）、`SRT_REJX_OVERLOAD`（SRT）、`EXCESSIVE_LOAD`（MoQ）で断ります。数はストリームの `live.viewers` に出ます。
+- Stream `limits.max_ingress_bps` is enforced: a sender whose 3-second average stays above the limit for 5 seconds is disconnected
+  (logged), and new senders are refused for 10 seconds.
+  ／ ストリームの `limits.max_ingress_bps` を適用します。直近 3 秒の平均が上限を超えた状態が 5 秒続いた配信者を切断し（ログに出力）、
+  その後 10 秒は新しい配信者を拒否します。
+- `latency_profile: interactive` now has its own behavior: LL-HLS parts of 200 ms, a 0.25 s wait (instead of 1 s) for a missing
+  video/audio track before HLS starts, a 1 MiB RTMP play backlog limit, and an 80 ms SRT receive latency. `standard` and `low` are unchanged.
+  ／ `latency_profile: interactive` に専用の動作を付けました。LL-HLS の part を 200 ms にし、映像・音声の片方が届かないときの HLS の
+  開始までの待ちを 1 秒から 0.25 秒に、RTMP play の送信待ちの上限を 1 MiB に、SRT の受信遅延を 80 ms にします。`standard`・`low` は変わりません。
+- `rtsps://` RTSP pull inputs connect over TLS (system CAs, or a pinned key with `options.tls_spki_sha256`).
+  ／ `rtsps://` の RTSP pull の入力を TLS でつなぎます（OS の認証局、または `options.tls_spki_sha256` での公開鍵の固定）。
+- MP4 export takes `start` and `end` (RFC 3339) to export a range: `GET /recordings/{id}/export.mp4?start=&end=`.
+  ／ MP4 の書き出しで `start`・`end`（RFC 3339）を指定して範囲を切り出せます: `GET /recordings/{id}/export.mp4?start=&end=`。
+- Pipeline `snapshot_on_change` images are stored per pipeline (`GET /pipelines/{id}/snapshots`, `GET`/`DELETE
+  /pipelines/{id}/snapshots/{snapshot_id}`) and pruned to the node's new `params.keep` (default 1000).
+  ／ パイプラインの `snapshot_on_change` の静止画を、パイプラインごとに保存します（`GET /pipelines/{id}/snapshots`、
+  `GET`・`DELETE /pipelines/{id}/snapshots/{snapshot_id}`）。部品の新しい `params.keep`（既定 1000）の枚数まで残します。
+- Captions on relay mirrors: a non-owner node fetches `master.m3u8`, subtitle playlists and WebVTT segments from the owner node,
+  so captions work on any node's playback URL.
+  ／ 中継のミラーでの字幕: 所有者でないノードは、`master.m3u8`・字幕のプレイリスト・WebVTT のセグメントを所有者のノードから取得して
+  返します。どのノードの再生 URL でも字幕を見られます。
 - SSE replay: `GET /api/v1/events` with `Last-Event-ID` now sends the missed events from a bounded window the node keeps
   (`--events-retain`, default 4096; a single node also reloads, after a restart, the events written since the last control-log
   snapshot). `resync` is sent only when the position is older than the window. Event IDs are the number of applied commands, the
@@ -93,22 +119,6 @@
   替えない。合成のシーンを切り替えてキーフレームを求める。`status.active_speaker`）。部屋の設定 `recording: per_participant|composite`
   で、録画用のメディアパイプライン（`room-rec.{部屋}`、`managed: true`）を自動で作り、設定に合わせます。メディアパイプラインは
   カスケードの edge にいる参加者も書き出します。参加者の変更・切断は、どのノードの REST API で呼んでも、参加者のいるノードへ転送します
-
-### Changed / 変更
-
-- `PATCH /rooms/{id}`: `settings` is now a JSON Merge Patch (only the fields sent change; `null` resets a field to its default)
-  instead of replacing the whole object
-  ／ `PATCH /rooms/{id}` の `settings` を、全体の置き換えから JSON Merge Patch に変えました（送った項目だけが変わり、`null` で既定に戻ります）
-- E2EE rooms: every server-side processing request answers 422 (`UNSUPPORTED_CODEC`, `details.reason: "e2ee"`), including
-  `recording: composite` (was 400), turning on `e2ee` with a composite or captions media pipeline, and, for streams exported from
-  E2EE rooms (marked `metadata.e2ee: "true"`), still images, captions, saved snapshots, snapshot schedules and pipeline sources;
-  their recordings get no thumbnail
-  ／ E2EE の部屋: サーバーで中身を処理する要求はすべて 422（`UNSUPPORTED_CODEC`、`details.reason: "e2ee"`）にしました。
-  `recording: composite`（以前は 400）、合成・文字起こしのメディアパイプラインがある部屋の `e2ee` を有効にすること、E2EE の部屋から
-  書き出した stream（`metadata.e2ee: "true"` の印）の静止画・字幕・静止画の保存・静止画の予約・パイプラインの入力が対象です。
-  その録画にはサムネイルを作りません
-- `GET /streams/{id}/snapshot` waits up to 5 seconds for a keyframe (was an immediate 409)
-  ／ `GET /streams/{id}/snapshot` は、キーフレームを 5 秒まで待つようにしました（以前はすぐに 409）
 
 ### Security / セキュリティ
 
@@ -158,6 +168,41 @@
 - `--log-json` now also covers the first-admin-token notice, codec/capture worker stderr lines, configuration errors
   and fatal errors ／ `--log-json` で、最初の管理者トークンの通知・codec/capture worker の標準エラー出力・設定の誤り・
   起動の失敗も JSON で出力します
+
+### Changed / 変更
+
+- `PATCH /rooms/{id}`: `settings` is now a JSON Merge Patch (only the fields sent change; `null` resets a field to its default)
+  instead of replacing the whole object
+  ／ `PATCH /rooms/{id}` の `settings` を、全体の置き換えから JSON Merge Patch に変えました（送った項目だけが変わり、`null` で既定に戻ります）
+- E2EE rooms: every server-side processing request answers 422 (`UNSUPPORTED_CODEC`, `details.reason: "e2ee"`), including
+  `recording: composite` (was 400), turning on `e2ee` with a composite or captions media pipeline, and, for streams exported from
+  E2EE rooms (marked `metadata.e2ee: "true"`), still images, captions, saved snapshots, snapshot schedules and pipeline sources;
+  their recordings get no thumbnail
+  ／ E2EE の部屋: サーバーで中身を処理する要求はすべて 422（`UNSUPPORTED_CODEC`、`details.reason: "e2ee"`）にしました。
+  `recording: composite`（以前は 400）、合成・文字起こしのメディアパイプラインがある部屋の `e2ee` を有効にすること、E2EE の部屋から
+  書き出した stream（`metadata.e2ee: "true"` の印）の静止画・字幕・静止画の保存・静止画の予約・パイプラインの入力が対象です。
+  その録画にはサムネイルを作りません
+- `GET /streams/{id}/snapshot` waits up to 5 seconds for a keyframe (was an immediate 409)
+  ／ `GET /streams/{id}/snapshot` は、キーフレームを 5 秒まで待つようにしました（以前はすぐに 409）
+- A scheduled recording lasts until the end of its window: if the sender returns after the broadcast ended mid-window, the same
+  recording continues with a `publisher_reconnect` gap and a discontinuity.
+  ／ 予約による録画は時間帯の終わりまで続きます。時間帯の途中で配信が終了した後に配信者が戻ると、`publisher_reconnect` の欠落と
+  不連続を挟んで同じ録画に記録します。
+- Only `pending` and `running` `live` schedules restrict publishing; finished (`completed`, `missed`, `failed`) ones no longer block
+  publishing outside their windows.
+  ／ 配信を制限する `live` の予約は、`pending`・`running` のものだけになりました。終了した（`completed`・`missed`・`failed`）予約は、
+  時間帯の外の配信を妨げません。
+- Cancelling or deleting a running schedule stops its recording and still-image saving; the run becomes `canceled`.
+  ／ 実行中の予約を取り消す・削除すると、その回の録画と静止画の保存を止め、回は `canceled` になります。
+- `POST /streams/{id}/plan` reports only what the node does: no `transcode` for `royalty_free` H.264 (the track is dropped and shown
+  as `unsupported` with a reason) or for H.265 over WebRTC.
+  ／ `POST /streams/{id}/plan` は、ノードが実際に行うことだけを返します。`royalty_free` の H.264（トラックは破棄され、理由付きの
+  `unsupported` になります）と WebRTC への H.265 で `transcode` と表示しなくなりました。
+
+### Fixed / 修正
+
+- Recording `gaps` are shown while the recording is running (previously only after a node restart).
+  ／ 録画の `gaps` が録画中にも表示されるようになりました（以前はノードを再起動するまで表示されませんでした）。
 
 ## v0.0.0 — 2026-11-03
 

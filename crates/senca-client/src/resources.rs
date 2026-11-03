@@ -486,6 +486,18 @@ impl Pipelines {
     pub async fn control(&self, id: &str, control: &PipelineControl) -> Result<PipelineControlResult> {
         self.0.op_post(format!("/pipelines/{}/control", seg(id)), Some(control), RequestOptions::default()).await.map(|v| v.value)
     }
+    /// 板書の変化の静止画の一覧（`listPipelineSnapshots`）。
+    pub async fn snapshots(&self, id: &str) -> Result<SnapshotList> {
+        self.0.op_get(format!("/pipelines/{}/snapshots", seg(id))).await.map(|v| v.value)
+    }
+    /// 板書の変化の静止画（`getPipelineSnapshotById`）。
+    pub async fn snapshot_by_id(&self, id: &str, sid: &str) -> Result<Bytes> {
+        self.0.bytes(Call::new(Method::Get, format!("/pipelines/{}/snapshots/{}", seg(id), seg(sid))), "image/jpeg").await
+    }
+    /// 板書の変化の静止画を消す（`deletePipelineSnapshot`）。
+    pub async fn delete_snapshot(&self, id: &str, sid: &str) -> Result<()> {
+        self.0.op_delete(format!("/pipelines/{}/snapshots/{}", seg(id), seg(sid)), None).await
+    }
 }
 
 /// ノード（`/nodes`）。

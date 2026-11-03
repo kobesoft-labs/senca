@@ -5,6 +5,7 @@
 //! - 開始時刻（pre-roll を引いた時刻）を過ぎても `grace_ms` 以内なら途中から実行、超えたら missed。
 //! - ノードが止まっている間に終了時刻を過ぎた Running は、起動時に completed（録画は回収で interrupted）にする。
 //! - 繰り返しは次の回を run として記録し、全回が終わったら completed。
+//! - 取り消した（canceled）・消した予約の実行中の回は、録画と静止画の保存を止める。録画を止めるのは録画を持つノード。
 
 use crate::app::App;
 use senca_control::model::*;
@@ -49,7 +50,55 @@ fn current_occurrence(app: &App, s: &Schedule, now: i64) -> Option<(u32, i64, i6
     }
 }
 
+/// 取り消した・消した予約の後始末: 実行中の回の録画（このノードのもの）と静止画の保存を止め、回を canceled にする。
+fn cleanup_canceled(app: &App) {
+    let (canceled, orphan_recs, live_ids) = {
+        let core = app.control.lock().unwrap_or_else(|e| e.into_inner());
+        let st = &core.state;
+        let canceled: Vec<Schedule> = st
+            .schedules
+            .values()
+            .filter(|s| s.state == ScheduleState::Canceled && s.runs.iter().any(|r| r.state == ScheduleState::Running))
+            .cloned()
+            .collect();
+        // 予約が消えた（または取り消された）のに録画中の、予約の録画
+        let orphan_recs: Vec<String> = st
+            .recordings
+            .values()
+            .filter(|r| r.state == RecordingState::Recording)
+            .filter(|r| r.schedule.as_ref().is_some_and(|sid| st.schedules.get(sid).is_none_or(|s| s.state == ScheduleState::Canceled)))
+            .filter(|r| app.cluster.get().is_none() || r.node.as_deref() == Some(app.node_id.as_str()))
+            .map(|r| r.id.clone())
+            .collect();
+        let live_ids: std::collections::HashSet<String> =
+            st.schedules.values().filter(|s| s.state == ScheduleState::Running).map(|s| s.id.clone()).collect();
+        (canceled, orphan_recs, live_ids)
+    };
+    // 静止画の保存は動いている予約の分だけ残す
+    app.snapshot_schedules.lock().unwrap().retain(|sid, _| live_ids.contains(sid));
+    for rid in orphan_recs {
+        app.log(&format!("scheduler: schedule of recording {rid} was canceled or deleted; stopping the recording"));
+        app.stop_recording(&rid, None);
+    }
+    for s in canceled {
+        for mut run in s.runs.iter().filter(|r| r.state == ScheduleState::Running).cloned() {
+            // 録画のある回は、録画を持つノードが記録する（止めるのはそのノード）
+            if let Some(rid) = &run.recording {
+                let mine = app.cluster.get().is_none()
+                    || app.control.lock().unwrap_or_else(|e| e.into_inner()).state.recordings.get(rid).is_some_and(|r| r.node.as_deref() == Some(app.node_id.as_str()));
+                if !mine {
+                    continue;
+                }
+            }
+            run.state = ScheduleState::Canceled;
+            run.reason = Some("予約が取り消されました".into());
+            record(app, &s, ScheduleState::Canceled, run);
+        }
+    }
+}
+
 pub fn tick(app: &App, now: i64) {
+    cleanup_canceled(app);
     let schedules: Vec<Schedule> = {
         let core = app.control.lock().unwrap_or_else(|e| e.into_inner());
         core.state
