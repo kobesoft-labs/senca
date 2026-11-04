@@ -264,7 +264,7 @@ a.ae-resource.is-id { color: var(--accent-text); }
 .role-card .rc-scopes { display: flex; flex-wrap: wrap; gap: 2px; margin-top: 2px; }
 .role-card .rc-scopes code { font-size: 10px; }
 .scope-details { border: 1px solid var(--border); border-radius: var(--r-md); padding: var(--sp-2) var(--sp-3); }
-.scope-details summary { cursor: pointer; font-weight: var(--fw-medium); font-size: var(--fs-sm); min-height: 28px; display: flex; align-items: center; }
+.scope-details summary { cursor: pointer; font-weight: var(--fw-medium); font-size: var(--fs-sm); line-height: 28px; }
 .scope-details[open] summary { margin-bottom: var(--sp-2); }
 .scope-list { display: grid; gap: var(--sp-1); }
 .scope-item { display: grid; grid-template-columns: 18px minmax(0, 1fr); gap: var(--sp-3); align-items: start; padding: var(--sp-2); border-radius: var(--r-sm); cursor: pointer; }
