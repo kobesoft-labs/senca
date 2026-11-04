@@ -192,6 +192,9 @@ function startSession() {
 /** ログアウト: セッションならノードでも失効させ、値を消してログインの画面へ（行き先はダッシュボードに戻す）。 */
 async function logout() {
   const tok = getToken();
+  // 先に画面と SSE を止める（失効の後に届く 401 で、入り直しのダイアログを出さないように）
+  leaveConsole();
+  state.screen = 'logout';
   if (isSessionToken(tok)) {
     try { await auth.logout(); } catch { /* 切れていても消す */ }
   }

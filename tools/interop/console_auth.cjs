@@ -40,7 +40,7 @@ function totp(secret, step = 0) {
 // 試験の中で意図して起こす失敗（[状態, URL]）
 const EXPECTED = [
   [/40[13]|429/, /\/api\/v1\/auth\/(login|login\/mfa|me|exchange)$/],
-  [/401/, /\/api\/v1\/(users|events|capabilities|auth\/sessions|streams)/], // 失効させたセッション
+  [/401/, /\/api\/v1\/(users|events|capabilities|auth\/sessions|streams|recordings|schedules|pipelines)/], // 失効させたセッション（ログアウトの直後に届く読み込みも）
   [/404/, /\/favicon\.ico$/], // 試験用の IdP のページ
   [/409/, /\/api\/v1\/users\/[^/?]+$/],
   [/403/, /\/api\/v1\/(nodes|devices|tokens|secrets|users|grid|audit)/], // 管理者でない利用者の画面（ダッシュボードなど）

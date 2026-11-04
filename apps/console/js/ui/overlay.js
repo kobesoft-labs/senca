@@ -247,9 +247,20 @@ export function attachMenu(anchor, items, { align = 'end', label } = {}) {
       else if (e.key === 'Escape') { e.preventDefault(); e.stopPropagation(); closeMenu(); }
       else if (e.key === 'Tab') { closeMenu(false); }
     });
-    const onDoc = (e) => { if (!el.contains(e.target) && !anchor.contains(e.target)) closeMenu(false); };
-    const onScroll = (e) => { if (!el.contains(e.target)) closeMenu(false); };
-    setTimeout(() => document.addEventListener('mousedown', onDoc), 0);
+    // 閉じた後に残った聞き手が、次に開いたメニューを閉じないように、自分のメニューが開いているときだけ動く
+    const mine = () => openMenu && openMenu.el === el;
+    const onDoc = (e) => {
+      if (!mine()) { document.removeEventListener('mousedown', onDoc); return; }
+      if (!el.contains(e.target) && !anchor.contains(e.target)) closeMenu(false);
+    };
+    // ボタンが実際に動いたときだけ閉じる（項目を押したときのフォーカスで起きる、どこかの小さなスクロールでは閉じない）
+    const at = anchor.getBoundingClientRect();
+    const onScroll = (e) => {
+      if (!mine() || el.contains(e.target)) return;
+      const now = anchor.getBoundingClientRect();
+      if (e.type === 'resize' || Math.abs(now.top - at.top) > 2 || Math.abs(now.left - at.left) > 2) closeMenu(false);
+    };
+    setTimeout(() => { if (mine()) document.addEventListener('mousedown', onDoc); }, 0);
     window.addEventListener('resize', onScroll);
     document.addEventListener('scroll', onScroll, true);
     openMenu = { el, anchor, off: () => { document.removeEventListener('mousedown', onDoc); window.removeEventListener('resize', onScroll); document.removeEventListener('scroll', onScroll, true); } };
