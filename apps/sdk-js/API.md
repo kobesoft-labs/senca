@@ -97,6 +97,15 @@ REST（problem+json、RFC 9457）の誤り。`code` は problem の `code`（`NO
 | `stack?: string` |  |
 | `cause?: unknown` |  |
 
+### `Audit`
+
+監査ログ（読み出しだけ。新しい順。クラスターでは全ノードの分を合わせて返す）。
+
+| メンバー | 説明 |
+|---|---|
+| `list(o?: ListOptions & AuditFilter): Paginator<AuditEntry>` | 一覧（cursor を自動でたどる）。`action` は完全一致、`.` か `*` で終われば前方一致。`tenant` は別のテナント・`*` に node:admin が要る。 |
+| `listPage(o?: ListOptions & AuditFilter): Promise<AuditList>` | 一覧の 1 頁（`unavailable_nodes` は答えなかったノード。項目が `limit` より少なくても `next_cursor` があれば続きがある）。 |
+
 ### `Auth`
 
 ログインと本人の操作（`/auth/...`）。`providers`・`login`・`loginMfa`・`exchange` は認証なしで使えます（token を省いた client でよい）。
@@ -375,6 +384,7 @@ text/event-stream の解析器（行を足すと、まとまったイベント�
 | `nodes: Nodes` |  |
 | `rooms: Rooms` | リアルタイムの部屋。 |
 | `mediaPipelines: MediaPipelines` | 部屋のメディアパイプライン（書き出し・録画・合成・送り出し・文字起こし）。 |
+| `audit: Audit` | 監査ログ（読み出しだけ）。 |
 | `auth: Auth` | ログインと本人の操作。 |
 | `users: Users` | 利用者の管理。 |
 | `setToken(token: string \| (() => string \| Promise<string>) \| undefined): void` | 以後の要求の認証の値を替えます（ログインで得たセッションの値 `sencas_...` など）。 |

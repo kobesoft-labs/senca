@@ -161,6 +161,7 @@ Resources: `streams` (`rotateKey`, `playbackUrl`, `startRecording`, `plan`, `sna
 `exportMp4`), `schedules` (`check`, `runs`), `tokens`, `inputs`, `outputs` (created per stream), `secrets`, `pipelines` (`validate`, `control`),
 `nodes` (`drain`, `undrain`, `devices.disable/enable`), `rooms` (`participants(id)`, `sendMessage`, `stats`, `createToken`),
 `mediaPipelines` (exporting, recording, compositing, pushing out and transcribing a room; `list({room})`, `start`, `stop`),
+`audit` (the audit log, newest first; `list({since, until, action, subject, resource, q, node})`, `listPage`),
 `auth` (login and self-service: `providers`, `login`, `loginMfa`, `exchange`, `oidcStartUrl`, `me`, `logout`, `changePassword`, `setupTotp`,
 `confirmTotp`, `disableMfa`, `regenerateRecoveryCodes`, `sessions`, `revokeSession`), `users` (user management: `resetPassword`, `resetMfa`,
 `sessions`, `revokeSessions`), plus

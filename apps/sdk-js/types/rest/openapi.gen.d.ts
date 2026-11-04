@@ -1,5 +1,33 @@
 // 生成物: apps/sdk-js/scripts/gen_types.py が docs/api/openapi.yaml から作る。手で直さない。
-// 管理 API v1 の components.schemas（158 個）。
+// 管理 API v1 の components.schemas（160 個）。
+
+/**
+ * 監査ログの 1 件（`audit.log` の 1 行に `node`・`node_name` を足したもの）。秘密情報やリクエストの本文は含みません。
+ * 操作によってフィールドが増えることがあります。
+ */
+export type AuditEntry = {
+  /** 操作の種類（`stream.create`・`token.delete`・`node.drain` など。`{資源}.{操作}` の形） */
+  action: string;
+  /** 記録したノード（要求を受けたノード）の ID */
+  node: string;
+  /** 記録したノードの名前 */
+  node_name: string;
+  /** 要求 ID（応答の `X-Request-Id`） */
+  request_id: string;
+  /** 対象の資源の ID（装置・参加者などは `{ノード}/{装置}`・`{部屋}/{接続}` の形） */
+  resource: string;
+  /** 操作した主体。API トークンなら `token:{ID}`、ログインのセッションなら `user:{ID}`（ログインの失敗で利用者が分からないときは `anonymous`）、JWT なら `sub` の値 */
+  subject: string;
+  tenant: string;
+  ts: Timestamp;
+};
+
+export type AuditList = {
+  items: AuditEntry[];
+  next_cursor: string | null;
+  /** 時間内に答えなかったノードの ID（その記録は含まれません。単一ノードでは常に空） */
+  unavailable_nodes: string[];
+};
 
 export type AuthProviders = {
   /** パスワードでログインする利用者に TOTP を必須にしているか（`--auth-require-mfa`） */

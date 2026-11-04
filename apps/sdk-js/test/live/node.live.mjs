@@ -68,6 +68,15 @@ test('stream の作成・一覧・取得・If-Match の更新・412・Idempotenc
   assert.ok(Array.isArray(await c.secrets.list()));
   assert.ok(Array.isArray(await c.nodes.list()));
   await c.tokens.list().toArray();
+
+  // 監査ログ: いま消した stream の記録が読める（新しい順、limit=1 で cursor をたどる）
+  const del = await c.audit.list({ limit: 1, action: 'stream.delete', resource: a.id }).toArray();
+  assert.equal(del.length, 1);
+  assert.ok(del[0].node && del[0].request_id && del[0].subject);
+  const recent = await c.audit.listPage({ limit: 3, action: 'stream.', since: new Date(Date.now() - 600e3) });
+  assert.equal(recent.items.length, 3);
+  assert.ok(recent.next_cursor && Array.isArray(recent.unavailable_nodes));
+  assert.ok(recent.items[0].ts >= recent.items[2].ts);
 });
 
 test('認証の失敗は 401 の ApiError（再試行しない）', opts, async () => {

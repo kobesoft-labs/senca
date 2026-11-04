@@ -16,6 +16,22 @@
   ／ イメージへのドライバー・ライブラリの追加: 共有ライブラリを `/opt/senca/lib` にマウントする（codec worker とキャプチャーの worker が
   最初に探します）、公開イメージから派生させる、`--build-arg EXTRA_PACKAGES=...`・`INTEL_VA_DRIVER=...` でビルドする、のいずれかでできます
 - Guide page 16, Container images ／ ガイドに「16. コンテナイメージ」を追加しました
+- `GET /api/v1/audit`: read the audit log newest first (`tenant:admin`; your own tenant only, `node:admin` may pass `tenant=`
+  or `tenant=*`). Filters `since`/`until` (RFC 3339), `action` (exact, or a prefix ending in `.` or `*`), `subject`, `resource`, `q`
+  (case-insensitive text) and `node`; the usual `limit`/`cursor` paging. Files are read backwards in chunks with at most 16 MiB per
+  node per request. In a cluster the receiving node asks every node over the authenticated inter-node connection (the caller's token
+  is never forwarded) and merges by time; each item carries `node`/`node_name`, and nodes that do not answer are listed in
+  `unavailable_nodes`. The JS SDK gains `senca.audit.list()`/`listPage()`, the Rust client `client.audit()`
+  ／ `GET /api/v1/audit`: 監査ログを新しい順に読めます（`tenant:admin`。見えるのは自分のテナントだけで、`node:admin` は `tenant=`・
+  `tenant=*` を指定できます）。絞り込みは `since`・`until`（RFC 3339）、`action`（完全一致、`.` か `*` で終われば前方一致）、`subject`・
+  `resource`・`q`（大文字・小文字を区別しない文字列）・`node` で、ページングはほかの一覧と同じ `limit`・`cursor` です。ファイルは後ろから
+  少しずつ読み、1 回の要求で読む量はノードごとに 16 MiB までです。クラスターでは、要求を受けたノードが認証済みのノード間の接続で各ノードに
+  問い合わせ（呼び出し元のトークンは転送しません）、時刻順に合わせて返します。各項目には `node`・`node_name` が付き、答えなかったノードは
+  `unavailable_nodes` に入ります。JS SDK に `senca.audit.list()`・`listPage()`、Rust のクライアントに `client.audit()` を追加しました
+- Audit log rotation: `--audit-log-max-bytes` (default 64 MiB, `0` = never) renames `audit.log` to `audit.log.{N}`, and
+  `--audit-log-keep` (default 8) rotated files are kept. The line format is unchanged
+  ／ 監査ログの回転: `--audit-log-max-bytes`（既定 64 MiB、`0` で回転しない）に達すると `audit.log` を `audit.log.{N}` に名前を変え、
+  回転したファイルを `--audit-log-keep`（既定 8）個残します。1 行の形式は変わりません
 
 - User accounts in the replicated control state, per tenant: username, optional email and display name, an optional password
   (Argon2id via the `argon2` crate, PHC string, rehashed on login when parameters rise), roles `admin`/`operator`/`viewer` plus
@@ -80,6 +96,12 @@
   ／ イメージは `--codec-lib-dir /usr/lib/x86_64-linux-gnu` を指定しなくなりました（arm64 で合わないため）。ライブラリは
   `/opt/senca/lib`、次にシステムの既定の場所から探します。`compose.yaml` は公開イメージ（`SENCA_IMAGE`）で起動し、`--build` では
   standard を作ります
+- An audit log line is now appended with a single write (it used to be written in pieces), and the inter-node connection skips
+  frames of unknown kinds instead of closing, and reconnects as soon as the peer closes it
+  ／ 監査ログの 1 行は 1 回の書き込みで追記するようにしました（以前は分けて書いていました）。ノード間の接続は、知らない種類の枠を
+  読み飛ばし（以前は接続を閉じていました）、相手が閉じたらすぐつなぎ直します
+- Rust client: a `Paginator` keeps going over an empty page as long as `next_cursor` advances (it used to stop there)
+  ／ Rust のクライアント: `Paginator` は、空のページでも `next_cursor` が進んでいれば続けて読みます（以前はそこで終えていました）
 
 ## v0.0.1 — 2026-11-03
 

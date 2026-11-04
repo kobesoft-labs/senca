@@ -74,6 +74,10 @@ pub struct Config {
     pub rate_limit_connect: u32,
     /// SSE の再開のために残す直近のイベントの数。
     pub events_retain: usize,
+    /// 監査ログ（`audit.log`）を回転する大きさ（バイト）。0 なら回転しない。
+    pub audit_log_max_bytes: u64,
+    /// 回転した監査ログを残す数（1〜1000）。
+    pub audit_log_keep: usize,
     /// ログインのセッションの待ち時間（最後に使ってからの秒数）と最長の寿命（秒）。ADR-0017。
     pub auth_session_idle_secs: u64,
     pub auth_session_lifetime_secs: u64,
@@ -437,6 +441,8 @@ impl Default for Config {
             auth_mfa_issuer: "SENCA".into(),
             rate_limit_login: DEFAULT_RATE_LIMIT_LOGIN,
             oidc_providers: Vec::new(),
+            audit_log_max_bytes: crate::audit::DEFAULT_MAX_BYTES,
+            audit_log_keep: crate::audit::DEFAULT_KEEP,
         }
     }
 }
@@ -487,9 +493,10 @@ pub const USAGE: &str = "senca-node [--config FILE] [--data-dir DIR] [--http ADD
    [--oidc-tenant TENANT | --oidc-tenant-claim CLAIM] [--oidc-role-map CLAIM=VALUE:ROLE]... [--oidc-default-role ROLE]
    [--oidc-no-sync-roles] [--oidc-auto-provision] [--oidc-allow-unverified-email] [--oidc-username-claim CLAIM]
    [--oidc-prompt PROMPT] [--oidc-max-age SECS]]
-senca-node reset-password --username NAME [--api URL] [--data-dir DIR | --token-file FILE] [--create-admin]
+  [--audit-log-max-bytes BYTES] [--audit-log-keep N]
   [--recording-storage local|s3://BUCKET[/PREFIX] [--s3-endpoint URL] [--s3-region REGION] [--s3-addressing path|virtual]
-   [--s3-credentials FILE] [--s3-part-size BYTES] [--recording-keep-local SECS]]";
+   [--s3-credentials FILE] [--s3-part-size BYTES] [--recording-keep-local SECS]]
+senca-node reset-password --username NAME [--api URL] [--data-dir DIR | --token-file FILE] [--create-admin]";
 
 impl Config {
     /// Webhook の署名の秘密（ファイルの中身、前後の空白を除く）。
@@ -651,6 +658,8 @@ impl Config {
                         _ => return Err(format!("unknown argument: {a}\n{USAGE}")),
                     }
                 }
+                _ if flag("--audit-log-max-bytes") => cfg.audit_log_max_bytes = num(val()?)?,
+                _ if flag("--audit-log-keep") => cfg.audit_log_keep = num(val()?)? as usize,
                 _ if flag("--label") => {
                     let v = val()?;
                     let (k, x) = v.split_once('=').ok_or_else(|| format!("--label は key=value: {v}"))?;
@@ -757,6 +766,12 @@ impl Config {
         if self.oidc_providers.len() > 16 {
             return Err("oidc: IdP は 16 個まで".into());
         }
+        if self.audit_log_max_bytes != 0 && self.audit_log_max_bytes < 4096 {
+            return Err("--audit-log-max-bytes は 0（回転しない）か 4096 以上".into());
+        }
+        if !(1..=1000).contains(&self.audit_log_keep) {
+            return Err("--audit-log-keep は 1〜1000".into());
+        }
         if self.max_playback_ttl_secs == 0 {
             return Err("--max-playback-ttl must be > 0".into());
         }
@@ -824,5 +839,16 @@ mod tests {
         assert!(Config::from_args(&args(&["--auth-password-login", "maybe"])).is_err());
         let c = Config::from_args(&args(&[])).unwrap();
         assert_eq!((c.auth_session_idle_secs, c.auth_session_lifetime_secs, c.auth_password_login), (28_800, 604_800, true));
+    }
+
+    #[test]
+    fn audit_log_rotation_flags() {
+        let c = Config::from_args(&[]).unwrap();
+        assert_eq!((c.audit_log_max_bytes, c.audit_log_keep), (64 << 20, 8));
+        let c = Config::from_args(&args(&["--audit-log-max-bytes", "0", "--audit-log-keep", "3"])).unwrap();
+        assert_eq!((c.audit_log_max_bytes, c.audit_log_keep), (0, 3));
+        assert!(Config::from_args(&args(&["--audit-log-max-bytes", "100"])).is_err());
+        assert!(Config::from_args(&args(&["--audit-log-keep", "0"])).is_err());
+        assert!(Config::from_args(&args(&["--audit-log-keep", "1001"])).is_err());
     }
 }

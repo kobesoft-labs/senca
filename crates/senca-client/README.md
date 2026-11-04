@@ -62,6 +62,7 @@ client.streams().delete(&s.id, s.if_match()).await?;
 | `media_pipelines()` | `create`・`list`・`list_with`（`ListOptions::room` で絞り込み）・`list_page`・`get`・`update`・`set_state`・`delete` |
 | `auth()` | `providers`・`login`（`LoginOutcome::Ok` か `MfaRequired`）・`login_mfa`・`exchange`・`oidc_start_url`・`oidc_callback_url`・`me`・`logout`・`change_password`・`setup_totp`・`confirm_totp`・`disable_mfa`・`regenerate_recovery_codes`・`sessions`・`revoke_session`。ログインの操作はトークンなしのクライアント（`SencaClient::builder(url).build()`）で呼べます。得たセッションの値は `with_token` で使います |
 | `users()` | `create`・`list`・`list_with`・`list_page`・`get`・`update`・`delete`・`reset_password`・`reset_mfa`・`sessions`・`revoke_sessions` |
+| `audit()` | `list(&AuditQuery)`・`list_with`・`list_page`（監査ログ。新しい順、`AuditQuery` で時刻・操作・主体・資源・ノードを絞り込み） |
 
 ## 規約
 

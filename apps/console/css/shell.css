@@ -1,0 +1,202 @@
+/* 外枠: 左のメニュー（畳める・狭い画面では引き出し）、上の帯、本文。 */
+.app { min-height: 100vh; min-height: 100dvh; }
+.shell {
+  --sb: var(--sidebar-w);
+  display: grid; grid-template-columns: var(--sb) minmax(0, 1fr); min-height: 100vh; min-height: 100dvh;
+  /* 左の列の面（メニューは sticky なので、長いページでも列の色が下まで続くように） */
+  background: linear-gradient(to right, var(--surface) calc(var(--sb) - 1px), var(--border) calc(var(--sb) - 1px), var(--border) var(--sb), transparent var(--sb));
+}
+.shell[data-sidebar="collapsed"] { --sb: var(--sidebar-w-collapsed); }
+
+/* ---------------------------------------------------------------- 左のメニュー */
+.sidebar {
+  position: sticky; top: 0; height: 100vh; height: 100dvh; display: flex; flex-direction: column; min-width: 0;
+  background: var(--surface); border-right: 1px solid var(--border); z-index: var(--z-sidebar);
+  padding-left: env(safe-area-inset-left);
+}
+.sidebar .brand {
+  display: flex; align-items: center; gap: var(--sp-3); height: var(--topbar-h); padding: 0 var(--sp-4); flex: none;
+  color: var(--text); text-decoration: none; border-bottom: 1px solid var(--border);
+}
+.sidebar .brand:hover { text-decoration: none; }
+.brand-mark {
+  width: 32px; height: 32px; border-radius: var(--r-md); flex: none; display: grid; place-items: center;
+  background: var(--surface-inverse); color: var(--text-inverse); font-weight: var(--fw-bold); font-size: 15px; letter-spacing: -.02em; position: relative;
+}
+.brand-mark::after { content: ""; position: absolute; right: 5px; top: 5px; width: 6px; height: 6px; border-radius: 50%; background: var(--live); }
+.brand-text { display: grid; line-height: 1.15; min-width: 0; }
+.brand-text strong { font-size: var(--fs-md); letter-spacing: .14em; font-weight: var(--fw-bold); }
+.brand-text small { font-size: var(--fs-2xs); color: var(--text-2); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+
+.nav { flex: 1; overflow-y: auto; overflow-x: hidden; padding: var(--sp-3) var(--sp-2) var(--sp-4); scrollbar-width: thin; }
+.nav-group { margin-top: var(--sp-4); }
+.nav-group:first-child { margin-top: 0; }
+.nav-group-label {
+  display: block; padding: 0 10px var(--sp-1); font-size: var(--fs-2xs); font-weight: var(--fw-semibold); color: var(--text-3);
+  letter-spacing: .06em; text-transform: uppercase; white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
+}
+.nav ul { list-style: none; margin: 0; padding: 0; display: grid; grid-template-columns: minmax(0, 1fr); gap: 1px; }
+.nav li { min-width: 0; }
+.nav a {
+  display: flex; align-items: center; gap: 10px; min-height: 36px; padding: 0 10px; border-radius: var(--r-md);
+  color: var(--text-2); text-decoration: none; font-size: var(--fs-sm); font-weight: var(--fw-medium); position: relative; white-space: nowrap;
+  transition: background-color var(--dur-fast) var(--ease), color var(--dur-fast) var(--ease);
+}
+.nav a .icon { width: 18px; height: 18px; flex: none; color: var(--text-3); transition: color var(--dur-fast) var(--ease); }
+.nav a .nav-label { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; }
+.nav a:hover { background: var(--surface-2); color: var(--text); text-decoration: none; }
+.nav a:hover .icon { color: var(--text-2); }
+.nav a[aria-current="page"] { background: var(--accent-soft); color: var(--accent-soft-text); font-weight: var(--fw-semibold); }
+.nav a[aria-current="page"] .icon { color: var(--accent-text); }
+.nav a[aria-current="page"]::before { content: ""; position: absolute; left: -8px; top: 8px; bottom: 8px; width: 3px; border-radius: 0 3px 3px 0; background: var(--accent); }
+.nav a:focus-visible { outline-offset: -2px; }
+.nav a .tag { margin-left: auto; height: 16px; padding: 0 4px; font-size: 10px; }
+.nav a .nav-count { margin-left: auto; font-size: var(--fs-2xs); font-weight: var(--fw-bold); color: var(--live-fg); background: var(--live); border-radius: var(--r-full); padding: 0 6px; line-height: 18px; }
+
+.sidebar-foot { flex: none; border-top: 1px solid var(--border); padding: var(--sp-2) var(--sp-3) calc(var(--sp-2) + env(safe-area-inset-bottom)); display: flex; align-items: center; gap: var(--sp-2); }
+.sidebar-foot .node-id { flex: 1; min-width: 0; font-size: var(--fs-2xs); color: var(--text-3); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; padding-left: var(--sp-1); }
+.sidebar-foot .node-id code { background: none; border: 0; padding: 0; color: var(--text-2); }
+
+/* 畳んだとき（広い画面だけ） */
+.shell[data-sidebar="collapsed"] .brand { padding: 0 var(--sp-4); justify-content: flex-start; }
+.shell[data-sidebar="collapsed"] .brand-text,
+.shell[data-sidebar="collapsed"] .nav-group-label,
+.shell[data-sidebar="collapsed"] .nav a .nav-label,
+.shell[data-sidebar="collapsed"] .nav a .tag,
+.shell[data-sidebar="collapsed"] .sidebar-foot .node-id { display: none; }
+.shell[data-sidebar="collapsed"] .nav { padding-left: var(--sp-2); padding-right: var(--sp-2); }
+.shell[data-sidebar="collapsed"] .nav a { justify-content: center; padding: 0; height: 40px; }
+.shell[data-sidebar="collapsed"] .nav a[aria-current="page"]::before { left: -8px; }
+.shell[data-sidebar="collapsed"] .nav-group { margin-top: var(--sp-2); padding-top: var(--sp-2); border-top: 1px solid var(--border); }
+.shell[data-sidebar="collapsed"] .nav-group:first-child { border-top: 0; padding-top: 0; }
+.shell[data-sidebar="collapsed"] .nav a .nav-count { position: absolute; top: 2px; right: 4px; }
+.shell[data-sidebar="collapsed"] .sidebar-foot { justify-content: center; }
+
+/* ---------------------------------------------------------------- 上の帯 */
+.workspace { min-width: 0; display: flex; flex-direction: column; }
+.topbar {
+  position: sticky; top: 0; z-index: var(--z-sticky); height: var(--topbar-h); flex: none;
+  display: flex; align-items: center; gap: var(--sp-2); padding: 0 var(--sp-5) 0 var(--sp-6);
+  padding-right: calc(var(--sp-5) + env(safe-area-inset-right));
+  background: color-mix(in srgb, var(--bg) 86%, transparent); backdrop-filter: saturate(1.4) blur(10px); -webkit-backdrop-filter: saturate(1.4) blur(10px);
+  border-bottom: 1px solid var(--border);
+}
+.topbar .menu-btn { display: none; }
+.topbar .crumbs { flex: 1; }
+.topbar .tb-actions { display: flex; align-items: center; gap: var(--sp-1); flex: none; }
+.cmdk-trigger {
+  --btn-bg: var(--surface); --btn-fg: var(--text-3); --btn-hover: var(--surface); --btn-border: var(--border);
+  width: 260px; justify-content: flex-start; font-weight: var(--fw-regular); box-shadow: none; margin-right: var(--sp-2);
+}
+.cmdk-trigger:hover { --btn-border: var(--border-strong); --btn-fg: var(--text-2); }
+.cmdk-trigger .cmdk-text { flex: 1; text-align: left; overflow: hidden; text-overflow: ellipsis; }
+.cmdk-trigger kbd { font-size: var(--fs-2xs); }
+.conn { display: inline-flex; align-items: center; gap: var(--sp-2); font-size: var(--fs-xs); color: var(--text-2); padding: 0 var(--sp-2); height: 32px; border-radius: var(--r-full); white-space: nowrap; }
+.conn .dot.ok { box-shadow: 0 0 0 3px var(--ok-soft); }
+.conn .dot.warn { box-shadow: 0 0 0 3px var(--warn-soft); }
+.conn .dot.danger { box-shadow: 0 0 0 3px var(--danger-soft); }
+.user-btn { --btn-bg: transparent; --btn-border: transparent; --btn-hover: var(--surface-3); box-shadow: none; padding: 0 var(--sp-1); gap: var(--sp-1); }
+.avatar {
+  width: 28px; height: 28px; border-radius: 50%; display: grid; place-items: center; flex: none;
+  background: var(--accent-soft); color: var(--accent-soft-text); font-size: var(--fs-xs); font-weight: var(--fw-bold);
+}
+.avatar .icon { width: 16px; height: 16px; }
+
+/* ---------------------------------------------------------------- 本文 */
+.main { flex: 1; min-width: 0; width: 100%; max-width: var(--content-max); margin: 0 auto; padding: var(--sp-6) var(--sp-8) var(--sp-12); }
+.main:focus { outline: none; }
+.main.full { max-width: none; }
+.route-loading { padding: var(--sp-6) 0; }
+
+/* 準備中のページ */
+.coming-soon { max-width: 640px; margin: var(--sp-10) auto; }
+
+/* ログイン */
+.login-wrap { min-height: 100vh; min-height: 100dvh; display: grid; place-items: center; padding: var(--sp-6) var(--sp-4); background:
+  radial-gradient(1200px 600px at 10% -10%, var(--accent-soft), transparent 60%), var(--bg); }
+.login { width: min(440px, 100%); }
+.login .panel { padding: var(--sp-8); box-shadow: var(--shadow-2); margin: 0; }
+.login .brand { display: flex; align-items: center; gap: var(--sp-3); margin-bottom: var(--sp-6); }
+.login h1 { font-size: var(--fs-xl); margin-bottom: var(--sp-1); }
+.login .login-sub { color: var(--text-2); margin-bottom: var(--sp-5); font-size: var(--fs-sm); }
+.login-tools { display: flex; justify-content: center; gap: var(--sp-2); margin-top: var(--sp-4); }
+
+/* ---------------------------------------------------------------- コマンドパレット */
+dialog.cmdk { width: min(640px, calc(100vw - 24px)); margin-top: 12vh; max-height: min(70vh, 560px); }
+dialog.cmdk .cmdk-input-row { display: flex; align-items: center; gap: var(--sp-2); padding: 0 var(--sp-4); border-bottom: 1px solid var(--border); }
+dialog.cmdk .cmdk-input-row > .icon { color: var(--text-3); width: 18px; height: 18px; }
+dialog.cmdk input.cmdk-input { border: 0; box-shadow: none; flex: 1; height: 52px; font-size: var(--fs-lg); padding: 0; background: transparent; }
+dialog.cmdk .cmdk-list { overflow-y: auto; padding: var(--sp-2); flex: 1; min-height: 0; }
+dialog.cmdk .cmdk-group { font-size: var(--fs-2xs); font-weight: var(--fw-semibold); color: var(--text-2); padding: var(--sp-2) var(--sp-3) var(--sp-1); letter-spacing: .05em; text-transform: uppercase; }
+dialog.cmdk [role="option"] {
+  display: flex; align-items: center; gap: var(--sp-3); min-height: 40px; padding: 0 var(--sp-3); border-radius: var(--r-md); cursor: pointer; color: var(--text);
+}
+dialog.cmdk [role="option"] .icon { width: 18px; height: 18px; color: var(--text-3); }
+dialog.cmdk [role="option"] .opt-label { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+dialog.cmdk [role="option"] .opt-hint { color: var(--text-3); font-size: var(--fs-xs); white-space: nowrap; }
+dialog.cmdk [role="option"] mark { background: transparent; color: var(--accent-text); font-weight: var(--fw-semibold); }
+dialog.cmdk [role="option"][aria-selected="true"] { background: var(--accent-soft); color: var(--accent-soft-text); }
+dialog.cmdk [role="option"][aria-selected="true"] .icon { color: var(--accent-text); }
+dialog.cmdk .cmdk-empty { padding: var(--sp-8) var(--sp-4); text-align: center; color: var(--text-2); }
+dialog.cmdk .cmdk-foot { display: flex; gap: var(--sp-4); padding: var(--sp-2) var(--sp-4); border-top: 1px solid var(--border); background: var(--surface-2); font-size: var(--fs-xs); color: var(--text-2); flex-wrap: wrap; }
+dialog.cmdk .cmdk-foot span { display: inline-flex; gap: var(--sp-1); align-items: center; }
+
+/* ショートカットの一覧 */
+.shortcut-list { display: grid; grid-template-columns: repeat(auto-fit, minmax(240px, 1fr)); gap: var(--sp-5); }
+.shortcut-list h3 { margin: 0 0 var(--sp-2); font-size: var(--fs-xs); color: var(--text-2); text-transform: uppercase; letter-spacing: .05em; }
+.shortcut-list dl { margin: 0; display: grid; grid-template-columns: 1fr auto; gap: var(--sp-2) var(--sp-3); font-size: var(--fs-sm); align-items: center; }
+.shortcut-list dd { margin: 0; display: flex; gap: var(--sp-1); align-items: center; }
+.shortcut-list dd .then { color: var(--text-3); font-size: var(--fs-2xs); }
+
+/* ---------------------------------------------------------------- 狭い画面 */
+.scrim { display: none; }
+@media (max-width: 768px) {
+  .shell, .shell[data-sidebar="collapsed"] { grid-template-columns: minmax(0, 1fr); background: none; }
+  .sidebar {
+    position: fixed; left: 0; top: 0; bottom: 0; height: auto; width: min(300px, 86vw);
+    transform: translateX(-102%); transition: transform var(--dur-slow) var(--ease); box-shadow: var(--shadow-3); visibility: hidden;
+  }
+  .shell[data-drawer="open"] .sidebar { transform: none; visibility: visible; }
+  .shell[data-drawer="open"] .scrim { display: block; position: fixed; inset: 0; background: var(--overlay); z-index: calc(var(--z-sidebar) - 1); animation: fade-in var(--dur) var(--ease); }
+  /* 引き出しの中では畳んだ状態を使わない */
+  .shell[data-sidebar="collapsed"] .brand-text,
+  .shell[data-sidebar="collapsed"] .nav-group-label,
+  .shell[data-sidebar="collapsed"] .nav a .nav-label,
+  .shell[data-sidebar="collapsed"] .nav a .tag,
+  .shell[data-sidebar="collapsed"] .sidebar-foot .node-id { display: revert; }
+  .shell[data-sidebar="collapsed"] .nav a { justify-content: flex-start; padding: 0 var(--sp-3); }
+  .shell[data-sidebar="collapsed"] .nav-group { border-top: 0; margin-top: var(--sp-4); padding-top: 0; }
+  .sidebar .collapse-btn { display: none; }
+  .nav a { min-height: 44px; font-size: var(--fs-md); }
+  .topbar { padding: 0 var(--sp-2); padding-left: calc(var(--sp-2) + env(safe-area-inset-left)); padding-right: calc(var(--sp-2) + env(safe-area-inset-right)); gap: var(--sp-1); }
+  .topbar .menu-btn { display: inline-flex; }
+  .topbar .crumbs li:not(:last-child) { display: none; }
+  .topbar .crumbs li + li::before { display: none; }
+  .topbar .crumbs { font-size: var(--fs-md); }
+  .cmdk-trigger { width: var(--control-h-lg); padding: 0; margin: 0; --btn-border: transparent; --btn-bg: transparent; }
+  .cmdk-trigger .cmdk-text, .cmdk-trigger kbd { display: none; }
+  .conn .conn-text { display: none; }
+  .topbar button, .topbar .btn { min-height: 44px; min-width: 44px; }
+  .main { padding: var(--sp-4) var(--sp-4) calc(var(--sp-10) + env(safe-area-inset-bottom)); padding-left: calc(var(--sp-4) + env(safe-area-inset-left)); padding-right: calc(var(--sp-4) + env(safe-area-inset-right)); }
+  .page-header { margin-bottom: var(--sp-5); }
+  .page-header .page-back { display: inline-flex; align-items: center; gap: var(--sp-1); font-size: var(--fs-sm); color: var(--text-2); width: fit-content; min-height: 32px; }
+  .page-header h1 { font-size: var(--fs-xl); }
+  .page-header .ph-actions { width: 100%; }
+  .page-header .ph-actions > button, .page-header .ph-actions > .btn { min-height: 44px; flex: 1 1 auto; }
+  .page-header .ph-actions > button.icon-only { flex: none; }
+  .panel { padding: var(--sp-4); }
+  .panel .table-wrap > table > tbody > tr { padding: var(--sp-1) var(--sp-3); }
+  button, .btn { min-height: 44px; }
+  button.small, button.sm { min-height: 36px; }
+  button.icon-only { width: 44px; }
+  input, select { min-height: 44px; font-size: 16px; }
+  .tablist [role="tab"] { min-height: 44px; }
+  .menu [role="menuitem"], .menu [role="menuitemradio"] { min-height: 44px; }
+  dialog { width: calc(100vw - 16px); max-height: calc(100dvh - 16px); border-radius: var(--r-lg); }
+  dialog.cmdk { margin-top: var(--sp-2); }
+  dialog .dlg-foot { padding-bottom: calc(var(--sp-4) + env(safe-area-inset-bottom)); }
+  dialog .dlg-foot button { flex: 1 1 auto; }
+}
+@media (max-width: 380px) {
+  .conn { display: none; }
+}

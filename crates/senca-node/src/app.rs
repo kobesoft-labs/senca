@@ -76,6 +76,8 @@ pub struct App {
     pub viewers: Arc<crate::viewers::Viewers>,
     /// 利用者のログイン（セッション・OIDC。ADR-0017）。
     pub auth: crate::auth::AuthRuntime,
+    /// 監査ログ（`data_dir/audit.log`。書き込み・回転・読み出し）。
+    pub audit_log: crate::audit::AuditLog,
 }
 
 /// 再生（RTMP・SRT・RTSP の play、WHEP）を始められない理由。
@@ -99,9 +101,11 @@ impl App {
         auth: crate::auth::AuthRuntime,
     ) -> Arc<App> {
         let limits = crate::ratelimit::RateLimits::from_config(&cfg);
+        let audit_log = crate::audit::AuditLog::new(&cfg.data_dir, cfg.audit_log_max_bytes, cfg.audit_log_keep);
         let app = Arc::new(App {
             auth,
             limits,
+            audit_log,
             cfg,
             node_id,
             control: Mutex::new(control),
@@ -188,12 +192,7 @@ impl App {
                 m.entry(k).or_insert(v);
             }
         }
-        let path = self.cfg.data_dir.join("audit.log");
-        let r = std::fs::OpenOptions::new().create(true).append(true).open(&path).and_then(|mut f| {
-            use std::io::Write;
-            writeln!(f, "{line}")
-        });
-        if let Err(e) = r {
+        if let Err(e) = self.audit_log.append(&line.to_string()) {
             self.log(&format!("audit log write failed: {e}"));
         }
     }

@@ -15,10 +15,11 @@
 
 import { request, ApiError } from './client.js';
 import { idemKey } from '../lib/format.js';
+import { t } from '../i18n/index.js';
 
 export class NotAvailableError extends Error {
   constructor(feature) {
-    super(`${feature} の API はこのノードでは使えません`);
+    super(t('pipelines.notAvailable', { feature }));
     this.name = 'NotAvailableError';
     this.feature = feature;
   }

@@ -1,4 +1,7 @@
 // DOM の小さな道具。文字列は常にテキストノードにする（HTML の文字列は組み立てない）。
+// 見た目のある部品は js/ui/（dataTable・formField など）。ここの table・field・kv・badge は同じ見た目の簡単な版。
+
+import { t } from '../i18n/index.js';
 
 const SVG_NS = 'http://www.w3.org/2000/svg';
 
@@ -84,22 +87,29 @@ export function checkbox(label, checked, attrs = {}) {
   return { input, el: h('label', { class: 'check' }, input, label) };
 }
 
-/** 表を作る。columns: [{label, render(row) -> node|string, class}] */
-export function table(columns, rows, { empty = 'ありません', caption } = {}) {
-  if (!rows.length) return h('div', { class: 'empty' }, empty);
+/**
+ * 表を作る。columns: [{label, render(row) -> node|string, class, primary, actions}]
+ * 狭い画面ではカードの並びになる（data-label が項目名）。並べ替え・空の状態の絵は ui/table.js の dataTable。
+ */
+export function table(columns, rows, { empty, caption } = {}) {
+  if (!rows.length) return h('div', { class: 'empty' }, empty || t('common.none'));
   return h('div', { class: 'table-wrap' },
     h('table', null,
       caption ? h('caption', { class: 'visually-hidden' }, caption) : null,
       h('thead', null, h('tr', null, columns.map((c) => h('th', { scope: 'col', class: c.class }, c.label)))),
-      h('tbody', null, rows.map((r) => h('tr', null, columns.map((c) => h('td', { class: c.class }, c.render(r))))))));
+      h('tbody', null, rows.map((r) => h('tr', null, columns.map((c) => h('td', {
+        class: [c.class, c.primary && 'cell-primary', c.actions && 'actions-cell'].filter(Boolean).join(' ') || null,
+        'data-label': c.primary || c.actions ? '' : c.label,
+      }, h('div', { class: 'cell' }, c.render(r)))))))));
 }
 
 export function kv(pairs) {
   return h('dl', { class: 'kv' }, pairs.filter(Boolean).flatMap(([k, v]) => [h('dt', null, k), h('dd', null, v ?? '—')]));
 }
 
+/** 小さなラベル。kind: ok・warn・danger・info・accent・live・rec。点付きは ui の statusPill。 */
 export function badge(text, kind) {
-  return h('span', { class: ['badge', kind] }, text);
+  return h('span', { class: ['badge', kind].filter(Boolean).join(' ') }, text);
 }
 
 /** 関数呼び出しをまとめる（SSE で連続した更新を 1 回にする）。 */

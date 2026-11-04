@@ -8,6 +8,7 @@
 // - ノードは配る stream のコーデックだけを申し出る（AAC は WebRTC で運べないので音声が無いことがある）。
 // - stream が配信中でない・コーデックを運べないときは 422（WhepError.status）。呼び手は HLS に戻せる。
 
+import { t } from '../i18n/index.js';
 export class WhepError extends Error {
   constructor(status, message) {
     super(message);
@@ -49,7 +50,7 @@ export class WhepPlayer {
   }
 
   async start() {
-    if (!whepSupported()) throw new WhepError(0, 'このブラウザは WebRTC を使えません');
+    if (!whepSupported()) throw new WhepError(0, t('player.noWebrtc'));
     const pc = new RTCPeerConnection({ bundlePolicy: 'max-bundle' });
     this.pc = pc;
     pc.addTransceiver('video', { direction: 'recvonly' });
@@ -61,11 +62,11 @@ export class WhepPlayer {
     };
     pc.onconnectionstatechange = () => {
       const s = pc.connectionState;
-      if (s === 'connected') this.status('playing', 'WebRTC で再生中');
-      else if (s === 'failed') this.status('error', 'WebRTC の接続に失敗しました');
-      else if (s === 'disconnected') this.status('loading', 'WebRTC の接続が途切れています');
+      if (s === 'connected') this.status('playing', t('player.webrtcPlaying'));
+      else if (s === 'failed') this.status('error', t('player.webrtcFailed'));
+      else if (s === 'disconnected') this.status('loading', t('player.webrtcDisconnected'));
     };
-    this.status('loading', 'WebRTC で接続中');
+    this.status('loading', t('player.webrtcConnecting'));
     await pc.setLocalDescription(await pc.createOffer());
     // 候補を offer に入れる（ノードは trickle の PATCH も受けるが、1 往復で済ませる）
     if (pc.iceGatheringState !== 'complete') {
@@ -79,11 +80,11 @@ export class WhepPlayer {
     try {
       r = await fetch(this.url, { method: 'POST', headers: { 'Content-Type': 'application/sdp' }, body: pc.localDescription.sdp, credentials: 'omit', cache: 'no-store' });
     } catch (e) {
-      throw new WhepError(0, `WHEP に接続できません: ${e.message}`);
+      throw new WhepError(0, t('player.whepConnectFailed', { reason: e.message }));
     }
     const body = await r.text();
     if (r.status !== 201 && r.status !== 200) {
-      const why = { 403: '署名が無効か期限切れです', 404: 'このノードは WHEP を配っていません', 422: 'この stream は配信中でないか、WebRTC で運べるコーデックがありません', 503: 'このノードでは WebRTC が動いていません' }[r.status];
+      const why = ([403, 404, 422, 503].includes(r.status) ? t(`player.whep${r.status}`) : undefined);
       throw new WhepError(r.status, `WHEP ${r.status}: ${why || body || r.statusText}`);
     }
     const loc = r.headers.get('Location');
@@ -121,7 +122,7 @@ export class WhepPlayer {
       audio: !!a,
       bitrate: bps,
     };
-    if (this.pc.connectionState === 'connected') this.status('playing', 'WebRTC で再生中');
+    if (this.pc.connectionState === 'connected') this.status('playing', t('player.webrtcPlaying'));
   }
 
   deleteSession() {

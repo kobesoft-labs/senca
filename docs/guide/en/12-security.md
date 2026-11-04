@@ -41,8 +41,8 @@ The management API (`/api/v1/...`) and SSE (`/api/v1/events`) use `Authorization
 | `subscribe` | Issuing live playback URLs |
 | `recording:read` | Reading recordings; recording playback URLs, thumbnails and MP4 export |
 | `recording:delete` | Deleting recordings |
-| `tenant:admin` | Everything except `node:admin`, plus managing tokens and secrets |
-| `node:admin` | Operations outside any tenant: `/nodes`, `/grid`, `/devices`, draining, disabling and enabling devices, node and grid events |
+| `tenant:admin` | Everything except `node:admin`, plus managing tokens and secrets and reading the audit log (`GET /audit`) |
+| `node:admin` | Operations outside any tenant: `/nodes`, `/grid`, `/devices`, draining, disabling and enabling devices, node and grid events, reading other tenants' audit log (`tenant` on `GET /audit`) |
 
 Per-operation scopes are listed in [15. Management API and SDKs](15-api-and-sdks.md) and the OpenAPI document
 ([docs/api/openapi.yaml](../../api/openapi.yaml)).
@@ -330,6 +330,51 @@ session values are never written).
 | `auth.mfa.enable`, `auth.mfa.disable`, `auth.mfa.recovery_codes`, `auth.mfa.recovery_code_used` | Registering and disabling MFA, regenerating recovery codes, using a recovery code |
 | `user.create`, `user.update`, `user.delete` | Creating, changing (whether roles or scopes changed, disabling) and deleting users. `by: "oidc:{id}"` when OIDC created the user or recomputed its roles |
 | `user.password.reset`, `user.mfa.reset`, `user.sessions.revoke`, `user.oidc.link` | An administrator resetting a password, removing MFA, revoking sessions; linking to an IdP user |
+
+### Rotation
+
+When `audit.log` reaches `--audit-log-max-bytes` (default 64 MiB), it is renamed to `audit.log.{N}` and a new `audit.log` is started.
+`N` counts up from 1, so a larger number is a newer file. The newest `--audit-log-keep` (default 8) rotated files are kept and older
+ones are deleted (by default, roughly 576 MiB per node at most). `--audit-log-max-bytes 0` turns rotation off.
+Each line is appended with a single write, so a node that stops mid-way never damages earlier lines (a half-written line is skipped
+when reading). To archive the log elsewhere, collect the rotated files (`audit.log.{N}`).
+
+### Reading it through the API
+
+`GET /api/v1/audit` returns the entries newest first (requires `tenant:admin`).
+
+```sh
+curl -s -H "Authorization: Bearer $TOKEN" \
+  "http://127.0.0.1:8080/api/v1/audit?since=2026-11-03T00:00:00Z&action=stream.&limit=50"
+```
+
+```json
+{"items":[{"action":"stream.create","node":"3d6d4c49...","node_name":"node-1","request_id":"req_...","resource":"<resource ID>",
+  "subject":"token:<token ID>","tenant":"default","ts":"2026-11-03T01:10:15.531Z"}],"next_cursor":"eyJ0Ijox...","unavailable_nodes":[]}
+```
+
+| Query | Meaning |
+|---|---|
+| `since`, `until` | Time range (RFC 3339; `since` is inclusive, `until` exclusive) |
+| `action` | Kind of operation: an exact match (`stream.create`), or a prefix match when it ends with `.` or `*` (`stream.`) |
+| `subject`, `resource` | Exact match on who acted and on the target resource |
+| `q` | Text contained in `action`, `subject`, `resource` or `request_id` (case-insensitive) |
+| `node` | Only the entries of that node (ID or name) |
+| `tenant` | Tenant to read. Defaults to your own; another tenant or `*` (all) also needs `node:admin` |
+| `limit`, `cursor` | Paging as in every other list (follow `next_cursor` until it is `null`) |
+
+- You only see your own tenant's entries.
+- Files are read backwards in small chunks, so a large log is never loaded into memory as a whole. Each request reads at most 16 MiB
+  per node; when that limit is reached, `next_cursor` is returned even if there are fewer items than `limit`. Reading continues across
+  rotated files (entries in deleted files are gone).
+- Lines that are not valid JSON are skipped. Entries may gain new fields in the future.
+
+**Clusters**: an entry lives in the `audit.log` of the node that served the request. The node that receives `GET /audit` asks every node
+over the inter-node connection (mutual authentication with the cluster secret, plus mTLS when configured; see
+[12.7](#127-cluster-mtls)) and merges the answers newest first. `node` and `node_name` on each item name the node that wrote it. The
+caller's token is never sent to other nodes: the receiving node derives the tenant filter from the caller's permissions and puts it in
+the query. Nodes that do not answer within 5 seconds are listed in `unavailable_nodes` and their entries are missing (if you asked for
+that node with `node`, the answer is 503). If node clocks drift, the order across nodes drifts too (keep clocks in sync with NTP or similar).
 
 ## 12.13 User accounts and login
 

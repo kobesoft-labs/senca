@@ -212,6 +212,7 @@ const COVERAGE = {
   exportRecordingMp4: (c) => c.recordings.exportMp4,
   createSchedule: (c) => c.schedules.create, listSchedules: (c) => c.schedules.list, checkSchedule: (c) => c.schedules.check, getSchedule: (c) => c.schedules.get,
   patchSchedule: (c) => c.schedules.update, deleteSchedule: (c) => c.schedules.delete, listScheduleRuns: (c) => c.schedules.runs,
+  listAudit: (c) => c.audit.list,
   createToken: (c) => c.tokens.create, listTokens: (c) => c.tokens.list, getToken: (c) => c.tokens.get, deleteToken: (c) => c.tokens.delete,
   createInput: (c) => c.inputs.create, listInputs: (c) => c.inputs.list, getInput: (c) => c.inputs.get, patchInput: (c) => c.inputs.update, deleteInput: (c) => c.inputs.delete,
   createOutput: (c) => c.outputs.create, listOutputs: (c) => c.outputs.list, getOutput: (c) => c.outputs.get, patchOutput: (c) => c.outputs.update, deleteOutput: (c) => c.outputs.delete,

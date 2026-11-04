@@ -1450,6 +1450,35 @@ pub struct RecoveryCodes {
     pub recovery_codes_redacted: Option<Value>,
 }
 
+/// 監査ログの 1 件（`audit.log` の 1 行に `node`・`node_name` を足したもの）。秘密情報やリクエストの本文は含みません。
+/// 操作によってフィールドが増えることがあります。
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, Default)]
+pub struct AuditEntry {
+    /// 操作の種類（`stream.create`・`token.delete`・`node.drain` など。`{資源}.{操作}` の形）
+    pub action: String,
+    /// 記録したノード（要求を受けたノード）の ID
+    pub node: String,
+    /// 記録したノードの名前
+    pub node_name: String,
+    /// 要求 ID（応答の `X-Request-Id`）
+    pub request_id: String,
+    /// 対象の資源の ID（装置・参加者などは `{ノード}/{装置}`・`{部屋}/{接続}` の形）
+    pub resource: String,
+    /// 操作した主体。API トークンなら `token:{ID}`、ログインのセッションなら `user:{ID}`（ログインの失敗で利用者が分からないときは `anonymous`）、JWT なら `sub` の値
+    pub subject: String,
+    pub tenant: String,
+    pub ts: Timestamp,
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, Default)]
+pub struct AuditList {
+    pub items: Vec<AuditEntry>,
+    #[serde(default)]
+    pub next_cursor: Option<String>,
+    /// 時間内に答えなかったノードの ID（その記録は含まれません。単一ノードでは常に空）
+    pub unavailable_nodes: Vec<String>,
+}
+
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize, Default)]
 pub struct Capabilities {
     pub api_version: Value,

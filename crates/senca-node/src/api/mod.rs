@@ -10,6 +10,7 @@
 //!   MFA の登録）は、[`pending_allowed`] の経路しか使えない（403、`details.pending`）。
 
 pub mod auth;
+pub mod audit;
 pub mod io;
 pub mod media_pipelines;
 pub mod pipelines;
@@ -215,6 +216,7 @@ impl Ctx<'_> {
                 "cursor" => cursor = Some(v),
                 "stream" | "state" if self.req.path == "/recordings" || self.req.path == "/schedules" => {}
                 "room" if self.req.path == "/media-pipelines" => {}
+                "since" | "until" | "action" | "subject" | "resource" | "q" | "tenant" | "node" if self.req.path == "/audit" => {}
                 _ => return Err(Problem::invalid(format!("知らないクエリ: {k}"))),
             }
         }
@@ -574,6 +576,7 @@ fn route(ctx: &Ctx) -> ApiResult {
         ("DELETE", ["users", id, "mfa"]) => users::reset_mfa(ctx, id),
         ("GET", ["users", id, "sessions"]) => users::sessions(ctx, id),
         ("DELETE", ["users", id, "sessions"]) => users::revoke_sessions(ctx, id),
+        ("GET", ["audit"]) => audit::list(ctx),
 
         ("POST", ["tokens"]) => tokens::create(ctx),
         ("GET", ["tokens"]) => tokens::list(ctx),
@@ -586,6 +589,7 @@ fn route(ctx: &Ctx) -> ApiResult {
             | ["tokens", ..]
             | ["auth", ..]
             | ["users", ..]
+            | ["audit"]
             | ["inputs", ..]
             | ["outputs", ..]
             | ["secrets", ..]

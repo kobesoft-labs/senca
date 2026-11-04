@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# M9: 3 台の制御面（自前の Raft）。転送・リーダーの停止・追いつき・過半数の喪失（AC-15 の一部）。
+# M9: 3 台の制御面（自前の Raft）。転送・リーダーの停止・追いつき・過半数の喪失（AC-15 の一部）。監査ログのクラスター全体の読み出し。
 # ノード間の挑戦応答・分断での fencing（SIGSTOP）・所有権の手放し・/readyz・排出・心拍の使用量も確かめる。
 source "$(dirname "$0")/lib.sh"
 [ -n "${NODE_BIN_PREBUILT:-}" ] || (cd "$ROOT" && cargo build -q -p senca-node)
@@ -317,6 +317,67 @@ ok=0; for _ in $(seq 20); do [ "$(api 2 GET /nodes/$N2ID | json "['draining']")"
 rc=0; timeout 15 "$FFMPEG" -v error -re -i "$W/src.flv" -t 2 -c copy -f flv rtmp://127.0.0.1:${RTMPP[2]}/live/$DBKEY 2>/dev/null || rc=$?
 [ "$rc" = 0 ] && pass "drain: after undrain, n2 accepts new publishers again" || fail "undrain: publish rc=$rc"
 kill $DPUB 2>/dev/null || true
+# ---- 監査ログ（GET /audit）: 各ノードの audit.log を、ノード間の接続で集めて時刻の新しい順に合わせる ----
+AS=$(python3 -c "import datetime;print(datetime.datetime.now(datetime.timezone.utc).strftime('%Y-%m-%dT%H:%M:%S.%f')[:-3]+'Z')")
+sleep 0.05
+for i in 1 2 3; do c=$(code $i POST /streams -d "{\"name\":\"audit-$i\"}"); [ "$c" = 201 ] || fail "audit: create via n$i $c"; sleep 0.05; done
+api 1 GET /nodes > "$W/nodes.json"
+for i in 1 2 3; do api $i GET "/audit?since=$AS&action=stream.create" > "$W/audit$i.json"; done
+python3 - "$W" <<'PY' && pass "audit: every node returns the cluster-wide view, newest first, with the node that served each request" || fail "audit: cluster-wide view $(head -c 600 "$W/audit1.json")"
+import json, sys
+w = sys.argv[1]
+ids = {n["name"]: n["id"] for n in json.load(open(f"{w}/nodes.json"))["items"]}
+pages = [json.load(open(f"{w}/audit{i}.json")) for i in (1, 2, 3)]
+p = pages[0]
+got = [(x["node"], x["node_name"]) for x in p["items"]]
+ok = got == [(ids["n3"], "n3"), (ids["n2"], "n2"), (ids["n1"], "n1")] and p["next_cursor"] is None and p["unavailable_nodes"] == []
+ok &= all(x["action"] == "stream.create" and x["tenant"] == "default" and x["subject"].startswith("token:") for x in p["items"])
+ok &= all(q["items"] == p["items"] for q in pages[1:])
+if not ok:
+    for i, q in enumerate(pages, 1):
+        print(f"   n{i}:", [(x["node_name"], x["ts"]) for x in q["items"]], q["next_cursor"], q["unavailable_nodes"])
+sys.exit(0 if ok else 1)
+PY
+N3ID=$(python3 -c "import json,sys;print([n['id'] for n in json.load(open(sys.argv[1]))['items'] if n['name']=='n3'][0])" "$W/nodes.json")
+r=$(api 1 GET "/audit?since=$AS&action=stream.create&node=n2")
+echo "$r" | python3 -c "import json,sys;i=json.load(sys.stdin)['items'];sys.exit(0 if [x['node_name'] for x in i]==['n2'] else 1)" \
+  && pass "audit: node= restricts the read to one node (by name)" || fail "audit: node=n2 $r"
+r=$(api 2 GET "/audit?since=$AS&action=stream.create&node=$N3ID")
+echo "$r" | python3 -c "import json,sys;i=json.load(sys.stdin)['items'];sys.exit(0 if [x['node_name'] for x in i]==['n3'] else 1)" \
+  && pass "audit: node= by id reads another node through the inter-node connection" || fail "audit: node=n3 via n2 $r"
+# 全体を limit=3 でたどる = 1 ページで読んだもの（重複・取りこぼしなし、新しい順）
+python3 - "http://127.0.0.1:${HTTP[2]}/api/v1" "$TOKEN" <<'PY' && pass "audit: cursor pagination over all nodes matches a single page" || fail "audit: cluster pagination"
+import json, sys, urllib.request, urllib.parse
+base, tok = sys.argv[1], sys.argv[2]
+def get(q):
+    r = urllib.request.Request(base + "/audit?" + urllib.parse.urlencode(q), headers={"Authorization": "Bearer " + tok})
+    return json.load(urllib.request.urlopen(r, timeout=30))
+full = get({"limit": 1000})
+assert full["next_cursor"] is None and full["unavailable_nodes"] == [], full
+items, cur, n = [], None, 0
+while True:
+    p = get({"limit": 3, **({"cursor": cur} if cur else {})})
+    assert len(p["items"]) <= 3
+    items += p["items"]; cur = p["next_cursor"]; n += 1
+    if cur is None:
+        break
+key = lambda x: (x["node"], x["request_id"], x["ts"], x["action"])
+assert [key(x) for x in items] == [key(x) for x in full["items"]], (len(items), len(full["items"]))
+assert len(set(map(key, items))) == len(items)
+assert len({x["node"] for x in items}) == 3
+assert all(a["ts"] >= b["ts"] for a, b in zip(items, items[1:]))
+print(f"   {len(items)} entries from 3 nodes in {n} pages")
+PY
+# 1 台が答えない（SIGSTOP）: ほかのノードの分を返し、答えなかったノードを unavailable_nodes に載せる。node= で指定すると 503
+kill -STOP ${PIDS[3]}
+r=$(api 1 GET "/audit?since=$AS&action=stream.create" --max-time 20)
+c=$(code 1 GET "/audit?node=n3" --max-time 20)
+kill -CONT ${PIDS[3]}
+echo "$r" | python3 -c "import json,sys;p=json.load(sys.stdin);sys.exit(0 if [x['node_name'] for x in p['items']]==['n2','n1'] and p['unavailable_nodes']==[sys.argv[1]] else 1)" "$N3ID" \
+  && pass "audit: a node that does not answer is listed in unavailable_nodes" || fail "audit: stopped node $r"
+[ "$c" = 503 ] && pass "audit: node= for a node that does not answer is 503" || fail "audit: node=n3 stopped $c"
+ok=0; for _ in $(seq 40); do curl -sf http://127.0.0.1:${HTTP[3]}/readyz >/dev/null && { ok=1; break; }; sleep 0.25; done
+[ $ok = 1 ] || fail "audit: n3 ready after SIGCONT"
 if [ -n "${CLUSTER_TLS:-}" ]; then
   # 別の認証局の証明書を持つノードは、合言葉を知っていても入れない
   python3 - "$W" <<'PY'

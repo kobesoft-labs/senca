@@ -38,8 +38,8 @@
 | `subscribe` | ライブの再生 URL の発行 |
 | `recording:read` | 録画の参照、録画の再生 URL・サムネイル・MP4 の書き出し |
 | `recording:delete` | 録画の削除 |
-| `tenant:admin` | `node:admin` 以外のすべて。加えて、トークンと秘密値の管理 |
-| `node:admin` | テナントをまたぐ運用操作（`/nodes`・`/grid`・`/devices`、ノードの退避（drain）、デバイスの停止・再開、ノード・グリッドのイベント） |
+| `tenant:admin` | `node:admin` 以外のすべて。加えて、トークンと秘密値の管理、監査ログの参照（`GET /audit`） |
+| `node:admin` | テナントをまたぐ運用操作（`/nodes`・`/grid`・`/devices`、ノードの退避（drain）、デバイスの停止・再開、ノード・グリッドのイベント、監査ログの別のテナントの参照（`GET /audit` の `tenant`）） |
 
 操作ごとに必要な権限は、[15. 管理 API と SDK](15-api-and-sdks.md) と OpenAPI（[docs/api/openapi.yaml](../../api/openapi.yaml)）を見てください。
 
@@ -305,6 +305,49 @@ Idempotency-Key のために保存する応答からも、`stream_key`・`token`
 | `auth.mfa.enable`・`auth.mfa.disable`・`auth.mfa.recovery_codes`・`auth.mfa.recovery_code_used` | MFA の登録・解除・回復コードの作り直し・回復コードの使用 |
 | `user.create`・`user.update`・`user.delete` | 利用者の作成・変更（役割・権限が変わったか、無効化）・削除。OIDC で自動で作った・役割を決め直したときは `by: "oidc:{id}"` |
 | `user.password.reset`・`user.mfa.reset`・`user.sessions.revoke`・`user.oidc.link` | 管理者によるパスワードの再設定・MFA の解除・セッションの失効、IdP の利用者との結び付け |
+
+### 回転
+
+`audit.log` が `--audit-log-max-bytes`（既定 64 MiB）以上になると、`audit.log.{N}` に名前を変えて新しい `audit.log` に書き始めます。
+`N` は 1 から順に増える番号で、大きいほど新しいファイルです。回転したファイルは新しいものから `--audit-log-keep`（既定 8）個を残し、
+それより古いものは削除します（既定では、ノードあたりおよそ 576 MiB まで）。`--audit-log-max-bytes 0` にすると回転しません。
+1 行は 1 回の書き込みで追記するので、途中でノードが止まっても、それまでの行は壊れません（書きかけの行は読み出しのときに飛ばします）。
+別の場所へ保管したい場合は、回転したファイル（`audit.log.{N}`）を集めてください。
+
+### API で読む
+
+`GET /api/v1/audit` で、記録を時刻の新しい順に読めます（`tenant:admin` が必要です）。
+
+```sh
+curl -s -H "Authorization: Bearer $TOKEN" \
+  "http://127.0.0.1:8080/api/v1/audit?since=2026-11-03T00:00:00Z&action=stream.&limit=50"
+```
+
+```json
+{"items":[{"action":"stream.create","node":"3d6d4c49...","node_name":"node-1","request_id":"req_...","resource":"<リソース ID>",
+  "subject":"token:<トークン ID>","tenant":"default","ts":"2026-11-03T01:10:15.531Z"}],"next_cursor":"eyJ0Ijox...","unavailable_nodes":[]}
+```
+
+| クエリ | 意味 |
+|---|---|
+| `since`・`until` | 時刻の範囲（RFC 3339。`since` は含み、`until` は含みません） |
+| `action` | 操作の種類。完全に一致するもの（`stream.create`）。`.` か `*` で終われば前方一致（`stream.`） |
+| `subject`・`resource` | 操作した主体・対象の資源に完全に一致するもの |
+| `q` | `action`・`subject`・`resource`・`request_id` のいずれかに含まれる文字列（大文字・小文字を区別しません） |
+| `node` | そのノード（ID または名前）の記録だけ |
+| `tenant` | 読むテナント。既定は自分のテナントで、別のテナントと `*`（すべて）は `node:admin` も必要です |
+| `limit`・`cursor` | ほかの一覧と同じページング（`next_cursor` が `null` になるまでたどります） |
+
+- 見えるのは自分のテナントの記録だけです。
+- ファイルは後ろから少しずつ読むので、記録が大きくてもファイル全体をメモリに読み込みません。1 回の要求で読む量には上限（ノードごとに 16 MiB）があり、
+  上限に達すると、項目が `limit` より少なくても `next_cursor` を返します。回転したファイルもまたいで読みます（削除したファイルの記録は返しません）。
+- JSON として読めない行は飛ばします。記録には今後フィールドが増えることがあります。
+
+**クラスター**: 記録は要求を受けたノードの `audit.log` にあります。`GET /audit` を受けたノードは、各ノードにノード間の接続
+（クラスターの共有シークレットによる相互認証。設定していれば mTLS。[12.7](#127-クラスターの-mtls)）で問い合わせ、時刻の新しい順に合わせて返します。
+各項目の `node`・`node_name` は記録したノードです。呼び出し元のトークンはほかのノードへ送りません。テナントの絞り込みは、要求を受けたノードが
+呼び出し元の権限から決めて問い合わせに含めます。5 秒以内に答えなかったノードは `unavailable_nodes` に入り、そのノードの記録は含まれません
+（`node` でそのノードを指定した場合は 503）。ノードの時計がずれていると、ノードをまたいだ並び順もずれます（時刻は NTP などでそろえてください）。
 
 ## 12.13 利用者のアカウントとログイン
 

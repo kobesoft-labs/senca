@@ -182,6 +182,8 @@ Requests over a limit get 429 (`RATE_LIMITED` with `Retry-After`; see [12. Secur
 |---|---|---|---|
 | `--config` | FILE | none | JSON configuration ([3.3](#33-configuration-file-json)) |
 | `--events-retain` | N | `4096` | Number of recent events the node keeps so that reconnecting SSE clients (`GET /api/v1/events`) get what they missed (0–1000000). See [15. API and SDKs](15-api-and-sdks.md) |
+| `--audit-log-max-bytes` | bytes | `67108864` (64 MiB) | Rotate the audit log (`audit.log`) when it reaches this size. `0` turns rotation off. See [12.12](12-security.md#1212-audit-log) |
+| `--audit-log-keep` | N | `8` | Number of rotated audit logs (`audit.log.{N}`) to keep (1–1000); older ones are deleted |
 | `--data-dir` | DIR | `out` (relative to the current directory) | Data directory ([3.6](#36-data-directory)). Always set it |
 | `--log-json` | — | off | Write node logs as one JSON object per line to stdout ([13. Operations](13-operations.md)) |
 
@@ -196,6 +198,7 @@ The node refuses to start (exit code 2) when:
 - `--recording-storage` is neither `local` nor `s3://BUCKET[/PREFIX]`, `--s3-endpoint`, `--s3-region` or `--s3-addressing` is malformed,
   or `--s3-part-size` is outside 5 MiB–5 GiB;
 - a `--webrtc-public-ip` value is not an IP address, is `0.0.0.0`, `::` or a multicast address, or more than 8 are given; `--events-retain` is over 1000000;
+- `--audit-log-max-bytes` is 1–4095 (use 0 or at least 4096), or `--audit-log-keep` is outside 1–1000;
 - `--rooms-auth-webhook` or `--rooms-event-webhook` is not an http/https URL, or is given without `--rooms-webhook-secret-file`;
   the secret file cannot be read or is shorter than 16 bytes;
 - the cluster configuration has `node_id` 0, does not list itself in `peers`, or has fewer than 1 or more than 7 peers;
@@ -245,6 +248,7 @@ The `--config FILE` JSON is an object with the keys below. Every key is optional
 | `rooms_auth_webhook`, `rooms_event_webhook` | same names | string or `null` |
 | `rooms_auth_mode` | `--rooms-auth-mode` | `"after_token"` or `"only"` |
 | `rooms_webhook_secret_file` | same names | string or `null` |
+| `audit_log_max_bytes`, `audit_log_keep` | `--audit-log-max-bytes`, `--audit-log-keep` | number |
 
 Notes:
 
@@ -358,7 +362,7 @@ Contents of `--data-dir`. The node creates what it needs.
 | Path | Contents |
 |---|---|
 | `node-id` | This node's ID (128-bit, hex). Created once and never changed |
-| `audit.log` | Audit log (one JSON object per line, append-only) |
+| `audit.log`, `audit.log.{N}` | Audit log (one JSON object per line, append-only; `.{N}` are rotated files, see [12.12](12-security.md#1212-audit-log)) |
 | `control/log` | Single-node control-state log (append-only, each record fsynced) |
 | `control/snapshot.json` | Single-node control-state snapshot. Rewritten when the log exceeds 1000 records, after which the log is emptied |
 | `control/raft/` | Raft storage in a cluster (`hardstate`, `snap-*.snap`, `log/*.seg`). `control/log` is not used in a cluster |

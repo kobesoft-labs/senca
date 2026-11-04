@@ -163,6 +163,7 @@ await senca.rooms.participants('daily').updateMetadata(connectionId, { name: 'Al
 `recordings`（`stop`・`playbackUrl`・`thumbnail`・`exportMp4`）・`schedules`（`check`・`runs`）・`tokens`・`inputs`・`outputs`（ストリームごとに作成）・
 `secrets`・`pipelines`（`validate`・`control`）・`nodes`（`drain`・`undrain`・`devices.disable/enable`）・`rooms`（`participants(id)`・`sendMessage`・
 `stats`・`createToken`）・`mediaPipelines`（部屋の書き出し・録画・合成・外部への送信・文字起こし。`list({room})`・`start`・`stop`）・
+`audit`（監査ログ。新しい順で、`list({since, until, action, subject, resource, q, node})`・`listPage`）・
 `auth`（ログインと本人の操作。`providers`・`login`・`loginMfa`・`exchange`・`oidcStartUrl`・`me`・`logout`・`changePassword`・`setupTotp`・`confirmTotp`・
 `disableMfa`・`regenerateRecoveryCodes`・`sessions`・`revokeSession`）・`users`（利用者の管理。`resetPassword`・`resetMfa`・`sessions`・`revokeSessions`）。
 ログインの操作は token なしの client で呼べます。ログインで得たセッションの値（`sencas_...`）は `senca.setToken(token)` で以後の要求に使います。

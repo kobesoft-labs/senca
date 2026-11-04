@@ -376,6 +376,26 @@ export class Users extends Collection<import("./openapi.gen.js").User, import(".
     /** 利用者のセッションをすべて失効させます。 @param {string} id @param {CallOptions} [o] @returns {Promise<void>} */
     revokeSessions(id: string, o?: CallOptions): Promise<void>;
 }
+/** 監査ログ（読み出しだけ。新しい順。クラスターでは全ノードの分を合わせて返す）。 */
+export class Audit {
+    /** @internal @param {Http} http */
+    constructor(http: Http);
+    /** @private */
+    private http;
+    /**
+     * 一覧（cursor を自動でたどる）。`action` は完全一致、`.` か `*` で終われば前方一致。`tenant` は別のテナント・`*` に node:admin が要る。
+     * `for await (const e of client.audit.list({ action: 'stream.', since: new Date(Date.now() - 3600e3) }))`。
+     * @param {ListOptions & AuditFilter} [o]
+     * @returns {Paginator<AuditEntry>}
+     */
+    list(o?: ListOptions & AuditFilter): Paginator<AuditEntry>;
+    /**
+     * 一覧の 1 頁（`unavailable_nodes` は答えなかったノード。項目が `limit` より少なくても `next_cursor` があれば続きがある）。
+     * @param {ListOptions & AuditFilter} [o]
+     * @returns {Promise<AuditList>}
+     */
+    listPage(o?: ListOptions & AuditFilter): Promise<AuditList>;
+}
 /** 管理 API の client。 */
 export class SencaClient {
     /**
@@ -410,6 +430,8 @@ export class SencaClient {
     rooms: Rooms;
     /** 部屋のメディアパイプライン（書き出し・録画・合成・送り出し・文字起こし）。 */
     mediaPipelines: MediaPipelines;
+    /** 監査ログ（読み出しだけ）。 */
+    audit: Audit;
     /** ログインと本人の操作。 */
     auth: Auth;
     /** 利用者の管理。 */
@@ -467,6 +489,8 @@ export type RoomParticipant = import("./openapi.gen.js").Participant;
 export type MediaPipeline = import("./openapi.gen.js").MediaPipeline;
 export type MediaPipelineCreate = import("./openapi.gen.js").MediaPipelineCreate;
 export type MediaPipelinePatch = import("./openapi.gen.js").MediaPipelinePatch;
+export type AuditEntry = import("./openapi.gen.js").AuditEntry;
+export type AuditList = import("./openapi.gen.js").AuditList;
 export type IfMatch = import("./http.js").IfMatch;
 export type RequestOptions = import("./http.js").RequestOptions;
 /**
@@ -496,5 +520,18 @@ export type UserPatch = import("./openapi.gen.js").UserPatch;
 export type Session = import("./openapi.gen.js").Session;
 export type LoginSuccess = import("./openapi.gen.js").LoginSuccess;
 export type LoginMfaRequired = import("./openapi.gen.js").LoginMfaRequired;
+/**
+ * 監査ログの絞り込み（`GET /audit`）。時刻は RFC 3339 の文字列か Date。
+ */
+export type AuditFilter = {
+    since?: string | Date;
+    until?: string | Date;
+    action?: string;
+    subject?: string;
+    resource?: string;
+    q?: string;
+    node?: string;
+    tenant?: string;
+};
 import { Http } from './http.js';
 import { Paginator } from './http.js';

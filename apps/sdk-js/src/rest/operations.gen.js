@@ -61,6 +61,7 @@ export const OPERATIONS = Object.freeze({
   getToken: { method: "GET", path: "/tokens/{id}", scope: "tenant:admin" },
   getUser: { method: "GET", path: "/users/{id}", scope: "tenant:admin" },
   issueRoomToken: { method: "POST", path: "/rooms/{id}/tokens", scope: "stream:write" },
+  listAudit: { method: "GET", path: "/audit", scope: "tenant:admin" },
   listDevices: { method: "GET", path: "/devices", scope: "node:admin" },
   listInputs: { method: "GET", path: "/streams/{id}/inputs", scope: "stream:read" },
   listMediaPipelines: { method: "GET", path: "/media-pipelines", scope: "stream:read" },

@@ -8,13 +8,16 @@
 // 操作: 左の部品を押すと置く。部品はドラッグで動かす。右の丸（出力）から左の丸（入力）へドラッグでつなぐ。
 // キーボード: Tab で部品を選び、矢印で動かす（Shift で大きく）、Delete で消す。つなぐのは検査器からもできる。
 
-import { h, s, replace, field, select, debounce, table, badge, kv } from '../lib/dom.js';
+import { h, s, replace, select, debounce, table, badge, kv } from '../lib/dom.js';
 import { modal, confirmDialog, toast, reportError } from '../lib/ui.js';
+import { t } from '../i18n/index.js';
+import { icon } from '../lib/icons.js';
+import { button, iconButton, pageHeader, panel, alert, formField, helpHint } from '../ui/index.js';
 import { pipelines as api, NotAvailableError, issuesOf } from '../api/pipelines.js';
 import { streams, listAll } from '../api/resources.js';
 import { fmtTime } from '../lib/format.js';
 import {
-  KINDS, PORT_LABEL, OPTION_FIELDS, NODE_W, TRANSITIONS, nodeHeight, inPorts, outPorts, outType, compatible, emptyPipeline, addNode, removeNode,
+  KINDS, PORT_LABEL, OPTION_FIELDS, NODE_W, transitions, nodeHeight, inPorts, outPorts, outType, compatible, emptyPipeline, addNode, removeNode,
   removeNamedInput, connect, validate, toGraph, fromGraph, positionsOf, samplePipeline, referencedStreams, isNodeName,
 } from '../pipeline/model.js';
 
@@ -41,39 +44,42 @@ function edgePath(a, b) {
   return `M${a.x},${a.y} C${a.x + dx},${a.y} ${b.x - dx},${b.y} ${b.x},${b.y}`;
 }
 
+/** パイプラインの観測した状態。data-state に生の値（running など）を入れる。 */
 export const observedBadge = (st) => {
-  const kind = { running: 'live', starting: 'warn', error: 'danger', stopped: '' }[st] ?? '';
-  return badge(st || '—', kind);
+  const kind = { running: 'ok', starting: 'info', stopping: 'warn', error: 'danger', failed: 'danger', stopped: 'outline' }[st] ?? '';
+  const known = ['running', 'starting', 'stopping', 'stopped', 'error', 'failed'].includes(st);
+  const b = h('span', { class: ['badge', 'has-dot', kind].filter(Boolean).join(' '), 'data-state': st || '', title: st || '' }, known ? t(`status.${st}`) : (st || '—'));
+  return b;
 };
 
 /** 計画（senca-pipeline の Plan）の表。 */
 export function planView(plan) {
-  if (!plan) return h('p', { class: 'muted' }, '計画はまだありません。「検証」でノードに計画を作らせます。');
-  const t = plan.totals || {};
+  if (!plan) return h('p', { class: 'muted' }, t('pipelines.plan.none'));
+  const tot = plan.totals || {};
   return h('div', null,
     kv([
-      ['実行の順', (plan.order || []).join(' → ')],
-      ['合計', `画素 ${Math.round((t.pixels_per_sec || 0) / 1e6)} M/s・CPU のコーデック ${t.cpu_codec_sessions ?? 0}・GPU のコーデック ${t.gpu_codec_sessions ?? 0}・スレッド ${t.threads ?? 0}・最大の遅延 ${Math.round(t.max_latency_ms || 0)} ms`],
+      [t('pipelines.plan.order'), (plan.order || []).join(' → ')],
+      [t('pipelines.plan.totals'), t('pipelines.plan.totalsValue', { px: Math.round((tot.pixels_per_sec || 0) / 1e6), cpu: tot.cpu_codec_sessions ?? 0, gpu: tot.gpu_codec_sessions ?? 0, threads: tot.threads ?? 0, ms: Math.round(tot.max_latency_ms || 0) })],
     ]),
     table([
-      { label: '部品', render: (n) => h('code', null, n.id) },
-      { label: '種類', render: (n) => n.type },
-      { label: '扱い', render: (n) => badge(n.mode, { passthrough: 'ok', transcode: 'warn', process: '', terminal: '' }[n.mode] || '') },
-      { label: 'コーデック', render: (n) => (n.codec ? [h('code', null, n.codec), n.hardware === true ? '（HW）' : n.hardware === false ? '（SW）' : '', n.provider ? ` ${n.provider}` : ''] : '—') },
-      { label: '出力', render: (n) => (n.outputs || []).join('・') || '—' },
-      { label: '遅延', class: 'num', render: (n) => `${Math.round(n.added_latency_ms || 0)} ms` },
-      { label: '注記', render: (n) => (n.notes || []).join(' / ') },
-    ], plan.nodes || [], { caption: '部品ごとの計画' }),
-    h('h3', null, '出力'),
+      { label: t('pipelines.plan.node'), render: (n) => h('code', null, n.id) },
+      { label: t('pipelines.plan.type'), render: (n) => n.type },
+      { label: t('pipelines.plan.mode'), render: (n) => badge(n.mode, { passthrough: 'ok', transcode: 'warn', process: '', terminal: '' }[n.mode] || '') },
+      { label: t('pipelines.plan.codec'), render: (n) => (n.codec ? [h('code', null, n.codec), n.hardware === true ? ' (HW)' : n.hardware === false ? ' (SW)' : '', n.provider ? ` ${n.provider}` : ''] : '—') },
+      { label: t('pipelines.plan.outputs'), render: (n) => (n.outputs || []).join(', ') || '—' },
+      { label: t('pipelines.plan.latency'), class: 'num', render: (n) => `${Math.round(n.added_latency_ms || 0)} ms` },
+      { label: t('pipelines.plan.notes'), render: (n) => (n.notes || []).join(' / ') },
+    ], plan.nodes || [], { caption: t('pipelines.plan.caption') }),
+    h('h3', null, t('pipelines.plan.sinks')),
     table([
       { label: 'sink', render: (x) => h('code', null, x.sink) },
       { label: 'stream', render: (x) => h('a', { href: `#/streams/${encodeURIComponent(x.stream)}` }, h('code', null, x.stream)) },
-      { label: 'トラック', render: (x) => `${x.track}（${x.kind}）` },
-      { label: 'コーデック', render: (x) => h('code', null, x.codec) },
-      { label: '扱い', render: (x) => x.mode },
-      { label: '元', render: (x) => x.from },
-      { label: '遅延', class: 'num', render: (x) => `${Math.round(x.latency_ms || 0)} ms` },
-    ], (plan.sinks || []).flatMap((sk) => sk.tracks.map((tr) => ({ sink: sk.id, stream: sk.stream, ...tr }))), { empty: '出力はありません' }));
+      { label: t('pipelines.plan.track'), render: (x) => `${x.track} (${x.kind})` },
+      { label: t('pipelines.plan.codec'), render: (x) => h('code', null, x.codec) },
+      { label: t('pipelines.plan.mode'), render: (x) => x.mode },
+      { label: t('pipelines.plan.from'), render: (x) => x.from },
+      { label: t('pipelines.plan.latency'), class: 'num', render: (x) => `${Math.round(x.latency_ms || 0)} ms` },
+    ], (plan.sinks || []).flatMap((sk) => sk.tracks.map((tk) => ({ sink: sk.id, stream: sk.stream, ...tk }))), { empty: t('pipelines.plan.noSinks') }));
 }
 
 export async function render(root) {
@@ -93,9 +99,9 @@ export async function render(root) {
   let dead = false;
 
   const banner = h('div');
-  const listSel = h('select', { id: 'pl-pick', 'aria-label': 'パイプラインを選ぶ' });
-  const svg = s('svg', { role: 'application', 'aria-label': 'パイプラインのグラフ', viewBox: '0 0 1400 700', width: 1400, height: 700 });
-  const inspector = h('div', { class: 'panel', style: { marginBottom: '0' } });
+  const listSel = h('select', { id: 'pl-pick', 'aria-label': t('pipelines.pick') });
+  const svg = s('svg', { role: 'application', 'aria-label': t('pipelines.graph'), viewBox: '0 0 1400 700', width: 1400, height: 700 });
+  const inspector = h('section', { class: 'panel pl-inspector', 'aria-label': t('pipelines.inspector') });
   const issuesBox = h('div');
   const runtimeBox = h('div');
   const planBox = h('div');
@@ -128,16 +134,14 @@ export async function render(root) {
     renderToolbar();
   };
 
-  const label = (e) => `${e.pl.name}${e.pl.remoteId ? '' : '（下書き）'}${e.pl.dirty && e.pl.remoteId ? ' *' : ''}`;
+  const label = (e) => `${e.pl.name}${e.pl.remoteId ? '' : t('pipelines.draftSuffix')}${e.pl.dirty && e.pl.remoteId ? ' *' : ''}`;
   const renderList = () => {
     replace(listSel, entries.map((e) => h('option', { value: e.pl.key, selected: e === cur }, label(e))));
   };
 
   const renderBanner = () => {
     replace(banner, available === false
-      ? h('div', { class: 'alert warn offline-banner', role: 'status' },
-        h('strong', null, 'このノードでは使えません'),
-        h('span', null, 'パイプラインの API（/pipelines）がありません。編集と検査はこのブラウザの中だけで動き、下書きは localStorage に残ります。'))
+      ? alert('warn', t('pipelines.offlineBody'), { title: t('pipelines.offlineTitle'), role: 'status' })
       : null);
   };
 
@@ -145,7 +149,7 @@ export async function render(root) {
     if (e instanceof NotAvailableError) {
       available = false;
       renderBanner();
-      toast('パイプラインの API はこのノードでは使えません。下書きはこのブラウザに保存しました', 'warn', 7000);
+      toast(t('pipelines.offlineToast'), 'warn', 7000);
       return true;
     }
     return false;
@@ -199,11 +203,11 @@ export async function render(root) {
       const nh = nodeHeight(n);
       const isSel = sel && sel.type === 'node' && sel.id === n.id;
       const sub = n.type === 'source' || n.type === 'sink'
-        ? ((streamList.find((x) => x.id === n.p.stream) || {}).name || n.p.stream || 'stream 未設定')
+        ? ((streamList.find((x) => x.id === n.p.stream) || {}).name || n.p.stream || t('pipelines.noStream'))
         : n.type === 'encode' ? `${n.p.codec || '?'} ${n.p.bitrate_kbps || ''}k` : k.label;
       const g = s('g', {
         class: ['pl-node', isSel && 'selected', bad.has(n.id) && 'invalid'], transform: `translate(${n.x},${n.y})`, tabindex: '0',
-        role: 'button', 'aria-label': `${k.label}「${n.name}」。矢印で移動、Delete で削除`, 'data-node': n.name,
+        role: 'button', 'aria-label': t('pipelines.nodeAria', { kind: k.label, node: n.name }), 'data-node': n.name,
       },
       s('rect', { class: 'body', width: NODE_W, height: nh, rx: 8 }),
       s('rect', { class: 'stripe', width: 6, height: nh, rx: 3, fill: k.color }),
@@ -269,18 +273,18 @@ export async function render(root) {
       inPorts(n).forEach((port, i) => {
         const q = portPos({ ...n, x: 0, y: 0 }, 'in', i);
         const c = s('circle', { class: ['pl-port', wire && compatible(wire.type, port.accept) && 'hot'], cx: q.x, cy: q.y, r: 7, 'data-port-in': `${n.id}:${i}` },
-          s('title', null, `入力「${port.name}」`));
+          s('title', null, t('pipelines.portIn', { port: port.name })));
         g.appendChild(c);
       });
       outPorts(n).forEach((o, i) => {
         const q = portPos({ ...n, x: 0, y: 0 }, 'out', i);
-        const t = outType(p, { node: n.id, port: i });
-        const c = s('circle', { class: 'pl-port', cx: q.x, cy: q.y, r: 7 }, s('title', null, `出力「${o.name}」: ${PORT_LABEL[t] || t}（ドラッグでつなぐ）`));
+        const ty = outType(p, { node: n.id, port: i });
+        const c = s('circle', { class: 'pl-port', cx: q.x, cy: q.y, r: 7 }, s('title', null, t('pipelines.portOut', { port: o.name, type: PORT_LABEL[ty] || ty })));
         c.addEventListener('pointerdown', (ev) => {
           ev.stopPropagation();
           ev.preventDefault();
           const from = portPos(n, 'out', i);
-          wire = { from: { node: n.id, port: i }, type: t, a: from, b: from };
+          wire = { from: { node: n.id, port: i }, type: ty, a: from, b: from };
           const move = (e2) => { wire.b = toSvg(e2); draw(); };
           const up = (e2) => {
             window.removeEventListener('pointermove', move);
@@ -319,9 +323,9 @@ export async function render(root) {
   const fieldInput = (f, getV, setV, n) => {
     const v = getV();
     let input;
-    if (f.type === 'select') input = select(f.options.map((o) => (Array.isArray(o) ? o : [o, o === '' ? '（使わない）' : o])), v ?? f.def ?? '');
-    else if (f.type === 'stream') input = select([['', '（選ぶ）'], ...streamList.map((x) => [x.id, `${x.name}（${x.codec_profile}）`]), ...(v && !streamList.some((x) => x.id === v) ? [[v, v]] : [])], v || '');
-    else if (f.type === 'scene') input = select([['', '（なし）'], ...Object.keys((n && n.p.scenes) || {}).map((x) => [x, x])], v || '');
+    if (f.type === 'select') input = select(f.options.map((o) => (Array.isArray(o) ? o : [o, o === '' ? t('pipelines.unused') : o])), v ?? f.def ?? '');
+    else if (f.type === 'stream') input = select([['', t('pipelines.choose')], ...streamList.map((x) => [x.id, `${x.name} (${x.codec_profile})`]), ...(v && !streamList.some((x) => x.id === v) ? [[v, v]] : [])], v || '');
+    else if (f.type === 'scene') input = select([['', t('pipelines.none')], ...Object.keys((n && n.p.scenes) || {}).map((x) => [x, x])], v || '');
     else if (f.type === 'check') {
       input = h('input', { type: 'checkbox', checked: v ?? f.def ?? false });
       input.addEventListener('change', () => setV(input.checked));
@@ -332,16 +336,16 @@ export async function render(root) {
       const x = input.value;
       setV(f.type === 'number' ? (x === '' ? null : Number(x)) : x);
     });
-    return field(f.label + (f.required ? '（必須）' : ''), input);
+    return formField({ label: f.label, input, required: !!f.required });
   };
 
   const namedInputsEditor = (n) => {
     const isMix = n.type === 'audio_mix';
     const rows = n.ins.map((inp, i) => {
-      const name = h('input', { type: 'text', value: inp.name, 'aria-label': `入力 ${i + 1} の名前`, style: { width: '110px' } });
+      const name = h('input', { type: 'text', value: inp.name, 'aria-label': t('pipelines.inputNameAria', { n: i + 1 }), style: { width: '110px' } });
       name.addEventListener('change', () => {
         const old = inp.name;
-        if (!isNodeName(name.value)) { toast('入力名は英数字と _ - です', 'warn'); name.value = old; return; }
+        if (!isNodeName(name.value)) { toast(t('pipelines.inputNameInvalid'), 'warn'); name.value = old; return; }
         inp.name = name.value;
         if (n.type === 'compose') {
           for (const sc of Object.values(n.p.scenes || {})) for (const l of sc.layers || []) if (l.source === old) l.source = inp.name;
@@ -350,11 +354,11 @@ export async function render(root) {
         renderInspector();
       });
       const up = pl().edges.find((e) => e.to.node === n.id && e.to.port === i);
-      const upName = up ? (() => { const m = pl().nodes.find((x) => x.id === up.from.node); return m ? `${m.name}.${outPorts(m)[up.from.port].name}` : '?'; })() : '（未接続）';
+      const upName = up ? (() => { const m = pl().nodes.find((x) => x.id === up.from.node); return m ? `${m.name}.${outPorts(m)[up.from.port].name}` : '?'; })() : t('pipelines.unconnected');
       const extras = [];
       if (isMix) {
         const numIn = (key, labelText, step = 0.5) => {
-          const x = h('input', { type: 'number', step, value: inp[key] ?? 0, style: { width: '64px' }, 'aria-label': `${inp.name} の${labelText}` });
+          const x = h('input', { type: 'number', step, value: inp[key] ?? 0, style: { width: '64px' }, 'aria-label': t('pipelines.mixFieldAria', { input: inp.name, field: labelText }) });
           x.addEventListener('change', () => { inp[key] = Number(x.value) || 0; changed(); });
           return h('label', { class: 'small' }, labelText, x);
         };
@@ -363,11 +367,11 @@ export async function render(root) {
           x.addEventListener('change', () => { inp[key] = x.checked; changed(); });
           return h('label', { class: 'check small' }, x, labelText);
         };
-        extras.push(numIn('gain_db', 'dB'), numIn('pan', 'pan', 0.1), numIn('delay_ms', '遅延 ms', 1), ck('mute', 'ミュート'), ck('solo', 'ソロ'));
+        extras.push(numIn('gain_db', 'dB'), numIn('pan', 'pan', 0.1), numIn('delay_ms', t('pipelines.delayMs'), 1), ck('mute', t('production.mute')), ck('solo', t('production.solo')));
       }
       return h('div', { class: 'inline', style: { flexWrap: 'wrap', gap: '4px', borderBottom: '1px solid var(--border)', paddingBottom: '4px' } },
         name, h('span', { class: 'small muted' }, `← ${upName}`), ...extras,
-        h('button', { type: 'button', class: 'small danger', 'aria-label': `入力「${inp.name}」を消す`, onClick: () => { removeNamedInput(pl(), n, i); changed(); renderInspector(); } }, '×'));
+        h('button', { type: 'button', class: 'small ghost icon-only', 'aria-label': t('pipelines.removeInput', { input: inp.name }), onClick: () => { removeNamedInput(pl(), n, i); changed(); renderInspector(); } }, icon('close')));
     });
     const add = h('button', { type: 'button', class: 'small', onClick: () => {
       let k = n.ins.length + 1;
@@ -375,8 +379,8 @@ export async function render(root) {
       n.ins.push(isMix ? { name: `in${k}`, gain_db: 0, mute: false, solo: false, pan: 0, delay_ms: 0 } : { name: `in${k}` });
       changed();
       renderInspector();
-    } }, '＋ 入力を足す');
-    return h('fieldset', null, h('legend', null, isMix ? 'ミキサーの入力' : '合成の入力（シーンから名前で参照）'), ...rows, add);
+    } }, icon('plus'), t('pipelines.addInput'));
+    return h('fieldset', null, h('legend', null, isMix ? t('pipelines.mixInputs') : t('pipelines.composeInputs')), ...rows, add);
   };
 
   const renderInspector = () => {
@@ -385,9 +389,9 @@ export async function render(root) {
       const n = p.nodes.find((m) => m.id === sel.id);
       if (!n) { sel = null; renderInspector(); return; }
       const k = KINDS[n.type];
-      const name = h('input', { type: 'text', value: n.name, maxlength: 64, 'aria-label': '部品の名前（id）' });
+      const name = h('input', { type: 'text', value: n.name, maxlength: 64, 'aria-label': t('pipelines.nodeNameAria') });
       name.addEventListener('change', () => {
-        if (!isNodeName(name.value) || p.nodes.some((m) => m !== n && m.name === name.value)) { toast('名前は英数字と _ - の 1〜64 文字で、重ならないものにしてください', 'warn'); name.value = n.name; return; }
+        if (!isNodeName(name.value) || p.nodes.some((m) => m !== n && m.name === name.value)) { toast(t('pipelines.nodeNameInvalid'), 'warn'); name.value = n.name; return; }
         n.name = name.value;
         changed();
       });
@@ -398,17 +402,17 @@ export async function render(root) {
       }, n));
       const targets = [];
       outPorts(n).forEach((o, oi) => {
-        const t = outType(p, { node: n.id, port: oi });
+        const ty = outType(p, { node: n.id, port: oi });
         for (const m of p.nodes) {
           if (m.id === n.id) continue;
           inPorts(m).forEach((port, ii) => {
-            if (compatible(t, port.accept) && !p.edges.some((e) => e.to.node === m.id && e.to.port === ii)) {
-              targets.push([`${oi}|${m.id}|${ii}`, `${o.name} → ${m.name}（${port.name}）`]);
+            if (compatible(ty, port.accept) && !p.edges.some((e) => e.to.node === m.id && e.to.port === ii)) {
+              targets.push([`${oi}|${m.id}|${ii}`, `${o.name} → ${m.name} (${port.name})`]);
             }
           });
         }
       });
-      const target = select(targets.length ? targets : [['', 'つなげる先がありません']], '');
+      const target = select(targets.length ? targets : [['', t('pipelines.noTargets')]], '');
       target.id = `tgt-${n.id}`;
       const linkBtn = h('button', { class: 'small', disabled: !targets.length, onClick: () => {
         const [oi, mid, ii] = target.value.split('|');
@@ -416,20 +420,20 @@ export async function render(root) {
         if (!r.ok) toast(r.reason, 'warn');
         changed();
         renderInspector();
-      } }, 'つなぐ');
+      } }, icon('link'), t('pipelines.connect'));
       const extraKeys = Object.keys(n.extra || {});
       replace(inspector,
         h('h2', null, h('span', { class: 'dot', style: { background: k.color } }), k.label),
         h('div', { class: 'form' },
-          field('名前（グラフの id）', name),
+          formField({ label: t('pipelines.nodeName'), input: name }),
           ...fields,
           k.named ? namedInputsEditor(n) : null,
-          n.type === 'compose' ? h('div', { class: 'inline' }, h('button', { type: 'button', onClick: () => editScenes(n) }, 'シーンを編集'),
-            h('span', { class: 'small muted' }, `${Object.keys(n.p.scenes || {}).length} 個`)) : null,
-          extraKeys.length ? h('div', { class: 'small muted' }, `この画面で編集しない項目（そのまま保存）: ${extraKeys.join('・')}`) : null,
-          outPorts(n).length ? h('div', { class: 'field' }, h('label', { for: target.id }, 'つなぐ（キーボード）'), h('div', { class: 'inline' }, target, linkBtn)) : null,
-          h('div', { class: 'small muted' }, `入力: ${inPorts(n).map((x) => x.name).join('・') || 'なし'} / 出力: ${outPorts(n).map((o, i) => `${o.name}（${PORT_LABEL[outType(p, { node: n.id, port: i })] || '?'}）`).join('・') || 'なし'}`),
-          h('div', { class: 'actions' }, h('button', { class: 'danger', onClick: () => { removeNode(p, n.id); sel = null; changed(); renderInspector(); } }, 'この部品を削除'))));
+          n.type === 'compose' ? h('div', { class: 'inline' }, h('button', { type: 'button', onClick: () => editScenes(n) }, icon('edit'), t('pipelines.editScenes')),
+            h('span', { class: 'small muted' }, t('pipelines.sceneCount', { n: Object.keys(n.p.scenes || {}).length }))) : null,
+          extraKeys.length ? h('div', { class: 'small muted' }, t('pipelines.extraKeys', { keys: extraKeys.join(', ') })) : null,
+          outPorts(n).length ? h('div', { class: 'field' }, h('label', { for: target.id }, t('pipelines.connectKeyboard')), h('div', { class: 'inline' }, target, linkBtn)) : null,
+          h('div', { class: 'small muted' }, t('pipelines.ports', { ins: inPorts(n).map((x) => x.name).join(', ') || t('pipelines.portsNone'), outs: outPorts(n).map((o, i) => `${o.name} (${PORT_LABEL[outType(p, { node: n.id, port: i })] || '?'})`).join(', ') || t('pipelines.portsNone') })),
+          h('div', { class: 'actions' }, h('button', { class: 'danger', onClick: () => { removeNode(p, n.id); sel = null; changed(); renderInspector(); } }, icon('trash'), t('pipelines.deleteNode')))));
       return;
     }
     if (sel && sel.type === 'edge') {
@@ -437,22 +441,22 @@ export async function render(root) {
       if (!e) { sel = null; renderInspector(); return; }
       const a = p.nodes.find((n) => n.id === e.from.node);
       const b = p.nodes.find((n) => n.id === e.to.node);
-      replace(inspector, h('h2', null, '接続'),
-        h('p', null, `${a.name}.${outPorts(a)[e.from.port].name} → ${b.name}（${inPorts(b)[e.to.port].name}）`),
-        h('p', { class: 'muted small' }, `型: ${PORT_LABEL[outType(p, e.from)] || '?'}`),
-        h('button', { class: 'danger', onClick: () => { p.edges = p.edges.filter((x) => x.id !== e.id); sel = null; changed(); renderInspector(); } }, 'この接続を削除'));
+      replace(inspector, h('h2', null, icon('link'), t('pipelines.edge')),
+        h('p', null, `${a.name}.${outPorts(a)[e.from.port].name} → ${b.name} (${inPorts(b)[e.to.port].name})`),
+        h('p', { class: 'muted small' }, t('pipelines.edgeType', { type: PORT_LABEL[outType(p, e.from)] || '?' })),
+        h('button', { class: 'danger', onClick: () => { p.edges = p.edges.filter((x) => x.id !== e.id); sel = null; changed(); renderInspector(); } }, icon('trash'), t('pipelines.deleteEdge')));
       return;
     }
-    const name = h('input', { type: 'text', value: p.name, maxlength: 64, 'aria-label': 'パイプラインの名前' });
+    const name = h('input', { type: 'text', value: p.name, maxlength: 64, 'aria-label': t('pipelines.nameAria') });
     name.addEventListener('change', () => { p.name = name.value; changed(); renderList(); });
     const opts = OPTION_FIELDS.map((f) => fieldInput(f, () => p.options[f.path], (v) => { p.options[f.path] = v; changed(); }));
-    replace(inspector, h('h2', null, 'パイプライン'),
+    replace(inspector, h('h2', null, icon('pipelines'), t('nav.pipelines')),
       h('div', { class: 'form' },
-        field('名前（英数字と . _ -）', name),
-        h('details', null, h('summary', null, '全体の設定（options）'), h('div', { class: 'form' }, ...opts)),
-        h('div', { class: 'small muted' }, `部品 ${p.nodes.length} 個・接続 ${p.edges.length} 本`),
-        p.remoteId ? h('div', { class: 'small' }, 'ID: ', h('code', null, p.remoteId)) : h('div', { class: 'small muted' }, 'まだノードに保存していません（下書き）'),
-        h('p', { class: 'small muted' }, '部品を選ぶと、ここで設定できます。')));
+        formField({ label: t('pipelines.name'), input: name, hint: t('pipelines.nameHint') }),
+        h('details', null, h('summary', null, t('pipelines.options')), h('div', { class: 'form' }, ...opts)),
+        h('div', { class: 'small muted' }, t('pipelines.counts', { nodes: p.nodes.length, edges: p.edges.length })),
+        p.remoteId ? h('div', { class: 'small' }, 'ID: ', h('code', null, p.remoteId)) : h('div', { class: 'small muted' }, t('pipelines.notSaved')),
+        h('p', { class: 'small muted' }, t('pipelines.selectHint'))));
   };
 
   // ---------------------------------------------------------------- シーンの編集（合成）
@@ -464,7 +468,7 @@ export async function render(root) {
     const ch = Number(n.p['canvas.height']) || 720;
     const draw2 = () => {
       replace(box, Object.entries(scenes).map(([sn, sc]) => {
-        const sname = h('input', { type: 'text', value: sn, 'aria-label': 'シーンの名前', style: { width: '160px' } });
+        const sname = h('input', { type: 'text', value: sn, 'aria-label': t('pipelines.sceneName'), style: { width: '160px' } });
         sname.addEventListener('change', () => {
           if (!sname.value || scenes[sname.value]) { sname.value = sn; return; }
           const ordered = Object.fromEntries(Object.entries(scenes).map(([k, v]) => (k === sn ? [sname.value, v] : [k, v])));
@@ -473,9 +477,9 @@ export async function render(root) {
           draw2();
         });
         const layers = (sc.layers || []).map((l, li) => {
-          const content = select([...inputNames.map((x) => [`source:${x}`, `入力: ${x}`]), ['color', '色'], ...(l.image ? [[`image:${l.image}`, `画像: ${l.image}`]] : [])],
-            l.source ? `source:${l.source}` : l.image ? `image:${l.image}` : 'color', { 'aria-label': `${sn} のレイヤー ${li + 1} の中身` });
-          const color = h('input', { type: 'color', value: l.color || '#000000', 'aria-label': '色', hidden: !!(l.source || l.image) });
+          const content = select([...inputNames.map((x) => [`source:${x}`, t('pipelines.layerInput', { name: x })]), ['color', t('pipelines.layerColor')], ...(l.image ? [[`image:${l.image}`, t('pipelines.layerImage', { name: l.image })]] : [])],
+            l.source ? `source:${l.source}` : l.image ? `image:${l.image}` : 'color', { 'aria-label': t('pipelines.layerContent', { scene: sn, n: li + 1 }) });
+          const color = h('input', { type: 'color', value: l.color || '#000000', 'aria-label': t('pipelines.layerColor'), hidden: !!(l.source || l.image) });
           content.addEventListener('change', () => {
             delete l.source; delete l.image; delete l.color;
             if (content.value.startsWith('source:')) l.source = content.value.slice(7);
@@ -485,38 +489,38 @@ export async function render(root) {
           });
           color.addEventListener('input', () => { if (!l.source && !l.image) l.color = color.value; });
           const nm = (key, lbl, def, step = 1) => {
-            const x = h('input', { type: 'number', value: l[key] ?? def, step, style: { width: '68px' }, 'aria-label': `${sn} のレイヤー ${li + 1} の ${lbl}` });
+            const x = h('input', { type: 'number', value: l[key] ?? def, step, style: { width: '68px' }, 'aria-label': t('pipelines.layerField', { scene: sn, n: li + 1, field: lbl }) });
             x.addEventListener('change', () => { l[key] = Number(x.value); });
             return h('label', { class: 'small' }, lbl, x);
           };
           const vis = h('input', { type: 'checkbox', checked: l.visible !== false });
           vis.addEventListener('change', () => { l.visible = vis.checked; });
-          const fit = select(['contain', 'cover', 'stretch'], l.fit || 'contain', { 'aria-label': '縦横比' });
+          const fit = select(['contain', 'cover', 'stretch'], l.fit || 'contain', { 'aria-label': t('pipelines.fit') });
           fit.addEventListener('change', () => { l.fit = fit.value; });
           return h('div', { class: 'inline', style: { flexWrap: 'wrap', gap: '4px' } }, content, color,
-            nm('x', 'x', 0), nm('y', 'y', 0), nm('width', '幅', cw), nm('height', '高さ', ch), nm('z', 'z', 0), nm('opacity', '不透明度', 1, 0.05), fit,
-            h('label', { class: 'check small' }, vis, '表示'),
-            h('button', { type: 'button', class: 'small danger', onClick: () => { sc.layers.splice(li, 1); draw2(); } }, '×'));
+            nm('x', 'x', 0), nm('y', 'y', 0), nm('width', t('pipelines.width'), cw), nm('height', t('pipelines.height'), ch), nm('z', 'z', 0), nm('opacity', t('pipelines.opacity'), 1, 0.05), fit,
+            h('label', { class: 'check small' }, vis, t('pipelines.visible')),
+            h('button', { type: 'button', class: 'small ghost icon-only', 'aria-label': t('pipelines.removeLayer', { n: li + 1 }), onClick: () => { sc.layers.splice(li, 1); draw2(); } }, icon('close')));
         });
-        return h('fieldset', null, h('legend', null, `シーン「${sn}」`),
-          h('div', { class: 'inline' }, sname, h('button', { type: 'button', class: 'small danger', onClick: () => { delete scenes[sn]; draw2(); } }, 'シーンを削除')),
+        return h('fieldset', null, h('legend', null, t('pipelines.sceneLegend', { scene: sn })),
+          h('div', { class: 'inline' }, sname, h('button', { type: 'button', class: 'small danger', onClick: () => { delete scenes[sn]; draw2(); } }, icon('trash'), t('pipelines.deleteScene'))),
           ...layers,
           h('button', { type: 'button', class: 'small', onClick: () => {
             sc.layers = sc.layers || [];
             sc.layers.push(inputNames[0] ? { source: inputNames[0], x: 0, y: 0, width: cw, height: ch, z: sc.layers.length } : { color: '#333333', x: 0, y: 0, width: cw, height: ch });
             draw2();
-          } }, '＋ レイヤー'));
+          } }, icon('plus'), t('pipelines.addLayer')));
       }), h('button', { type: 'button', onClick: () => {
         let k = Object.keys(scenes).length + 1;
         while (scenes[`scene${k}`]) k += 1;
         scenes[`scene${k}`] = { layers: inputNames[0] ? [{ source: inputNames[0], x: 0, y: 0, width: cw, height: ch }] : [] };
         draw2();
-      } }, '＋ シーン'));
+      } }, icon('plus'), t('pipelines.addScene')));
     };
     draw2();
-    const ok = await modal(`「${n.name}」のシーン`, () => [
-      h('p', { class: 'small muted' }, `位置と大きさはキャンバス（${cw}×${ch}）の画素。z が大きいほど手前。運用中の切り替え・位置の変更はスイッチャーの画面から（保存はここ）。`), box,
-    ], { wide: true, actions: (close) => [h('button', { onClick: () => close(false) }, 'やめる'), h('button', { class: 'primary', onClick: () => close(true) }, '決定')] });
+    const ok = await modal(t('pipelines.scenesTitle', { node: n.name }), () => [
+      h('p', { class: 'small muted' }, t('pipelines.scenesLead', { w: cw, h: ch })), box,
+    ], { wide: true, icon: 'layout-grid', actions: (close) => [h('button', { onClick: () => close(false) }, t('common.cancel')), h('button', { class: 'primary', onClick: () => close(true) }, t('pipelines.apply'))] });
     if (!ok) return;
     n.p.scenes = scenes;
     if (n.p.program && !scenes[n.p.program]) n.p.program = Object.keys(scenes)[0] || '';
@@ -529,42 +533,42 @@ export async function render(root) {
   const renderIssues = () => {
     const errs = localIssues.filter((i) => i.level === 'error').length + remoteIssues.length;
     replace(issuesBox,
-      h('h2', null, '検査', h('span', { class: ['badge', errs ? 'danger' : 'ok'] }, errs ? `問題 ${errs}` : '問題なし')),
-      remoteIssues.length ? h('div', null, h('h3', null, 'ノードの検証'),
-        h('ul', { class: 'pl-issues', 'data-remote': 'true' }, remoteIssues.map((i) => h('li', { class: 'error' }, '✕ ', h('code', null, i.code), i.node ? [' [', h('code', null, i.node), ']'] : null, ' ', i.message)))) : null,
+      h('h2', null, icon('check'), t('pipelines.checks'), h('span', { class: ['badge', errs ? 'danger' : 'ok'] }, errs ? t('pipelines.problems', { n: errs }) : t('pipelines.noProblems'))),
+      remoteIssues.length ? h('div', null, h('h3', null, t('pipelines.remoteChecks')),
+        h('ul', { class: 'pl-issues', 'data-remote': 'true' }, remoteIssues.map((i) => h('li', { class: 'error' }, icon('error', { size: 'sm' }), ' ', h('code', null, i.code), i.node ? [' [', h('code', null, i.node), ']'] : null, ' ', i.message)))) : null,
       localIssues.length
-        ? h('div', null, remoteIssues.length ? h('h3', null, 'この画面の検査') : null,
-          h('ul', { class: 'pl-issues' }, localIssues.map((i) => h('li', { class: i.level }, i.level === 'error' ? '✕ ' : '! ', i.text))))
-        : remoteIssues.length ? null : h('p', { class: 'muted' }, '問題はありません。'));
+        ? h('div', null, remoteIssues.length ? h('h3', null, t('pipelines.localChecks')) : null,
+          h('ul', { class: 'pl-issues' }, localIssues.map((i) => h('li', { class: i.level }, icon(i.level === 'error' ? 'error' : 'warning', { size: 'sm' }), ' ', i.text))))
+        : remoteIssues.length ? null : h('p', { class: 'muted' }, t('pipelines.noProblemsLong')));
   };
 
   const renderPlan = () => replace(planBox, planView(plan || (cur && cur.remote && cur.remote.plan)));
 
   const renderRuntime = () => {
     const r = cur && cur.remote;
-    if (!r) { replace(runtimeBox, h('p', { class: 'muted small' }, '下書きです。「保存」でノードに作ります（止めた状態で作ります）。')); return; }
+    if (!r) { replace(runtimeBox, h('p', { class: 'muted small' }, t('pipelines.draftRuntime'))); return; }
     const st = r.status && r.status.event === 'status' ? r.status : null;
     const hasCompose = (r.graph.nodes || []).some((x) => x.type === 'compose');
     replace(runtimeBox,
       kv([
-        ['状態', [badge(`desired: ${r.desired_state}`, r.desired_state === 'running' ? 'ok' : ''), ' ', observedBadge(r.observed_state)]],
-        ['世代', String(r.generation)],
-        ['更新', fmtTime(r.updated_at)],
-        r.last_error ? ['最後の誤り', h('span', { class: 'field-error' }, r.last_error)] : null,
+        [t('common.state'), [badge(`desired: ${r.desired_state}`, r.desired_state === 'running' ? 'ok' : 'outline'), ' ', observedBadge(r.observed_state)]],
+        [t('pipelines.generation'), String(r.generation)],
+        [t('common.updated'), fmtTime(r.updated_at)],
+        r.last_error ? [t('pipelines.lastError'), h('span', { class: 'field-error' }, r.last_error)] : null,
       ]),
       st ? table([
-        { label: '入力', render: (x) => h('code', null, x.id) },
-        { label: '状態', render: (x) => badge(x.state, x.state === 'live' ? 'ok' : x.state === 'stalled' ? 'warn' : '') },
+        { label: t('pipelines.input'), render: (x) => h('code', null, x.id) },
+        { label: t('common.state'), render: (x) => badge(x.state, x.state === 'live' ? 'ok' : x.state === 'stalled' ? 'warn' : '') },
         { label: 'fps', class: 'num', render: (x) => (x.fps || 0).toFixed(1) },
-        { label: '復号', class: 'num', render: (x) => String(x.decoded_frames) },
-        { label: 'タリー', render: (x) => (x.on_program ? badge('PGM', 'live') : x.on_preview ? badge('PVW', 'ok') : '') },
-      ], st.sources || [], { empty: '入力の状態はまだありません' }) : null,
-      hasCompose ? h('p', null, h('a', { href: `#/production?pipeline=${encodeURIComponent(r.id)}` }, 'スイッチャーで操作する →')) : null);
+        { label: t('pipelines.decoded'), class: 'num', render: (x) => String(x.decoded_frames) },
+        { label: t('pipelines.tally'), render: (x) => (x.on_program ? badge('PGM', 'live') : x.on_preview ? badge('PVW', 'ok') : '') },
+      ], st.sources || [], { empty: t('pipelines.noSourceState') }) : null,
+      hasCompose ? h('p', null, h('a', { class: 'row', href: `#/production?pipeline=${encodeURIComponent(r.id)}` }, icon('switcher'), t('pipelines.openSwitcher'), icon('arrow-right', { size: 'sm' }))) : null);
   };
 
   const renderToolbar = () => {
     const r = cur && cur.remote;
-    replace(toolbarState, r ? observedBadge(r.observed_state) : badge('下書き', ''), cur && cur.pl.dirty && cur.pl.remoteId ? h('span', { class: 'small muted' }, '未保存の変更あり') : null);
+    replace(toolbarState, r ? observedBadge(r.observed_state) : badge(t('pipelines.draft'), 'outline'), cur && cur.pl.dirty && cur.pl.remoteId ? h('span', { class: 'small muted' }, t('pipelines.unsaved')) : null);
     startBtn.disabled = !r || r.desired_state === 'running';
     stopBtn.disabled = !r || r.desired_state !== 'running';
   };
@@ -622,7 +626,7 @@ export async function render(root) {
       const keep = new Map(entries.filter((e) => e.pl.remoteId && e.pl.dirty).map((e) => [e.pl.remoteId, e]));
       entries = [...remote.map((e) => keep.get(e.pl.remoteId) || e), ...entries.filter((e) => !e.pl.remoteId)];
     } catch (e) {
-      if (!offline(e)) reportError(e, 'パイプラインの一覧');
+      if (!offline(e)) reportError(e, t('pipelines.list'));
     }
     renderBanner();
   };
@@ -640,7 +644,7 @@ export async function render(root) {
   const showRemoteError = (e, what) => {
     if (offline(e)) return;
     if (e.status === 412) {
-      toast('他の操作で更新されていました。「再読み込み」で最新を読み、もう一度操作してください', 'warn', 9000);
+      toast(t('pipelines.stale'), 'warn', 9000);
       return;
     }
     if (e.details && (e.details.issues || e.details.reason)) {
@@ -656,7 +660,7 @@ export async function render(root) {
     localIssues = validate(p, { royaltyFree: rf() });
     renderIssues();
     if (localIssues.some((i) => i.level === 'error')) {
-      toast('検査のエラーを直してから保存してください', 'warn');
+      toast(t('pipelines.fixBeforeSave'), 'warn');
       return;
     }
     const graph = toGraph(p);
@@ -682,9 +686,9 @@ export async function render(root) {
       renderToolbar();
       renderIssues();
       draw();
-      toast('ノードに保存しました', 'ok');
+      toast(t('pipelines.saved'), 'ok');
     } catch (e) {
-      showRemoteError(e, '保存');
+      showRemoteError(e, t('common.save'));
     }
   };
 
@@ -695,7 +699,7 @@ export async function render(root) {
     draw();
     if (!p.remoteId) {
       const bad = localIssues.some((i) => i.level === 'error');
-      toast(bad ? 'この画面の検査でエラーがあります' : 'この画面の検査に通りました（ノードでの検証は保存後）', bad ? 'warn' : 'ok');
+      toast(bad ? t('pipelines.localBad') : t('pipelines.localOk'), bad ? 'warn' : 'ok');
       return;
     }
     try {
@@ -705,7 +709,7 @@ export async function render(root) {
       renderIssues();
       renderPlan();
       draw();
-      toast('ノードの検証に通りました', 'ok');
+      toast(t('pipelines.validated'), 'ok');
     } catch (e) {
       plan = null;
       renderPlan();
@@ -713,8 +717,8 @@ export async function render(root) {
         remoteIssues = issuesOf(e);
         renderIssues();
         draw();
-        toast(`ノードの検証で問題があります（${remoteIssues.length} 件）`, 'warn', 7000);
-      } else showRemoteError(e, '検証');
+        toast(t('pipelines.validateIssues', { n: remoteIssues.length }), 'warn', 7000);
+      } else showRemoteError(e, t('pipelines.validate'));
     }
   };
 
@@ -722,7 +726,7 @@ export async function render(root) {
     const p = pl();
     if (!p.remoteId) return;
     if (p.dirty && want === 'running') {
-      if (!(await confirmDialog('未保存の変更', '画面の変更はまだ保存していません。保存済みのグラフで開始します。', { ok: '開始', danger: false }))) return;
+      if (!(await confirmDialog(t('pipelines.unsavedTitle'), t('pipelines.unsavedBody'), { ok: t('pipelines.start'), danger: false }))) return;
     }
     try {
       const r = await api.setDesired(p.remoteId, want, p.etag);
@@ -731,9 +735,9 @@ export async function render(root) {
       renderRuntime();
       renderToolbar();
       renderList();
-      toast(want === 'running' ? '開始しました' : '停止しました', 'ok');
+      toast(want === 'running' ? t('pipelines.started') : t('pipelines.stopped'), 'ok');
     } catch (e) {
-      showRemoteError(e, want === 'running' ? '開始' : '停止');
+      showRemoteError(e, want === 'running' ? t('pipelines.start') : t('pipelines.stop'));
     }
   };
 
@@ -747,41 +751,42 @@ export async function render(root) {
       cur.pl = e.pl;
       cur.remote = r.data;
       switchTo(p.key);
-      toast('ノードから読み直しました', 'ok');
+      toast(t('pipelines.reloaded'), 'ok');
     } catch (e) {
-      showRemoteError(e, '読み込み');
+      showRemoteError(e, t('common.refresh'));
     }
   };
 
   const remove = async () => {
     const p = pl();
     if (p.remoteId) {
-      if (!(await confirmDialog('パイプラインを削除', `「${p.name}」をノードから削除します。動いていれば止まります。`, { ok: '削除', requireText: p.name }))) return;
+      if (!(await confirmDialog(t('pipelines.deleteTitle'), t('pipelines.deleteBody', { name: p.name }), { ok: t('common.delete'), requireText: p.name }))) return;
       try {
         await api.remove(p.remoteId);
         delete layout[p.remoteId];
         writeJson(LAYOUT, layout);
       } catch (e) {
-        showRemoteError(e, '削除');
+        showRemoteError(e, t('common.delete'));
         return;
       }
     } else {
-      if (!(await confirmDialog('下書きを削除', `「${p.name}」をこのブラウザから削除します。`, { ok: '削除' }))) return;
+      if (!(await confirmDialog(t('pipelines.deleteDraftTitle'), t('pipelines.deleteDraftBody', { name: p.name }), { ok: t('common.delete') }))) return;
       drafts = drafts.filter((d) => d.key !== p.key);
       writeJson(DRAFTS, drafts);
     }
     entries = entries.filter((e) => e !== cur);
     if (!entries.length) entries = [{ pl: emptyPipeline(), remote: null }];
     switchTo(entries[0].pl.key);
-    toast('削除しました', 'ok');
+    toast(t('common.deleted'), 'ok');
   };
 
   const io = async () => {
     const body = { name: pl().name, graph: toGraph(pl()) };
-    const ta = h('textarea', { rows: 18, 'aria-label': 'パイプラインの定義（JSON）', spellcheck: 'false' }, JSON.stringify(body, null, 2));
-    const v = await modal('定義（JSON）', () => [h('p', { class: 'small muted' }, 'POST /pipelines の本文（{name, graph}）です。グラフだけ（{version, nodes}）も貼り付けて取り込めます。取り込むと新しい下書きになります。'), ta], {
+    const ta = h('textarea', { rows: 18, 'aria-label': t('pipelines.jsonLabel'), spellcheck: 'false' }, JSON.stringify(body, null, 2));
+    const v = await modal(t('pipelines.jsonTitle'), () => [h('p', { class: 'small muted' }, t('pipelines.jsonLead')), ta], {
       wide: true,
-      actions: (close) => [h('button', { onClick: () => close(null) }, '閉じる'), h('button', { class: 'primary', onClick: () => close(ta.value) }, '取り込む')],
+      icon: 'json',
+      actions: (close) => [h('button', { onClick: () => close(null) }, t('common.close')), h('button', { class: 'primary', onClick: () => close(ta.value) }, icon('upload'), t('pipelines.import'))],
     });
     if (!v) return;
     try {
@@ -790,48 +795,58 @@ export async function render(root) {
       const next = fromGraph(graph, { name: j.name || `imported-${Date.now().toString(36)}` });
       next.dirty = true;
       addEntry({ pl: next, remote: null });
-      toast('取り込みました（下書き）', 'ok');
+      toast(t('pipelines.imported'), 'ok');
     } catch (e) {
-      toast(`取り込めません: ${e.message}`, 'error');
+      toast(t('pipelines.importFailed', { reason: e.message }), 'error');
     }
   };
 
-  const startBtn = h('button', { onClick: () => setDesired('running') }, '▶ 開始');
-  const stopBtn = h('button', { onClick: () => setDesired('stopped') }, '■ 停止');
+  const startBtn = h('button', { onClick: () => setDesired('running'), 'data-testid': 'pipeline-start' }, icon('play'), t('pipelines.start'));
+  const stopBtn = h('button', { onClick: () => setDesired('stopped'), 'data-testid': 'pipeline-stop' }, icon('stop'), t('pipelines.stop'));
   listSel.addEventListener('change', () => switchTo(listSel.value));
 
+  const newDraft = () => addEntry({ pl: Object.assign(emptyPipeline(`pipeline-${Date.now().toString(36)}`), { dirty: true }), remote: null });
+  const addSample = () => {
+    const rfs = streamList.filter((x) => x.codec_profile === 'royalty_free');
+    const p = samplePipeline({ a: rfs[0] ? rfs[0].id : '', b: rfs[1] ? rfs[1].id : '', out: rfs[2] ? rfs[2].id : '' });
+    p.name = `pinp-${Date.now().toString(36)}`;
+    p.dirty = true;
+    addEntry({ pl: p, remote: null });
+  };
+  const jsonBtn = h('button', { type: 'button', onClick: io }, icon('json'), 'JSON');
+
   root.append(
-    h('div', { class: 'page-head' }, h('h1', null, 'パイプライン'), h('span', { class: 'spacer' }),
-      h('label', { class: 'visually-hidden', for: 'pl-pick' }, 'パイプライン'), listSel,
-      h('button', { onClick: () => addEntry({ pl: Object.assign(emptyPipeline(`pipeline-${Date.now().toString(36)}`), { dirty: true }), remote: null }) }, '新規'),
-      h('button', { onClick: () => {
-        const rfs = streamList.filter((x) => x.codec_profile === 'royalty_free');
-        const p = samplePipeline({ a: rfs[0] ? rfs[0].id : '', b: rfs[1] ? rfs[1].id : '', out: rfs[2] ? rfs[2].id : '' });
-        p.name = `pinp-${Date.now().toString(36)}`;
-        p.dirty = true;
-        addEntry({ pl: p, remote: null });
-      } }, '例を追加'),
-      h('button', { onClick: io }, 'JSON'),
-      h('button', { class: 'danger', onClick: remove }, '削除')),
+    pageHeader({
+      title: t('nav.pipelines'),
+      description: t('pipelines.lead'),
+      help: helpHint({ title: t('nav.pipelines'), body: t('pipelines.help'), guide: '07-pipelines.md' }),
+      actions: [
+        h('label', { class: 'visually-hidden', for: 'pl-pick' }, t('pipelines.pick')), listSel,
+        button(t('pipelines.new'), { icon: 'plus', onClick: newDraft }),
+        button(t('pipelines.sample'), { icon: 'lightbulb', onClick: addSample }),
+        jsonBtn,
+        iconButton('trash', t('pipelines.deleteThis'), { variant: 'danger', onClick: remove }),
+      ],
+    }),
     banner,
-    h('div', { class: 'toolbar' },
-      h('button', { onClick: validateRemote }, '検証'),
-      h('button', { class: 'primary', onClick: save }, '保存'),
+    h('div', { class: 'toolbar pl-toolbar' },
+      h('button', { type: 'button', onClick: validateRemote }, icon('check'), t('pipelines.validate')),
+      h('button', { type: 'button', class: 'primary', onClick: save }, icon('save'), t('common.save')),
       startBtn, stopBtn,
-      h('button', { onClick: reloadCurrent }, '再読み込み'),
+      iconButton('refresh', t('pipelines.reload'), { variant: 'secondary', onClick: reloadCurrent }),
       h('span', { class: 'spacer' }), toolbarState),
     h('div', { class: 'pl-layout' },
-      h('div', { class: 'pl-palette', role: 'group', 'aria-label': '部品を置く' },
-        h('div', { class: 'small muted' }, '部品を置く'),
-        Object.entries(KINDS).map(([type, k]) => h('button', { onClick: () => place(type), title: type, 'data-type': type },
+      h('div', { class: 'pl-palette', role: 'group', 'aria-labelledby': 'pl-pal-h' },
+        h('div', { class: 'pl-palette-title', id: 'pl-pal-h' }, t('pipelines.palette')),
+        Object.entries(KINDS).map(([type, k]) => h('button', { type: 'button', onClick: () => place(type), title: type, 'data-type': type },
           h('span', { class: 'dot', style: { background: k.color } }), k.label)),
-        h('p', { class: 'small muted' }, '右の丸（出力）から左の丸（入力）へドラッグでつなぎます。符号化済みの入力は「復号」、出力の前は「符号化」を挟みます。')),
+        h('p', { class: 'small muted' }, t('pipelines.paletteHint'))),
       h('div', { class: 'pl-canvas' }, svg),
-      h('div', { style: { display: 'grid', gap: '12px', alignContent: 'start' } }, inspector,
-        h('div', { class: 'panel' }, issuesBox),
-        h('section', { class: 'panel', 'aria-labelledby': 'pl-rt' }, h('h2', { id: 'pl-rt' }, '実行'), runtimeBox))),
-    h('section', { class: 'panel', 'aria-labelledby': 'pl-plan' }, h('h2', { id: 'pl-plan' }, '計画'), planBox),
-    h('p', { class: 'small muted' }, 'トランジションの種類: ', TRANSITIONS.map((t) => t[1]).join('・'), '。H.264/H.265 の符号化・復号にはハードウェアが要ります（無いと CAPACITY_UNAVAILABLE）。'));
+      h('div', { class: 'pl-side' }, inspector,
+        h('section', { class: 'panel', 'aria-label': t('pipelines.checks') }, issuesBox),
+        panel({ title: t('pipelines.runtime'), icon: 'activity' }, runtimeBox))),
+    panel({ title: t('pipelines.plan'), icon: 'list' }, planBox),
+    h('p', { class: 'small muted' }, t('pipelines.footer', { list: transitions().map((x) => x[1]).join(t('pipelines.listSep')) })));
 
   try { streamList = await listAll(streams.list); } catch { /* 選べないだけ */ }
   entries = drafts.map(entryFromDraft).filter(Boolean);
@@ -861,7 +876,7 @@ export async function render(root) {
       if (!plan) renderPlan();
     } catch (e) {
       if (e.status === 404) {
-        toast('このパイプラインは削除されました', 'warn');
+        toast(t('pipelines.gone'), 'warn');
         entries = entries.filter((x) => x !== cur);
         if (!entries.length) entries = [{ pl: emptyPipeline(), remote: null }];
         switchTo(entries[0].pl.key);

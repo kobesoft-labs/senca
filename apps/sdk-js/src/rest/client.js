@@ -40,6 +40,8 @@ import { OPERATIONS } from './operations.gen.js';
 /** @typedef {import('./openapi.gen.js').MediaPipeline} MediaPipeline */
 /** @typedef {import('./openapi.gen.js').MediaPipelineCreate} MediaPipelineCreate */
 /** @typedef {import('./openapi.gen.js').MediaPipelinePatch} MediaPipelinePatch */
+/** @typedef {import('./openapi.gen.js').AuditEntry} AuditEntry */
+/** @typedef {import('./openapi.gen.js').AuditList} AuditList */
 /** @typedef {import('./http.js').IfMatch} IfMatch */
 /** @typedef {import('./http.js').RequestOptions} RequestOptions */
 
@@ -642,6 +644,49 @@ export class Users extends Collection {
   }
 }
 
+/**
+ * 監査ログの絞り込み（`GET /audit`）。時刻は RFC 3339 の文字列か Date。
+ * @typedef {{
+ *   since?: string | Date, until?: string | Date, action?: string, subject?: string, resource?: string, q?: string,
+ *   node?: string, tenant?: string
+ * }} AuditFilter
+ */
+
+/** @param {string | Date | undefined} t */
+const isoTime = (t) => (t instanceof Date ? t.toISOString() : t);
+
+/** 監査ログ（読み出しだけ。新しい順。クラスターでは全ノードの分を合わせて返す）。 */
+export class Audit {
+  /** @internal @param {Http} http */
+  constructor(http) {
+    /** @private */
+    this.http = http;
+  }
+
+  /**
+   * 一覧（cursor を自動でたどる）。`action` は完全一致、`.` か `*` で終われば前方一致。`tenant` は別のテナント・`*` に node:admin が要る。
+   * `for await (const e of client.audit.list({ action: 'stream.', since: new Date(Date.now() - 3600e3) }))`。
+   * @param {ListOptions & AuditFilter} [o]
+   * @returns {Paginator<AuditEntry>}
+   */
+  list(o = {}) {
+    return new Paginator((cursor, signal) => this.listPage({ ...o, cursor: cursor ?? undefined, signal }), { signal: o.signal, cursor: o.cursor });
+  }
+
+  /**
+   * 一覧の 1 頁（`unavailable_nodes` は答えなかったノード。項目が `limit` より少なくても `next_cursor` があれば続きがある）。
+   * @param {ListOptions & AuditFilter} [o]
+   * @returns {Promise<AuditList>}
+   */
+  async listPage(o = {}) {
+    const query = {
+      limit: o.limit, cursor: o.cursor, since: isoTime(o.since), until: isoTime(o.until), action: o.action, subject: o.subject,
+      resource: o.resource, q: o.q, node: o.node, tenant: o.tenant,
+    };
+    return (await this.http.request('GET', '/audit', { query, signal: o.signal })).data;
+  }
+}
+
 /** 管理 API の client。 */
 export class SencaClient {
   /** @param {import('./http.js').ClientOptions} options */
@@ -663,6 +708,8 @@ export class SencaClient {
     this.rooms = new Rooms(this.http);
     /** 部屋のメディアパイプライン（書き出し・録画・合成・送り出し・文字起こし）。 */
     this.mediaPipelines = new MediaPipelines(this.http);
+    /** 監査ログ（読み出しだけ）。 */
+    this.audit = new Audit(this.http);
     /** ログインと本人の操作。 */
     this.auth = new Auth(this.http);
     /** 利用者の管理。 */

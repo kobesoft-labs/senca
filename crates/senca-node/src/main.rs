@@ -4,6 +4,7 @@ mod api;
 mod app;
 mod archive;
 mod auth;
+mod audit;
 mod capture;
 mod captions;
 mod cascade;

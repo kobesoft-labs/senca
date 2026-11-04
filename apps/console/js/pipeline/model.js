@@ -8,24 +8,36 @@
 // - 場所（どのノードで動かすか）は持たない（REQ-005）。画面の位置はグラフに入れられないので、画面側が別に覚える。
 // - 取り込んだグラフの、この画面で編集しない項目（compose の images、board の corners など）はそのまま残す。
 
+import { t as tr } from '../i18n/index.js';
+
 export const GRAPH_VERSION = 1;
 
+/** 鍵の文を、読むたびに今の言語で引く（言語を切り替えても作り直さなくてよいように）。 */
+const L = (key) => ({ key, toString: () => tr(key) });
+const withLabel = (o, key) => Object.defineProperty(o, 'label', { get: () => tr(key), enumerable: true, configurable: true });
+/** [値, 鍵] の選択肢を [値, 文] にする（鍵でないものはそのまま）。 */
+const resolveOptions = (opts) => opts.map((o) => (Array.isArray(o) && typeof o[1] === 'string' && o[1].startsWith('pipelines.') ? [o[0], tr(o[1])] : o));
+
 /** ポートの型。ev/ea = 符号化済みの映像・音声、v/a = 生のフレーム。raw/enc は上流が決まっていないとき。 */
-export const PORT_LABEL = {
-  ev: '映像（符号化済み）', ea: '音声（符号化済み）', v: '映像（生）', a: '音声（生）', raw: '生（上流しだい）', enc: '符号化済み（上流しだい）',
-};
+export const PORT_LABEL = {};
+for (const k of ['ev', 'ea', 'v', 'a', 'raw', 'enc']) Object.defineProperty(PORT_LABEL, k, { get: () => tr(`pipelines.port.${k}`), enumerable: true });
 
 const VIDEO_CODECS = ['av1', 'vp9', 'vp8', 'h264', 'h265'];
 const AUDIO_CODECS = ['opus', 'aac', 'pcma', 'pcmu'];
 const ENCODE_CODECS = ['av1', 'vp9', 'vp8', 'h264', 'h265', 'opus'];
 const FILTERS = ['bilinear', 'nearest', 'bicubic', 'lanczos3', 'area'];
-export const TRANSITIONS = [['cut', 'カット'], ['fade', 'フェード'], ['wipe_left', 'ワイプ（左から）'], ['wipe_right', 'ワイプ（右から）']];
+const TRANSITION_KEYS = ['cut', 'fade', 'wipe_left', 'wipe_right'];
+/** トランジションの種類 [値, 今の言語の名前]。 */
+export const transitions = () => TRANSITION_KEYS.map((k) => [k, tr(`pipelines.transition.${k}`)]);
 /** ロイヤリティのあるコーデック（royalty_free の stream が関わると使えない。REQ-007）。 */
 export const ROYALTY_CODECS = new Set(['h264', 'h265', 'aac']);
 
-const num = (path, label, extra = {}) => ({ path, label, type: 'number', ...extra });
-const sel = (path, label, options, extra = {}) => ({ path, label, type: 'select', options, ...extra });
-const chk = (path, label, def) => ({ path, label, type: 'check', def });
+const num = (path, key, extra = {}) => withLabel({ path, type: 'number', ...extra }, key);
+const sel = (path, key, options, extra = {}) => {
+  const o = withLabel({ path, type: 'select', ...extra }, key);
+  return Object.defineProperty(o, 'options', { get: () => resolveOptions(typeof options === 'function' ? options() : options), enumerable: true });
+};
+const chk = (path, key, def) => withLabel({ path, type: 'check', def }, key);
 
 /**
  * 部品の種類。
@@ -35,111 +47,113 @@ const chk = (path, label, def) => ({ path, label, type: 'check', def });
  */
 export const KINDS = {
   source: {
-    label: '入力（stream）', color: '#2f80ed', in: [], out: ['video', 'audio'],
+    color: '#2f80ed', in: [], out: ['video', 'audio'],
     fields: [
-      { path: 'stream', label: 'stream', type: 'stream', required: true },
-      sel('video.codec', '映像のコーデック（空 = 使わない）', ['', ...VIDEO_CODECS]),
-      num('video.track', '映像のトラック番号', { min: 0, when: (p) => !!p['video.codec'] }),
-      num('video.width', '映像の幅（見込み）', { min: 16, when: (p) => !!p['video.codec'] }),
-      num('video.height', '映像の高さ（見込み）', { min: 16, when: (p) => !!p['video.codec'] }),
-      num('video.fps', '映像の fps（見込み）', { min: 1, step: 'any', when: (p) => !!p['video.codec'] }),
-      sel('audio.codec', '音声のコーデック（空 = 使わない）', ['', ...AUDIO_CODECS]),
-      num('audio.track', '音声のトラック番号', { min: 0, when: (p) => !!p['audio.codec'] }),
-      num('audio.sample_rate', 'サンプルレート', { min: 8000, when: (p) => !!p['audio.codec'] }),
-      num('audio.channels', 'チャンネル数', { min: 1, max: 8, when: (p) => !!p['audio.codec'] }),
+      withLabel({ path: 'stream', type: 'stream', required: true }, 'pipelines.f.source.stream'),
+      sel('video.codec', 'pipelines.f.source.video.codec', ['', ...VIDEO_CODECS]),
+      num('video.track', 'pipelines.f.source.video.track', { min: 0, when: (p) => !!p['video.codec'] }),
+      num('video.width', 'pipelines.f.source.video.width', { min: 16, when: (p) => !!p['video.codec'] }),
+      num('video.height', 'pipelines.f.source.video.height', { min: 16, when: (p) => !!p['video.codec'] }),
+      num('video.fps', 'pipelines.f.source.video.fps', { min: 1, step: 'any', when: (p) => !!p['video.codec'] }),
+      sel('audio.codec', 'pipelines.f.source.audio.codec', ['', ...AUDIO_CODECS]),
+      num('audio.track', 'pipelines.f.source.audio.track', { min: 0, when: (p) => !!p['audio.codec'] }),
+      num('audio.sample_rate', 'pipelines.f.source.audio.sample_rate', { min: 8000, when: (p) => !!p['audio.codec'] }),
+      num('audio.channels', 'pipelines.f.source.audio.channels', { min: 1, max: 8, when: (p) => !!p['audio.codec'] }),
     ],
     defaults: { 'video.codec': 'vp9' },
   },
   decode: {
-    label: '復号', color: '#8e44ad', in: [['input', ['ev', 'ea', 'enc']]], out: ['out'],
-    fields: [num('max_width', '解像度の上限（幅）', { min: 16 }), num('max_height', '解像度の上限（高さ）', { min: 16 }), num('threads', 'スレッド数（0 = 自動）', { min: 0, def: 0 })],
+    color: '#8e44ad', in: [['input', ['ev', 'ea', 'enc']]], out: ['out'],
+    fields: [num('max_width', 'pipelines.f.decode.max_width', { min: 16 }), num('max_height', 'pipelines.f.decode.max_height', { min: 16 }), num('threads', 'pipelines.f.decode.threads', { min: 0, def: 0 })],
   },
   board: {
-    label: '板書の補正', color: '#16a085', in: [['input', ['v', 'raw']]], out: ['out'],
+    color: '#16a085', in: [['input', ['v', 'raw']]], out: ['out'],
     fields: [
-      sel('params.mode', '板の種類', [['whiteboard', 'ホワイトボード'], ['blackboard', '黒板']], { def: 'whiteboard' }),
-      chk('params.auto_detect', '4 隅を自動で検出', false),
-      num('params.redetect_frames', '検出のやり直し間隔（フレーム、0 = しない）', { min: 0, def: 0 }),
-      num('params.output_width', '出力の幅', { min: 16, def: 1280 }),
-      num('params.output_height', '出力の高さ', { min: 16, def: 720 }),
-      chk('params.enhance', '照明むら・反射の補正と強調', true),
-      num('params.stroke_gain', '線の強調（任意）', { step: 'any' }),
-      num('params.chroma_gain', '色の強調（任意）', { step: 'any' }),
-      chk('params.invert_to_white', '黒板を白地に反転', false),
-      chk('params.clahe', '輝度の CLAHE', false),
+      sel('params.mode', 'pipelines.f.board.params.mode', [['whiteboard', 'pipelines.opt.whiteboard'], ['blackboard', 'pipelines.opt.blackboard']], { def: 'whiteboard' }),
+      chk('params.auto_detect', 'pipelines.f.board.params.auto_detect', false),
+      num('params.redetect_frames', 'pipelines.f.board.params.redetect_frames', { min: 0, def: 0 }),
+      num('params.output_width', 'pipelines.f.board.params.output_width', { min: 16, def: 1280 }),
+      num('params.output_height', 'pipelines.f.board.params.output_height', { min: 16, def: 720 }),
+      chk('params.enhance', 'pipelines.f.board.params.enhance', true),
+      num('params.stroke_gain', 'pipelines.f.board.params.stroke_gain', { step: 'any' }),
+      num('params.chroma_gain', 'pipelines.f.board.params.chroma_gain', { step: 'any' }),
+      chk('params.invert_to_white', 'pipelines.f.board.params.invert_to_white', false),
+      chk('params.clahe', 'pipelines.f.board.params.clahe', false),
     ],
   },
   scale: {
-    label: '拡大縮小', color: '#16a085', in: [['input', ['v', 'raw']]], out: ['out'],
-    fields: [num('width', '幅', { min: 16, required: true, def: 1280 }), num('height', '高さ', { min: 16, required: true, def: 720 }), sel('filter', 'フィルター', FILTERS, { def: 'bilinear' })],
+    color: '#16a085', in: [['input', ['v', 'raw']]], out: ['out'],
+    fields: [num('width', 'pipelines.f.scale.width', { min: 16, required: true, def: 1280 }), num('height', 'pipelines.f.scale.height', { min: 16, required: true, def: 720 }), sel('filter', 'pipelines.f.scale.filter', FILTERS, { def: 'bilinear' })],
   },
   crop: {
-    label: '切り抜き', color: '#16a085', in: [['input', ['v', 'raw']]], out: ['out'],
-    fields: [num('x', 'x', { min: 0, required: true, def: 0 }), num('y', 'y', { min: 0, required: true, def: 0 }), num('width', '幅', { min: 2, required: true, def: 640 }), num('height', '高さ', { min: 2, required: true, def: 360 })],
+    color: '#16a085', in: [['input', ['v', 'raw']]], out: ['out'],
+    fields: [num('x', 'pipelines.f.crop.x', { min: 0, required: true, def: 0 }), num('y', 'pipelines.f.crop.y', { min: 0, required: true, def: 0 }), num('width', 'pipelines.f.crop.width', { min: 2, required: true, def: 640 }), num('height', 'pipelines.f.crop.height', { min: 2, required: true, def: 360 })],
   },
   compose: {
-    label: '合成（スイッチャー）', color: '#d35400', named: true, out: ['program', 'preview'],
+    color: '#d35400', named: true, out: ['program', 'preview'],
     accept: ['v', 'raw'],
     fields: [
-      num('canvas.width', 'キャンバスの幅', { min: 16, required: true, def: 1280 }),
-      num('canvas.height', 'キャンバスの高さ', { min: 16, required: true, def: 720 }),
-      num('canvas.fps_num', 'fps（分子）', { min: 1, required: true, def: 30 }),
-      num('canvas.fps_den', 'fps（分母）', { min: 1, def: 1 }),
-      { path: 'canvas.background', label: '地の色', type: 'color', def: '#000000' },
-      { path: 'program', label: 'プログラムのシーン', type: 'scene', required: true },
-      { path: 'preview', label: 'プレビューのシーン（任意）', type: 'scene' },
-      sel('transition.kind', '既定のトランジション（TAKE）', TRANSITIONS, { def: 'cut' }),
-      num('transition.duration_ms', 'トランジションの時間（ms）', { min: 0, def: 0 }),
-      num('missing.hold_ms', '入力が切れたとき最後の画を保つ時間（ms）', { min: 0, def: 2000 }),
-      { path: 'missing.slate_color', label: 'スレートの色', type: 'color', def: '#000000' },
-      num('threads', '帯の並列度（0 = CPU の数）', { min: 0, def: 0 }),
+      num('canvas.width', 'pipelines.f.compose.canvas.width', { min: 16, required: true, def: 1280 }),
+      num('canvas.height', 'pipelines.f.compose.canvas.height', { min: 16, required: true, def: 720 }),
+      num('canvas.fps_num', 'pipelines.f.compose.canvas.fps_num', { min: 1, required: true, def: 30 }),
+      num('canvas.fps_den', 'pipelines.f.compose.canvas.fps_den', { min: 1, def: 1 }),
+      withLabel({ path: 'canvas.background', type: 'color', def: '#000000' }, 'pipelines.f.compose.canvas.background'),
+      withLabel({ path: 'program', type: 'scene', required: true }, 'pipelines.f.compose.program'),
+      withLabel({ path: 'preview', type: 'scene' }, 'pipelines.f.compose.preview'),
+      sel('transition.kind', 'pipelines.f.compose.transition.kind', transitions, { def: 'cut' }),
+      num('transition.duration_ms', 'pipelines.f.compose.transition.duration_ms', { min: 0, def: 0 }),
+      num('missing.hold_ms', 'pipelines.f.compose.missing.hold_ms', { min: 0, def: 2000 }),
+      withLabel({ path: 'missing.slate_color', type: 'color', def: '#000000' }, 'pipelines.f.compose.missing.slate_color'),
+      num('threads', 'pipelines.f.compose.threads', { min: 0, def: 0 }),
     ],
   },
   audio_mix: {
-    label: '音声ミキサー', color: '#d35400', named: true, out: ['out'], accept: ['a', 'raw'],
-    fields: [num('master_gain_db', 'マスター（dB）', { step: 0.5, def: 0 }), chk('limiter', 'リミッター', true)],
+    color: '#d35400', named: true, out: ['out'], accept: ['a', 'raw'],
+    fields: [num('master_gain_db', 'pipelines.f.audio_mix.master_gain_db', { step: 0.5, def: 0 }), chk('limiter', 'pipelines.f.audio_mix.limiter', true)],
   },
   encode: {
-    label: '符号化', color: '#c0392b', in: [['input', ['v', 'a', 'raw']]], out: ['out'],
+    color: '#c0392b', in: [['input', ['v', 'a', 'raw']]], out: ['out'],
     fields: [
-      sel('codec', 'コーデック', ENCODE_CODECS, { required: true, def: 'av1' }),
-      num('bitrate_kbps', 'ビットレート（kbps）', { min: 1, required: true, def: 2000 }),
-      num('gop', 'キーフレーム間隔（フレーム、空 = 2 秒）', { min: 1 }),
-      chk('low_latency', '低遅延', true),
-      sel('rate_control', '符号量の制御', ['cbr', 'vbr'], { def: 'cbr' }),
-      num('width', '出力の幅（空 = 入力のまま）', { min: 16 }),
-      num('height', '出力の高さ（空 = 入力のまま）', { min: 16 }),
-      num('frame_ms', 'Opus のパケット長（ms）', { min: 2.5, step: 'any', when: (p) => p.codec === 'opus' }),
-      num('threads', 'スレッド数（0 = 自動）', { min: 0, def: 0 }),
+      sel('codec', 'pipelines.f.encode.codec', ENCODE_CODECS, { required: true, def: 'av1' }),
+      num('bitrate_kbps', 'pipelines.f.encode.bitrate_kbps', { min: 1, required: true, def: 2000 }),
+      num('gop', 'pipelines.f.encode.gop', { min: 1 }),
+      chk('low_latency', 'pipelines.f.encode.low_latency', true),
+      sel('rate_control', 'pipelines.f.encode.rate_control', ['cbr', 'vbr'], { def: 'cbr' }),
+      num('width', 'pipelines.f.encode.width', { min: 16 }),
+      num('height', 'pipelines.f.encode.height', { min: 16 }),
+      num('frame_ms', 'pipelines.f.encode.frame_ms', { min: 2.5, step: 'any', when: (p) => p.codec === 'opus' }),
+      num('threads', 'pipelines.f.encode.threads', { min: 0, def: 0 }),
     ],
   },
   snapshot_on_change: {
-    label: '板書の変化で静止画', color: '#7f8c8d', in: [['input', ['v', 'raw']]], out: [],
+    color: '#7f8c8d', in: [['input', ['v', 'raw']]], out: [],
     fields: [
-      sel('params.mode', '板の種類', [['whiteboard', 'ホワイトボード'], ['blackboard', '黒板']], { def: 'whiteboard' }),
-      chk('params.enabled', '始めから動かす', true),
-      num('params.analysis_fps', '解析の回数（毎秒、0 = 全フレーム）', { min: 0, step: 'any', def: 2 }),
-      num('params.stable_frames', '落ち着いたとみなす回数', { min: 1, def: 3 }),
-      num('params.change_fraction', '変化の割合', { min: 0, step: 'any', def: 0.004 }),
-      num('params.jpeg_quality', 'JPEG の品質', { min: 1, max: 100, def: 85 }),
+      sel('params.mode', 'pipelines.f.snapshot_on_change.params.mode', [['whiteboard', 'pipelines.opt.whiteboard'], ['blackboard', 'pipelines.opt.blackboard']], { def: 'whiteboard' }),
+      chk('params.enabled', 'pipelines.f.snapshot_on_change.params.enabled', true),
+      num('params.analysis_fps', 'pipelines.f.snapshot_on_change.params.analysis_fps', { min: 0, step: 'any', def: 2 }),
+      num('params.stable_frames', 'pipelines.f.snapshot_on_change.params.stable_frames', { min: 1, def: 3 }),
+      num('params.change_fraction', 'pipelines.f.snapshot_on_change.params.change_fraction', { min: 0, step: 'any', def: 0.004 }),
+      num('params.jpeg_quality', 'pipelines.f.snapshot_on_change.params.jpeg_quality', { min: 1, max: 100, def: 85 }),
     ],
   },
   sink: {
-    label: '出力（stream）', color: '#27ae60', in: [['入力 1', ['ev', 'ea', 'enc']], ['入力 2', ['ev', 'ea', 'enc']]], out: [],
-    fields: [{ path: 'stream', label: '出力先の stream', type: 'stream', required: true }],
+    color: '#27ae60', in: [[L('pipelines.port.in1'), ['ev', 'ea', 'enc']], [L('pipelines.port.in2'), ['ev', 'ea', 'enc']]], out: [],
+    fields: [withLabel({ path: 'stream', type: 'stream', required: true }, 'pipelines.f.sink.stream')],
   },
 };
 
+for (const [type, k] of Object.entries(KINDS)) withLabel(k, `pipelines.kind.${type}`);
+
 export const OPTION_FIELDS = [
-  sel('clock', '時刻の進め方', [['realtime', 'realtime（ライブ）'], ['input', 'input（入力の時刻）']], { def: 'realtime' }),
-  sel('overflow', 'キューが一杯のとき', [['drop', 'drop（古いものを捨てる）'], ['block', 'block（上流を待たせる）']], { def: 'drop' }),
-  num('latency_ms', '揺らぎ吸収の遅延（ms）', { min: 0, def: 100 }),
-  num('missing_timeout_ms', '入力が切れたとみなす時間（ms）', { min: 1, def: 2000 }),
-  num('block_timeout_ms', 'block の待ちの上限（ms）', { min: 1, def: 2000 }),
-  num('input_queue_aus', '入力キュー（AU 数）', { min: 1, def: 256 }),
-  num('frame_queue', 'フレームのキュー', { min: 1, def: 8 }),
-  num('status_interval_ms', '状態・メーターの間隔（ms、0 = 出さない）', { min: 0, def: 100 }),
-  num('commit_timeout_ms', '世代の切り替えの待ちの上限（ms）', { min: 1, def: 10000 }),
+  sel('clock', 'pipelines.f.options.clock', [['realtime', 'pipelines.opt.realtime'], ['input', 'pipelines.opt.input']], { def: 'realtime' }),
+  sel('overflow', 'pipelines.f.options.overflow', [['drop', 'pipelines.opt.drop'], ['block', 'pipelines.opt.block']], { def: 'drop' }),
+  num('latency_ms', 'pipelines.f.options.latency_ms', { min: 0, def: 100 }),
+  num('missing_timeout_ms', 'pipelines.f.options.missing_timeout_ms', { min: 1, def: 2000 }),
+  num('block_timeout_ms', 'pipelines.f.options.block_timeout_ms', { min: 1, def: 2000 }),
+  num('input_queue_aus', 'pipelines.f.options.input_queue_aus', { min: 1, def: 256 }),
+  num('frame_queue', 'pipelines.f.options.frame_queue', { min: 1, def: 8 }),
+  num('status_interval_ms', 'pipelines.f.options.status_interval_ms', { min: 0, def: 100 }),
+  num('commit_timeout_ms', 'pipelines.f.options.commit_timeout_ms', { min: 1, def: 10000 }),
 ];
 
 export const NODE_W = 180;
@@ -155,7 +169,7 @@ export function nodeHeight(n) {
 export function inPorts(n) {
   const k = KINDS[n.type];
   if (k.named) return (n.ins || []).map((i) => ({ name: i.name, accept: k.accept }));
-  return k.in.map(([name, accept]) => ({ name, accept }));
+  return k.in.map(([name, accept]) => ({ name: String(name), accept }));
 }
 
 /** 出力ポート: [{name}] */
@@ -253,23 +267,23 @@ export function compatible(t, accept) {
 }
 
 export function connect(pl, from, to) {
-  if (from.node === to.node) return { ok: false, reason: '同じ部品にはつなげません' };
+  if (from.node === to.node) return { ok: false, reason: tr('pipelines.v.sameNode') };
   const tn = byId(pl, to.node);
-  if (!tn) return { ok: false, reason: '部品がありません' };
+  if (!tn) return { ok: false, reason: tr('pipelines.v.noNode') };
   const port = inPorts(tn)[to.port];
-  if (!port) return { ok: false, reason: '入力がありません' };
+  if (!port) return { ok: false, reason: tr('pipelines.v.noInput') };
   const t = outType(pl, from);
   if (!compatible(t, port.accept)) {
-    const hint = (t === 'ev' || t === 'ea') && port.accept.includes('v') ? '（間に「復号」を挟んでください）'
-      : (t === 'v' || t === 'a') && port.accept.includes('ev') ? '（間に「符号化」を挟んでください）' : '';
-    return { ok: false, reason: `${PORT_LABEL[t] || t} は ${port.accept.map((x) => PORT_LABEL[x]).filter(Boolean)[0] || ''} の入力につなげません${hint}` };
+    const hint = (t === 'ev' || t === 'ea') && port.accept.includes('v') ? tr('pipelines.v.needDecode')
+      : (t === 'v' || t === 'a') && port.accept.includes('ev') ? tr('pipelines.v.needEncode') : '';
+    return { ok: false, reason: tr('pipelines.v.incompatible', { from: PORT_LABEL[t] || t, to: port.accept.map((x) => PORT_LABEL[x]).filter(Boolean)[0] || '', hint }) };
   }
-  if (incoming(pl, to.node, to.port)) return { ok: false, reason: 'この入力にはもうつながっています' };
+  if (incoming(pl, to.node, to.port)) return { ok: false, reason: tr('pipelines.v.taken') };
   const e = { id: uid('e'), from: { ...from }, to: { ...to } };
   pl.edges.push(e);
   if (hasCycle(pl)) {
     pl.edges.pop();
-    return { ok: false, reason: '輪になるのでつなげません（DAG）' };
+    return { ok: false, reason: tr('pipelines.v.cycleEdge') };
   }
   return { ok: true, edge: e };
 }
@@ -306,25 +320,25 @@ export function validate(pl, opt = {}) {
   const issues = [];
   const err = (text, node, edge) => issues.push({ level: 'error', node, edge, text });
   const warn = (text, node) => issues.push({ level: 'warn', node, text });
-  if (!isPipelineName(pl.name)) err('パイプラインの名前は英数字と . _ - の 1〜64 文字です');
-  if (!pl.nodes.some((n) => n.type === 'source')) err('入力（source）がありません');
-  if (!pl.nodes.some((n) => n.type === 'sink' || n.type === 'snapshot_on_change')) err('出力（sink）がありません');
-  if (hasCycle(pl)) err('輪（循環）があります。DAG にしてください');
+  if (!isPipelineName(pl.name)) err(tr('pipelines.v.pipelineName'));
+  if (!pl.nodes.some((n) => n.type === 'source')) err(tr('pipelines.v.noSource'));
+  if (!pl.nodes.some((n) => n.type === 'sink' || n.type === 'snapshot_on_change')) err(tr('pipelines.v.noSink'));
+  if (hasCycle(pl)) err(tr('pipelines.v.cycle'));
   const names = new Map();
   for (const n of pl.nodes) {
-    if (!isNodeName(n.name)) err(`部品の名前「${n.name}」は英数字と _ - の 1〜64 文字です`, n.id);
-    if (names.has(n.name)) err(`部品の名前「${n.name}」が重なっています`, n.id);
+    if (!isNodeName(n.name)) err(tr('pipelines.v.nodeName', { node: n.name }), n.id);
+    if (names.has(n.name)) err(tr('pipelines.v.nodeDup', { node: n.name }), n.id);
     names.set(n.name, n);
   }
   for (const e of pl.edges) {
     const tn = byId(pl, e.to.node);
     const port = tn && inPorts(tn)[e.to.port];
     const t = outType(pl, e.from);
-    if (!port || !compatible(t, port.accept)) err(`つなげない組み合わせ: ${PORT_LABEL[t] || t} → ${tn ? tn.name : '?'}`, undefined, e.id);
+    if (!port || !compatible(t, port.accept)) err(tr('pipelines.v.badEdge', { type: PORT_LABEL[t] || t, node: tn ? tn.name : '?' }), undefined, e.id);
     const fn = byId(pl, e.from.node);
     if (fn && fn.type === 'source') {
       const kind = e.from.port === 0 ? 'video' : 'audio';
-      if (!fn.p[`${kind}.codec`]) err(`「${fn.name}」の ${kind} を使っていますが、${kind} のコーデックがありません`, fn.id, e.id);
+      if (!fn.p[`${kind}.codec`]) err(tr('pipelines.v.noCodec', { node: fn.name, kind }), fn.id, e.id);
     }
   }
   for (const n of pl.nodes) {
@@ -333,14 +347,14 @@ export function validate(pl, opt = {}) {
     ports.forEach((port, i) => {
       if (incoming(pl, n.id, i)) return;
       if (n.type === 'sink' && i === 1) return;
-      err(`「${n.name}」の入力「${port.name}」がつながっていません`, n.id);
+      err(tr('pipelines.v.unconnected', { node: n.name, port: port.name }), n.id);
     });
     if (k.named) {
-      if (!n.ins.length) err(`「${n.name}」に入力がありません`, n.id);
+      if (!n.ins.length) err(tr('pipelines.v.noIns', { node: n.name }), n.id);
       const seen = new Set();
       for (const i of n.ins) {
-        if (!isNodeName(i.name)) err(`「${n.name}」の入力名「${i.name}」は英数字と _ - です`, n.id);
-        if (seen.has(i.name)) err(`「${n.name}」の入力名「${i.name}」が重なっています`, n.id);
+        if (!isNodeName(i.name)) err(tr('pipelines.v.inName', { node: n.name, input: i.name }), n.id);
+        if (seen.has(i.name)) err(tr('pipelines.v.inDup', { node: n.name, input: i.name }), n.id);
         seen.add(i.name);
       }
     }
@@ -348,44 +362,44 @@ export function validate(pl, opt = {}) {
     outPorts(n).forEach((o, i) => {
       if (n.type === 'compose' && i === 1) return;
       if (n.type === 'source' && !n.p[`${o.name}.codec`]) return;
-      if (!pl.edges.some((e) => e.from.node === n.id && e.from.port === i)) err(`「${n.name}」の出力「${o.name}」がどこにも使われていません`, n.id);
+      if (!pl.edges.some((e) => e.from.node === n.id && e.from.port === i)) err(tr('pipelines.v.unused', { node: n.name, port: o.name }), n.id);
     });
     for (const f of k.fields) {
       if (f.when && !f.when(n.p)) continue;
       const v = n.p[f.path];
-      if (f.required && empty(v)) err(`「${n.name}」の「${f.label}」がありません`, n.id);
+      if (f.required && empty(v)) err(tr('pipelines.v.missingField', { node: n.name, field: f.label }), n.id);
       if (f.type === 'number' && !empty(v)) {
         const x = Number(v);
-        if (Number.isNaN(x) || (f.min !== undefined && x < f.min) || (f.max !== undefined && x > f.max)) err(`「${n.name}」の「${f.label}」が範囲外です`, n.id);
+        if (Number.isNaN(x) || (f.min !== undefined && x < f.min) || (f.max !== undefined && x > f.max)) err(tr('pipelines.v.range', { node: n.name, field: f.label }), n.id);
       }
     }
-    if (n.type === 'source' && !n.p['video.codec'] && !n.p['audio.codec']) err(`「${n.name}」は映像も音声も使っていません`, n.id);
+    if (n.type === 'source' && !n.p['video.codec'] && !n.p['audio.codec']) err(tr('pipelines.v.noTracks', { node: n.name }), n.id);
     if (n.type === 'compose') {
       const scenes = n.p.scenes || {};
       const inNames = new Set(n.ins.map((i) => i.name));
-      if (!Object.keys(scenes).length) err(`「${n.name}」にシーンがありません`, n.id);
-      if (n.p.program && !scenes[n.p.program]) err(`「${n.name}」のプログラム「${n.p.program}」というシーンがありません`, n.id);
-      if (n.p.preview && !scenes[n.p.preview]) err(`「${n.name}」のプレビュー「${n.p.preview}」というシーンがありません`, n.id);
+      if (!Object.keys(scenes).length) err(tr('pipelines.v.noScenes', { node: n.name }), n.id);
+      if (n.p.program && !scenes[n.p.program]) err(tr('pipelines.v.noProgram', { node: n.name, scene: n.p.program }), n.id);
+      if (n.p.preview && !scenes[n.p.preview]) err(tr('pipelines.v.noPreview', { node: n.name, scene: n.p.preview }), n.id);
       for (const [sn, sc] of Object.entries(scenes)) {
         (sc.layers || []).forEach((l, li) => {
           const kinds = ['source', 'image', 'color'].filter((x) => !empty(l[x]));
-          if (kinds.length !== 1) err(`「${n.name}」のシーン「${sn}」のレイヤー ${li + 1} は source・image・color のどれか 1 つです`, n.id);
-          if (l.source && !inNames.has(l.source)) err(`「${n.name}」のシーン「${sn}」が知らない入力「${l.source}」を使っています`, n.id);
-          if (!(l.width > 0) || !(l.height > 0)) err(`「${n.name}」のシーン「${sn}」のレイヤー ${li + 1} の大きさがありません`, n.id);
+          if (kinds.length !== 1) err(tr('pipelines.v.layerKind', { node: n.name, scene: sn, n: li + 1 }), n.id);
+          if (l.source && !inNames.has(l.source)) err(tr('pipelines.v.layerSource', { node: n.name, scene: sn, input: l.source }), n.id);
+          if (!(l.width > 0) || !(l.height > 0)) err(tr('pipelines.v.layerSize', { node: n.name, scene: sn, n: li + 1 }), n.id);
         });
       }
     }
     if (n.type === 'sink') {
       const kinds = [0, 1].map((i) => incoming(pl, n.id, i)).filter(Boolean).map((e) => outType(pl, e.from));
-      if (kinds.filter((t) => t === 'ev').length > 1 || kinds.filter((t) => t === 'ea').length > 1) err(`「${n.name}」に入れられるのは映像 1 つと音声 1 つまでです`, n.id);
+      if (kinds.filter((t) => t === 'ev').length > 1 || kinds.filter((t) => t === 'ea').length > 1) err(tr('pipelines.v.sinkTracks', { node: n.name }), n.id);
     }
     if (opt.royaltyFree) {
       const codecs = n.type === 'encode' ? [n.p.codec] : n.type === 'source' ? [n.p['video.codec'], n.p['audio.codec']] : [];
-      for (const c of codecs) if (c && ROYALTY_CODECS.has(c)) err(`「${n.name}」: royalty_free の stream が関わるので ${c} は使えません（REQ-007）`, n.id);
+      for (const c of codecs) if (c && ROYALTY_CODECS.has(c)) err(tr('pipelines.v.royalty', { node: n.name, codec: c }), n.id);
     }
   }
   if (pl.nodes.some((n) => n.type === 'encode' && n.p.codec === 'h264') && !opt.royaltyFree) {
-    warn('H.264 の符号化にはハードウェアが要ります（無ければノードの検証で CAPACITY_UNAVAILABLE）');
+    warn(tr('pipelines.v.h264hw'));
   }
   return issues;
 }
@@ -522,14 +536,14 @@ function autoLayout(pl) {
  * @param {{name?: string, positions?: Record<string, [number, number]>}} [opt]
  */
 export function fromGraph(graph, opt = {}) {
-  if (!graph || typeof graph !== 'object' || !Array.isArray(graph.nodes)) throw new Error('graph.nodes がありません');
-  if (graph.version !== GRAPH_VERSION) throw new Error(`graph.version は ${GRAPH_VERSION} です`);
+  if (!graph || typeof graph !== 'object' || !Array.isArray(graph.nodes)) throw new Error(tr('pipelines.v.noNodes'));
+  if (graph.version !== GRAPH_VERSION) throw new Error(tr('pipelines.v.version', { v: GRAPH_VERSION }));
   const pl = emptyPipeline(opt.name || 'imported');
   for (const f of OPTION_FIELDS) if (graph.options && graph.options[f.path] !== undefined) pl.options[f.path] = graph.options[f.path];
   const pending = [];
   for (const gn of graph.nodes) {
     const k = KINDS[gn.type];
-    if (!k) throw new Error(`知らない部品の種類: ${gn.type}`);
+    if (!k) throw new Error(tr('pipelines.v.unknownType', { type: gn.type }));
     const rest = clone(gn);
     delete rest.type;
     delete rest.id;

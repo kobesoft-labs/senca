@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 # M1〜M3: RTMP → ライブ HLS・録画・VOD・MP4 書き出し・回収・RTMP play・API の契約。
-# P〜X: 視聴者と入力の上限・録画中の欠落・予約・interactive・計画・RTSPS・書き出しの切り出し・パイプラインの静止画。
+# P〜Y: 視聴者と入力の上限・録画中の欠落・予約・interactive・計画・RTSPS・書き出しの切り出し・パイプラインの静止画・監査ログの読み出し。
 # 使い方: tools/interop/node.sh（KEEP=1 で作業場所を残す、ONLY=ABC で場面を絞る）
 source "$(dirname "$0")/lib.sh"
 [ -n "${NODE_BIN_PREBUILT:-}" ] || (cd "$ROOT" && cargo build -q -p senca-node -p senca-codec-worker -p senca-capture -p senca-devtools && cargo build -q -p senca-rtmp -p senca-paas --examples)
@@ -9,7 +9,7 @@ CODEC_LIB_DIR=${CODEC_LIB_DIR:-$HOME/tools/codeclibs/usr/lib/x86_64-linux-gnu}
 W=$(mktemp -d); NODE_PID=
 cleanup() { [ -n "$NODE_PID" ] && kill "$NODE_PID" 2>/dev/null || true; wait 2>/dev/null || true; [ -n "${KEEP:-}" ] && echo "kept $W" || rm -rf "$W"; }
 trap cleanup EXIT
-ONLY=${ONLY:-ABCDEFGHIJKLMNOPQRSTUVWX}
+ONLY=${ONLY:-ABCDEFGHIJKLMNOPQRSTUVWXY}
 HTTP=$(port); RTMP=$(port); SRT=$(port); RTSP=$(port); API=http://127.0.0.1:$HTTP/api/v1
 start_node() {
   "$NODE_BIN" --data-dir "$W/data" --http 127.0.0.1:$HTTP --rtmp 127.0.0.1:$RTMP --srt 127.0.0.1:$SRT --capture-synthetic --rtsp 127.0.0.1:$RTSP --public-rtsp-url rtsp://127.0.0.1:$RTSP \
@@ -597,5 +597,93 @@ PY
   api DELETE /pipelines/$XP >/dev/null
   [ ! -e "$W/data/pipeline-snapshots/$XP" ] && pass "X pipeline delete removes its snapshots" || fail "X snapshots dir left"
   fi
+fi
+if [[ $ONLY == *Y* ]]; then
+  # Y. 監査ログの読み出し（GET /audit）: 新しい順・絞り込み・カーソル・テナント・回転したファイルをまたぐ
+  stop_node; start_node --audit-log-max-bytes 4096 --audit-log-keep 3
+  YS=$(python3 -c "import datetime;print(datetime.datetime.now(datetime.timezone.utc).strftime('%Y-%m-%dT%H:%M:%S.%f')[:-3]+'Z')")
+  sleep 0.05
+  for i in $(seq 1 40); do api POST /streams -d "{\"name\":\"y$i\"}" > "$W/y$i.json"; done
+  for i in 1 2 3; do api DELETE /streams/$(sid y$i) >/dev/null; done
+  YT=$(api POST /tokens -d '{"name":"ya","scopes":["tenant:admin"]}' | json "['token']")
+  YR=$(api POST /tokens -d '{"name":"yr","scopes":["stream:read"]}' | json "['token']")
+  NID=$(api GET /nodes | json "['items'][0]['id']")
+  ls "$W"/data/audit.log.* >/dev/null 2>&1 && [ "$(ls "$W"/data/audit.log.* | wc -l)" -le 3 ] \
+    && pass "Y audit.log rotated by size, at most --audit-log-keep files kept ($(ls "$W"/data/audit.log.* | wc -l))" || fail "Y rotation: $(ls "$W"/data)"
+  # 他のテナントの行（JWT の主体など）を直接足しておく: 自分のテナントの読み出しには出ない
+  echo '{"action":"stream.create","request_id":"req_other","resource":"x","subject":"user:o","tenant":"other","ts":"'"$YS"'"}' >> "$W/data/audit.log"
+  python3 - "$API" "$TOKEN" "$YT" "$YR" "$YS" "$NID" "$(sid y1)" "$W/data" <<'PY' && pass "Y GET /audit: filters, newest first, cursor across rotated files, tenant isolation, scopes" || fail "Y GET /audit"
+import glob, json, sys, urllib.request, urllib.parse, urllib.error
+api, tok, ta, tr, since, nid, y1, data = sys.argv[1:9]
+def get(q, t=tok):
+    r = urllib.request.Request(api + "/audit?" + urllib.parse.urlencode(q), headers={"Authorization": "Bearer " + t})
+    try:
+        with urllib.request.urlopen(r, timeout=30) as resp:
+            return resp.status, json.load(resp)
+    except urllib.error.HTTPError as e:
+        return e.code, json.load(e)
+def walk(q, limit, t=tok):
+    out, cur = [], None
+    while True:
+        s, p = get({**q, "limit": limit, **({"cursor": cur} if cur else {})}, t)
+        assert s == 200, (s, p)
+        assert len(p["items"]) <= limit and p["unavailable_nodes"] == []
+        out += p["items"]; cur = p["next_cursor"]
+        if cur is None:
+            return out
+fails = []
+def check(c, m):
+    if not c:
+        fails.append(m)
+# 作った 40 本と消した 3 本（自分の要求の分だけ）
+s, p = get({"since": since, "action": "stream.create"})
+check(s == 200 and len(p["items"]) == 40 and p["next_cursor"] is None, f"since+action {s} {len(p.get('items', []))}")
+check([x["resource"] for x in p["items"]][-1] == y1, "newest first (y1 is the oldest)")
+check(all(x["node"] == nid and x["node_name"] and x["tenant"] == "default" and x["request_id"] for x in p["items"]), "node/tenant/request_id")
+s, p = get({"since": since, "action": "stream."})
+check(len(p["items"]) == 43, f"prefix stream. {len(p['items'])}")
+s, p = get({"since": since, "action": "stream.delete"})
+check(len(p["items"]) == 3, "exact stream.delete")
+s, p = get({"resource": y1})
+check([x["action"] for x in p["items"]] == ["stream.delete", "stream.create"], f"resource {p}")
+sub = p["items"][0]["subject"]
+s, p = get({"since": since, "subject": sub, "action": "token.create"})
+check(len(p["items"]) == 2, "subject + action")
+s, p = get({"since": since, "q": y1[:12].upper()})
+check(len(p["items"]) == 2, "q is case-insensitive over the fields")
+s, p = get({"since": "2000-01-01T00:00:00Z", "until": "2000-01-02T00:00:00Z"})
+check(s == 200 and p["items"] == [] and p["next_cursor"] is None, "empty range")
+# カーソル: limit=7 でたどる = 1 ページ（回転したファイルをまたぐ）
+full = walk({}, 1000)
+paged = walk({}, 7)
+check(paged == full and len(full) >= 30, f"pagination {len(paged)} vs {len(full)}")
+lines = 0
+for f in glob.glob(data + "/audit.log*"):
+    lines += sum(1 for l in open(f) if '"tenant":"default"' in l)
+check(len(full) == lines, f"all kept lines are readable ({len(full)} vs {lines})")
+check(all(a["ts"] >= b["ts"] for a, b in zip(full, full[1:])), "ordered")
+# テナント: 他のテナントの行は見えない。node:admin は tenant= で見られる
+check(all(x["tenant"] == "default" for x in full) and "req_other" not in [x["request_id"] for x in full], "tenant isolation")
+s, p = get({"tenant": "other"})
+check(s == 200 and [x["request_id"] for x in p["items"]] == ["req_other"], f"tenant=other by node:admin {s}")
+s, p = get({"tenant": "*", "limit": 2})
+check(s == 200 and p["items"][0]["request_id"] == "req_other", f"tenant=* {s}")
+s, p = get({"tenant": "other"}, ta)
+check(s == 403, f"tenant= without node:admin {s}")
+s, p = get({"tenant": "default", "limit": 1}, ta)
+check(s == 200 and len(p["items"]) == 1, f"own tenant with tenant:admin {s}")
+s, p = get({}, tr)
+check(s == 403, f"stream:read {s}")
+# 誤り
+for q in ({"since": "yesterday"}, {"cursor": "!!"}, {"limit": "0"}, {"bogus": "1"}, {"node": "nosuch"}, {"action": ""}):
+    s, p = get(q)
+    check(s == 400 and p.get("code") == "INVALID_REQUEST", f"400 for {q}: {s} {p}")
+for m in fails:
+    print("   NG", m)
+sys.exit(1 if fails else 0)
+PY
+  # 書き込みの形は変えていない（1 行 1 JSON、キーは action・request_id・resource・subject・tenant・ts）
+  tail -n 2 "$W/data/audit.log" | head -n 1 | python3 -c "import json,sys;d=json.loads(sys.stdin.read());sys.exit(0 if sorted(d)==['action','request_id','resource','subject','tenant','ts'] else 1)" \
+    && pass "Y line format unchanged" || fail "Y line format"
 fi
 summary
