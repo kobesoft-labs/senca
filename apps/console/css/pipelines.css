@@ -397,7 +397,7 @@
   .pl-run-actions .btn { min-height: 44px; }
   .pl-run-actions .icon-only { width: 44px; }
   .pl-sep { display: none; }
-  .pl-keys-btn { display: none; }
+  .pl-keys-btn, .pl-undo [data-testid="redo"] { display: none; }
   .pl-legend { display: none; }
   .pl-minimap { display: none; }
   .pl-controls .btn.sm, .pl-controls .icon-only.sm { min-height: 40px; }
