@@ -4,7 +4,8 @@
 //!   `token_endpoint` だけ（トークンの中の URL へは行かない）。発行者は管理者が設定した宛先なので、
 //!   外向きの接続の制限（`--egress-allow`、仕様 9.4）は通さない（録画の保存先と同じ扱い）。発行者が https なら、
 //!   discovery に書かれた宛先もすべて https でなければ使わない。
-//! - discovery と JWKS は 1 時間覚える。知らない `kid` のトークンが来たら JWKS を取り直す（60 秒に 1 回まで）。
+//! - discovery と JWKS は 1 時間覚える。知らない `kid` のトークンが来たら JWKS を取り直す（5 秒に 1 回まで。ID トークンは
+//!   こちらからトークンエンドポイントに取りに行ったものだけなので、外から知らない kid を送り付けられることはない）。
 //! - 通信は 10 秒で打ち切る。応答は 1 MiB まで。
 
 use crate::config::OidcProviderConfig;
@@ -17,7 +18,7 @@ use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 
 const CACHE: Duration = Duration::from_secs(3600);
-const REFRESH_MIN: Duration = Duration::from_secs(60);
+const REFRESH_MIN: Duration = Duration::from_secs(5);
 const TIMEOUT: Duration = Duration::from_secs(10);
 const MAX_BODY: usize = 1 << 20;
 
@@ -114,7 +115,7 @@ impl Provider {
         Ok(m)
     }
 
-    /// 検証器（`kid` を知らなければ取り直す。60 秒に 1 回まで）。
+    /// 検証器（`kid` を知らなければ取り直す。5 秒に 1 回まで）。
     async fn verifier(&self, meta: &Metadata, kid: Option<&str>) -> Result<Arc<JwtVerifier>, String> {
         let cached = self.keys.lock().unwrap_or_else(|e| e.into_inner()).clone();
         if let Some((at, v)) = &cached {

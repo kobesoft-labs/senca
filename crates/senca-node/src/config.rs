@@ -738,11 +738,11 @@ impl Config {
         if self.events_retain > 1_000_000 {
             return Err("--events-retain は 0〜1000000".into());
         }
-        if !(60..=30 * 86_400).contains(&self.auth_session_idle_secs) {
-            return Err("--auth-session-idle は 60〜2592000 秒".into());
+        if !(10..=30 * 86_400).contains(&self.auth_session_idle_secs) {
+            return Err("--auth-session-idle は 10〜2592000 秒".into());
         }
-        if !(300..=365 * 86_400).contains(&self.auth_session_lifetime_secs) || self.auth_session_lifetime_secs < self.auth_session_idle_secs {
-            return Err("--auth-session-lifetime は 300〜31536000 秒で、--auth-session-idle 以上".into());
+        if !(10..=365 * 86_400).contains(&self.auth_session_lifetime_secs) || self.auth_session_lifetime_secs < self.auth_session_idle_secs {
+            return Err("--auth-session-lifetime は 10〜31536000 秒で、--auth-session-idle 以上".into());
         }
         if self.auth_mfa_issuer.is_empty() || self.auth_mfa_issuer.len() > 64 || self.auth_mfa_issuer.contains(':') {
             return Err("--auth-mfa-issuer は 1〜64 文字で : を含まない名前".into());
@@ -819,7 +819,7 @@ mod tests {
         assert!(Config::from_args(&args(&["--oidc-issuer", "https://x", "--oidc-client-id", "x", "--oidc-default-role", "root"])).is_err());
         assert!(Config::from_args(&args(&["--oidc-issuer", "https://x", "--oidc-client-id", "x", "--oidc-tenant", "a", "--oidc-tenant-claim", "t"])).is_err());
         assert!(Config::from_args(&args(&["--oidc-issuer", "https://x", "--oidc-client-id", "x", "--oidc-id", "Bad Id"])).is_err());
-        assert!(Config::from_args(&args(&["--auth-session-idle", "10"])).is_err());
+        assert!(Config::from_args(&args(&["--auth-session-idle", "5"])).is_err());
         assert!(Config::from_args(&args(&["--auth-session-idle", "7200", "--auth-session-lifetime", "3600"])).is_err());
         assert!(Config::from_args(&args(&["--auth-password-login", "maybe"])).is_err());
         let c = Config::from_args(&args(&[])).unwrap();

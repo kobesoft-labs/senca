@@ -56,24 +56,26 @@ impl AuthRuntime {
     }
 }
 
-/// 最後に使った時刻を進める間隔（待ち時間の 1/16、30 秒〜5 分）。合意ログへの書き込みを要求ごとにしない。
+/// 最後に使った時刻を進める間隔（待ち時間の 1/16 を 30 秒〜5 分に収めたもの。ただし待ち時間の 1/4 まで）。
+/// 合意ログへの書き込みを要求ごとにしない。
 pub fn touch_interval_ms(idle_ms: i64) -> i64 {
-    (idle_ms / 16).clamp(30_000, 300_000)
+    (idle_ms / 16).clamp(30_000, 300_000).min(idle_ms / 4)
 }
 
 /// セッションで使ったとき、前回の記録から間隔が空いていれば、最後に使った時刻を進める（裏で送る）。
 pub fn touch(app: &App, p: &Principal, now_ms: i64) {
     let Some(s) = &p.session else { return };
-    if now_ms - s.last_seen_ms < touch_interval_ms(s.idle_timeout_ms) {
+    let every = touch_interval_ms(s.idle_timeout_ms);
+    if now_ms - s.last_seen_ms < every {
         return;
     }
     {
         let mut t = app.auth.touching.lock().unwrap_or_else(|e| e.into_inner());
-        if t.get(&s.hash).is_some_and(|at| now_ms - at < 30_000) {
+        if t.get(&s.hash).is_some_and(|at| now_ms - at < every) {
             return;
         }
         if t.len() > 10_000 {
-            t.retain(|_, at| now_ms - *at < 30_000);
+            t.retain(|_, at| now_ms - *at < 300_000);
         }
         t.insert(s.hash.clone(), now_ms);
     }
@@ -234,5 +236,6 @@ mod tests {
         assert_eq!(touch_interval_ms(8 * 3600 * 1000), 300_000);
         assert_eq!(touch_interval_ms(60_000), 30_000);
         assert_eq!(touch_interval_ms(16 * 60_000), 60_000);
+        assert_eq!(touch_interval_ms(10_000), 2_500);
     }
 }
