@@ -9,18 +9,19 @@ info:
     ## 共通の決まり
 
     - base path は `/api/v1` です。本文は JSON（UTF-8）で、時刻は UTC の RFC 3339（`2026-10-25T00:00:00.000Z` の形）です。
-    - **認証**: `/api/v1` 以下はすべて `Authorization: Bearer <token>` が必要です。値が `senca_` で始まれば API トークン、それ以外は JWT として扱います（JWT は `--jwks` を設定したときだけ使えます）。認証に失敗すると 401（`WWW-Authenticate: Bearer`）を返します。失敗の理由は応答に含めません。
+    - **認証**: `/api/v1` 以下は、ログインの操作（`GET /auth/providers`・`POST /auth/login`・`POST /auth/login/mfa`・`POST /auth/exchange`・`GET /auth/oidc/{provider}/start`・`GET /auth/oidc/{provider}/callback`。`security: []`）を除いて `Authorization: Bearer <token>` が必要です。値が `senca_` で始まれば API トークン、`sencas_` で始まればログインのセッション（`POST /auth/login` などで得ます）、それ以外は JWT として扱います（JWT は `--jwks` を設定したときだけ使えます）。認証に失敗すると 401（`WWW-Authenticate: Bearer`）を返します。失敗の理由は応答に含めません。
+    - **ログインのセッション**: 利用者（`/users`）がパスワード（と TOTP）か OIDC でログインすると得られる、期限付きの値です。権限は利用者の役割と権限で決まり、変更はすぐに効きます。監査ログの `subject` は `user:{id}` です。仮のパスワード・MFA の登録待ちのセッションは、一部の操作しか使えません（`PendingAction`）。
     - **権限（scope）**: 各操作に必要な権限は拡張フィールド `x-senca-scope` に記載します（`null` は認証だけで使えることを表します）。`tenant:admin` は `node:admin` 以外のすべての権限を含みます。権限が足りなければ 403（`FORBIDDEN`）です。テナントは認証情報から決まり、本文に書いたテナントは使いません。他のテナントの資源は 404 になります。
     - **本文**: `Content-Type: application/json` 以外は 415 です。未知のフィールドは 400 です（スキーマでは `additionalProperties: false`）。HTTP 層の本文の上限は 1 MiB で、超えると text/plain の 413 を返して接続を閉じます。
     - **Idempotency-Key**: POST に付けると、24 時間は同じ応答（状態コード・本文・Location）を返します。再送に対する応答には `Idempotency-Replayed: true` が付きます。同じキーで別の要求（メソッド・パス・クエリ・本文の SHA-256 のいずれかが違う）を送ると 409（`IDEMPOTENCY_CONFLICT`）です。キーは 1〜255 文字の表示可能な ASCII で、違反すると 400 です。保存する応答からは秘密（`stream_key`・`token`・`secret`）を取り除き、代わりに `stream_key_redacted: true`・`token_redacted: true`（`secret_redacted: true`）を入れます。5xx の応答は保存しません。
     - **楽観的排他制御**: 応答の `ETag` は `"{generation}"` です。PATCH には `If-Match` が必須で、無ければ 428、形式が違うか古ければ 412 です。DELETE の `If-Match` は任意です（付けた場合は検査します）。
     - **一覧**: `limit`（1〜1000、既定 100）と `cursor`（前の応答の `next_cursor`）でページングします。並び順は ID の昇順です（`GET /audit` だけは時刻の新しい順）。知らないクエリパラメーターは 400 です。
     - **エラー**: エラーは `application/problem+json`（`Problem`）で返します。すべての応答に `X-Request-Id` と `Cache-Control: no-store` が付きます。`X-Request-Id` は、要求の `X-Request-Id` が 64 文字以内の英数字と `-_.` であればその値、そうでなければ生成した `req_...` です。
-    - **405**: 定義済みの資源（`/capabilities`・`/nodes/...`・`/devices`・`/grid`・`/events`・`/streams/...`・`/recordings/...`・`/schedules/...`・`/tokens/...`・`/audit`・`/inputs/...`・`/outputs/...`・`/secrets/...`・`/pipelines/...`・`/rooms/...`・`/media-pipelines/...`）に、この文書に無いメソッド（HEAD を含む）を送ると 405（`METHOD_NOT_ALLOWED`）です。それ以外の未知のパスは 404 です。`x-senca-undefined-method-status` を参照してください。
+    - **405**: 定義済みの資源（`/capabilities`・`/nodes/...`・`/devices`・`/grid`・`/events`・`/streams/...`・`/recordings/...`・`/schedules/...`・`/tokens/...`・`/audit`・`/auth/...`・`/users/...`・`/inputs/...`・`/outputs/...`・`/secrets/...`・`/pipelines/...`・`/rooms/...`・`/media-pipelines/...`）に、この文書に無いメソッド（HEAD を含む）を送ると 405（`METHOD_NOT_ALLOWED`）です。それ以外の未知のパスは 404 です。`x-senca-undefined-method-status` を参照してください。
     - **429**: 要求の量の上限を超えると、どの `/api/v1` の操作（`GET /events` を含む）も 429（`RATE_LIMITED`、`retryable: true`）を返します。
       `Retry-After` は次に通るまでの秒数で、`details` は `{limit, retry_after_secs}` です。`limit` は `ip`（送信元の IP アドレスごと。認証の前に数えます）・
       `token`（主体ごと: API トークン・JWT の subject）・`auth_failures`（認証に失敗した IP アドレス。使い切ると正しい資格情報でも 429）・
-      `connect`（`GET /events` の接続の開始）のどれかです。上限はノードの設定（`--rate-limit-*`）で決まります。各操作の responses には書きません。
+      `connect`（`GET /events` の接続の開始）・`login`（ログインの失敗。送信元の IP アドレスごと）・`login_account`（ログインの失敗。アカウントごと）のどれかです。上限はノードの設定（`--rate-limit-*`）で決まります。ログインの操作のほかは、各操作の responses には書きません。
     - **API の版**: `/api/v{N}`（N が 1 以外）は 422（`UNSUPPORTED_PROTOCOL_VERSION`、`details: {requested, supported: ["v1"]}`）です。
     - **E2EE**: E2EE の部屋や、E2EE の部屋から書き出した stream について、サーバーが中身を処理する要求（部屋の合成の録画・合成・文字起こし、
       stream の静止画・字幕・静止画の保存・静止画の予約、パイプラインの入力）は 422（`UNSUPPORTED_CODEC`、`details.reason: "e2ee"`）です。
@@ -55,6 +56,19 @@ tags:
     description: 配信や録画の予約です。
   - name: tokens
     description: API トークンです（ADR-0005）。
+  - name: auth
+    description: |
+      ログインと本人の操作です（ADR-0017）。ログイン画面は `GET /auth/providers` を見て、パスワードの欄と IdP のボタンを出します。
+
+      - **パスワード**: `POST /auth/login` → （TOTP を登録した利用者は）`POST /auth/login/mfa` → `status: ok` の `token`（`sencas_...`）。
+      - **OIDC**: ブラウザーで `GET /auth/oidc/{provider}/start?return_to=/console/...` を開く → IdP → `GET /auth/oidc/{provider}/callback`
+        → `/console/#/auth/complete?code=...`（失敗は `?error=...`）→ 管理画面が同じブラウザーから `POST /auth/exchange {code}`。
+      - セッションは `--auth-session-idle`（既定 8 時間）使わなければ、使っていても `--auth-session-lifetime`（既定 7 日）で失効します。
+        ログアウト・パスワードの変更（ほかのセッション）・利用者の無効化と削除・役割の変更でも失効します。
+  - name: users
+    description: |
+      利用者の管理です（`tenant:admin`。ADR-0017）。利用者はテナントごとで、パスワード（任意）・役割（`Role`）と権限・MFA・OIDC の結び付きを持ちます。
+      利用者の作成・変更・削除・パスワードと MFA の変更は、SSE に `user.created`・`user.updated`・`user.deleted` として流れます（`tenant:admin` を持つ主体にだけ）。
   - name: audit
     description: 監査ログです（状態を変更する管理 API の操作の記録）。
   - name: io
@@ -1091,6 +1105,622 @@ paths:
         '409': { $ref: '#/components/responses/Conflict' }
         '500': { $ref: '#/components/responses/InternalError' }
 
+  # ------------------------------------------------------------------ auth（ログイン・本人の操作）
+  /auth/providers:
+    get:
+      tags: [auth]
+      operationId: getAuthProviders
+      summary: ログインの方法の一覧（認証なし）
+      description: |
+        ログイン画面を作るための情報です。認証なしで読めます。
+        `setup_required` が `true` のとき、利用者がまだ 1 人もいません。管理画面は「最初の管理者を作る」画面を出し、
+        最初の管理者トークン（`{data-dir}/control/bootstrap-admin-token`）で `POST /users` を呼びます。
+      security: []
+      x-senca-scope: null
+      responses:
+        '200':
+          description: ログインの方法
+          headers: { X-Request-Id: { $ref: '#/components/headers/X-Request-Id' } }
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/AuthProviders' }
+  /auth/login:
+    post:
+      tags: [auth]
+      operationId: login
+      summary: パスワードでログイン（認証なし）
+      description: |
+        成功すると `status: ok` とセッションの値（`token`、`sencas_` で始まります）を返します。以後は `Authorization: Bearer {token}` で管理 API を使えます。
+        TOTP を登録した利用者には `status: mfa_required` と `mfa_token`（5 分）を返します。続けて `POST /auth/login/mfa` を呼んでください。
+        利用者がいない・パスワードが違う・利用者が無効、のどれでも同じ 401 を返します（理由は応答に含めません）。
+        失敗は送信元の IP アドレスごと（`--rate-limit-login`、1 分あたり）とアカウントごと（5 回の後は 1 秒から倍々に待たせ、最長 15 分）に数え、
+        使い切ると 429（`details.limit` は `login` か `login_account`）です。待たせている間は、正しいパスワードでも 429 です。
+        `--auth-password-login off` のときは 403 です。
+        応答の `pending` が空でないとき（仮のパスワード・`--auth-require-mfa` で TOTP が未登録）、セッションは `pending_allowed` の操作だけに使えます（`Me` を参照してください）。
+        この操作は Idempotency-Key を使いません。
+      security: []
+      x-senca-scope: null
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: '#/components/schemas/LoginRequest' }
+      responses:
+        '200':
+          description: 'ログインしました（`status: ok`）、または 2 つ目の要素が要ります（`status: mfa_required`）'
+          headers: { X-Request-Id: { $ref: '#/components/headers/X-Request-Id' } }
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/LoginResult' }
+        '400': { $ref: '#/components/responses/BadRequest' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '403': { $ref: '#/components/responses/Forbidden' }
+        '415': { $ref: '#/components/responses/UnsupportedMediaType' }
+        '429': { $ref: '#/components/responses/TooManyRequests' }
+        '500': { $ref: '#/components/responses/InternalError' }
+        '503': { $ref: '#/components/responses/ServiceUnavailable' }
+  /auth/login/mfa:
+    post:
+      tags: [auth]
+      operationId: loginMfa
+      summary: 2 つ目の要素（TOTP・回復コード）でログイン（認証なし）
+      description: |
+        `POST /auth/login` が返した `mfa_token` と、認証アプリの 6 桁のコード（`code`）か回復コード（`recovery_code`）のどちらか 1 つを送ります。
+        同じ TOTP のコード（同じ 30 秒の区切り）と同じ回復コードは 2 度使えません（401）。回復コードは大文字・小文字と `-`・空白を区別しません。
+        `mfa_token` が期限切れ・壊れている場合も 401 です。失敗の数え方は `POST /auth/login` と同じです。
+      security: []
+      x-senca-scope: null
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: '#/components/schemas/LoginMfaRequest' }
+      responses:
+        '200':
+          description: 'ログインしました（`status: ok`）'
+          headers: { X-Request-Id: { $ref: '#/components/headers/X-Request-Id' } }
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/LoginSuccess' }
+        '400': { $ref: '#/components/responses/BadRequest' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '415': { $ref: '#/components/responses/UnsupportedMediaType' }
+        '429': { $ref: '#/components/responses/TooManyRequests' }
+        '500': { $ref: '#/components/responses/InternalError' }
+        '503': { $ref: '#/components/responses/ServiceUnavailable' }
+  /auth/exchange:
+    post:
+      tags: [auth]
+      operationId: exchangeLoginCode
+      summary: OIDC の一度きりのコードをセッションに替える（認証なし）
+      description: |
+        OIDC のコールバックは、管理画面の `/console/#/auth/complete?code={コード}` へリダイレクトします。管理画面はこのコードを、
+        **同じブラウザーから**（クッキー `senca_oidc` を付けて。`fetch` の既定の `credentials: same-origin` で付きます）この操作に送ります。
+        コードは 60 秒・1 回だけ使えます。別のブラウザー（クッキーが違う・無い）、期限切れ、使用済みは 401 です。
+        成功すると `POST /auth/login` と同じ形の応答（`status: ok`）を返し、`return_to` に `start` で渡した戻り先が入ります。クッキーは消します。
+      security: []
+      x-senca-scope: null
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: '#/components/schemas/ExchangeRequest' }
+      responses:
+        '200':
+          description: 'ログインしました（`status: ok`）'
+          headers:
+            Set-Cookie: { $ref: '#/components/headers/OidcCookieClear' }
+            X-Request-Id: { $ref: '#/components/headers/X-Request-Id' }
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/LoginSuccess' }
+        '400': { $ref: '#/components/responses/BadRequest' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '415': { $ref: '#/components/responses/UnsupportedMediaType' }
+        '429': { $ref: '#/components/responses/TooManyRequests' }
+        '500': { $ref: '#/components/responses/InternalError' }
+        '503': { $ref: '#/components/responses/ServiceUnavailable' }
+  /auth/oidc/{provider}/start:
+    parameters:
+      - $ref: '#/components/parameters/OidcProvider'
+    get:
+      tags: [auth]
+      operationId: startOidcLogin
+      summary: OIDC のログインを始める（IdP へリダイレクト、認証なし）
+      description: |
+        ブラウザーでこの URL を開きます（`GET /auth/providers` の `oidc[].start_url`）。IdP の認可エンドポイントへ 302 でリダイレクトします
+        （認可コードフロー、`code_challenge_method=S256`・`state`・`nonce` 付き）。途中の値は封じたクッキー `senca_oidc`
+        （HttpOnly・SameSite=Lax・Path=/api/v1/auth・10 分。`--public-http-url` が https なら Secure）に入れます。
+        `return_to` は管理画面のパス（`/console` か `/console/` で始まるもの）だけです。それ以外は 400 です。
+        IdP の discovery を取得できないときは、管理画面へ `error=provider_unavailable` でリダイレクトします。
+      security: []
+      x-senca-scope: null
+      parameters:
+        - name: return_to
+          in: query
+          required: false
+          description: ログインの後に管理画面が開くパス（例 `/console/#/streams`）。`POST /auth/exchange` の応答の `return_to` で返します。
+          schema: { type: string, maxLength: 512 }
+      responses:
+        '302':
+          description: IdP の認可エンドポイント（または、discovery に失敗したときは管理画面の完了の画面）へ
+          headers:
+            Location: { required: true, schema: { type: string } }
+            Set-Cookie: { $ref: '#/components/headers/OidcCookie' }
+            X-Request-Id: { $ref: '#/components/headers/X-Request-Id' }
+        '400': { $ref: '#/components/responses/BadRequest' }
+        '404': { $ref: '#/components/responses/NotFound' }
+        '429': { $ref: '#/components/responses/TooManyRequests' }
+        '500': { $ref: '#/components/responses/InternalError' }
+        '503': { $ref: '#/components/responses/ServiceUnavailable' }
+  /auth/oidc/{provider}/callback:
+    parameters:
+      - $ref: '#/components/parameters/OidcProvider'
+    get:
+      tags: [auth]
+      operationId: oidcCallback
+      summary: OIDC のコールバック（IdP からのリダイレクト、認証なし）
+      description: |
+        IdP に登録する redirect URI です（既定は `{--public-http-url}/api/v1/auth/oidc/{provider}/callback`、設定の `redirect_url` で変えられます）。
+        クラスターでは、`start` と違うノードに届いてもかまいません（途中の値はクッキーに入っていて、どのノードでも開けます）。
+        `state` をクッキーと比べ、認可コードを ID トークンに替え（PKCE の verifier を付けます）、ID トークンを検証し（署名・`iss`・`aud`・`exp`・`nbf`・`iat`・`nonce`・`azp`）、
+        利用者を決めます。成功すると `Location: /console/#/auth/complete?code={一度きりのコード}` へ、失敗すると
+        `Location: /console/#/auth/complete?error={理由}` へ 302 でリダイレクトします。
+
+        | `error` | 意味 |
+        |---|---|
+        | `invalid_state` | クッキーが無い・期限切れ・`state` が違う（別のタブで始め直したときなど） |
+        | `access_denied` | IdP で利用者が断った |
+        | `idp_error` | IdP がほかのエラーを返した |
+        | `invalid_request` | `code` が無い |
+        | `invalid_response` | 応答の `iss`（RFC 9207）が発行者と違う |
+        | `provider_unavailable` | discovery・JWKS を取得できない |
+        | `token_exchange_failed` | トークンエンドポイントが断った（PKCE・クライアントの認証の誤りなど） |
+        | `invalid_id_token` | ID トークンの検証に失敗した |
+        | `tenant_not_allowed` | テナントのクレームが無い・形が違う |
+        | `email_not_verified` | メールアドレスが無い、または確認されていない（ドメインを制限しているとき） |
+        | `email_domain_not_allowed` | 許していないドメインのメールアドレス |
+        | `no_account` | 結び付いた利用者がいない（自動で作らない設定のとき） |
+        | `account_conflict` | 同じメールアドレスの利用者が、この IdP の別の利用者に結び付いている |
+        | `account_disabled` | 利用者が無効 |
+        | `no_role` | 役割の対応に当たらず、`default_role` も無い |
+        | `rate_limited` | 失敗の上限を使い切った |
+        | `server_error` | 利用者を作れなかった・ノードの内部の誤り |
+      security: []
+      x-senca-scope: null
+      parameters:
+        - { name: code, in: query, required: false, schema: { type: string }, description: IdP の認可コード }
+        - { name: state, in: query, required: false, schema: { type: string } }
+        - { name: error, in: query, required: false, schema: { type: string }, description: IdP のエラー }
+        - { name: iss, in: query, required: false, schema: { type: string }, description: 発行者（RFC 9207。あれば確かめます） }
+      responses:
+        '302':
+          description: 管理画面の完了の画面へ（`code` か `error`）
+          headers:
+            Location: { required: true, schema: { type: string, pattern: '^/console/#/auth/complete\?(code|error)=' } }
+            Set-Cookie: { $ref: '#/components/headers/OidcCookie' }
+            X-Request-Id: { $ref: '#/components/headers/X-Request-Id' }
+        '404': { $ref: '#/components/responses/NotFound' }
+        '500': { $ref: '#/components/responses/InternalError' }
+        '503': { $ref: '#/components/responses/ServiceUnavailable' }
+  /auth/me:
+    get:
+      tags: [auth]
+      operationId: getMe
+      summary: 自分の情報（主体・テナント・権限・セッション）
+      description: |
+        どの認証方法（セッション・API トークン・JWT）でも使えます。セッションのときだけ `user` と `session` が入ります。
+        `pending` が空でないセッションでも使えます（管理画面は、これを見てパスワードの変更・MFA の登録の画面を出します）。
+      x-senca-scope: null
+      responses:
+        '200':
+          description: 自分の情報
+          headers: { X-Request-Id: { $ref: '#/components/headers/X-Request-Id' } }
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/Me' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+  /auth/logout:
+    post:
+      tags: [auth]
+      operationId: logout
+      summary: ログアウト（今のセッションを失効させる）
+      description: ログインのセッションでだけ使えます（API トークン・JWT では 403）。
+      x-senca-scope: null
+      parameters:
+        - $ref: '#/components/parameters/IdempotencyKey'
+      responses:
+        '204': { $ref: '#/components/responses/NoContent' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '403': { $ref: '#/components/responses/Forbidden' }
+        '500': { $ref: '#/components/responses/InternalError' }
+        '503': { $ref: '#/components/responses/ServiceUnavailable' }
+  /auth/password:
+    post:
+      tags: [auth]
+      operationId: changePassword
+      summary: 自分のパスワードを変える
+      description: |
+        今のパスワードが要ります（違えば 403。失敗はアカウントごとに数え、使い切ると 429）。新しいパスワードは 12〜256 文字で、利用者名・メールアドレスと同じものは使えません（400）。
+        今のセッション以外のセッションはすべて失効します。パスワードの無い利用者（OIDC だけの利用者）は 409 です。
+      x-senca-scope: null
+      parameters:
+        - $ref: '#/components/parameters/IdempotencyKey'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: '#/components/schemas/PasswordChange' }
+      responses:
+        '204': { $ref: '#/components/responses/NoContent' }
+        '400': { $ref: '#/components/responses/BadRequest' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '403': { $ref: '#/components/responses/Forbidden' }
+        '409': { $ref: '#/components/responses/Conflict' }
+        '415': { $ref: '#/components/responses/UnsupportedMediaType' }
+        '429': { $ref: '#/components/responses/TooManyRequests' }
+        '500': { $ref: '#/components/responses/InternalError' }
+        '503': { $ref: '#/components/responses/ServiceUnavailable' }
+  /auth/mfa/totp/setup:
+    post:
+      tags: [auth]
+      operationId: setupTotp
+      summary: TOTP の登録を始める（秘密を 1 度だけ返す）
+      description: |
+        今のパスワード（`password`）が要ります。応答の `otpauth_uri` を QR コードにして認証アプリで読み取るか、`secret`（base32）を手で入力してもらいます。
+        続けて `POST /auth/mfa/totp/confirm` に `enrollment_token`（10 分）と認証アプリのコードを送ると有効になります。
+        すでに有効なら 409、パスワードの無い利用者（OIDC だけの利用者。MFA は IdP の側で行います）も 409 です。
+      x-senca-scope: null
+      parameters:
+        - $ref: '#/components/parameters/IdempotencyKey'
+      requestBody:
+        required: false
+        content:
+          application/json:
+            schema: { $ref: '#/components/schemas/MfaSetupRequest' }
+      responses:
+        '200':
+          description: 登録の途中の値（再送に対する応答では `secret`・`otpauth_uri`・`enrollment_token` を伏せます）
+          headers:
+            X-Request-Id: { $ref: '#/components/headers/X-Request-Id' }
+            Idempotency-Replayed: { $ref: '#/components/headers/Idempotency-Replayed' }
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/MfaSetup' }
+        '400': { $ref: '#/components/responses/BadRequest' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '403': { $ref: '#/components/responses/Forbidden' }
+        '409': { $ref: '#/components/responses/Conflict' }
+        '415': { $ref: '#/components/responses/UnsupportedMediaType' }
+        '429': { $ref: '#/components/responses/TooManyRequests' }
+        '500': { $ref: '#/components/responses/InternalError' }
+        '503': { $ref: '#/components/responses/ServiceUnavailable' }
+  /auth/mfa/totp/confirm:
+    post:
+      tags: [auth]
+      operationId: confirmTotp
+      summary: 確認コードで TOTP を有効にする（回復コードを 1 度だけ返す）
+      description: |
+        コードが違う・`enrollment_token` が違うか期限切れなら 400 です。有効にすると、回復コード 10 個（各 16 文字、`xxxx-xxxx-xxxx-xxxx`）を返します。
+        回復コードはこの応答でだけ返します（再送に対する応答では伏せます）。
+      x-senca-scope: null
+      parameters:
+        - $ref: '#/components/parameters/IdempotencyKey'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: '#/components/schemas/MfaConfirmRequest' }
+      responses:
+        '200':
+          description: 有効にしました
+          headers:
+            X-Request-Id: { $ref: '#/components/headers/X-Request-Id' }
+            Idempotency-Replayed: { $ref: '#/components/headers/Idempotency-Replayed' }
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/MfaConfirmResult' }
+        '400': { $ref: '#/components/responses/BadRequest' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '403': { $ref: '#/components/responses/Forbidden' }
+        '409': { $ref: '#/components/responses/Conflict' }
+        '415': { $ref: '#/components/responses/UnsupportedMediaType' }
+        '500': { $ref: '#/components/responses/InternalError' }
+        '503': { $ref: '#/components/responses/ServiceUnavailable' }
+  /auth/mfa/disable:
+    post:
+      tags: [auth]
+      operationId: disableMfa
+      summary: 自分の MFA を解除する
+      description: |
+        今のパスワード（`password`）か、TOTP のコード・回復コード（`code`）のどちらか 1 つが要ります（違えば 403）。
+        MFA が有効でなければ 409、`--auth-require-mfa` のノードでは解除できません（409）。
+      x-senca-scope: null
+      parameters:
+        - $ref: '#/components/parameters/IdempotencyKey'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: '#/components/schemas/MfaReauth' }
+      responses:
+        '204': { $ref: '#/components/responses/NoContent' }
+        '400': { $ref: '#/components/responses/BadRequest' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '403': { $ref: '#/components/responses/Forbidden' }
+        '409': { $ref: '#/components/responses/Conflict' }
+        '415': { $ref: '#/components/responses/UnsupportedMediaType' }
+        '429': { $ref: '#/components/responses/TooManyRequests' }
+        '500': { $ref: '#/components/responses/InternalError' }
+        '503': { $ref: '#/components/responses/ServiceUnavailable' }
+  /auth/mfa/recovery-codes:
+    post:
+      tags: [auth]
+      operationId: regenerateRecoveryCodes
+      summary: 回復コードを作り直す（前のものは使えなくなります）
+      description: 本人確認は `POST /auth/mfa/disable` と同じです。新しい回復コード 10 個を 1 度だけ返します。MFA が有効でなければ 409 です。
+      x-senca-scope: null
+      parameters:
+        - $ref: '#/components/parameters/IdempotencyKey'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: '#/components/schemas/MfaReauth' }
+      responses:
+        '200':
+          description: 新しい回復コード
+          headers:
+            X-Request-Id: { $ref: '#/components/headers/X-Request-Id' }
+            Idempotency-Replayed: { $ref: '#/components/headers/Idempotency-Replayed' }
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/RecoveryCodes' }
+        '400': { $ref: '#/components/responses/BadRequest' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '403': { $ref: '#/components/responses/Forbidden' }
+        '409': { $ref: '#/components/responses/Conflict' }
+        '415': { $ref: '#/components/responses/UnsupportedMediaType' }
+        '429': { $ref: '#/components/responses/TooManyRequests' }
+        '500': { $ref: '#/components/responses/InternalError' }
+        '503': { $ref: '#/components/responses/ServiceUnavailable' }
+  /auth/sessions:
+    get:
+      tags: [auth]
+      operationId: listMySessions
+      summary: 自分のセッションの一覧
+      description: 'ログインのセッションでだけ使えます（API トークン・JWT では 403）。今のセッションは `current: true` です。期限の切れたものは含みません。'
+      x-senca-scope: null
+      parameters:
+        - $ref: '#/components/parameters/Limit'
+        - $ref: '#/components/parameters/Cursor'
+      responses:
+        '200':
+          description: セッションの一覧
+          headers: { X-Request-Id: { $ref: '#/components/headers/X-Request-Id' } }
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/SessionList' }
+        '400': { $ref: '#/components/responses/BadRequest' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '403': { $ref: '#/components/responses/Forbidden' }
+  /auth/sessions/{id}:
+    parameters:
+      - $ref: '#/components/parameters/SessionId'
+    delete:
+      tags: [auth]
+      operationId: revokeMySession
+      summary: 自分のセッションを失効させる
+      description: 自分のものでないセッション・無いセッションは 404 です。今のセッションも指定できます（ログアウトと同じ）。
+      x-senca-scope: null
+      responses:
+        '204': { $ref: '#/components/responses/NoContent' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '403': { $ref: '#/components/responses/Forbidden' }
+        '404': { $ref: '#/components/responses/NotFound' }
+        '500': { $ref: '#/components/responses/InternalError' }
+        '503': { $ref: '#/components/responses/ServiceUnavailable' }
+
+  # ------------------------------------------------------------------ users（利用者の管理）
+  /users:
+    post:
+      tags: [users]
+      operationId: createUser
+      summary: 利用者を作る
+      description: |
+        `roles`（`admin`・`operator`・`viewer`）か `scopes` を 1 つ以上指定します。**自分が持っている権限しか渡せません**（403。`node:admin` は `node:admin` を持つ主体だけが渡せます）。
+        `password` を省くと、パスワードの無い利用者（OIDC で結び付けて使う利用者）になります。後から `POST /users/{id}/password` で設定できます。
+        利用者名は 1〜64 文字の英数字と `. _ @ + -` で、テナントの中で大文字・小文字を区別せずに重なりません（409）。メールアドレスも重なりません（409）。
+        利用者はテナントあたり 1000 人までです（403 `QUOTA_EXCEEDED`）。
+        最初の管理者は、最初の管理者トークン（`bootstrap-admin-token`）で作ります。
+      x-senca-scope: tenant:admin
+      parameters:
+        - $ref: '#/components/parameters/IdempotencyKey'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: '#/components/schemas/UserCreate' }
+      responses:
+        '201':
+          description: 作りました
+          headers:
+            Location: { $ref: '#/components/headers/Location' }
+            ETag: { $ref: '#/components/headers/ETagNotOnReplay' }
+            X-Request-Id: { $ref: '#/components/headers/X-Request-Id' }
+            Idempotency-Replayed: { $ref: '#/components/headers/Idempotency-Replayed' }
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/User' }
+        '400': { $ref: '#/components/responses/BadRequest' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '403': { $ref: '#/components/responses/Forbidden' }
+        '409': { $ref: '#/components/responses/Conflict' }
+        '415': { $ref: '#/components/responses/UnsupportedMediaType' }
+        '500': { $ref: '#/components/responses/InternalError' }
+        '503': { $ref: '#/components/responses/ServiceUnavailable' }
+    get:
+      tags: [users]
+      operationId: listUsers
+      summary: 利用者の一覧
+      x-senca-scope: tenant:admin
+      parameters:
+        - $ref: '#/components/parameters/Limit'
+        - $ref: '#/components/parameters/Cursor'
+      responses:
+        '200':
+          description: 利用者の一覧
+          headers: { X-Request-Id: { $ref: '#/components/headers/X-Request-Id' } }
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/UserList' }
+        '400': { $ref: '#/components/responses/BadRequest' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '403': { $ref: '#/components/responses/Forbidden' }
+  /users/{id}:
+    parameters:
+      - $ref: '#/components/parameters/UserId'
+    get:
+      tags: [users]
+      operationId: getUser
+      summary: 利用者の取得
+      x-senca-scope: tenant:admin
+      responses:
+        '200': { $ref: '#/components/responses/UserOk' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '403': { $ref: '#/components/responses/Forbidden' }
+        '404': { $ref: '#/components/responses/NotFound' }
+    patch:
+      tags: [users]
+      operationId: updateUser
+      summary: 利用者の変更（役割・権限・無効化・表示名・メールアドレス）
+      description: |
+        書いた項目だけを変えます（`email`・`display_name` は null で消します）。`If-Match` が要ります。
+        渡せる権限は `POST /users` と同じ決まりです。自分の持たない権限を持つ利用者（例: `node:admin` を持つ利用者）は変更できません（403）。
+        役割・権限を変える、または無効にすると、その利用者のセッションはすべて失効します。
+        テナントの最後の管理者（有効で `tenant:admin` を持つ利用者）を無効化・降格すると 409 です。
+      x-senca-scope: tenant:admin
+      parameters:
+        - $ref: '#/components/parameters/IfMatchRequired'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: '#/components/schemas/UserPatch' }
+      responses:
+        '200': { $ref: '#/components/responses/UserOk' }
+        '400': { $ref: '#/components/responses/BadRequest' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '403': { $ref: '#/components/responses/Forbidden' }
+        '404': { $ref: '#/components/responses/NotFound' }
+        '409': { $ref: '#/components/responses/Conflict' }
+        '412': { $ref: '#/components/responses/PreconditionFailed' }
+        '415': { $ref: '#/components/responses/UnsupportedMediaType' }
+        '428': { $ref: '#/components/responses/PreconditionRequired' }
+        '500': { $ref: '#/components/responses/InternalError' }
+        '503': { $ref: '#/components/responses/ServiceUnavailable' }
+    delete:
+      tags: [users]
+      operationId: deleteUser
+      summary: 利用者の削除
+      description: 利用者のセッションもすべて失効します。テナントの最後の管理者は削除できません（409）。自分の持たない権限を持つ利用者は削除できません（403）。
+      x-senca-scope: tenant:admin
+      parameters:
+        - $ref: '#/components/parameters/IfMatchOptional'
+      responses:
+        '204': { $ref: '#/components/responses/NoContent' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '403': { $ref: '#/components/responses/Forbidden' }
+        '404': { $ref: '#/components/responses/NotFound' }
+        '409': { $ref: '#/components/responses/Conflict' }
+        '412': { $ref: '#/components/responses/PreconditionFailed' }
+        '500': { $ref: '#/components/responses/InternalError' }
+        '503': { $ref: '#/components/responses/ServiceUnavailable' }
+  /users/{id}/password:
+    parameters:
+      - $ref: '#/components/parameters/UserId'
+    post:
+      tags: [users]
+      operationId: resetUserPassword
+      summary: 利用者のパスワードを再設定する
+      description: |
+        `password` を省くと、ノードが仮のパスワード（20 文字）を作り、`temporary_password` でこの応答にだけ返します（再送に対する応答では伏せます）。
+        `must_change_password`（既定は true）が true なら、利用者は次のログインでパスワードの変更を求められます。
+        利用者のセッションはすべて失効します。MFA はそのままです（外すには `DELETE /users/{id}/mfa`）。
+      x-senca-scope: tenant:admin
+      parameters:
+        - $ref: '#/components/parameters/IdempotencyKey'
+      requestBody:
+        required: false
+        content:
+          application/json:
+            schema: { $ref: '#/components/schemas/UserPasswordReset' }
+      responses:
+        '200':
+          description: 再設定しました
+          headers:
+            ETag: { $ref: '#/components/headers/ETagNotOnReplay' }
+            X-Request-Id: { $ref: '#/components/headers/X-Request-Id' }
+            Idempotency-Replayed: { $ref: '#/components/headers/Idempotency-Replayed' }
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/UserPasswordResetResult' }
+        '400': { $ref: '#/components/responses/BadRequest' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '403': { $ref: '#/components/responses/Forbidden' }
+        '404': { $ref: '#/components/responses/NotFound' }
+        '415': { $ref: '#/components/responses/UnsupportedMediaType' }
+        '500': { $ref: '#/components/responses/InternalError' }
+        '503': { $ref: '#/components/responses/ServiceUnavailable' }
+  /users/{id}/mfa:
+    parameters:
+      - $ref: '#/components/parameters/UserId'
+    delete:
+      tags: [users]
+      operationId: resetUserMfa
+      summary: 利用者の MFA を外す（認証アプリをなくしたとき）
+      description: MFA が無くても 204 です。利用者は次のログインでパスワードだけで入れます（`--auth-require-mfa` なら登録し直しを求められます）。
+      x-senca-scope: tenant:admin
+      responses:
+        '204': { $ref: '#/components/responses/NoContent' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '403': { $ref: '#/components/responses/Forbidden' }
+        '404': { $ref: '#/components/responses/NotFound' }
+        '500': { $ref: '#/components/responses/InternalError' }
+        '503': { $ref: '#/components/responses/ServiceUnavailable' }
+  /users/{id}/sessions:
+    parameters:
+      - $ref: '#/components/parameters/UserId'
+    get:
+      tags: [users]
+      operationId: listUserSessions
+      summary: 利用者のセッションの一覧
+      x-senca-scope: tenant:admin
+      parameters:
+        - $ref: '#/components/parameters/Limit'
+        - $ref: '#/components/parameters/Cursor'
+      responses:
+        '200':
+          description: セッションの一覧
+          headers: { X-Request-Id: { $ref: '#/components/headers/X-Request-Id' } }
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/SessionList' }
+        '400': { $ref: '#/components/responses/BadRequest' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '403': { $ref: '#/components/responses/Forbidden' }
+        '404': { $ref: '#/components/responses/NotFound' }
+    delete:
+      tags: [users]
+      operationId: revokeUserSessions
+      summary: 利用者のセッションをすべて失効させる
+      x-senca-scope: tenant:admin
+      responses:
+        '204': { $ref: '#/components/responses/NoContent' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '403': { $ref: '#/components/responses/Forbidden' }
+        '404': { $ref: '#/components/responses/NotFound' }
+        '500': { $ref: '#/components/responses/InternalError' }
   # ------------------------------------------------------------------ audit
   /audit:
     get:
@@ -2347,7 +2977,8 @@ components:
       type: http
       scheme: bearer
       description: |
-        API トークン（`senca_` で始まり、`POST /tokens` で発行します。初回起動時に、`tenant:admin`+`node:admin` のトークンが `{data-dir}/control/bootstrap-admin-token` に書き出されます）
+        API トークン（`senca_` で始まり、`POST /tokens` で発行します。初回起動時に、`tenant:admin`+`node:admin` のトークンが `{data-dir}/control/bootstrap-admin-token` に書き出されます）、
+        ログインのセッション（`sencas_` で始まり、`POST /auth/login`・`POST /auth/login/mfa`・`POST /auth/exchange` で得ます）、
         または JWT（`--jwks`・`--jwt-issuer`・`--jwt-audience` を設定したとき。テナントは `--jwt-tenant-claim` で指定した claim から決まります）。
 
   parameters:
@@ -2355,6 +2986,9 @@ components:
     RecordingId: { name: id, in: path, required: true, schema: { type: string }, description: 録画の ID }
     ScheduleId: { name: id, in: path, required: true, schema: { type: string }, description: 予約の ID }
     TokenId: { name: id, in: path, required: true, schema: { type: string }, description: トークンの ID }
+    UserId: { name: id, in: path, required: true, schema: { type: string }, description: 利用者の ID }
+    SessionId: { name: id, in: path, required: true, schema: { type: string }, description: セッションの ID（値ではありません） }
+    OidcProvider: { name: provider, in: path, required: true, schema: { type: string }, description: 'OIDC の IdP の ID（`GET /auth/providers` の `oidc[].id`）' }
     NodeId: { name: id, in: path, required: true, schema: { type: string }, description: ノードの ID }
     DeviceId: { name: dev, in: path, required: true, schema: { type: string }, description: '装置の ID（`GET /grid` の `nodes[].gpus[].id`・`nodes[].capture[].id`）' }
     InputId: { name: id, in: path, required: true, schema: { type: string }, description: 入力の ID }
@@ -2441,6 +3075,16 @@ components:
       description: '再試行までの秒数（現在は常に 1）。`retryable: false` のときは付きません'
       required: false
       schema: { type: integer }
+    OidcCookie:
+      description: |
+        OIDC のログインの途中の値を封じたクッキー（`senca_oidc=...; Path=/api/v1/auth; Max-Age=...; HttpOnly; SameSite=Lax`、https なら `; Secure`）。
+        失敗したときは `Max-Age=0` で消します。
+      required: false
+      schema: { type: string, pattern: '^senca_oidc=' }
+    OidcCookieClear:
+      description: 'クッキー `senca_oidc` を消します（`Max-Age=0`）'
+      required: false
+      schema: { type: string, pattern: '^senca_oidc=;' }
     WWW-Authenticate:
       description: '`Bearer`'
       required: true
@@ -2488,6 +3132,14 @@ components:
       content:
         application/json:
           schema: { $ref: '#/components/schemas/Node' }
+    UserOk:
+      description: 利用者
+      headers:
+        ETag: { $ref: '#/components/headers/ETag' }
+        X-Request-Id: { $ref: '#/components/headers/X-Request-Id' }
+      content:
+        application/json:
+          schema: { $ref: '#/components/schemas/User' }
     DeviceHealthAccepted:
       description: '受け付けました'
       headers: { X-Request-Id: { $ref: '#/components/headers/X-Request-Id' } }
@@ -3125,6 +3777,267 @@ components:
       properties:
         items: { type: array, items: { $ref: '#/components/schemas/Token' } }
         next_cursor: { type: [string, 'null'] }
+    Role:
+      type: string
+      enum: [admin, operator, viewer]
+      description: |
+        役割（決まった権限の組）です。`admin` = `tenant:admin`、`operator` = `stream:read`・`stream:write`・`publish`・`subscribe`・`recording:read`、
+        `viewer` = `stream:read`・`recording:read`・`subscribe`。
+    PendingAction:
+      type: string
+      enum: [password_change, mfa_enrollment]
+      description: |
+        セッションで先に済ませることです。`password_change` は仮のパスワード（`POST /auth/password` で変えます）、
+        `mfa_enrollment` は `--auth-require-mfa` で TOTP が未登録（`POST /auth/mfa/totp/setup`・`confirm` で登録します）。
+        どちらかがある間は、`GET /auth/me`・`POST /auth/logout`・`POST /auth/password`・`POST /auth/mfa/totp/setup`・`POST /auth/mfa/totp/confirm`・
+        `GET /auth/sessions`・`DELETE /auth/sessions/{id}` のほかは 403（`details: {reason: "pending", pending: [...]}`）です。
+    AuthProviders:
+      type: object
+      additionalProperties: false
+      required: [password, mfa_required, setup_required, oidc]
+      properties:
+        password: { type: boolean, description: 'パスワードでのログインを受け付けるか（`--auth-password-login`）' }
+        mfa_required: { type: boolean, description: 'パスワードでログインする利用者に TOTP を必須にしているか（`--auth-require-mfa`）' }
+        setup_required: { type: boolean, description: 利用者がまだ 1 人もいない（最初の管理者を作る画面を出します） }
+        oidc:
+          type: array
+          items:
+            type: object
+            additionalProperties: false
+            required: [id, display_name, start_url]
+            properties:
+              id: { type: string }
+              display_name: { type: string, description: ログインのボタンに出す名前 }
+              start_url: { type: string, description: 'ブラウザーで開く URL（`/api/v1/auth/oidc/{id}/start`。`?return_to=` を付けられます）' }
+    LoginRequest:
+      type: object
+      additionalProperties: false
+      required: [username, password]
+      properties:
+        username: { type: string, maxLength: 256, description: 大文字・小文字を区別しません }
+        password: { type: string }
+        tenant: { type: string, maxLength: 64, description: '利用者のテナント（省略時は `default`）' }
+    LoginMfaRequest:
+      type: object
+      additionalProperties: false
+      required: [mfa_token]
+      description: '`code` か `recovery_code` のどちらか 1 つを指定します（両方・どちらも無しは 400）。'
+      properties:
+        mfa_token: { type: string }
+        code: { type: string, pattern: '^[0-9]{6}$', description: 認証アプリの 6 桁のコード }
+        recovery_code: { type: string, description: '回復コード（`xxxx-xxxx-xxxx-xxxx`。大文字・小文字・`-`・空白は問いません）' }
+    ExchangeRequest:
+      type: object
+      additionalProperties: false
+      required: [code]
+      properties:
+        code: { type: string, description: '`/console/#/auth/complete?code=` のコード' }
+    LoginResult:
+      oneOf:
+        - $ref: '#/components/schemas/LoginSuccess'
+        - $ref: '#/components/schemas/LoginMfaRequired'
+    LoginSuccess:
+      type: object
+      additionalProperties: false
+      required: [status, token, session, user, tenant, scopes, pending, return_to]
+      properties:
+        status: { type: string, const: ok }
+        token:
+          type: string
+          pattern: '^sencas_'
+          description: 'セッションの値（`Authorization: Bearer` に使います）。この応答でだけ返します。'
+        session: { $ref: '#/components/schemas/Session' }
+        user: { $ref: '#/components/schemas/User' }
+        tenant: { type: string }
+        scopes: { type: array, items: { $ref: '#/components/schemas/Scope' }, description: '実際に持つ権限（`tenant:admin` を展開したもの）' }
+        pending: { type: array, items: { $ref: '#/components/schemas/PendingAction' } }
+        return_to: { type: [string, 'null'], description: 'OIDC で `start` に渡した戻り先（`POST /auth/exchange` のときだけ）' }
+    LoginMfaRequired:
+      type: object
+      additionalProperties: false
+      required: [status, mfa_token, expires_at, methods]
+      properties:
+        status: { type: string, const: mfa_required }
+        mfa_token: { type: string, description: '`POST /auth/login/mfa` に渡す値（5 分）' }
+        expires_at: { $ref: '#/components/schemas/Timestamp' }
+        methods: { type: array, items: { type: string, enum: [totp, recovery_code] } }
+    Session:
+      type: object
+      additionalProperties: false
+      required: [id, user, method, provider, mfa, created_at, last_seen_at, idle_expires_at, expires_at, ip, user_agent, current]
+      properties:
+        id: { type: string, description: セッションの ID（値ではありません。失効させるときに使います） }
+        user: { type: string, description: 利用者の ID }
+        method: { type: string, enum: [password, oidc] }
+        provider: { type: [string, 'null'], description: OIDC の IdP の ID }
+        mfa: { type: boolean, description: 2 つ目の要素（TOTP・回復コード）を通ったか }
+        created_at: { $ref: '#/components/schemas/Timestamp' }
+        last_seen_at:
+          $ref: '#/components/schemas/Timestamp'
+          description: 最後に使った時刻（合意ログへの書き込みを減らすため、待ち時間の 1/16 を 30 秒〜5 分に収めた間隔（待ち時間の 1/4 まで）でだけ進めます）
+        idle_expires_at: { $ref: '#/components/schemas/Timestamp', description: 'このまま使わなければ失効する時刻（`--auth-session-idle`、既定 8 時間）' }
+        expires_at: { $ref: '#/components/schemas/Timestamp', description: '使っていても失効する時刻（`--auth-session-lifetime`、既定 7 日）' }
+        ip: { type: [string, 'null'], description: ログインした送信元の IP アドレス }
+        user_agent: { type: [string, 'null'] }
+        current: { type: boolean, description: この要求のセッションか }
+    SessionList:
+      type: object
+      additionalProperties: false
+      required: [items, next_cursor]
+      properties:
+        items: { type: array, items: { $ref: '#/components/schemas/Session' } }
+        next_cursor: { type: [string, 'null'] }
+    User:
+      type: object
+      additionalProperties: false
+      required: [id, username, email, display_name, roles, scopes, effective_scopes, disabled, has_password, must_change_password, mfa, oidc,
+                 generation, created_at, updated_at, last_login_at, password_changed_at]
+      properties:
+        id: { type: string }
+        username: { type: string }
+        email: { type: [string, 'null'] }
+        display_name: { type: [string, 'null'] }
+        roles: { type: array, items: { $ref: '#/components/schemas/Role' } }
+        scopes: { type: array, items: { $ref: '#/components/schemas/Scope' }, description: 役割のほかに個別に渡した権限 }
+        effective_scopes: { type: array, items: { $ref: '#/components/schemas/Scope' }, description: 役割と個別の権限から決まる、実際に持つ権限 }
+        disabled: { type: boolean }
+        has_password: { type: boolean, description: パスワードでログインできるか（OIDC だけの利用者は false） }
+        must_change_password: { type: boolean, description: 次のログインでパスワードの変更を求めるか }
+        mfa:
+          type: object
+          additionalProperties: false
+          required: [enabled, enrolled_at, recovery_codes_remaining]
+          properties:
+            enabled: { type: boolean }
+            enrolled_at: { type: [string, 'null'], format: date-time }
+            recovery_codes_remaining: { type: integer, minimum: 0 }
+        oidc:
+          type: array
+          description: 結び付いた IdP の利用者
+          items:
+            type: object
+            additionalProperties: false
+            required: [provider, subject]
+            properties:
+              provider: { type: string }
+              subject: { type: string, description: ID トークンの `sub` }
+        generation: { type: integer }
+        created_at: { $ref: '#/components/schemas/Timestamp' }
+        updated_at: { $ref: '#/components/schemas/Timestamp' }
+        last_login_at: { type: [string, 'null'], format: date-time }
+        password_changed_at: { type: [string, 'null'], format: date-time }
+    UserList:
+      type: object
+      additionalProperties: false
+      required: [items, next_cursor]
+      properties:
+        items: { type: array, items: { $ref: '#/components/schemas/User' } }
+        next_cursor: { type: [string, 'null'] }
+    UserCreate:
+      type: object
+      additionalProperties: false
+      required: [username]
+      description: '`roles` か `scopes` を 1 つ以上指定します。'
+      properties:
+        username: { type: string, minLength: 1, maxLength: 64, pattern: '^[A-Za-z0-9._@+-]+$' }
+        password: { type: string, description: '12〜256 文字。利用者名・メールアドレスと同じものは不可。省くとパスワードの無い利用者になります' }
+        email: { type: string, maxLength: 254 }
+        display_name: { type: string, maxLength: 128 }
+        roles: { type: array, items: { $ref: '#/components/schemas/Role' } }
+        scopes: { type: array, items: { $ref: '#/components/schemas/Scope' } }
+        must_change_password: { type: boolean, default: false, description: 次のログインでパスワードの変更を求める（`password` があるときだけ） }
+        disabled: { type: boolean, default: false }
+    UserPatch:
+      type: object
+      additionalProperties: false
+      properties:
+        email: { type: [string, 'null'] }
+        display_name: { type: [string, 'null'] }
+        roles: { type: array, items: { $ref: '#/components/schemas/Role' } }
+        scopes: { type: array, items: { $ref: '#/components/schemas/Scope' } }
+        disabled: { type: boolean }
+    UserPasswordReset:
+      type: object
+      additionalProperties: false
+      properties:
+        password: { type: string, description: 省くと仮のパスワードを作ります }
+        must_change_password: { type: boolean, default: true }
+    UserPasswordResetResult:
+      type: object
+      additionalProperties: false
+      required: [user, temporary_password]
+      properties:
+        user: { $ref: '#/components/schemas/User' }
+        temporary_password: { type: [string, 'null'], description: ノードが作った仮のパスワード（`password` を渡したときは null） }
+        temporary_password_redacted: { type: boolean, const: true, description: Idempotency-Key による再送で値を伏せたとき }
+    Me:
+      type: object
+      additionalProperties: false
+      required: [tenant, subject, auth_method, scopes, user, session, pending]
+      properties:
+        tenant: { type: string }
+        subject: { type: string, description: '監査ログの `subject`（`user:{id}`・`token:{id}`・JWT の `sub`）' }
+        auth_method: { type: string, enum: [session, api_token, jwt] }
+        scopes: { type: array, items: { $ref: '#/components/schemas/Scope' }, description: 実際に持つ権限 }
+        user: { oneOf: [{ $ref: '#/components/schemas/User' }, { type: 'null' }] }
+        session: { oneOf: [{ $ref: '#/components/schemas/Session' }, { type: 'null' }] }
+        pending: { type: array, items: { $ref: '#/components/schemas/PendingAction' } }
+    PasswordChange:
+      type: object
+      additionalProperties: false
+      required: [current_password, new_password]
+      properties:
+        current_password: { type: string }
+        new_password: { type: string, description: 12〜256 文字。利用者名・メールアドレス・今のパスワードと同じものは不可 }
+    MfaSetupRequest:
+      type: object
+      additionalProperties: false
+      properties:
+        password: { type: string, description: 今のパスワード（必須） }
+    MfaSetup:
+      type: object
+      additionalProperties: false
+      required: [secret, otpauth_uri, enrollment_token, expires_at, algorithm, digits, period]
+      properties:
+        secret: { type: [string, 'null'], description: TOTP の秘密（base32、パディングなし。手で入力するとき） }
+        otpauth_uri: { type: [string, 'null'], description: '`otpauth://totp/{発行者}:{メールアドレスか利用者名}?secret=...&issuer=...`（QR コードにします）' }
+        enrollment_token: { type: [string, 'null'], description: '`POST /auth/mfa/totp/confirm` に渡す値（10 分）' }
+        expires_at: { $ref: '#/components/schemas/Timestamp' }
+        algorithm: { type: string, const: SHA1 }
+        digits: { type: integer, const: 6 }
+        period: { type: integer, const: 30 }
+        secret_redacted: { type: boolean, const: true }
+        otpauth_uri_redacted: { type: boolean, const: true }
+        enrollment_token_redacted: { type: boolean, const: true }
+    MfaConfirmRequest:
+      type: object
+      additionalProperties: false
+      required: [enrollment_token, code]
+      properties:
+        enrollment_token: { type: string }
+        code: { type: string, pattern: '^[0-9]{6}$' }
+    MfaConfirmResult:
+      type: object
+      additionalProperties: false
+      required: [recovery_codes, user]
+      properties:
+        recovery_codes: { oneOf: [{ type: array, items: { type: string } }, { type: 'null' }], description: 回復コード 10 個（この応答でだけ返します） }
+        recovery_codes_redacted: { type: boolean, const: true }
+        user: { $ref: '#/components/schemas/User' }
+    MfaReauth:
+      type: object
+      additionalProperties: false
+      description: '本人確認。`password` か `code`（TOTP の 6 桁、または回復コード）のどちらか 1 つ。'
+      properties:
+        password: { type: string }
+        code: { type: string }
+    RecoveryCodes:
+      type: object
+      additionalProperties: false
+      required: [recovery_codes]
+      properties:
+        recovery_codes: { oneOf: [{ type: array, items: { type: string } }, { type: 'null' }] }
+        recovery_codes_redacted: { type: boolean, const: true }
     AuditEntry:
       type: object
       additionalProperties: true
@@ -3135,7 +4048,7 @@ components:
       properties:
         ts: { $ref: '#/components/schemas/Timestamp' }
         tenant: { type: string }
-        subject: { type: string, description: '操作した主体。API トークンなら `token:{ID}`、JWT なら `sub` の値' }
+        subject: { type: string, description: '操作した主体。API トークンなら `token:{ID}`、ログインのセッションなら `user:{ID}`（ログインの失敗で利用者が分からないときは `anonymous`）、JWT なら `sub` の値' }
         action: { type: string, description: '操作の種類（`stream.create`・`token.delete`・`node.drain` など。`{資源}.{操作}` の形）' }
         resource: { type: string, description: '対象の資源の ID（装置・参加者などは `{ノード}/{装置}`・`{部屋}/{接続}` の形）' }
         request_id: { type: string, description: '要求 ID（応答の `X-Request-Id`）' }
@@ -4610,7 +5523,7 @@ components:
                  schedule.created, schedule.updated, schedule.deleted, schedule.run, node.updated,
                  input.updated, input.deleted, output.updated, output.deleted, secret.created, secret.deleted,
                  pipeline.updated, pipeline.deleted, room.updated, room.deleted,
-                 media_pipeline.updated, media_pipeline.deleted,
+                 media_pipeline.updated, media_pipeline.deleted, user.created, user.updated, user.deleted,
                  node.down, node.up, device.down, device.up, device.disabled, device.enabled, grid.decisions,
                  room.started, room.stopped, room.connection.created, room.connection.updated, room.connection.destroyed,
                  room.track.published, room.track.unpublished, room.spotlight.changed]

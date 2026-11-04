@@ -9,6 +9,7 @@
 use crate::auth::Scope;
 use crate::model::*;
 use crate::problem::{Problem, ProblemCode};
+use crate::users::{LoginCode, LoginRecord, OidcLink, Session, User, UserMfa, UserProfile};
 use serde::{Deserialize, Serialize};
 use std::collections::BTreeMap;
 
@@ -66,6 +67,15 @@ pub struct ControlState {
     /// （base64。中身はノードだけが開ける）。最初に適用されたものが使われ、後から置き換えない（ADR-0009）。
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub secret_data_key: Option<String>,
+    /// 利用者（ADR-0017）。
+    #[serde(default)]
+    pub users: BTreeMap<String, User>,
+    /// ログインのセッション。キーは値の SHA-256。
+    #[serde(default)]
+    pub sessions: BTreeMap<String, Session>,
+    /// OIDC の一度きりのコード。キーはコードの SHA-256。
+    #[serde(default)]
+    pub login_codes: BTreeMap<String, LoginCode>,
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
@@ -114,6 +124,34 @@ pub enum Command {
     DeleteRoom { tenant: String, id: String },
     PutMediaPipeline { pipeline: MediaPipeline, expect_generation: Option<u64> },
     DeleteMediaPipeline { tenant: String, id: String },
+    /// 利用者（ADR-0017）。パスワードのハッシュ・乱数はコマンドを作る側で済ませる。
+    CreateUser { user: User },
+    /// 本人・管理者が変えられる項目を置き換える。権限が変わる・無効にすると、その利用者のセッションを失効させる。
+    UpdateUser { tenant: String, id: String, profile: UserProfile, expect_generation: Option<u64>, now_ms: i64 },
+    /// パスワードを置き換える（None で消す）。`keep_session` 以外のセッションを失効させる。
+    SetUserPassword {
+        tenant: String,
+        id: String,
+        password_hash: Option<String>,
+        must_change_password: bool,
+        keep_session: Option<String>,
+        now_ms: i64,
+    },
+    /// MFA を置き換える（登録・回復コードの作り直し・解除）。
+    SetUserMfa { tenant: String, id: String, mfa: Option<UserMfa>, now_ms: i64 },
+    LinkUserOidc { tenant: String, id: String, link: OidcLink, now_ms: i64 },
+    DeleteUser { tenant: String, id: String },
+    /// ログイン。`login` は同じコマンドで確かめる・記録すること（TOTP の区切り・回復コード・パスワードのハッシュ）。
+    CreateSession { session: Session, login: LoginRecord },
+    /// 最後に使った時刻を進める（粗い間隔でだけ送る）。キーは値の SHA-256。
+    TouchSession { hash: String, now_ms: i64 },
+    DeleteSession { tenant: String, id: String },
+    DeleteUserSessions { tenant: String, user: String, except: Option<String> },
+    /// 期限の切れたセッションと一度きりのコードを消す。
+    ExpireSessions { now_ms: i64 },
+    PutLoginCode { code: LoginCode },
+    /// 一度きりのコードを使ってセッションを作る（コードは消える）。
+    RedeemLoginCode { hash: String, binding_hash: String, now_ms: i64, session: Session },
 }
 
 fn conflict(t: &str) -> Problem {
@@ -589,6 +627,23 @@ impl ControlState {
                 self.media_pipelines.get(&id).filter(|m| m.tenant == tenant).ok_or_else(Problem::not_found)?;
                 self.media_pipelines.remove(&id);
             }
+            Command::CreateUser { user } => self.create_user(user)?,
+            Command::UpdateUser { tenant, id, profile, expect_generation, now_ms } => {
+                self.update_user(&tenant, &id, profile, expect_generation, now_ms)?
+            }
+            Command::SetUserPassword { tenant, id, password_hash, must_change_password, keep_session, now_ms } => {
+                self.set_user_password(&tenant, &id, password_hash, must_change_password, keep_session.as_deref(), now_ms)?
+            }
+            Command::SetUserMfa { tenant, id, mfa, now_ms } => self.set_user_mfa(&tenant, &id, mfa, now_ms)?,
+            Command::LinkUserOidc { tenant, id, link, now_ms } => self.link_user_oidc(&tenant, &id, link, now_ms)?,
+            Command::DeleteUser { tenant, id } => self.delete_user(&tenant, &id)?,
+            Command::CreateSession { session, login } => self.create_session(session, login)?,
+            Command::TouchSession { hash, now_ms } => self.touch_session(&hash, now_ms),
+            Command::DeleteSession { tenant, id } => self.delete_session(&tenant, &id)?,
+            Command::DeleteUserSessions { tenant, user, except } => self.delete_user_sessions(&tenant, &user, except.as_deref())?,
+            Command::ExpireSessions { now_ms } => self.expire_sessions(now_ms),
+            Command::PutLoginCode { code } => self.put_login_code(code)?,
+            Command::RedeemLoginCode { hash, binding_hash, now_ms, session } => self.redeem_login_code(&hash, &binding_hash, now_ms, session)?,
             Command::Grid { cmd } => {
                 if let senca_grid::GridCommand::PutWorkload { workload } = &cmd
                     && crate::workloads::is_derived(&workload.id)

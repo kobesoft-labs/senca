@@ -1,20 +1,23 @@
 # 12. セキュリティ
 
 この章では、SENCA のセキュリティに関わる機能と設定を説明します。
-管理 API の認証と権限、配信者と視聴者の資格情報（stream key・署名付き URL・参加トークン）、秘密値の保管、外部への接続の制限、
-クラスターの mTLS、codec worker のサンドボックスを扱います。
+管理 API の認証と権限、利用者のアカウントとログイン（パスワード・MFA・OIDC）、配信者と視聴者の資格情報（stream key・署名付き URL・参加トークン）、
+秘密値の保管、外部への接続の制限、クラスターの mTLS、codec worker のサンドボックスを扱います。
 
 - 関連するページ: [3. 設定](03-configuration.md)、[9. クラスターとグリッド](09-cluster-grid.md)、[10. リアルタイムの部屋](10-rooms.md)、[13. 運用](13-operations.md)、[15. 管理 API と SDK](15-api-and-sdks.md)
-- 設計の背景: [ADR-0002 依存関係と暗号の部品](../../dev/adr/0002-dependencies-and-crypto.md)、[ADR-0007 入力・出力・秘密値と外部への接続の制限](../../dev/adr/0007-inputs-outputs-egress.md)、[ADR-0009 分散の制御プレーン](../../dev/adr/0009-cluster.md)
+- 設計の背景: [ADR-0002 依存関係と暗号の部品](../../dev/adr/0002-dependencies-and-crypto.md)、[ADR-0017 利用者のアカウント・ログインのセッション・OIDC](../../dev/adr/0017-users-sessions-oidc.md)、[ADR-0007 入力・出力・秘密値と外部への接続の制限](../../dev/adr/0007-inputs-outputs-egress.md)、[ADR-0009 分散の制御プレーン](../../dev/adr/0009-cluster.md)
 
 ## 12.1 管理 API の認証
 
 管理 API（`/api/v1/...`）と SSE（`/api/v1/events`）は、`Authorization: Bearer <値>` ヘッダーで認証します。
 
-- 値が `senca_` で始まれば **API トークン**、それ以外は **JWT** として扱います（JWT は `--jwks` を指定したときだけ使えます）。
+- 値が `senca_` で始まれば **API トークン**、`sencas_` で始まれば利用者の**ログインのセッション**（[12.13](#1213-利用者のアカウントとログイン)）、
+  それ以外は **JWT** として扱います（JWT は `--jwks` を指定したときだけ使えます）。
 - 認証に失敗すると 401（`WWW-Authenticate: Bearer`）を返します。失敗の理由（未知のトークン、期限切れ、署名の誤りなど）は応答に含めず、
   ノードのログに `auth failed: <理由> request_id=...` として記録します。
-- 認証なしで応答するのは、`/healthz`・`/readyz`、管理画面と配信用ページの静的ファイル、署名付きの再生 URL（`/s/...`）です。
+- 認証なしで応答するのは、`/healthz`・`/readyz`、管理画面と配信用ページの静的ファイル、署名付きの再生 URL（`/s/...`）、
+  ログインの操作（`GET /api/v1/auth/providers`・`POST /api/v1/auth/login`・`POST /api/v1/auth/login/mfa`・`POST /api/v1/auth/exchange`・
+  `GET /api/v1/auth/oidc/{id}/start`・`GET /api/v1/auth/oidc/{id}/callback`）です。
   WHIP は stream key、WHEP は署名、部屋のシグナリングは参加トークンで認証します。
 
 ### API トークン
@@ -43,7 +46,8 @@
 ### テナント
 
 すべてのリソースはテナントに属し、他のテナントのリソースは見えません（404 になります）。最初の管理者トークンのテナントは `default` です。
-API トークンは作成者と同じテナントにしか作れないため、**別のテナントを作るには JWT を使います**（テナントは JWT のクレームで決まります）。
+API トークンは作成者と同じテナントにしか作れないため、**別のテナントを作るには JWT か OIDC を使います**（テナントは JWT のクレーム、
+または OIDC の IdP の設定（[12.15](#1215-oidc-のシングルサインオン)）で決まります）。
 
 ### 最初の管理者トークン
 
@@ -67,6 +71,8 @@ API トークンは作成者と同じテナントにしか作れないため、*
 | `token` | API トークン（JWT は subject） | 管理 API | 1 秒に 200（`--rate-limit-token`） |
 | `auth_failures` | 送信元の IP アドレス | 認証の失敗（管理 API・SSE・WHIP の誤ったトークンや stream key） | 1 分に 30（`--rate-limit-auth-failures`） |
 | `connect` | 送信元の IP アドレス | 接続の開始（`/signaling`・WHIP・WHEP・SSE） | 1 秒に 30（`--rate-limit-connect`） |
+| `login` | 送信元の IP アドレス | ログインの失敗（パスワード・確認コード・OIDC） | 1 分に 10（`--rate-limit-login`） |
+| `login_account` | アカウント（テナントと利用者名） | パスワード・確認コードの失敗 | 5 回まで。その後は 1 秒から倍々に待たせる（最長 15 分） |
 
 - 1 秒あたりの上限は、短い間なら 2 倍まで受け付けます。
 - 認証の失敗の回数を使い切った IP アドレスは、回復するまで、正しいトークンを送っても 429 になります。
@@ -235,6 +241,7 @@ Raft と中継の接続では、mTLS の有無にかかわらず、接続の直�
 
 - 単一ノードの `control/log`・`control/snapshot.json`、クラスターの `control/raft/` には、再生用の鍵（16 進の平文）、
   トークンと stream key のハッシュ、暗号化した秘密値が入っています。再生用の鍵があれば、再生 URL と部屋の参加トークンを偽造できます。
+  利用者のパスワードのハッシュ（Argon2id）、ログインのセッションと回復コードのハッシュ、暗号化した認証アプリの秘密も入っています。
 - ノードは `secret-key`・`bootstrap-admin-token` をパーミッション 0600 で作成し、起動のたびに `control/` を 0700 にします（制御用のファイルは他のユーザーから読めません）。
   録画とセグメントは umask に従います。データディレクトリは専用のユーザーで運用し、
   `chmod 700` にしてください（Docker イメージは専用ユーザー `senca` で動き、データはボリュームに置きます）。
@@ -284,9 +291,20 @@ HLS や WHEP など配信量の多い経路を TLS にしたいときは、前�
 {"action":"stream.create","request_id":"req_...","resource":"<リソース ID>","subject":"token:<トークン ID>","tenant":"default","ts":"2026-11-03T01:10:15.531Z"}
 ```
 
-`subject` は、API トークンなら `token:{ID}`、JWT なら `sub` の値です。秘密情報やリクエストの本文は記録しません。
-Idempotency-Key のために保存する応答からも、`stream_key`・`token`・`secret` を消してから保存します（再送時の応答では、これらは `null` になり、
-`*_redacted: true` が付きます）。
+`subject` は、API トークンなら `token:{ID}`、ログインのセッションなら `user:{利用者 ID}`、JWT なら `sub` の値です。秘密情報やリクエストの本文は記録しません。
+Idempotency-Key のために保存する応答からも、`stream_key`・`token`・`secret`・`temporary_password`・`recovery_codes`・`otpauth_uri`・
+`enrollment_token`・`mfa_token` を消してから保存します（再送時の応答では、これらは `null` になり、`*_redacted: true` が付きます）。
+
+ログインと利用者の操作は、次の `action` で記録します（パスワード・確認コード・回復コード・セッションの値は記録しません）。
+
+| `action` | 内容 |
+|---|---|
+| `auth.login` | ログイン。`outcome`（`success`・`failure`・`mfa_required`・`callback`）、`method`（`password`・`password+totp`・`password+recovery_code`・`oidc:{id}`）、`reason`、`ip` を付けます。知らない利用者名での失敗は `subject: anonymous` で、試された利用者名は記録しません |
+| `auth.logout`・`auth.session.revoke` | ログアウト・自分のセッションの失効 |
+| `auth.password.change` | 自分のパスワードの変更 |
+| `auth.mfa.enable`・`auth.mfa.disable`・`auth.mfa.recovery_codes`・`auth.mfa.recovery_code_used` | MFA の登録・解除・回復コードの作り直し・回復コードの使用 |
+| `user.create`・`user.update`・`user.delete` | 利用者の作成・変更（役割・権限が変わったか、無効化）・削除。OIDC で自動で作った・役割を決め直したときは `by: "oidc:{id}"` |
+| `user.password.reset`・`user.mfa.reset`・`user.sessions.revoke`・`user.oidc.link` | 管理者によるパスワードの再設定・MFA の解除・セッションの失効、IdP の利用者との結び付け |
 
 ### 回転
 
@@ -330,3 +348,313 @@ curl -s -H "Authorization: Bearer $TOKEN" \
 各項目の `node`・`node_name` は記録したノードです。呼び出し元のトークンはほかのノードへ送りません。テナントの絞り込みは、要求を受けたノードが
 呼び出し元の権限から決めて問い合わせに含めます。5 秒以内に答えなかったノードは `unavailable_nodes` に入り、そのノードの記録は含まれません
 （`node` でそのノードを指定した場合は 503）。ノードの時計がずれていると、ノードをまたいだ並び順もずれます（時刻は NTP などでそろえてください）。
+
+## 12.13 利用者のアカウントとログイン
+
+管理画面や管理 API を人が使うときは、API トークンを配る代わりに**利用者のアカウント**を作り、ログインしてもらいます。
+ログインの方法は 2 つあり、両方を同時に使えます。
+
+- **パスワード**（と、任意で認証アプリの確認コード。[12.14](#1214-多要素認証mfa)）
+- **OIDC のシングルサインオン**（Google Workspace・Microsoft Entra ID・Keycloak・Auth0 など。[12.15](#1215-oidc-のシングルサインオン)）
+
+ログインすると**セッション**（`sencas_` で始まる値）が返ります。API トークンと同じく `Authorization: Bearer` に付けて使います。
+
+### 利用者
+
+- 利用者はテナントごとに作ります。他のテナントの利用者は見えません（404）。1 つのテナントに 1000 人まで作れます。
+- 利用者名は 1〜64 文字の英数字と `. _ @ + -` です。大文字と小文字は区別しません（`Alice` と `alice` は同じ利用者名です）。メールアドレスもテナントの中で重複できません。
+- パスワードは省略できます。パスワードの無い利用者は、OIDC でだけログインします。
+- 利用者の権限は**役割**と個別の権限の和です。
+
+| 役割 | 権限 |
+|---|---|
+| `admin` | `tenant:admin`（`node:admin` 以外のすべて） |
+| `operator` | `stream:read`・`stream:write`・`publish`・`subscribe`・`recording:read` |
+| `viewer` | `stream:read`・`recording:read`・`subscribe` |
+
+  役割にない権限（`recording:delete`・`node:admin` など）は `scopes` で個別に渡します。役割や権限を変えると、すぐに効きます。
+
+### 最初の管理者を作る
+
+`GET /api/v1/auth/providers`（認証は不要です）の `setup_required` が `true` なら、利用者はまだ 1 人もいません。
+管理画面はこのとき「最初の管理者を作る」画面を出します。API では、最初の管理者トークン（[12.1](#121-管理-api-の認証)）で利用者を作ります。
+
+```sh
+TOKEN=$(cat /var/lib/senca/control/bootstrap-admin-token)
+curl -s -X POST http://127.0.0.1:8080/api/v1/users \
+  -H "Authorization: Bearer $TOKEN" -H 'Content-Type: application/json' \
+  -d '{"username": "alice", "email": "alice@example.com", "password": "長くて推測されにくいパスワード", "roles": ["admin"]}'
+```
+
+利用者ができた後も、最初の管理者トークンはそのまま使えます。入れ替えの手順は [12.1](#121-管理-api-の認証) を見てください。
+
+### パスワード
+
+- 12〜256 文字です（文字数で数えます。日本語も使えます）。利用者名・メールアドレスと同じものは使えません。文字列は正規化せずに、そのまま扱います。
+- サーバーには Argon2id（19 MiB・2 回・並列 1、利用者ごとの塩）のハッシュだけを保存します。パラメーターはハッシュの中に記録しているので、
+  将来パラメーターを上げたときは、次のログインで新しいパラメーターのハッシュに置き換えます。
+- 本人は `POST /api/v1/auth/password`（今のパスワードが必要）で変えられます。変えると、そのとき使っていたセッション以外は失効します。
+- 管理者は `POST /api/v1/users/{id}/password` で再設定できます。パスワードを渡さなければ、ノードが 20 文字の仮のパスワードを作って、その応答でだけ返します。
+  仮のパスワードでログインした利用者は、パスワードを変えるまで他の操作ができません（`pending: ["password_change"]`）。
+
+### パスワードでのログイン
+
+```sh
+curl -s -X POST http://127.0.0.1:8080/api/v1/auth/login -H 'Content-Type: application/json' \
+  -d '{"username": "alice", "password": "長くて推測されにくいパスワード"}'
+# → {"status": "ok", "token": "sencas_...", "session": {...}, "user": {...}, "pending": [], ...}
+```
+
+- `default` 以外のテナントの利用者は、本文に `"tenant": "acme"` を加えます。
+- 認証アプリを登録した利用者には `{"status": "mfa_required", "mfa_token": "..."}` が返ります（[12.14](#1214-多要素認証mfa)）。
+- 利用者がいない・パスワードが違う・利用者が無効のどれでも、同じ 401 を返します。利用者がいない場合も同じだけ計算するので、
+  応答の内容や時間から利用者の有無は分かりません。
+- **失敗の上限**: 送信元の IP アドレスごとに 1 分に 10 回（`--rate-limit-login`）、アカウントごとに 5 回まで失敗できます。アカウントは 6 回目の失敗から
+  1 秒、2 秒、4 秒…と待たせ（最長 15 分。1 時間失敗がなければ数え直します）、その間は正しいパスワードでも 429（`details.limit` は `login_account`）です。
+  IP アドレスの上限を超えたときは `details.limit` が `login` です。どちらもノードごとに数えます。
+- `--auth-password-login off` にすると、パスワードではログインできなくなります（OIDC だけにする場合）。
+
+### セッション
+
+- セッションは、最後に使ってから 8 時間（`--auth-session-idle`）使わなければ失効します。使い続けていても、ログインから 7 日（`--auth-session-lifetime`）で失効します。
+- 次のときにも失効します: ログアウト（`POST /api/v1/auth/logout`）、パスワードの変更・再設定、利用者の無効化・削除、役割・権限の変更。
+- 自分のセッションは `GET /api/v1/auth/sessions` で一覧でき（ログインした IP アドレスとブラウザーの情報付き）、`DELETE /api/v1/auth/sessions/{id}` で失効させられます。
+  管理者は `GET`・`DELETE /api/v1/users/{id}/sessions` で利用者のセッションを扱えます。1 人あたり 20 まで持て、超えると古いものから消えます。
+- サーバーにはセッションの値の SHA-256 だけを保存します。クラスターでは全ノードに複製されるので、どのノードでログインしても、どのノードでも使えます。
+- 最後に使った時刻は、要求のたびではなく数分おき（既定では 5 分おき）に記録します（クラスターの合意ログへの書き込みを減らすためです）。
+  そのため、待ち時間による失効は、最大でその分だけ早くなることがあります。
+- 監査ログの `subject` は `user:{利用者 ID}` です。`GET /api/v1/auth/me` で、自分の利用者・テナント・権限・セッションの期限を確かめられます。
+
+### 利用者の管理
+
+利用者の管理には `tenant:admin` が必要です（`/api/v1/users`）。
+
+| 操作 | API |
+|---|---|
+| 作成・一覧・取得 | `POST /users`、`GET /users`、`GET /users/{id}` |
+| 役割・権限・無効化・表示名・メールアドレスの変更 | `PATCH /users/{id}`（`If-Match` が必要） |
+| 削除 | `DELETE /users/{id}` |
+| パスワードの再設定 | `POST /users/{id}/password` |
+| MFA を外す（認証アプリをなくしたとき） | `DELETE /users/{id}/mfa` |
+| セッションの一覧・すべて失効 | `GET /users/{id}/sessions`、`DELETE /users/{id}/sessions` |
+
+- **自分が持っている権限しか渡せません**（403）。`node:admin` は `node:admin` を持つ主体だけが渡せます。
+  また、自分が持っていない権限を持つ利用者（例: `node:admin` を持つ利用者）は、変更・削除・パスワードの再設定ができません（403）。
+- **テナントの最後の管理者**（有効で `tenant:admin` を持つ利用者）は、削除・無効化・降格できません（409）。先に別の管理者を作ってください。
+- 利用者の作成・変更・削除は、SSE（`GET /api/v1/events`）に `user.created`・`user.updated`・`user.deleted` として流れます（`tenant:admin` を持つ主体にだけ）。
+
+## 12.14 多要素認証（MFA）
+
+パスワードでログインする利用者は、認証アプリ（TOTP。Google Authenticator・Microsoft Authenticator・1Password など）の確認コードを
+2 つ目の要素として登録できます。
+
+1. `POST /api/v1/auth/mfa/totp/setup`（本文に今のパスワード `{"password": "..."}`）で、`otpauth_uri`（QR コード用）と `secret`（手で入力する場合の文字列）、
+   `enrollment_token` を受け取ります。秘密はこのときにだけ表示されます。
+2. 認証アプリに登録し、表示された 6 桁のコードを `POST /api/v1/auth/mfa/totp/confirm`（`{"enrollment_token": "...", "code": "123456"}`）に送ると有効になります。
+3. 応答の**回復コード 10 個**（`xxxx-xxxx-xxxx-xxxx`）を安全な場所に保管してもらいます。回復コードもこのときにだけ表示されます。
+
+有効にした後のログイン:
+
+```sh
+curl -s -X POST .../api/v1/auth/login -d '{"username": "alice", "password": "..."}'      # → {"status": "mfa_required", "mfa_token": "..."}
+curl -s -X POST .../api/v1/auth/login/mfa -d '{"mfa_token": "...", "code": "123456"}'   # → {"status": "ok", "token": "sencas_..."}
+```
+
+- 認証アプリの代わりに、回復コード（`{"mfa_token": "...", "recovery_code": "abcd-efgh-jkmn-pqrs"}`）も使えます。回復コードは 1 回ずつしか使えません。
+- 同じ確認コードは 2 度使えません（30 秒ごとに変わるコードのうち、使ったものより後のものだけを受け付けます）。時計のずれは前後 30 秒まで許します。
+- 回復コードの作り直し（`POST /api/v1/auth/mfa/recovery-codes`）と MFA の解除（`POST /api/v1/auth/mfa/disable`）には、今のパスワードか確認コード
+  （`{"password": "..."}` または `{"code": "..."}`）が必要です。
+- `--auth-require-mfa` を付けたノードでは、パスワードでログインする利用者は MFA が必須です。未登録の利用者は、ログインすると
+  `pending: ["mfa_enrollment"]` のセッションを受け取り、登録を終えるまで他の操作ができません。このノードでは MFA を解除できません。
+- 認証アプリの秘密は、秘密値と同じ鍵（[12.5](#125-秘密値)）で暗号化して保存します。回復コードはハッシュだけを保存します。
+- OIDC でログインする利用者には、SENCA の MFA は使いません。IdP の側で MFA を設定してください。
+
+## 12.15 OIDC のシングルサインオン
+
+ノードが OpenID Connect の relying party になり、IdP のログイン画面で認証します（認可コードフロー。PKCE（S256）・`state`・`nonce` を必ず使います）。
+
+### 流れ
+
+1. ログイン画面のボタンが、`GET /api/v1/auth/providers` の `oidc[].start_url`（`/api/v1/auth/oidc/{id}/start?return_to=/console/...`）をブラウザーで開きます。
+2. ノードは IdP へリダイレクトします。ログインの途中の値は、暗号化したクッキー（`senca_oidc`、HttpOnly、10 分）に入れます。
+3. IdP から `/api/v1/auth/oidc/{id}/callback` に戻ると、ノードは ID トークンを受け取って検証し、利用者を決めて、
+   管理画面の `/console/#/auth/complete?code=...`（失敗したときは `?error=...`）へリダイレクトします。
+4. 管理画面は、同じブラウザーから `POST /api/v1/auth/exchange`（`{"code": "..."}`）を送ってセッションを受け取ります。コードは 60 秒・1 回だけ有効です。
+
+クラスターでは、手順 1・3・4 がそれぞれ別のノードに届いてもかまいません（クッキーはクラスター共通の鍵で暗号化しています）。
+
+### IdP の側の設定
+
+- **リダイレクト URI** に `{公開 URL}/api/v1/auth/oidc/{id}/callback` を登録します（`{公開 URL}` は `--public-http-url`）。
+  リバースプロキシの背後などで違う URL にする場合は、`redirect_url` で指定します。`--public-http-url` が `https://` なら、クッキーに `Secure` を付けます。
+- クライアントの種類は、クライアントシークレットを使うもの（confidential）を勧めます。シークレットはファイルに書いて `client_secret_file` で指定します。
+  シークレットの無いクライアント（public client）も使えます。
+- スコープは既定で `openid email profile` です。
+
+### SENCA の側の設定
+
+IdP が 1 つなら起動オプションで、複数なら JSON ファイル（`--oidc-config`）で指定します。
+
+```sh
+senca-node ... --public-http-url https://senca.example.com \
+  --oidc-id keycloak --oidc-display-name "社内アカウント" \
+  --oidc-issuer https://sso.example.com/realms/media --oidc-client-id senca \
+  --oidc-client-secret-file /etc/senca/keycloak-client-secret \
+  --oidc-role-map groups=senca-admins:admin --oidc-default-role viewer --oidc-auto-provision
+```
+
+`--oidc-config` のファイルは `{"providers": [ ... ]}` の形で、各要素は次の項目を持ちます。
+
+| 項目 | 既定 | 説明 |
+|---|---|---|
+| `id` | （必須） | URL に入る名前（英小文字・数字・`-`・`_`、1〜32 文字） |
+| `display_name` | `id` | ログインのボタンに出す名前 |
+| `issuer` | （必須） | 発行者の URL。`{issuer}/.well-known/openid-configuration` を取得します |
+| `client_id` | （必須） | クライアント ID |
+| `client_secret_file` | なし | クライアントシークレットのファイル（前後の空白は除きます）。無ければ public client |
+| `scopes` | `["openid", "email", "profile"]` | 要求するスコープ（`openid` は必須） |
+| `redirect_url` | `{--public-http-url}/api/v1/auth/oidc/{id}/callback` | IdP に登録したリダイレクト URI |
+| `allowed_email_domains` | `[]`（制限なし） | ログインを許すメールアドレスのドメイン |
+| `require_email_verified` | `true` | メールアドレスを使う（ドメインの制限・既存の利用者との結び付け）とき、`email_verified: true` を求める |
+| `tenant` | `default` | 利用者を置くテナント |
+| `tenant_claim` | なし | テナントを決めるクレームの名前（`tenant` とは同時に使えません） |
+| `role_mappings` | `[]` | `{"claim", "value", "role"}` の一覧。クレームが値を含めば、その役割（`admin`・`operator`・`viewer`）か権限 |
+| `default_role` | なし | どの対応にも当たらないときの役割。無ければログインを断ります |
+| `sync_roles` | `true` | ログインのたびに、役割を `role_mappings` から決め直します（`role_mappings` があるときだけ） |
+| `auto_provision` | `false` | 初めてログインした人の利用者を自動で作ります |
+| `username_claim` | `preferred_username` | 自動で作る利用者の名前に使うクレーム（無ければ `email`、`sub`） |
+| `prompt`・`max_age` | なし | 認可の要求にそのまま付けます（`max_age` を付けると `auth_time` も確かめます） |
+
+起動オプションは `--oidc-id`・`--oidc-display-name`・`--oidc-issuer`・`--oidc-client-id`・`--oidc-client-secret-file`・`--oidc-scopes`・`--oidc-redirect-url`・
+`--oidc-allowed-domain`（繰り返し）・`--oidc-tenant`・`--oidc-tenant-claim`・`--oidc-role-map CLAIM=VALUE:ROLE`（繰り返し）・`--oidc-default-role`・
+`--oidc-no-sync-roles`・`--oidc-auto-provision`・`--oidc-allow-unverified-email`・`--oidc-username-claim`・`--oidc-prompt`・`--oidc-max-age` です（[3. 設定](03-configuration.md)）。
+
+### 利用者の決まり方
+
+1. IdP の利用者（ID トークンの `sub`）と結び付いた SENCA の利用者がいれば、その利用者です。
+2. いなければ、同じメールアドレスの利用者を探して結び付けます（メールアドレスが確認済みのときだけ）。管理者があらかじめメールアドレス付きで
+   利用者を作っておけば、その人が初めて OIDC でログインしたときに結び付きます。
+3. それでもいなければ、`auto_provision: true` なら利用者を作ります（パスワードは持ちません）。`false` ならログインを断ります（`error=no_account`）。
+
+- `role_mappings` があると、ログインのたびに役割を決め直します。ネストしたクレームは `.` でつなぎます（例: Keycloak の `realm_access.roles`）。
+  IdP の設定で `node:admin` を渡すこともできます。
+- `role_mappings` が無ければ、自動で作るときに `default_role` を使い、その後の役割は SENCA の管理画面・API で変えます。
+- 失敗したときの `error` の値（`email_domain_not_allowed`・`no_role`・`account_disabled` など）の一覧は、OpenAPI の `GET /auth/oidc/{provider}/callback` にあります。
+
+### ID トークンの検証
+
+- 取得するのは、設定した発行者の discovery と、そこに書かれた JWKS・トークンエンドポイントだけです（トークンの中の URL へは接続しません）。
+  discovery の `issuer` が設定と違う場合や、発行者が `https://` なのに `http://` の宛先が書かれている場合は使いません。
+- discovery と JWKS は 1 時間キャッシュします。知らない `kid` のトークンが来たら JWKS を取得し直します（鍵のローテーションに追従します）。
+- 確かめる項目: 署名（EdDSA・ES256・RS256。アルゴリズムは鍵の種類で決まり、`none` と HS 系は使えません）・`iss`・`aud`（`client_id` を含む）・`exp`・`nbf`・
+  `iat`（10 分以内）・`nonce`・`azp`（ある場合と `aud` が複数の場合）・`sub`。時計のずれは 60 秒まで許します。
+- 発行者は管理者が設定した宛先なので、[12.6](#126-外部への接続の制限ssrf-対策) の宛先の検査（`--egress-allow`）は行いません。社内のネットワークの
+  Keycloak などにも、許可を足さずに接続できます。
+
+### Google（Google Workspace）
+
+1. Google Cloud コンソールの「API とサービス」→「認証情報」で、OAuth クライアント ID（種類は「ウェブ アプリケーション」）を作ります。
+   「承認済みのリダイレクト URI」に `https://senca.example.com/api/v1/auth/oidc/google/callback` を登録します。
+2. クライアントシークレットをファイルに保存します。
+3. Google の ID トークンにはグループの情報が入らないため、ドメインで利用者を絞り、役割は SENCA で割り当てます。
+
+```json
+{"providers": [{
+  "id": "google", "display_name": "Google でログイン",
+  "issuer": "https://accounts.google.com",
+  "client_id": "1234567890-abcdefg.apps.googleusercontent.com",
+  "client_secret_file": "/etc/senca/google-client-secret",
+  "allowed_email_domains": ["example.com"],
+  "auto_provision": true, "default_role": "viewer"
+}]}
+```
+
+管理者にする人は、先に `POST /api/v1/users`（`{"username": "alice", "email": "alice@example.com", "roles": ["admin"]}`）で作っておけば、
+初めてのログインでその利用者に結び付きます。
+
+### Microsoft Entra ID
+
+1. Entra 管理センターの「アプリの登録」で新規登録し、プラットフォーム「Web」のリダイレクト URI に
+   `https://senca.example.com/api/v1/auth/oidc/entra/callback` を登録します。「証明書とシークレット」でクライアントシークレットを作ります。
+2. 役割をグループで決める場合は、「トークン構成」で「グループ要求」を追加します（セキュリティグループ、ID トークンにはグループの ID）。
+   `groups` クレームにはグループのオブジェクト ID が入ります。
+3. 発行者は、テナントごとの `https://login.microsoftonline.com/{テナント ID}/v2.0` を使います（`common`・`organizations` は使えません）。
+
+```json
+{"providers": [{
+  "id": "entra", "display_name": "Microsoft でログイン",
+  "issuer": "https://login.microsoftonline.com/00000000-0000-0000-0000-000000000000/v2.0",
+  "client_id": "11111111-2222-3333-4444-555555555555",
+  "client_secret_file": "/etc/senca/entra-client-secret",
+  "auto_provision": true,
+  "role_mappings": [
+    {"claim": "groups", "value": "aaaaaaaa-0000-0000-0000-000000000001", "role": "admin"},
+    {"claim": "groups", "value": "aaaaaaaa-0000-0000-0000-000000000002", "role": "operator"}
+  ],
+  "default_role": "viewer"
+}]}
+```
+
+- Entra ID の ID トークンには `email_verified` が入らず、`email` は利用者が変えられる場合があります。そのため既定では、メールアドレスによる結び付けと
+  `allowed_email_domains` は働きません（ドメインを制限すると `error=email_not_verified` になります）。上の例のように、テナントごとの発行者で
+  組織の利用者だけに絞り、グループで役割を決めてください。メールアドレスを組織が管理していて、既存の利用者に結び付けたい場合だけ
+  `"require_email_verified": false` にします。
+- 利用者が多くのグループ（ID トークンでは 200 を超えるもの）に属していると、`groups` クレームが省略されます。その場合はアプリに割り当てたグループだけを
+  出す設定にしてください。
+
+### Keycloak
+
+1. レルムでクライアントを作ります（Client authentication を ON、Standard flow を ON）。「Valid redirect URIs」に
+   `https://senca.example.com/api/v1/auth/oidc/keycloak/callback` を登録し、「Credentials」のシークレットをファイルに保存します。
+2. 役割をグループで決める場合は、クライアントスコープに「Group Membership」のマッパーを追加します（Token Claim Name は `groups`、
+   Full group path は OFF、Add to ID token は ON）。レルムのロールを使う場合は、「roles」スコープの「realm roles」マッパーで
+   Add to ID token を ON にします（クレームは `realm_access.roles`）。
+
+```json
+{"providers": [{
+  "id": "keycloak", "display_name": "社内アカウント",
+  "issuer": "https://sso.example.com/realms/media",
+  "client_id": "senca",
+  "client_secret_file": "/etc/senca/keycloak-client-secret",
+  "auto_provision": true,
+  "role_mappings": [
+    {"claim": "groups", "value": "senca-admins", "role": "admin"},
+    {"claim": "realm_access.roles", "value": "senca-operator", "role": "operator"}
+  ],
+  "default_role": "viewer"
+}]}
+```
+
+Keycloak のメールアドレスは、レルムの「Email verified」が ON の利用者だけが確認済みになります。
+
+### Auth0 など
+
+- Auth0 の発行者は `https://{ドメイン}/`（最後の `/` を含みます）です。アプリケーションの種類は「Regular Web Application」にし、
+  「Allowed Callback URLs」にリダイレクト URI を登録します。
+- その他の IdP も、discovery（`/.well-known/openid-configuration`）・認可コードフロー・PKCE の S256 に対応していれば使えます。
+  ID トークンの署名は EdDSA・ES256・RS256 のどれかにしてください。
+
+### テナントとクレーム
+
+複数の組織を 1 つの SENCA で扱う場合は、IdP のクレームでテナントを決められます（`"tenant_claim": "org"`）。
+クレームの値は 1〜64 文字の英数字と `. _ -` でなければなりません。API トークンは作成者のテナントにしか作れないため、
+新しいテナントの最初の管理者は、この方法か JWT で作ります。
+
+## 12.16 ログインできなくなったとき
+
+- **他の管理者がいる場合**: その管理者が `POST /api/v1/users/{id}/password`（パスワードの再設定）や `DELETE /api/v1/users/{id}/mfa`（MFA を外す）を使います。
+- **管理者トークンがある場合**: ノードのサーバーで次のコマンドを実行すると、利用者を有効に戻し、MFA を外して、仮のパスワードを表示します。
+  次のログインでパスワードの変更を求めます。
+
+  ```sh
+  senca-node reset-password --data-dir /var/lib/senca --username alice
+  # temporary password for alice: Xk3...（20 文字）
+  ```
+
+  動いているノードの管理 API（既定は `http://127.0.0.1:8080`、`--api` で変更）を、`{data-dir}/control/bootstrap-admin-token`
+  （無ければ `recovery-admin-token`）のトークンで呼びます。別のファイルのトークンは `--token-file` で渡します。利用者がいなければ、
+  `--create-admin` で管理者を作れます。API を通すので、クラスターでもそのまま使えます。
+- **管理者トークンもない場合**（最初の管理者トークンを削除したか、値をなくした）: ノードを 1 台、`--recovery-admin-token` を付けて起動し直します。
+  ノードは `control/recovery-admin-token`（0600）に、`default` テナントの管理者トークン（`tenant:admin`・`node:admin`、24 時間で失効）を書き出します。
+  このトークンで上の `reset-password` を実行し、終わったらファイルを削除して、オプションを外して起動し直してください（ファイルがある間は新しいトークンを作りません）。
+  データディレクトリと起動の引数を変えられる人は、もともと制御状態のすべてを読めるため、この方法で権限が増えることはありません。

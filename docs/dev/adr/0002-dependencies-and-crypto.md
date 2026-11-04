@@ -23,6 +23,8 @@
 | libloading | 外部コーデック・ハードウェア SDK の動的読み込み（codec worker だけ） | ISC |
 | libc | codec worker のサンドボックス（prctl・setrlimit・seccomp・Landlock） | MIT/Apache-2.0 |
 | base64 / subtle | トークン・署名の符号化、定数時間比較 | MIT/Apache-2.0、BSD-3 |
+| argon2（と password-hash・blake2・base64ct） | 利用者のパスワードのハッシュ（Argon2id、PHC 文字列。ADR-0017） | MIT/Apache-2.0 |
+| totp-rs（と base32・constant_time_eq） | TOTP（RFC 6238）の HOTP の計算。既定の機能は使わない（URL・QR コード・乱数は自分の部品で） | MIT、MIT/Apache-2.0、CC0-1.0 |
 
 暗号の演算（AES、ChaCha20、SHA、HMAC、HKDF、ECDSA/EdDSA/RSA、ECDH、乱数）は上の検証済みライブラリを使い、自分で書かない（仕様 2.2）。TLS 1.3・DTLS 1.2・SRTP・QUIC のハンドシェイクと記録層・鍵スケジュールは自前（仕様 2.1）で、公開前に独立監査を受ける（仕様 15.3）。
 

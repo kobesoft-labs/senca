@@ -1,5 +1,5 @@
 // 生成物: apps/sdk-js/scripts/gen_types.py が docs/api/openapi.yaml から作る。手で直さない。
-// 管理 API v1 の components.schemas（135 個）。
+// 管理 API v1 の components.schemas（160 個）。
 
 /**
  * 監査ログの 1 件（`audit.log` の 1 行に `node`・`node_name` を足したもの）。秘密情報やリクエストの本文は含みません。
@@ -16,7 +16,7 @@ export type AuditEntry = {
   request_id: string;
   /** 対象の資源の ID（装置・参加者などは `{ノード}/{装置}`・`{部屋}/{接続}` の形） */
   resource: string;
-  /** 操作した主体。API トークンなら `token:{ID}`、JWT なら `sub` の値 */
+  /** 操作した主体。API トークンなら `token:{ID}`、ログインのセッションなら `user:{ID}`（ログインの失敗で利用者が分からないときは `anonymous`）、JWT なら `sub` の値 */
   subject: string;
   tenant: string;
   ts: Timestamp;
@@ -27,6 +27,22 @@ export type AuditList = {
   next_cursor: string | null;
   /** 時間内に答えなかったノードの ID（その記録は含まれません。単一ノードでは常に空） */
   unavailable_nodes: string[];
+};
+
+export type AuthProviders = {
+  /** パスワードでログインする利用者に TOTP を必須にしているか（`--auth-require-mfa`） */
+  mfa_required: boolean;
+  oidc: Array<{
+    /** ログインのボタンに出す名前 */
+    display_name: string;
+    id: string;
+    /** ブラウザーで開く URL（`/api/v1/auth/oidc/{id}/start`。`?return_to=` を付けられます） */
+    start_url: string;
+  }>;
+  /** パスワードでのログインを受け付けるか（`--auth-password-login`） */
+  password: boolean;
+  /** 利用者がまだ 1 人もいない（最初の管理者を作る画面を出します） */
+  setup_required: boolean;
 };
 
 export type Capabilities = {
@@ -157,6 +173,11 @@ export type Devices = {
     devices: DeviceStatus;
     node: string;
   }>;
+};
+
+export type ExchangeRequest = {
+  /** `/console/#/auth/complete?code=` のコード */
+  code: string;
 };
 
 /** 転送フィルター（`docs/realtime/signaling.md` の 8 章）。`rules` は「AND 条件の組」の OR です。`block` は一致したものを配信せず、`allow` は一致したものだけを配信します。 */
@@ -407,6 +428,59 @@ export type LivePlayback = {
   };
 };
 
+/** `code` か `recovery_code` のどちらか 1 つを指定します（両方・どちらも無しは 400）。 */
+export type LoginMfaRequest = {
+  /** 認証アプリの 6 桁のコード */
+  code?: string;
+  mfa_token: string;
+  /** 回復コード（`xxxx-xxxx-xxxx-xxxx`。大文字・小文字・`-`・空白は問いません） */
+  recovery_code?: string;
+};
+
+export type LoginMfaRequired = {
+  expires_at: Timestamp;
+  methods: Array<"totp" | "recovery_code">;
+  /** `POST /auth/login/mfa` に渡す値（5 分） */
+  mfa_token: string;
+  status: "mfa_required";
+};
+
+export type LoginRequest = {
+  password: string;
+  /** 利用者のテナント（省略時は `default`） */
+  tenant?: string;
+  /** 大文字・小文字を区別しません */
+  username: string;
+};
+
+export type LoginResult = LoginSuccess | LoginMfaRequired;
+
+export type LoginSuccess = {
+  pending: PendingAction[];
+  /** OIDC で `start` に渡した戻り先（`POST /auth/exchange` のときだけ） */
+  return_to: string | null;
+  /** 実際に持つ権限（`tenant:admin` を展開したもの） */
+  scopes: Scope[];
+  session: Session;
+  status: "ok";
+  tenant: string;
+  /** セッションの値（`Authorization: Bearer` に使います）。この応答でだけ返します。 */
+  token: string;
+  user: User;
+};
+
+export type Me = {
+  auth_method: "session" | "api_token" | "jwt";
+  pending: PendingAction[];
+  /** 実際に持つ権限 */
+  scopes: Scope[];
+  session: Session | null;
+  /** 監査ログの `subject`（`user:{id}`・`token:{id}`・JWT の `sub`） */
+  subject: string;
+  tenant: string;
+  user: User | null;
+};
+
 export type MediaPipeline = {
   artifacts: MediaPipelineArtifacts;
   /** 資格情報は `secret:{name}` で参照し、値は返しません */
@@ -562,6 +636,45 @@ export type MediaPipelineStatus = {
 
 export type Metadata = { [key: string]: string };
 
+export type MfaConfirmRequest = {
+  code: string;
+  enrollment_token: string;
+};
+
+export type MfaConfirmResult = {
+  /** 回復コード 10 個（この応答でだけ返します） */
+  recovery_codes: string[] | null;
+  recovery_codes_redacted?: true;
+  user: User;
+};
+
+/** 本人確認。`password` か `code`（TOTP の 6 桁、または回復コード）のどちらか 1 つ。 */
+export type MfaReauth = {
+  code?: string;
+  password?: string;
+};
+
+export type MfaSetup = {
+  algorithm: "SHA1";
+  digits: 6;
+  /** `POST /auth/mfa/totp/confirm` に渡す値（10 分） */
+  enrollment_token: string | null;
+  enrollment_token_redacted?: true;
+  expires_at: Timestamp;
+  /** `otpauth://totp/{発行者}:{メールアドレスか利用者名}?secret=...&issuer=...`（QR コードにします） */
+  otpauth_uri: string | null;
+  otpauth_uri_redacted?: true;
+  period: 30;
+  /** TOTP の秘密（base32、パディングなし。手で入力するとき） */
+  secret: string | null;
+  secret_redacted?: true;
+};
+
+export type MfaSetupRequest = {
+  /** 今のパスワード（必須） */
+  password?: string;
+};
+
 export type Node = {
   draining: boolean;
   id: string;
@@ -677,6 +790,20 @@ export type ParticipantList = {
 export type ParticipantPatch = {
   metadata: RoomMetadata;
 };
+
+export type PasswordChange = {
+  current_password: string;
+  /** 12〜256 文字。利用者名・メールアドレス・今のパスワードと同じものは不可 */
+  new_password: string;
+};
+
+/**
+ * セッションで先に済ませることです。`password_change` は仮のパスワード（`POST /auth/password` で変えます）、
+ * `mfa_enrollment` は `--auth-require-mfa` で TOTP が未登録（`POST /auth/mfa/totp/setup`・`confirm` で登録します）。
+ * どちらかがある間は、`GET /auth/me`・`POST /auth/logout`・`POST /auth/password`・`POST /auth/mfa/totp/setup`・`POST /auth/mfa/totp/confirm`・
+ * `GET /auth/sessions`・`DELETE /auth/sessions/{id}` のほかは 403（`details: {reason: "pending", pending: [...]}`）です。
+ */
+export type PendingAction = "password_change" | "mfa_enrollment";
 
 export type Pipeline = {
   created_at: Timestamp;
@@ -1142,6 +1269,11 @@ export type RecordingStart = {
   retention_days?: number | null;
 };
 
+export type RecoveryCodes = {
+  recovery_codes: string[] | null;
+  recovery_codes_redacted?: true;
+};
+
 export type Recurrence = {
   count?: number | null;
   freq: "daily" | "weekly";
@@ -1199,6 +1331,12 @@ export type Resources = {
   net_in_mbps: number;
   net_out_mbps: number;
 };
+
+/**
+ * 役割（決まった権限の組）です。`admin` = `tenant:admin`、`operator` = `stream:read`・`stream:write`・`publish`・`subscribe`・`recording:read`、
+ * `viewer` = `stream:read`・`recording:read`・`subscribe`。
+ */
+export type Role = "admin" | "operator" | "viewer";
 
 export type Room = {
   /** 参加トークンの発行で自動作成された部屋かどうか（誰もいない状態で `empty_timeout_secs` が経過すると削除されます） */
@@ -1503,6 +1641,35 @@ export type SecretList = {
   next_cursor: null;
 };
 
+export type Session = {
+  created_at: Timestamp;
+  /** この要求のセッションか */
+  current: boolean;
+  /** 使っていても失効する時刻（`--auth-session-lifetime`、既定 7 日） */
+  expires_at: Timestamp;
+  /** セッションの ID（値ではありません。失効させるときに使います） */
+  id: string;
+  /** このまま使わなければ失効する時刻（`--auth-session-idle`、既定 8 時間） */
+  idle_expires_at: Timestamp;
+  /** ログインした送信元の IP アドレス */
+  ip: string | null;
+  /** 最後に使った時刻（合意ログへの書き込みを減らすため、待ち時間の 1/16 を 30 秒〜5 分に収めた間隔（待ち時間の 1/4 まで）でだけ進めます） */
+  last_seen_at: Timestamp;
+  method: "password" | "oidc";
+  /** 2 つ目の要素（TOTP・回復コード）を通ったか */
+  mfa: boolean;
+  /** OIDC の IdP の ID */
+  provider: string | null;
+  /** 利用者の ID */
+  user: string;
+  user_agent: string | null;
+};
+
+export type SessionList = {
+  items: Session[];
+  next_cursor: string | null;
+};
+
 export type SnapshotList = {
   items: Array<{
     /** JPEG のサイズ */
@@ -1535,7 +1702,7 @@ export type SseEventData = {
   occurred_at: Timestamp;
   /** 資源の ID（部屋のイベントは部屋の ID、`grid.decisions` は空） */
   resource_id: string;
-  type: "stream.created" | "stream.updated" | "stream.deleted" | "stream.owner" | "recording.updated" | "recording.deleted" | "schedule.created" | "schedule.updated" | "schedule.deleted" | "schedule.run" | "node.updated" | "input.updated" | "input.deleted" | "output.updated" | "output.deleted" | "secret.created" | "secret.deleted" | "pipeline.updated" | "pipeline.deleted" | "room.updated" | "room.deleted" | "media_pipeline.updated" | "media_pipeline.deleted" | "node.down" | "node.up" | "device.down" | "device.up" | "device.disabled" | "device.enabled" | "grid.decisions" | "room.started" | "room.stopped" | "room.connection.created" | "room.connection.updated" | "room.connection.destroyed" | "room.track.published" | "room.track.unpublished" | "room.spotlight.changed";
+  type: "stream.created" | "stream.updated" | "stream.deleted" | "stream.owner" | "recording.updated" | "recording.deleted" | "schedule.created" | "schedule.updated" | "schedule.deleted" | "schedule.run" | "node.updated" | "input.updated" | "input.deleted" | "output.updated" | "output.deleted" | "secret.created" | "secret.deleted" | "pipeline.updated" | "pipeline.deleted" | "room.updated" | "room.deleted" | "media_pipeline.updated" | "media_pipeline.deleted" | "user.created" | "user.updated" | "user.deleted" | "node.down" | "node.up" | "device.down" | "device.up" | "device.disabled" | "device.enabled" | "grid.decisions" | "room.started" | "room.stopped" | "room.connection.created" | "room.connection.updated" | "room.connection.destroyed" | "room.track.published" | "room.track.unpublished" | "room.spotlight.changed";
 };
 
 export type Stream = {
@@ -1629,6 +1796,80 @@ export type TranscodeCapability = {
   max_sessions: number | null;
   max_width: number;
   provider: string;
+};
+
+export type User = {
+  created_at: Timestamp;
+  disabled: boolean;
+  display_name: string | null;
+  /** 役割と個別の権限から決まる、実際に持つ権限 */
+  effective_scopes: Scope[];
+  email: string | null;
+  generation: number;
+  /** パスワードでログインできるか（OIDC だけの利用者は false） */
+  has_password: boolean;
+  id: string;
+  last_login_at: string | null;
+  mfa: {
+    enabled: boolean;
+    enrolled_at: string | null;
+    recovery_codes_remaining: number;
+  };
+  /** 次のログインでパスワードの変更を求めるか */
+  must_change_password: boolean;
+  /** 結び付いた IdP の利用者 */
+  oidc: Array<{
+    provider: string;
+    /** ID トークンの `sub` */
+    subject: string;
+  }>;
+  password_changed_at: string | null;
+  roles: Role[];
+  /** 役割のほかに個別に渡した権限 */
+  scopes: Scope[];
+  updated_at: Timestamp;
+  username: string;
+};
+
+/** `roles` か `scopes` を 1 つ以上指定します。 */
+export type UserCreate = {
+  disabled?: boolean;
+  display_name?: string;
+  email?: string;
+  /** 次のログインでパスワードの変更を求める（`password` があるときだけ） */
+  must_change_password?: boolean;
+  /** 12〜256 文字。利用者名・メールアドレスと同じものは不可。省くとパスワードの無い利用者になります */
+  password?: string;
+  roles?: Role[];
+  scopes?: Scope[];
+  username: string;
+};
+
+export type UserList = {
+  items: User[];
+  next_cursor: string | null;
+};
+
+export type UserPasswordReset = {
+  must_change_password?: boolean;
+  /** 省くと仮のパスワードを作ります */
+  password?: string;
+};
+
+export type UserPasswordResetResult = {
+  /** ノードが作った仮のパスワード（`password` を渡したときは null） */
+  temporary_password: string | null;
+  /** Idempotency-Key による再送で値を伏せたとき */
+  temporary_password_redacted?: true;
+  user: User;
+};
+
+export type UserPatch = {
+  disabled?: boolean;
+  display_name?: string | null;
+  email?: string | null;
+  roles?: Role[];
+  scopes?: Scope[];
 };
 
 export type VodPlayback = {
