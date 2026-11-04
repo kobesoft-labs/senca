@@ -200,6 +200,10 @@ The console is at `http://127.0.0.1:8080/console/`. The first time you open it, 
 only, so it cannot play a stream that uses the default TS container; see `hls.container` in
 [4. Ingest and playback](04-ingest-playback.md).
 
+You can do the same from the console. Under Streams → Create stream, pick a name and how you will send (OBS or another RTMP encoder,
+SRT, this browser, or pulling from a camera or URL); the console then shows the server and stream key to paste into OBS, step by step
+(streams created in the console use fMP4). The page switches to "Receiving" by itself once the video arrives.
+
 ## 2.9 Try recording (optional)
 
 ```sh

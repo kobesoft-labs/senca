@@ -317,6 +317,7 @@ Idempotency-Key のために保存する応答からも、`stream_key`・`token`
 ### API で読む
 
 `GET /api/v1/audit` で、記録を時刻の新しい順に読めます（`tenant:admin` が必要です）。
+管理画面の「監査ログ」でも、期間・操作の種類・主体で絞り込んで読み、CSV・JSON に書き出せます。
 
 ```sh
 curl -s -H "Authorization: Bearer $TOKEN" \

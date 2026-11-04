@@ -16,6 +16,8 @@ import nodes from './nodes.js';
 import tokens from './tokens.js';
 import secrets from './secrets.js';
 import activity from './activity.js';
+import grid from './grid.js';
+import audit from './audit.js';
 import auth from './auth.js';
 import account from './account.js';
 import users from './users.js';
@@ -37,6 +39,8 @@ export default {
   ...tokens,
   ...secrets,
   ...activity,
+  ...grid,
+  ...audit,
   ...auth,
   ...account,
   ...users,

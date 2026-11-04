@@ -10,6 +10,7 @@ import { WhepPlayer, whepSupported } from './whep.js';
 import { fmtBps } from '../lib/format.js';
 import { t } from '../i18n/index.js';
 import { button, alert } from '../ui/index.js';
+import { icon } from '../lib/icons.js';
 
 /**
  * @param {object} opt
@@ -19,10 +20,21 @@ import { button, alert } from '../ui/index.js';
  * @param {string} [opt.label]
  * @param {'auto'|'webrtc'|'hls'} [opt.mode]
  * @param {boolean} [opt.autostart]
+ * @param {() => Promise<string|null>} [opt.poster] 止まっている間に出す画（blob の URL など）。再生の前に出す
  * @returns {{el: HTMLElement, stop: () => void, start: () => Promise<void>, video: HTMLVideoElement}}
  */
-export function playerWidget({ getUrl, getPlayback, live = true, label = t('player.preview'), mode = 'auto', autostart = false }) {
+export function playerWidget({ getUrl, getPlayback, live = true, label = t('player.preview'), mode = 'auto', autostart = false, poster }) {
   const video = h('video', { controls: true, playsinline: true, muted: true, autoplay: true, 'aria-label': label });
+  // 止まっている間の大きな再生ボタン（押すと下の「再生」と同じ）。動画の上に重ねる
+  const overlay = h('button', { type: 'button', class: 'player-overlay', 'aria-label': t('player.playOverlay'), 'data-testid': 'player-overlay' },
+    h('span', { class: 'po-circle' }, icon('play')));
+  const setPoster = async () => {
+    if (!poster) return;
+    try {
+      const u = await poster();
+      if (u && !player) video.poster = u;
+    } catch { /* 画が無いだけ */ }
+  };
   const statusEl = h('div', { class: 'player-status', role: 'status', 'aria-live': 'polite' }, t('player.stopped'));
   const note = h('div');
   const modeSel = getPlayback ? select([['auto', t('player.modeAuto')], ['webrtc', t('player.modeWebrtc')], ['hls', t('player.modeHls')]], mode, { 'aria-label': t('player.mode'), class: 'small' }) : null;
@@ -57,6 +69,7 @@ export function playerWidget({ getUrl, getPlayback, live = true, label = t('play
     clearInterval(statsTimer);
     if (player) player.destroy();
     player = null;
+    overlay.hidden = false;
     startBtn.disabled = false;
     stopBtn.disabled = true;
     statusEl.textContent = t('player.stopped');
@@ -101,6 +114,7 @@ export function playerWidget({ getUrl, getPlayback, live = true, label = t('play
 
   const start = async () => {
     stop();
+    overlay.hidden = true;
     replace(note);
     startBtn.disabled = true;
     stopBtn.disabled = false;
@@ -113,6 +127,7 @@ export function playerWidget({ getUrl, getPlayback, live = true, label = t('play
       statusEl.dataset.state = 'error';
       startBtn.disabled = false;
       stopBtn.disabled = true;
+      overlay.hidden = false;
       return;
     }
     const m = modeSel ? modeSel.value : 'hls';
@@ -142,11 +157,13 @@ export function playerWidget({ getUrl, getPlayback, live = true, label = t('play
 
   const startBtn = button(t('player.play'), { variant: 'primary', icon: 'play', onClick: () => { start(); } });
   const stopBtn = button(t('player.stop'), { icon: 'stop', onClick: stop, attrs: { disabled: true } });
+  overlay.addEventListener('click', () => { start(); });
   const el = h('div', { class: 'player-widget' },
-    h('div', { class: 'player' }, video),
+    h('div', { class: 'player' }, video, overlay),
     h('div', { class: 'player-controls' }, startBtn, stopBtn, modeSel, statusEl),
     note);
   el.video = video;
   if (autostart) setTimeout(start, 0);
-  return { el, stop, start, video, status: statusEl, get player() { return player; } };
+  else setPoster();
+  return { el, stop, start, video, status: statusEl, refreshPoster: setPoster, get player() { return player; }, get playing() { return !!player; } };
 }

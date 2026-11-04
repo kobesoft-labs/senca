@@ -153,7 +153,7 @@ t('pipeline graph round-trips (senca-pipeline JSON) and port types', () => {
   assert.equal(canon(toGraph(pl)), canon(g));
   assert.deepEqual(validate(pl, { royaltyFree: true }).filter((i) => i.level === 'error'), []);
   pl.nodes.find((n) => n.name === 'venc').p.codec = 'h264';
-  assert.ok(validate(pl, { royaltyFree: true }).some((i) => i.level === 'error' && /royalty_free/.test(i.text)));
+  assert.ok(validate(pl, { royaltyFree: true }).some((i) => i.level === 'error' && i.code === 'POLICY_REJECTED'));
   const p = emptyPipeline('y'); const s = addNode(p, 'source', 0, 0); s.p.stream = 'A';
   const d = addNode(p, 'decode', 0, 0); const e = addNode(p, 'encode', 0, 0); const o = addNode(p, 'sink', 0, 0); o.p.stream = 'O';
   assert.equal(connect(p, { node: s.id, port: 0 }, { node: e.id, port: 0 }).ok, false); // 符号化済み → encode は不可
@@ -177,6 +177,63 @@ t('pipeline API helpers: issues from problem details, status/meters split', () =
   const subs = parseSubtitleMedia('#EXTM3U\n#EXT-X-MEDIA:TYPE=SUBTITLES,GROUP-ID="subs",NAME="English",LANGUAGE="en",DEFAULT=NO,AUTOSELECT=YES,URI="sub_en.m3u8"\n', 'http://h/s/1/x/live/id/master.m3u8');
   assert.deepEqual(subs, [{ language: 'en', name: 'English', uri: 'http://h/s/1/x/live/id/sub_en.m3u8', default: false }]);
 });
+// ---- パイプラインの編集とスイッチャーの道具（ここから）
+const PM = await import(D + '/pipeline/model.js');
+const { TEMPLATES, fillTemplate } = await import(D + '/pipeline/templates.js');
+t('pipeline templates: every template validates once streams are filled, and round-trips', () => {
+  const canon = (v) => JSON.stringify(v, (k, x) => (x && typeof x === 'object' && !Array.isArray(x) ? Object.fromEntries(Object.entries(x).sort()) : x));
+  for (const tpl of TEMPLATES.filter((x) => x.id !== 'blank')) {
+    for (const opts of [{}, ...(tpl.options || []).map((o) => ({ [o.id]: true }))]) {
+      const streams = Object.fromEntries(tpl.roles.map((r, i) => [r.node, 'S' + i]));
+      const g = fillTemplate(tpl, streams, opts);
+      const pl = PM.fromGraph(g, { name: 'tpl-' + tpl.id });
+      const errs = PM.validate(pl, { royaltyFree: true }).filter((i) => i.level === 'error');
+      assert.deepEqual(errs.map((e) => e.text), [], tpl.id);
+      assert.equal(canon(PM.toGraph(pl)), canon(g), tpl.id);
+    }
+  }
+});
+t('pipeline editor model: connect check, auto layout, copy/paste, undo snapshot, live tracks, compose inputs', () => {
+  const pl = PM.fromGraph(sampleGraph({ a: 'A', b: 'B', out: 'O' }), { name: 'x' });
+  const id = (n) => pl.nodes.find((m) => m.name === n).id;
+  // 符号化済みの映像は encode に入らず、理由に「デコード」を挟むよう書く。入っている入力は taken
+  const c1 = PM.checkConnect(pl, { node: id('cam_a'), port: 0 }, { node: id('venc'), port: 0 });
+  assert.equal(c1.code, 'incompatible');
+  assert.equal(PM.checkConnect(pl, { node: id('dec_b'), port: 0 }, { node: id('venc'), port: 0 }).code, 'taken');
+  assert.equal(PM.checkConnect(pl, { node: id('venc'), port: 0 }, { node: id('dec_a'), port: 0 }).code, 'cycle');
+  assert.ok(PM.connectTargets(pl, { node: id('dec_b'), port: 0 }).some((x) => x.node === id('venc') && x.taken));
+  assert.ok(PM.kindsAccepting('ev').includes('decode') && !PM.kindsAccepting('ev').includes('compose'));
+  // 自動の配置: 重ならず、上流が左
+  PM.autoLayout(pl);
+  for (const a of pl.nodes) for (const b of pl.nodes) {
+    if (a === b) continue;
+    const overlap = a.x < b.x + PM.NODE_W && b.x < a.x + PM.NODE_W && a.y < b.y + PM.nodeHeight(b) && b.y < a.y + PM.nodeHeight(a);
+    assert.ok(!overlap, a.name + '/' + b.name);
+  }
+  for (const e of pl.edges) assert.ok(pl.nodes.find((n) => n.id === e.from.node).x < pl.nodes.find((n) => n.id === e.to.node).x);
+  // 元に戻す用の写し
+  const snap = PM.serialize(pl);
+  PM.removeNode(pl, id('venc'));
+  PM.restore(pl, snap);
+  assert.equal(pl.nodes.length, 10); assert.equal(pl.edges.length, 10);
+  // 写しと貼り付け: 名前は重ならず、間の線も付く
+  const clip = PM.copyNodes(pl, [id('dec_a'), id('venc')]);
+  const made = PM.pasteNodes(pl, clip);
+  assert.equal(made.length, 2);
+  assert.equal(new Set(pl.nodes.map((n) => n.name)).size, pl.nodes.length);
+  assert.ok(pl.nodes.some((n) => n.name === 'dec_a_2'));
+  // 配信中のトラックを source に入れる
+  const src = pl.nodes.find((n) => n.name === 'cam_b');
+  const changed = PM.applyLiveTracks(src, [{ codec: 'av1', width: 1280, height: 720, track: 0 }, { codec: 'opus', track: 1 }]);
+  assert.deepEqual([src.p['video.codec'], src.p['audio.codec'], src.p['video.width']], ['av1', 'opus', 1280]);
+  assert.ok(changed.includes('video.codec'));
+  assert.equal(PM.describeTracks([{ codec: 'h264', width: 640, height: 360 }]), 'H.264 640×360');
+  // スイッチャー: 合成の入力 → 元の stream、H.264 の符号化は GPU の注意（ノードの code）
+  assert.deepEqual(PM.composeInputStreams(sampleGraph({ a: 'A', b: 'B', out: 'O' }), 'prod'), { a: 'A', b: 'B' });
+  pl.nodes.find((n) => n.name === 'venc').p.codec = 'h264';
+  assert.ok(PM.validate(pl).some((i) => i.level === 'warn' && i.code === 'CAPACITY_UNAVAILABLE'));
+});
+// ---- パイプラインの編集とスイッチャーの道具（ここまで）
 t('SSE parser (CRLF split across chunks, comments, resync)', () => {
   const evs = []; const ps = new EventStreamParser((e) => evs.push(e));
   ps.feed(': keepalive\r\nevent: stream.created\r\nid: 42\r\ndata: {"type":"stream.created","resource_id":"x"}\r\n\r');
@@ -398,7 +455,7 @@ const waitFile = async (f, ms) => { const end = Date.now() + ms; while (Date.now
 const EXPECTED_FAIL = [
   [/401/, /\/api\/v1\/(capabilities|auth\/me)$/], // 間違ったトークンでのログイン
   [/412/, /\/api\/v1\/recordings\/[^/?]+$/], // 古い ETag
-  [/40[49]|503/, /\/api\/v1\/streams\/[^/]+\/snapshot(\?|$)/], // 今の画が無い・作れない
+  [/40[49]|422|503/, /\/api\/v1\/streams\/[^/]+\/snapshot(\?|$)/], // 今の画が無い・作れない
   [/404/, /\/s\/\d+\/[^/]+\/live\/[^/]+\/(index|master)\.m3u8/], // 送り手を止めた後のライブ・字幕の無い master
   [/409/, /\/api\/v1\/secrets\/[^/?]+$/], // 使われている秘密値の削除
   [/400/, /\/api\/v1\/inputs\/[^/?]+$/], // URL に資格情報を入れた入力の変更
@@ -457,7 +514,19 @@ const EXPECTED_FAIL = [
     check('login with bootstrap token → dashboard (token only in sessionStorage)', stored);
     await page.locator('[data-testid="sse-status"][data-state="open"]').waitFor({ timeout: 10000 });
     check('SSE over fetch connected', true);
-    await page.getByText('dav1d').first().waitFor({ timeout: 5000 }).then(() => check('dashboard shows devices', true)).catch(() => check('dashboard shows devices (no codec worker)', true, 'no providers'));
+    await page.getByTestId('health-strip').waitFor({ timeout: 8000 });
+    check('dashboard health strip', await page.getByTestId('health-summary').isVisible());
+    // ---- 運用と設定: はじめの手順（新しいノード） ----
+    const fresh = page.getByTestId('checklist-getting-started');
+    await fresh.waitFor({ timeout: 5000 });
+    const freshState = await fresh.evaluate((el) => ({
+      streamDone: el.querySelector('[data-step="stream"]').classList.contains('done'),
+      href: el.querySelector('[data-step="stream"] a.primary')?.getAttribute('href'),
+      steps: el.querySelectorAll('li[data-step]').length,
+    }));
+    const haveStreams = ((await apiGet('/streams')).body.items || []).length > 0;
+    check('onboarding checklist on first login: 6 steps, progress from real state', freshState.steps === 6 && freshState.streamDone === haveStreams && (haveStreams || freshState.href === '#/streams?new=1'), JSON.stringify(freshState));
+    // ---- ここまで ----
     await shot('01-dashboard');
   });
 
@@ -467,13 +536,14 @@ const EXPECTED_FAIL = [
     await page.getByTestId('streams-create').click();
     const dlg = page.getByRole('dialog');
     await dlg.getByLabel('名前', { exact: true }).fill('browser-av1');
-    await dlg.getByRole('combobox', { name: 'コーデックの方針' }).selectOption('royalty_free');
-    await dlg.getByLabel('publish が始まったら自動で録画する').check();
+    await dlg.getByTestId('stream-advanced').locator('summary').click();
+    await dlg.getByTestId('stream-codec').selectOption('royalty_free');
+    await dlg.getByTestId('stream-autorecord').check();
     await dlg.getByTestId('stream-create-submit').click();
     await page.getByRole('heading', { name: 'browser-av1' }).waitFor({ timeout: 10000 });
-    key = await page.getByLabel('ストリームキー', { exact: true }).inputValue();
+    key = await page.getByTestId('setup-key').inputValue();
     check('create stream via form → detail with one-time stream key', /^sk_/.test(key), key ? 'sk_…' : 'none');
-    check('one-time key warning shown', await page.getByText('この鍵はもう表示されません').isVisible());
+    check('one-time key warning shown', await page.getByTestId('key-once').isVisible());
     fs.writeFileSync(path.join(work, 'key.txt'), key);
   });
 
@@ -497,13 +567,15 @@ const EXPECTED_FAIL = [
   });
 
   await step('snapshot and plan', async () => {
-    await page.getByRole('button', { name: '今の画を取る' }).click();
-    const img = page.locator('img[alt="今の画（静止画）"]');
-    await page.waitForFunction(() => { const i = document.querySelector('img[alt="今の画（静止画）"]'); return (i && i.naturalWidth > 0) || document.querySelector('.snap-msg .alert'); }, null, { timeout: 15000 });
-    const w = await img.evaluate((i) => i.naturalWidth);
-    const msg = await page.locator('.snap-msg').textContent().catch(() => '');
+    await page.getByTestId('grab-frame').click();
+    const img = page.locator('dialog img[alt="今の画（静止画）"]');
+    await page.waitForFunction(() => { const i = document.querySelector('dialog img[alt="今の画（静止画）"]'); return (i && i.naturalWidth > 0) || document.querySelector('[data-testid="grab-error"]'); }, null, { timeout: 15000 });
+    const w = await img.evaluate((i) => i.naturalWidth).catch(() => 0);
+    const msg = await page.getByTestId('grab-error').textContent().catch(() => '');
     check('snapshot via auth fetch → blob image (or reasoned message)', w === 640 || /今の画/.test(msg), `width=${w} ${msg}`);
-    await page.getByRole('button', { name: '計画を取る' }).click();
+    await page.keyboard.press('Escape');
+    await page.getByRole('tab', { name: '同時配信' }).click();
+    await page.locator('details.panel-disclosure summary').click();
     await page.getByRole('cell', { name: 'recording' }).first().waitFor({ timeout: 5000 });
     check('transform plan table', true);
   });
@@ -550,12 +622,11 @@ const EXPECTED_FAIL = [
     await page.goto(`${base}/console/#/schedules`);
     await page.getByTestId('schedules-create').click();
     const dlg = page.getByRole('dialog');
-    await dlg.getByLabel('タイムゾーン').selectOption('Asia/Tokyo');
+    await dlg.getByLabel('タイムゾーン', { exact: true }).selectOption('Asia/Tokyo');
     await dlg.getByLabel('名前（任意）').fill('browser-sched');
-    await dlg.getByRole('button', { name: '検査（重なりを確かめる）' }).click();
-    await dlg.getByText('検査に通りました').waitFor({ timeout: 5000 });
-    check('schedule check (POST /schedules/check)', true);
-    await dlg.getByRole('button', { name: '検査して作成' }).click();
+    await dlg.locator('[data-testid="sched-check"] [data-state="ok"]').waitFor({ timeout: 8000 });
+    check('schedule check runs automatically while filling the form (POST /schedules/check)', true);
+    await dlg.getByTestId('schedule-create-submit').click();
     await page.getByRole('heading', { name: 'browser-sched' }).waitFor({ timeout: 10000 });
     check('schedule created → detail', true);
     await page.getByRole('button', { name: '取り消す' }).click();
@@ -567,23 +638,36 @@ const EXPECTED_FAIL = [
   await step('tokens', async () => {
     await page.goto(`${base}/console/#/tokens`);
     await page.getByTestId('tokens-create').click();
-    const dlg = page.getByRole('dialog');
-    await dlg.getByLabel('名前').fill('browser-ro');
-    await dlg.getByRole('button', { name: '発行' }).click();
-    const val = await page.getByRole('dialog').getByRole('textbox', { name: '「browser-ro」のトークン' }).inputValue();
-    check('token created and shown once', /^senca_/.test(val));
-    await page.getByRole('button', { name: '控えました' }).click();
-    await page.getByRole('cell', { name: 'browser-ro', exact: true }).waitFor();
+    const dlg = page.getByTestId('token-create-dialog');
+    await dlg.getByTestId('token-name').fill('browser-ro');
+    await dlg.locator('label.role-card', { has: page.getByTestId('token-role-encoder') }).click();
+    const pubOnly = await dlg.evaluate((d) => [...d.querySelectorAll('[data-testid^="token-scope-"]')].filter((i) => i.checked).map((i) => i.value).join(','));
+    await dlg.locator('label.role-card', { has: page.getByTestId('token-role-viewer') }).click();
+    await dlg.getByTestId('token-create-submit').click();
+    const reveal = page.getByTestId('token-reveal-dialog');
+    const val = await reveal.getByTestId('token-value').inputValue();
+    check('token create: role preset → scopes, value revealed once', /^senca_/.test(val) && pubOnly === 'publish', pubOnly);
+    // 写さずに閉じようとすると一度止まる
+    await page.keyboard.press('Escape');
+    await page.getByTestId('token-not-copied').waitFor({ timeout: 3000 });
+    const still = await reveal.isVisible();
+    await reveal.getByTestId('token-reveal-done').click();
+    await reveal.waitFor({ state: 'detached', timeout: 3000 });
+    check('token reveal: closing without copying warns first, second close works', still);
+    const row = page.locator('[data-testid="tokens-table"] tr', { hasText: 'browser-ro' });
+    await row.waitFor();
+    check('token row shows role and expiry (90 days by default)', /見るだけ/.test(await row.textContent()) && /日後|か月後|月後/.test(await row.textContent()), await row.textContent());
   });
 
   await step('nodes', async () => {
     await page.goto(`${base}/console/#/nodes`);
-    await page.getByRole('button', { name: 'drain', exact: true }).click();
-    await page.getByRole('dialog').getByRole('button', { name: 'drain' }).click();
-    await page.getByRole('button', { name: 'drain を解除' }).waitFor({ timeout: 5000 });
-    await page.getByRole('button', { name: 'drain を解除' }).click();
-    await page.getByRole('dialog').getByRole('button', { name: '解除' }).click();
-    await page.getByRole('button', { name: 'drain', exact: true }).waitFor({ timeout: 5000 });
+    await page.getByTestId('node-card').first().waitFor();
+    await page.getByTestId('node-drain').first().click();
+    await page.getByTestId('confirm-ok').click();
+    await page.getByTestId('node-undrain').first().waitFor({ timeout: 5000 });
+    await page.getByTestId('node-undrain').first().click();
+    await page.getByTestId('confirm-ok').click();
+    await page.getByTestId('node-drain').first().waitFor({ timeout: 5000 });
     check('node drain / undrain', true);
   });
 
@@ -591,52 +675,57 @@ const EXPECTED_FAIL = [
   const SECRET_VALUE = 'sv-' + Math.random().toString(36).slice(2);
   await step('secrets create', async () => {
     await page.goto(`${base}/console/#/secrets`);
-    await page.getByLabel('名前', { exact: true }).fill('sinkkey');
-    await page.getByLabel('値（表示・保存しません）').fill(SECRET_VALUE);
-    await page.getByRole('button', { name: '作成' }).click();
+    await page.getByTestId('secrets-create').click();
+    await page.getByTestId('secret-name').fill('sinkkey');
+    await page.getByTestId('secret-value').fill(SECRET_VALUE);
+    await page.getByTestId('secret-create-submit').click();
     await page.getByRole('textbox', { name: 'sinkkey の参照' }).waitFor({ timeout: 5000 });
     const ref = await page.getByRole('textbox', { name: 'sinkkey の参照' }).inputValue();
     const leaked = await page.evaluate((v) => document.body.innerHTML.includes(v) || [...Object.values(localStorage), ...Object.values(sessionStorage)].some((x) => x.includes(v)), SECRET_VALUE);
-    const valEmpty = (await page.getByLabel('値（表示・保存しません）').inputValue()) === '';
-    check('secret created (write-only; value not in DOM/storage, field cleared)', ref === 'secret:sinkkey' && !leaked && valEmpty, `ref=${ref} leaked=${leaked}`);
+    const dialogGone = (await page.getByTestId('secret-create-dialog').count()) === 0;
+    check('secret created (write-only; value not in DOM/storage, dialog closed)', ref === 'secret:sinkkey' && !leaked && dialogGone, `ref=${ref} leaked=${leaked}`);
     await shot('07-secrets');
   });
 
   await step('outputs and inputs CRUD', async () => {
-    await page.goto(`${base}/console/#/streams/${env.whep264}`);
+    await page.goto(`${base}/console/#/streams/${env.whep264}?tab=restream`);
     await page.getByRole('heading', { name: 'whep264' }).waitFor();
-    const outSec = page.locator('section', { has: page.getByRole('heading', { name: '出力（push・PaaS）' }) });
-    await outSec.getByRole('button', { name: '出力を追加' }).first().click();
+    const outSec = page.getByTestId('restream-list');
+    await outSec.getByTestId('restream-add').click();
     let dlg = page.getByRole('dialog');
-    await dlg.getByLabel('方式').selectOption('rtmp_push');
-    await dlg.getByLabel('URL').fill('rtmp://127.0.0.1:9/app');
-    await dlg.getByLabel('資格情報（秘密値）').selectOption('secret:sinkkey');
-    await dlg.getByRole('button', { name: '追加' }).click();
-    await outSec.getByRole('cell', { name: 'rtmp://127.0.0.1:9/app' }).waitFor({ timeout: 8000 });
-    await outSec.getByRole('button', { name: '再読み込み' }).click();
-    await outSec.locator('td .badge').first().waitFor({ timeout: 8000 });
-    const st = await outSec.locator('td .badge').first().textContent();
+    await dlg.locator('label', { has: page.getByTestId('restream-dest-rtmp') }).click();
+    await dlg.getByTestId('restream-url').fill('rtmp://127.0.0.1:9/app');
+    await dlg.getByTestId('restream-key-mode').getByRole('radio', { name: '保存した秘密値を使う' }).click();
+    await dlg.getByTestId('restream-secret').selectOption('secret:sinkkey');
+    await dlg.getByTestId('restream-save').click();
+    await outSec.locator('li[data-output]', { hasText: 'rtmp://127.0.0.1:9/app' }).waitFor({ timeout: 8000 });
+    await outSec.locator('li[data-output] .dest-status .badge').first().waitFor({ timeout: 8000 });
+    const st = await outSec.locator('li[data-output] .dest-status .badge').first().textContent();
     check('output created (rtmp_push + secret ref) with status', true, `status=${st}`);
-    await outSec.getByRole('button', { name: '編集' }).click();
+    await outSec.getByTestId('restream-edit').click();
     dlg = page.getByRole('dialog');
-    await dlg.getByLabel('URL').fill('rtmp://127.0.0.1:9/app2');
-    await dlg.getByRole('button', { name: '保存' }).click();
-    await outSec.getByRole('cell', { name: 'rtmp://127.0.0.1:9/app2' }).waitFor({ timeout: 8000 });
-    await outSec.getByRole('button', { name: '無効にする' }).click();
+    await dlg.getByTestId('restream-url').fill('rtmp://127.0.0.1:9/app2');
+    await dlg.getByTestId('restream-save').click();
+    await outSec.locator('li[data-output]', { hasText: 'rtmp://127.0.0.1:9/app2' }).waitFor({ timeout: 8000 });
+    await outSec.getByTestId('restream-toggle').uncheck();
     await outSec.locator('.badge', { hasText: '無効' }).waitFor({ timeout: 8000 });
     check('output edit (PATCH If-Match) and disable', true);
     // 使われている秘密値は消せない
     await page.goto(`${base}/console/#/secrets`);
     await clearToasts();
-    await page.getByRole('button', { name: '秘密値 sinkkey を削除' }).click();
+    const skRow = page.locator('[data-testid="secrets-table"] tr[data-key="sinkkey"]');
+    await skRow.locator('details.usage').waitFor({ timeout: 10000 });
+    await skRow.getByTestId('secret-delete').click();
+    await page.getByTestId('secret-in-use').waitFor({ timeout: 5000 });
+    const where = await page.getByTestId('secret-in-use').textContent();
+    await page.keyboard.press('Escape');
+    check('secret in use → delete explains where it is used', /whep264/.test(where), where);
+    await page.goto(`${base}/console/#/streams/${env.whep264}?tab=restream`);
+    await outSec.getByTestId('restream-delete').click();
     await page.getByRole('dialog').getByRole('button', { name: '削除' }).click();
-    await toastText(/消せません/);
-    check('secret in use → 409 explained', true);
-    await page.goto(`${base}/console/#/streams/${env.whep264}`);
-    await outSec.getByRole('button', { name: /出力 rtmp_push を削除/ }).click();
-    await page.getByRole('dialog').getByRole('button', { name: '削除' }).click();
-    await outSec.getByText('出力はありません').waitFor({ timeout: 8000 });
+    await outSec.getByTestId('restream-empty').waitFor({ timeout: 8000 });
     check('output delete', true);
+    await page.goto(`${base}/console/#/streams/${env.whep264}?tab=connect`);
     const inSec = page.locator('section', { has: page.getByRole('heading', { name: '入力（pull）' }) });
     await inSec.getByRole('button', { name: '入力を追加' }).first().click();
     dlg = page.getByRole('dialog');
@@ -659,14 +748,16 @@ const EXPECTED_FAIL = [
     await inSec.getByText('入力はありません').waitFor({ timeout: 8000 });
     check('input delete', true);
     await page.goto(`${base}/console/#/secrets`);
-    await page.getByRole('button', { name: '秘密値 sinkkey を削除' }).click();
-    await page.getByRole('dialog').getByRole('button', { name: '削除' }).click();
-    await page.getByText('秘密値はありません').waitFor({ timeout: 5000 });
-    check('secret delete after unused', true);
+    await page.locator('[data-testid="secrets-table"] tr[data-key="sinkkey"]').getByText('使われていません').waitFor({ timeout: 10000 });
+    await page.locator('[data-testid="secrets-table"] tr[data-key="sinkkey"]').getByTestId('secret-delete').click();
+    await page.getByRole('dialog').getByRole('textbox').fill('sinkkey');
+    await page.getByTestId('confirm-ok').click();
+    await page.getByTestId('secrets-empty').waitFor({ timeout: 5000 });
+    check('secret delete after unused (type the name to confirm)', true);
   });
 
   await step('captions settings', async () => {
-    await page.goto(`${base}/console/#/streams/${env.whep264}`);
+    await page.goto(`${base}/console/#/streams/${env.whep264}?tab=playback`);
     await page.getByRole('heading', { name: 'whep264' }).waitFor();
     await page.getByRole('button', { name: '字幕の設定を編集' }).click();
     const dlg = page.getByRole('dialog');
@@ -716,12 +807,15 @@ const EXPECTED_FAIL = [
     await page.getByRole('button', { name: '停止', exact: true }).first().click();
   });
 
-  // ---------------------------------------------------------------- パイプライン（VP9 → AV1）
+  // ================================================================ パイプラインとスイッチャー（ここから）
+  // 編集（ひな形・JSON・保存・検証・開始）、グラフの操作（つなぐ・元に戻す・キーボード・文字の一覧）、
+  // スイッチャー（CUT・AUTO・ダブルクリック・キーボード・安全装置・音声・モニター）、狭い画面。
   let pipelineId = null;
+  const nodeIdOf = (name) => page.locator(`[data-node="${name}"]`).getAttribute('data-id');
+  const edgeCount = () => page.locator('.pl-edge').count();
+  const centerOf = async (sel) => { const b = await page.locator(sel).first().boundingBox(); return { x: b.x + b.width / 2, y: b.y + b.height / 2 }; };
   await step('pipeline editor', async () => {
     if (!env.vpx) { check('pipeline editor (skipped: no libvpx / codec worker)', true); return; }
-    await page.goto(`${base}/console/#/pipelines`);
-    await page.getByRole('heading', { name: 'パイプライン', exact: true, level: 1 }).waitFor();
     const graph = {
       version: 1, options: { clock: 'realtime' }, nodes: [
         { type: 'source', id: 'cam_a', stream: env.pv1, video: { codec: 'vp9' }, audio: { codec: 'opus' } },
@@ -737,50 +831,135 @@ const EXPECTED_FAIL = [
         { type: 'sink', id: 'out', inputs: ['venc', 'aenc'], stream: env.pout },
       ],
     };
-    await page.getByRole('button', { name: 'JSON', exact: true }).click();
-    await page.getByLabel('パイプラインの定義（JSON）').fill(JSON.stringify({ name: 'pinp-browser', graph }));
-    await page.getByRole('button', { name: '取り込む' }).click();
+    // 空のひな形から下書きを作り、JSON を貼り付けて反映する
+    await page.goto(`${base}/console/#/pipelines?new=1&template=blank`);
+    await page.getByTestId('tpl-name').fill('pinp-browser');
+    await page.getByTestId('tpl-create').click();
+    await page.getByTestId('pipeline-canvas').waitFor();
+    await page.getByTestId('pipeline-more').click();
+    await page.getByTestId('menu-json').click();
+    await page.getByTestId('json-text').fill(JSON.stringify({ name: 'pinp-browser', graph }));
+    await page.getByTestId('json-apply').click();
     await page.locator('[data-node="venc"]').waitFor();
     const nodes = await page.locator('.pl-node').count();
-    const edges = await page.locator('.pl-edge').count();
-    check('pipeline graph imported into editor (nodes and edges drawn)', nodes === 10 && edges === 10, `${nodes} nodes ${edges} edges`);
+    const edges = await edgeCount();
+    check('pipeline graph applied from JSON into a draft (nodes and edges drawn)', nodes === 10 && edges === 10 && /#\/pipelines\/pl_/.test(page.url()), `${nodes} nodes ${edges} edges ${page.url()}`);
     await clearToasts();
-    await page.getByRole('button', { name: '保存', exact: true }).click();
-    await toastText(/ノードに保存しました/);
+    await page.getByTestId('pipeline-save').click();
+    await toastText(/ノードに作りました/);
     const list = (await apiGet('/pipelines')).body.items;
     const created = list.find((x) => x.name === 'pinp-browser');
     pipelineId = created && created.id;
-    check('pipeline saved (POST /pipelines)', !!created && created.desired_state === 'stopped' && JSON.stringify(created.graph.nodes.map((n) => n.id)) === JSON.stringify(graph.nodes.map((n) => n.id)), created ? created.id : 'none');
+    check('pipeline saved (POST /pipelines) and the URL moves to the saved id', !!created && created.desired_state === 'stopped' && JSON.stringify(created.graph.nodes.map((n) => n.id)) === JSON.stringify(graph.nodes.map((n) => n.id)) && page.url().endsWith(`#/pipelines/${pipelineId}`), created ? created.id : 'none');
+    await page.locator('[data-testid="check-state"][data-state="ok"]').waitFor({ timeout: 15000 });
     await clearToasts();
-    await page.getByRole('button', { name: '検証', exact: true }).click();
+    await page.getByTestId('pipeline-validate').click();
     await toastText(/ノードの検証に通りました/);
-    await page.locator('section', { has: page.getByRole('heading', { name: '計画', exact: true }) }).getByRole('cell', { name: 'venc' }).first().waitFor({ timeout: 5000 });
-    const planText = await page.locator('section', { has: page.getByRole('heading', { name: '計画', exact: true }) }).textContent();
-    check('VP9/AV1 graph validates on node → plan shown', /av1/.test(planText) && /vp9/.test(planText), planText.slice(0, 200));
-    // 方針に反する変更（royalty_free の stream で H.264）→ 問題の一覧
+    await page.locator('[data-tab="plan"]').click();
+    await page.locator('[data-plan-node="venc"]').waitFor({ timeout: 5000 });
+    const planText = await page.getByTestId('plan').textContent();
+    check('VP9/AV1 graph validates on node → plan shown (steps, CPU-only, outputs)', /av1/.test(planText) && /vp9/.test(planText) && /CPU/.test(planText), planText.slice(0, 200));
+    // 方針に反する変更（royalty_free の stream で H.264）→ 問題の一覧（ノードの code と直し方）
     await page.locator('[data-node="venc"]').click();
-    await page.getByLabel('コーデック', { exact: true }).selectOption('h264');
+    await page.locator('[data-k="f:codec"]').selectOption('h264');
     await clearToasts();
-    await page.getByRole('button', { name: '検証', exact: true }).click();
-    await page.locator('ul[data-remote] li').first().waitFor({ timeout: 8000 });
-    const issues = await page.locator('ul[data-remote]').textContent();
-    check('policy violation → node issue list from problem details', /venc/.test(issues) || /h264|H\.264|POLICY|CAPACITY/i.test(issues), issues.slice(0, 200));
-    await page.getByLabel('コーデック', { exact: true }).selectOption('av1');
-    await page.getByLabel('ビットレート（kbps）', { exact: true }).fill('700');
-    await page.getByLabel('ビットレート（kbps）', { exact: true }).press('Tab');
+    await page.getByTestId('pipeline-validate').click();
+    await page.locator('[data-testid="issues"] .pl-issue.remote').first().waitFor({ timeout: 8000 });
+    const issues = await page.getByTestId('issues').textContent();
+    check('policy violation → node issue list with a plain explanation, click focuses the part', /venc/.test(issues) && /(POLICY|ロイヤリティフリー)/.test(issues), issues.slice(0, 200));
+    await page.locator('[data-k="f:codec"]').selectOption('av1');
+    await page.locator('[data-k="f:bitrate_kbps"]').fill('700');
+    await page.locator('[data-k="f:bitrate_kbps"]').press('Tab');
     await clearToasts();
-    await page.getByRole('button', { name: '保存', exact: true }).click();
+    await page.getByTestId('pipeline-save').click();
     await toastText(/ノードに保存しました/);
     const after = (await apiGet(`/pipelines/${pipelineId}`)).body;
     check('pipeline edit saved (PATCH graph with If-Match → new generation)', after.generation === 2 && after.graph.nodes.find((n) => n.id === 'venc').bitrate_kbps === 700, `gen=${after.generation}`);
     await clearToasts();
     await page.getByTestId('pipeline-start').click();
     await toastText(/開始しました/);
-    await page.locator('.toolbar .badge[data-state="running"]').waitFor({ timeout: 30000 });
+    await page.locator('.page-header .badge[data-state="running"]').waitFor({ timeout: 30000 });
     check('pipeline start (PATCH desired_state) → observed running', true);
     await waitApi(`/streams/${env.pout}`, (b) => b && b.observed_state === 'live', 60000);
     check('pipeline output stream turns live', true);
     await shot('10-pipeline');
+  });
+
+  await step('pipeline templates and graph editing', async () => {
+    // ひな形（PinP）から: 入力・出力の stream を選んで下書きを作る
+    await page.goto(`${base}/console/#/pipelines`);
+    await page.getByTestId('pipelines-new').click();
+    await page.locator('[data-testid="template-gallery"] [data-template="pinp"]').click();
+    await page.getByTestId('tpl-name').fill('tpl-pinp');
+    await page.getByTestId('tpl-role-main').selectOption(env.pv1);
+    await page.getByTestId('tpl-role-corner').selectOption(env.pv2);
+    await page.getByTestId('tpl-role-out').selectOption(env.whep264);
+    await page.getByTestId('tpl-create').click();
+    await page.locator('[data-node="prod"]').waitFor();
+    const tn = await page.locator('.pl-node').count();
+    const te = await edgeCount();
+    const stored = await page.evaluate(() => JSON.parse(localStorage.getItem('senca.console.pipelines.v2') || '[]').some((d) => d.name === 'tpl-pinp'));
+    const okIssues = await page.getByTestId('issue-count').textContent();
+    check('template "Picture-in-picture" → draft with streams filled, autosaved, no problems', tn === 7 && te === 7 && stored && /問題なし/.test(okIssues), `${tn} nodes ${te} edges stored=${stored} ${okIssues}`);
+    // Delete で部品を消し、Ctrl+Z で戻す
+    await page.locator('[data-node="venc"]').click();
+    await page.keyboard.press('Delete');
+    await page.locator('[data-node="venc"]').waitFor({ state: 'detached' });
+    const e1 = await edgeCount();
+    await page.keyboard.press('Control+z');
+    await page.locator('[data-node="venc"]').waitFor();
+    const e2 = await edgeCount();
+    check('Delete removes a part with its connections; Ctrl+Z brings both back', e1 === te - 2 && e2 === te, `${te} → ${e1} → ${e2}`);
+    // 部品の一覧から「エンコード」を置き、マウスで prod の出力からつなぐ（つなげる点だけが光る）
+    await page.evaluate(() => { const b = document.querySelector('[data-testid="palette-toggle"]'); if (b && b.getAttribute('aria-expanded') === 'false') b.click(); });
+    await page.locator('.pl-pal-item[data-type="encode"]').click();
+    await page.locator('[data-node="enc1"]').waitFor();
+    await page.getByTestId('pipeline-canvas').locator('button[aria-label="全体を表示"]').click();
+    await sleep(300);
+    const prodOut = await centerOf('[data-node="prod"] [data-port^="out:"]');
+    const encIn = await centerOf('[data-node="enc1"] [data-port^="in:"]');
+    const mainVideo = await centerOf('[data-node="main"] [data-port^="out:"]');
+    // 符号化済みの映像は encode に入らない: 印と理由
+    await page.mouse.move(mainVideo.x, mainVideo.y);
+    await page.mouse.down();
+    await page.mouse.move(encIn.x - 20, encIn.y, { steps: 6 });
+    await page.mouse.move(encIn.x, encIn.y, { steps: 3 });
+    const cannot = await page.locator('[data-node="enc1"] [data-port^="in:"]').getAttribute('class');
+    const why = await page.locator('.pl-wire-hint.no').textContent().catch(() => '');
+    await page.mouse.move(encIn.x + 200, encIn.y + 300, { steps: 4 });
+    await page.mouse.up();
+    await page.keyboard.press('Escape');
+    const before = await edgeCount();
+    await page.mouse.move(prodOut.x, prodOut.y);
+    await page.mouse.down();
+    await page.mouse.move(encIn.x - 20, encIn.y, { steps: 6 });
+    await page.mouse.move(encIn.x, encIn.y, { steps: 3 });
+    const can = await page.locator('[data-node="enc1"] [data-port^="in:"]').getAttribute('class');
+    await page.mouse.up();
+    const afterConnect = await edgeCount();
+    check('drag to connect: incompatible input explains why (put a Decode in between), compatible one lights up and connects', /cannot/.test(cannot) && /デコード/.test(why) && /\bcan\b/.test(can) && afterConnect === before + 1, `cannot=${cannot} why=${why} can=${can} ${before}→${afterConnect}`);
+    await page.keyboard.press('Control+z');
+    const undone = await edgeCount();
+    await page.keyboard.press('Control+Shift+z');
+    const redone = await edgeCount();
+    check('undo / redo of a connection (Ctrl+Z, Ctrl+Shift+Z)', undone === before && redone === before + 1, `${undone} ${redone}`);
+    // キーボードだけで: 部品にフォーカス → 矢印で動かす → Enter で設定 → 「つなぐ先」でつなぐ
+    await page.locator('[data-node="enc1"]').focus();
+    const tr1 = await page.locator('[data-node="enc1"]').getAttribute('transform');
+    await page.keyboard.press('ArrowRight');
+    const tr2 = await page.locator('[data-node="enc1"]').getAttribute('transform');
+    await page.keyboard.press('Enter');
+    const focusedInInspector = await page.evaluate(() => !!document.activeElement.closest('[data-testid="inspector"]'));
+    const target = page.getByTestId('connect-to-0');
+    const optVal = await target.locator('option', { hasText: 'out · 入力 2' }).first().getAttribute('value');
+    await target.selectOption(optVal);
+    await sleep(200);
+    await page.locator('[data-tab="outline"]').click();
+    const outLinks = await page.locator('.pl-out-item', { has: page.locator('[data-outline="out"]') }).textContent();
+    await page.locator('[data-outline="enc1"]').click();
+    const fromOutline = await page.evaluate(() => document.activeElement.getAttribute('data-node'));
+    check('keyboard: arrows move the focused part, Enter opens settings, "Connect to" connects, the text outline focuses parts', tr1 !== tr2 && focusedInInspector && /入力 2 ← enc1/.test(outLinks) && fromOutline === 'enc1', `${tr1}→${tr2} insp=${focusedInInspector} links=${outLinks} outline=${fromOutline}`);
+    await shot('14-pipeline-editing');
   });
 
   // ---------------------------------------------------------------- スイッチャー
@@ -789,13 +968,13 @@ const EXPECTED_FAIL = [
     await page.goto(`${base}/console/#/production?pipeline=${pipelineId}`);
     await page.locator('[data-scene="pinp"]').waitFor({ timeout: 10000 });
     await page.locator('[data-program="pinp"]').waitFor({ timeout: 10000 });
+    await page.locator('[data-scene="cam_a"]:not([disabled])').waitFor({ timeout: 20000 });
     await page.locator('[data-scene="cam_a"]').click();
     await page.locator('[data-preview="cam_a"]').waitFor({ timeout: 5000 });
-    await page.getByRole('button', { name: 'CUT', exact: true }).click();
+    await page.getByTestId('sw-cut').click();
     await page.locator('[data-program="cam_a"]').waitFor({ timeout: 5000 });
     await sleep(2500);
     const stillA = await page.locator('[data-program="cam_a"]').count();
-    // ノードの status（届いていれば）で確かめる
     let confirmed = 'status not observed';
     const end = Date.now() + 6000;
     while (Date.now() < end) {
@@ -806,13 +985,36 @@ const EXPECTED_FAIL = [
       await sleep(150);
     }
     check('switcher: set_preview + CUT (take) round-trip', stillA === 1 && !/program=pinp/.test(confirmed), confirmed);
-    await page.getByRole('button', { name: 'FADE', exact: true }).click();
+    await page.getByTestId('sw-auto').click();
     await page.locator('[data-program="pinp"]').waitFor({ timeout: 5000 });
     await page.locator('[data-scene="cam_a"]').dblclick();
     await page.locator('[data-program="cam_a"]').waitFor({ timeout: 5000 });
-    check('switcher: FADE and double-click switch_program', true);
+    check('switcher: AUTO (take with transition) and double-click switch_program', true);
+    // キーボード: 数字でプレビュー、C で CUT
+    await page.evaluate(() => document.activeElement && document.activeElement.blur());
+    const keyOf = (sc) => page.locator(`[data-scene="${sc}"] .sw-key`).textContent();
+    const kPinp = await keyOf('pinp');
+    const kCamA = await keyOf('cam_a');
+    await page.keyboard.press(kPinp);
+    await page.locator('[data-preview="pinp"]').waitFor({ timeout: 5000 });
+    await page.keyboard.press('c');
+    await page.locator('[data-program="pinp"]').waitFor({ timeout: 5000 });
+    check('switcher keyboard: number key → preview, C → CUT', true);
+    // 安全装置: 1 回目は構えるだけ、2 回目で実行
+    await page.getByTestId('sw-safety').check();
+    await page.evaluate(() => document.activeElement && document.activeElement.blur());
+    await page.keyboard.press(kCamA);
+    await page.locator('[data-preview="cam_a"]').waitFor({ timeout: 5000 });
+    await page.keyboard.press('c');
+    await sleep(600);
+    const armed = await page.getByTestId('sw-cut').getAttribute('class');
+    const stillPinp = await page.locator('[data-program="pinp"]').count();
+    await page.keyboard.press('c');
+    await page.locator('[data-program="cam_a"]').waitFor({ timeout: 5000 });
+    await page.getByTestId('sw-safety').uncheck();
+    check('switcher safety: first C only arms, second C cuts', /armed/.test(armed) && stillPinp === 1, armed);
     // 音声: フェーダー → set_audio、メーター（届いていれば）でノードの値を確かめる
-    const fader = page.getByLabel('mic_a の音量（dB）');
+    const fader = page.getByTestId('fader-mix-mic_a');
     await fader.evaluate((el) => { el.value = '-12'; el.dispatchEvent(new Event('input', { bubbles: true })); });
     let gainSeen = null;
     const end2 = Date.now() + 8000;
@@ -821,35 +1023,61 @@ const EXPECTED_FAIL = [
       if (gainSeen === '-12') break;
       await sleep(300);
     }
-    const meterNow = await page.locator('[data-strip="mix/mic_a"] .meter').getAttribute('aria-valuenow');
-    check('switcher: fader → set_audio (node-reported gain via meters)', gainSeen === '-12' || gainSeen === null, `server gain=${gainSeen} meter=${meterNow}`);
-    const mute = page.locator('[data-strip="mix/mic_a"] button', { hasText: 'ミュート' });
-    await mute.click();
-    await page.waitForFunction(() => document.querySelector('[data-strip="mix/mic_a"] button[aria-pressed="true"]'), null, { timeout: 5000 });
+    const meterNow = await page.locator('[data-strip="mix/mic_a"] [role="meter"]').getAttribute('aria-valuenow');
+    check('switcher: fader → set_audio (node-reported gain via meters)', gainSeen === '-12' || gainSeen === '', `server gain=${gainSeen} meter=${meterNow}`);
+    await page.locator('[data-strip="mix/mic_a"] button.mute').click();
+    await page.waitForFunction(() => document.querySelector('[data-strip="mix/mic_a"] button.mute[aria-pressed="true"]'), null, { timeout: 5000 });
     check('switcher: mute toggle', true);
     // プログラムのモニター（出力の stream を WHEP で）
     const pv = 'video[aria-label="プログラムのモニター"]';
     const playing = await page.waitForFunction((s) => { const v = document.querySelector(s); return v && v.currentTime > 1; }, pv, { timeout: 8000 }).then(() => true).catch(() => false);
-    if (!playing) {
-      await page.locator('.monitor.program').getByRole('button', { name: '再生', exact: true }).click();
-    }
+    if (!playing) await page.locator('.monitor.program').getByRole('button', { name: '再生', exact: true }).click();
     const v = await videoAdvances(pv, 20000);
     const mstatus = await page.locator('.monitor.program .player-status').textContent();
     check('switcher: program monitor plays the sink stream (WHEP, AV1)', v.ok && /WebRTC/.test(mstatus), `${mstatus} t1=${v.t1.toFixed(1)} t2=${v.t2.toFixed(1)}`);
     await shot('11-switcher');
-    // 止める
-    await page.goto(`${base}/console/#/pipelines?id=${pipelineId}`);
-    await page.getByTestId('pipeline-stop').click();
-    await page.locator('.toolbar .badge[data-state="stopped"]').waitFor({ timeout: 20000 });
-    check('pipeline stop (PATCH desired_state)', true);
   });
+
+  // 狭い画面（390×844）: パイプラインの一覧・編集とスイッチャーが横にはみ出さず、主な操作が 44px 以上
+  await step('pipelines mobile', async () => {
+    if (!pipelineId) { check('pipelines mobile (skipped: no pipeline)', !env.vpx); return; }
+    const m = await browser.newContext({ viewport: { width: 390, height: 844 }, deviceScaleFactor: 2, isMobile: true, hasTouch: true, locale: 'ja-JP', timezoneId: 'Asia/Tokyo' });
+    await m.addInitScript((tok) => sessionStorage.setItem('senca.console.token', tok), token);
+    const mp = await m.newPage();
+    mp.on('pageerror', (e) => errors.push(`mobile pageerror: ${e.message}`));
+    const widths = {};
+    for (const r of ['/pipelines', `/pipelines/${pipelineId}`, `/production?pipeline=${pipelineId}`]) {
+      await mp.goto(`${base}/console/#${r}`);
+      await mp.locator('main h1').first().waitFor({ timeout: 10000 });
+      await sleep(1200);
+      widths[r] = await mp.evaluate(() => document.documentElement.scrollWidth - window.innerWidth);
+      if (r.startsWith('/pipelines/')) {
+        const cv = await mp.getByTestId('pipeline-canvas').boundingBox();
+        widths.canvasH = cv ? Math.round(cv.height) : 0;
+        await mp.screenshot({ path: path.join(work, '15-mobile-editor.png') });
+      }
+    }
+    const cut = await mp.getByTestId('sw-cut').boundingBox();
+    const auto = await mp.getByTestId('sw-auto').boundingBox();
+    await mp.screenshot({ path: path.join(work, '16-mobile-switcher.png'), fullPage: true });
+    const over = Object.entries(widths).filter(([k, w]) => k !== 'canvasH' && w > 1);
+    check('mobile: pipelines list, editor and switcher fit the width; graph usable; CUT/AUTO ≥ 44px', over.length === 0 && widths.canvasH >= 300 && cut.height >= 44 && auto.height >= 44, JSON.stringify({ widths, cut: cut && cut.height, auto: auto && auto.height }));
+    await m.close();
+    // 止める（確認のダイアログ）
+    await page.goto(`${base}/console/#/pipelines/${pipelineId}`);
+    await page.getByTestId('pipeline-stop').click();
+    await page.getByTestId('confirm-ok').click();
+    await page.locator('.page-header .badge[data-state="stopped"]').waitFor({ timeout: 20000 });
+    check('pipeline stop (confirm → PATCH desired_state)', true);
+  });
+  // ================================================================ パイプラインとスイッチャー（ここまで）
 
   // ---------------------------------------------------------------- このブラウザから送る（WHIP）
   await step('whip send', async () => {
     await page.goto(`${base}/console/#/send?stream=${env.whipcam}`);
     await page.getByRole('heading', { name: 'このブラウザから送る' }).waitFor();
     await page.getByLabel('ストリームキー（保存しません）').fill(env.whipkey);
-    await page.getByLabel('大きさ').selectOption('640x360');
+    await page.getByLabel('大きさ', { exact: true }).selectOption('640x360');
     await page.getByTestId('send-start').click();
     await page.locator('.player-status[data-state="live"]').waitFor({ timeout: 20000 });
     await page.waitForFunction(() => Number((document.querySelector('[data-stats]') || {}).dataset?.frames || 0) > 30, null, { timeout: 15000 });
@@ -863,6 +1091,161 @@ const EXPECTED_FAIL = [
     await page.locator('.player-status[data-state="idle"]').waitFor({ timeout: 5000 });
     check('WHIP stop (DELETE session)', true);
   });
+
+  // ================================================================ 配信まわりの流れ（配信・録画・予約・送信の画面の作り直し）ここから
+  await step('streaming: create → connect step → signal flips by itself', async () => {
+    await page.goto(`${base}/console/#/streams`);
+    await page.getByTestId('streams-create').click();
+    const dlg = page.getByTestId('stream-create-dialog');
+    await dlg.getByLabel('名前', { exact: true }).fill('setup-flow');
+    const cards = await dlg.locator('[data-testid="stream-source"] input[type="radio"]').count();
+    await dlg.getByTestId('stream-create-submit').click();
+    await page.getByTestId('setup').waitFor({ timeout: 10000 });
+    const waiting = await page.getByTestId('setup-signal').getAttribute('data-state');
+    const k = await page.getByTestId('setup-key').inputValue();
+    const url = await page.getByTestId('setup-rtmp-url').inputValue();
+    const masked = await page.getByTestId('setup-key').evaluate((el) => el.classList.contains('masked'));
+    check('streaming: guided create (4 source choices) lands on the connect step with server URL and masked one-time key', cards === 4 && waiting === 'waiting' && /^sk_/.test(k) && /^rtmp:\/\//.test(url) && masked, `${cards} ${waiting} ${url}`);
+    fs.writeFileSync(path.join(work, 'setupkey.txt'), k);
+    await page.locator('[data-testid="setup-signal"][data-state="live"]').waitFor({ timeout: 40000 });
+    const text = await page.getByTestId('setup-signal').textContent();
+    check('streaming: "waiting for signal" flips to "receiving" without reload when the encoder starts', /H\.264/.test(text), text.slice(0, 120));
+    await page.getByTestId('setup-done').click();
+    await page.getByTestId('setup').waitFor({ state: 'detached' });
+    await page.getByTestId('health').waitFor({ timeout: 8000 });
+    const hash = await page.evaluate(() => location.hash);
+    check('streaming: finishing the setup shows the overview with signal health (URL without ?setup)', !/setup=/.test(hash), hash);
+    await shot('20-setup-live');
+  });
+
+  await step('streaming: list filter, URL state and keyboard', async () => {
+    await page.goto(`${base}/console/#/streams?state=live`);
+    await page.getByTestId('streams-table').waitFor();
+    await sleep(500);
+    const states = await page.locator('[data-testid="streams-table"] tbody tr td:nth-child(2) .badge.live').count();
+    const rows = await page.locator('[data-testid="streams-table"] tbody tr').count();
+    const checked = await page.locator('[data-testid="streams-state-filter"] [aria-checked="true"]').getAttribute('data-value');
+    check('streaming: ?state=live filter restores from the URL and shows only live streams', rows > 0 && rows === states && checked === 'live', `${rows} rows, ${states} live`);
+    await page.getByTestId('streams-filter').fill('zzz-no-such');
+    await page.getByTestId('streams-nomatch').waitFor();
+    check('streaming: search with no match explains and offers to clear', /q=zzz-no-such/.test(await page.evaluate(() => location.hash)));
+    await page.getByTestId('streams-nomatch').getByRole('button').click();
+    await page.getByTestId('streams-table').waitFor();
+    await page.evaluate(() => document.activeElement.blur());
+    await page.keyboard.press('j');
+    const active = await page.locator('[data-testid="streams-table"] tbody tr[data-active]').getAttribute('data-key');
+    await page.keyboard.press('Enter');
+    await page.waitForFunction((id) => location.hash.startsWith(`#/streams/${id}`), active, { timeout: 5000 });
+    check('streaming: J selects a row and Enter opens it', !!active, active);
+  });
+
+  await step('streaming: restream to YouTube with a key saved inline as a secret', async () => {
+    await page.goto(`${base}/console/#/streams/${env.whep264}?tab=restream`);
+    await page.getByTestId('restream-list').waitFor();
+    await page.getByTestId('restream-add').first().click();
+    const dlg = page.getByTestId('restream-dialog');
+    const url = await dlg.getByTestId('restream-url').inputValue();
+    const KEY = 'yt-' + Math.random().toString(36).slice(2);
+    await dlg.getByTestId('restream-key').fill(KEY);
+    await dlg.getByTestId('restream-secret-name').fill('browser-yt-key');
+    await shot('21-restream-dialog');
+    await dlg.getByTestId('restream-save').click();
+    await page.locator('[data-testid="restream-list"] li[data-output]').first().waitFor({ timeout: 8000 });
+    const outs = (await apiGet(`/streams/${env.whep264}/outputs`)).body.items;
+    const o = outs.find((x) => x.credential_ref === 'secret:browser-yt-key');
+    const secs = (await apiGet('/secrets')).body.items.map((x) => x.ref);
+    const leaked = await page.evaluate((v) => document.body.innerHTML.includes(v) || [...Object.values(localStorage), ...Object.values(sessionStorage)].some((x) => x.includes(v)), KEY);
+    check('streaming: YouTube preset fills the server URL; the pasted key becomes a secret and the output references it (key not kept in the page)', /youtube\.com/.test(url) && o && o.url === url && secs.includes('secret:browser-yt-key') && !leaked, `url=${url} out=${o && o.id} leaked=${leaked}`);
+    const status = await page.locator('[data-testid="restream-list"] li[data-output] .dest-status').first().textContent();
+    check('streaming: each destination shows its status', status.length > 0, status.slice(0, 80));
+    await shot('22-restream');
+    // 片付け（後の試験が「秘密値はありません」を見るので、ここで作ったものは消す）
+    await page.evaluate(async ([id, token]) => {
+      await fetch(`/api/v1/outputs/${id}`, { method: 'DELETE', headers: { Authorization: `Bearer ${token}` } });
+      const s = await (await fetch('/api/v1/secrets', { headers: { Authorization: `Bearer ${token}` } })).json();
+      const x = s.items.find((i) => i.name === 'browser-yt-key');
+      if (x) await fetch(`/api/v1/secrets/${x.id}`, { method: 'DELETE', headers: { Authorization: `Bearer ${token}` } });
+    }, [o.id, token]);
+  });
+
+  await step('streaming: recordings filters (state, period) are URL-stateful', async () => {
+    await page.goto(`${base}/console/#/recordings`);
+    await page.getByTestId('recordings-table').waitFor({ timeout: 10000 });
+    await page.getByTestId('rec-filter-state').getByRole('radio', { name: '確定' }).click();
+    await sleep(300);
+    const badges = await page.locator('[data-testid="recordings-table"] tbody tr td:nth-child(2) .badge').allTextContents();
+    const hash1 = await page.evaluate(() => location.hash);
+    check('streaming: state filter shows only finalized recordings and is kept in the URL', badges.length > 0 && badges.every((b) => /確定/.test(b)) && /state=finalized/.test(hash1), `${badges.join(',')} ${hash1}`);
+    await page.getByTestId('rec-filter-from').fill('2099-01-01');
+    await page.getByTestId('recordings-nomatch').waitFor({ timeout: 5000 });
+    await page.reload();
+    await page.getByTestId('recordings-nomatch').waitFor({ timeout: 10000 });
+    check('streaming: period filter survives a reload (from the URL) and an empty result offers to clear', /from=2099-01-01/.test(await page.evaluate(() => location.hash)));
+    await page.getByTestId('recordings-nomatch').getByRole('button').click();
+    await page.getByTestId('recordings-table').waitFor();
+    await page.getByTestId('rec-row-play').first().click();
+    await page.getByTestId('rec-play-dialog').waitFor();
+    const played = await page.waitForFunction(() => { const v = document.querySelector('[data-testid="rec-play-dialog"] video'); return v && v.currentTime > 0.5; }, null, { timeout: 15000 }).then(() => true).catch(() => false);
+    check('streaming: inline playback from the recordings list', played);
+    await page.keyboard.press('Escape');
+  });
+
+  await step('streaming: recording export of a selected range', async () => {
+    const rec = (await apiGet('/recordings')).body.items.find((r) => r.state === 'finalized' && r.duration_ms > 4000);
+    if (!rec) { check('streaming: range export (skipped: no finalized recording)', false); return; }
+    await page.goto(`${base}/console/#/recordings/${rec.id}`);
+    await page.getByTestId('rec-timeline').waitFor();
+    await page.getByTestId('rec-range-a').evaluate((el) => { el.value = '1'; el.dispatchEvent(new Event('input', { bubbles: true })); });
+    await page.getByTestId('rec-range-b').evaluate((el) => { el.value = '3'; el.dispatchEvent(new Event('input', { bubbles: true })); });
+    const sum = await page.getByTestId('rec-range-summary').textContent();
+    const [dl] = await Promise.all([page.waitForEvent('download', { timeout: 20000 }), page.getByTestId('rec-export').click()]);
+    const p = await dl.path();
+    const size = fs.statSync(p).size;
+    check('streaming: timeline range → export.mp4?start&end (smaller than the whole recording)', size > 1000 && size < rec.bytes && /〜/.test(sum), `${size} < ${rec.bytes} ${sum}`);
+  });
+
+  await step('streaming: schedules timetable and agenda', async () => {
+    const now = Date.now();
+    const iso = (ms) => new Date(ms).toISOString();
+    await page.evaluate(async ([token, body]) => {
+      await fetch('/api/v1/schedules', { method: 'POST', headers: { Authorization: `Bearer ${token}`, 'Content-Type': 'application/json' }, body: JSON.stringify(body) });
+    }, [token, { stream: env.whep264, name: 'tt-daily', action: 'record', start_at: iso(now + 3 * 3600_000), end_at: iso(now + 4 * 3600_000), recurrence: { freq: 'daily', timezone: 'Asia/Tokyo', count: 3 } }]);
+    await page.goto(`${base}/console/#/schedules`);
+    await page.getByTestId('sched-agenda').waitFor({ timeout: 10000 });
+    const blocks = await page.locator('[data-testid="tt-block"]', { hasText: 'tt-daily' }).count();
+    const agenda = await page.getByTestId('sched-agenda').locator('li', { hasText: 'tt-daily' }).count();
+    check('streaming: a daily schedule (count 3) appears 3 times on the 7-day timetable and in the agenda', blocks === 3 && agenda === 3, `${blocks} blocks, ${agenda} agenda`);
+    await shot('23-schedules');
+  });
+
+  await step('streaming: mobile layout (390px)', async () => {
+    const m = await browser.newContext({ viewport: { width: 390, height: 844 }, deviceScaleFactor: 2, isMobile: true, hasTouch: true, locale: 'ja-JP', timezoneId: 'Asia/Tokyo' });
+    await m.addInitScript((tok) => sessionStorage.setItem('senca.console.token', tok), token);
+    const mp = await m.newPage();
+    mp.on('pageerror', (e) => errors.push(`mobile pageerror: ${e.message}`));
+    const over = [];
+    for (const r of [`/streams/${env.whep264}?tab=connect`, `/streams/${env.whep264}?tab=restream`, `/streams/${env.whep264}?tab=recordings`, `/streams/${env.whep264}?tab=settings`, '/recordings', '/schedules', '/schedules?view=all']) {
+      await mp.goto(`${base}/console/#${r}`);
+      await mp.locator('main h1').first().waitFor({ timeout: 10000 });
+      await sleep(700);
+      const w = await mp.evaluate(() => document.documentElement.scrollWidth - window.innerWidth);
+      if (w > 1) over.push(`${r}:${w}`);
+    }
+    check('streaming: no horizontal scrolling on the detail tabs, recordings and schedules', over.length === 0, over.join(' '));
+    await mp.goto(`${base}/console/#/streams`);
+    await mp.getByTestId('streams-table').waitFor();
+    await sleep(500);
+    const card = await mp.locator('[data-testid="streams-table"] tbody tr').first().evaluate((tr) => {
+      const r = tr.getBoundingClientRect();
+      const tds = [...tr.children].filter((td) => getComputedStyle(td).display !== 'none').length;
+      const btns = [...tr.querySelectorAll('button')].filter((b) => b.offsetParent).map((b) => b.getBoundingClientRect());
+      return { h: Math.round(r.height), tds, small: btns.filter((b) => b.width < 44 || b.height < 44).length };
+    });
+    check('streaming: a stream on a phone is a compact card (2 visible cells, under 160px tall, 44px buttons)', card.tds === 2 && card.h < 160 && card.small === 0, JSON.stringify(card));
+    await mp.screenshot({ path: path.join(work, '24-mobile-streams.png'), fullPage: true });
+    await m.close();
+  });
+  // ================================================================ 配信まわりの流れ ここまで
 
   // ---------------------------------------------------------------- 外枠: キーボードだけで動かす（スキップリンク・メニュー・パレット・ショートカット・ダイアログ・言語・明暗）
   await step('shell keyboard', async () => {
@@ -888,7 +1271,7 @@ const EXPECTED_FAIL = [
     await page.getByTestId('streams-filter').focus();
     await page.keyboard.type('gr');
     await sleep(300);
-    check('shortcuts do not fire while typing', await page.evaluate(() => location.hash) === '#/streams' && (await page.getByTestId('streams-filter').inputValue()) === 'gr');
+    check('shortcuts do not fire while typing', /^#\/streams(\?|$)/.test(await page.evaluate(() => location.hash)) && (await page.getByTestId('streams-filter').inputValue()) === 'gr');
     await page.getByTestId('streams-filter').fill('');
     await page.getByTestId('streams-filter').press('Escape');
     await page.evaluate(() => document.activeElement.blur());
@@ -930,9 +1313,9 @@ const EXPECTED_FAIL = [
     await page.getByTestId('stream-create-dialog').waitFor({ state: 'detached' });
     check('dialog keeps focus inside (40 Tabs) and closes with Escape', inside);
     // 確認のダイアログ: 削除は名前を入れるまで押せない
-    await page.goto(`${base}/console/#/streams/${env.whipcam}`);
+    await page.goto(`${base}/console/#/streams/${env.whipcam}?tab=settings`);
     await page.getByRole('heading', { name: 'whipcam', level: 1 }).waitFor();
-    const del = page.locator('.page-header').getByRole('button', { name: '削除' });
+    const del = page.getByTestId('stream-delete');
     await del.focus();
     await page.keyboard.press('Enter');
     const okDisabled = await page.getByTestId('confirm-ok').isDisabled();
@@ -963,6 +1346,126 @@ const EXPECTED_FAIL = [
     check('style guide renders in English with no missing keys', missingEn.length === 0, missingEn.join(', '));
   });
 
+  // ================================================================ 運用と設定（ダッシュボード・グリッド・監査ログ）ここから
+  await step('ops: onboarding progress', async () => {
+    await page.goto(`${base}/console/#/?onboarding=1`);
+    const cl = page.getByTestId('checklist-getting-started');
+    await cl.waitFor({ timeout: 8000 });
+    const st = await cl.evaluate((el) => Object.fromEntries([...el.querySelectorAll('li[data-step]')].map((li) => [li.dataset.step, li.classList.contains('done')])));
+    const meter = await cl.locator('[role="meter"]').getAttribute('aria-valuenow');
+    check('onboarding checklist follows real state (stream, send, record, team done)', st.stream && st.send && st.record && st.team && Number(meter) >= 4, `${JSON.stringify(st)} meter=${meter}`);
+    await cl.getByRole('button', { name: 'この案内を閉じる' }).click();
+    await page.getByTestId('onboarding-reopen').waitFor({ timeout: 3000 });
+    await page.getByTestId('onboarding-reopen').click();
+    await cl.waitFor({ timeout: 3000 });
+    check('onboarding checklist: dismiss, then re-open from the header', true);
+  });
+
+  await step('ops: audit filter and pagination', async () => {
+    // 130 件の記録を作る（秘密値の作成と削除）
+    const made = await page.evaluate(async (token) => {
+      const H = { Authorization: `Bearer ${token}`, 'Content-Type': 'application/json' };
+      let n = 0;
+      for (let i = 0; i < 65; i++) {
+        const r = await fetch('/api/v1/secrets', { method: 'POST', headers: { ...H, 'Idempotency-Key': `audit-gen-${i}-${Date.now()}` }, body: JSON.stringify({ name: `audit-gen-${i}`, value: 'x' }) });
+        if (r.ok) { n++; const id = (await r.json()).id; if ((await fetch(`/api/v1/secrets/${id}`, { method: 'DELETE', headers: H })).ok) n++; }
+      }
+      return n;
+    }, token);
+    await page.goto(`${base}/console/#/audit?action=secret.`);
+    await page.getByTestId('audit-entry').first().waitFor({ timeout: 10000 });
+    const first = await page.getByTestId('audit-entry').count();
+    // 下へ進むと続きを読む（終わりまで）
+    for (let i = 0; i < 20; i++) {
+      await page.getByTestId('audit-list').locator('li').last().scrollIntoViewIfNeeded();
+      await sleep(400);
+      if (await page.getByTestId('audit-more').isHidden()) break;
+    }
+    const all = await page.getByTestId('audit-entry').evaluateAll((els) => els.map((e) => e.dataset.action));
+    const onlySecret = all.every((a) => a.startsWith('secret.'));
+    check('audit: action prefix filter + infinite scroll to the end', made === 130 && first >= 50 && all.length >= 130 && first < all.length && onlySecret, `made=${made} first=${first} all=${all.length}`);
+    // 条件は URL に残る。操作の種類を変える
+    await page.getByTestId('audit-action').selectOption('token.');
+    await page.waitForFunction(() => location.hash.includes('action=token.'));
+    await page.getByTestId('audit-entry').first().waitFor({ timeout: 8000 });
+    const tok = await page.getByTestId('audit-entry').evaluateAll((els) => els.map((e) => e.dataset.action));
+    await page.reload();
+    await page.getByTestId('audit-entry').first().waitFor({ timeout: 8000 });
+    const kept = await page.getByTestId('audit-action').inputValue();
+    check('audit: filters are URL-stateful and survive reload', tok.length > 0 && tok.every((a) => a.startsWith('token.')) && kept === 'token.', `${tok.length} ${kept}`);
+    // 主体で絞る（チップで外せる）
+    await page.getByTestId('audit-actor').first().click();
+    await page.getByTestId('chip-subject').waitFor({ timeout: 5000 });
+    check('audit: click an actor to filter by it (removable chip)', /subject=/.test(await page.evaluate(() => location.hash)));
+    // キーボード: J で先頭の記録へ、Enter で詳細を開く
+    await page.locator('main h1').first().click();
+    await page.keyboard.press('j');
+    await page.keyboard.press('Enter');
+    await page.locator('.audit-entry.open').first().waitFor({ timeout: 3000 });
+    check('audit: J and Enter open an entry (shared listNav)', await page.locator('.audit-entry[data-active].open').count() === 1);
+    // 書き出し（今の条件）
+    const [dl] = await Promise.all([page.waitForEvent('download', { timeout: 20000 }), (async () => { await page.getByTestId('audit-export').click(); await page.getByTestId('audit-export-csv').click(); })()]);
+    const csv = fs.readFileSync(await dl.path(), 'utf8').replace(/^﻿/, '').trim().split(/\r\n/);
+    check('audit: CSV export of the current filter', csv[0].startsWith('ts,action,action_label') && csv.length - 1 === tok.length, `${csv.length - 1} rows, ${csv[0].slice(0, 40)}`);
+    await shot('20-audit');
+  });
+
+  await step('ops: grid', async () => {
+    // 配置できるもの 1 つと、ラベルが合わず配置できないもの 1 つ
+    await page.evaluate(async (token) => {
+      const H = { Authorization: `Bearer ${token}`, 'Content-Type': 'application/json' };
+      const post = (p, b) => fetch(`/api/v1${p}`, { method: 'POST', headers: { ...H, 'Idempotency-Key': `${p}-${Math.random()}` }, body: JSON.stringify(b) }).then((r) => r.json());
+      const s = await post('/streams', { name: 'grid-probe' });
+      await post(`/streams/${s.id}/outputs`, { protocol: 'rtmp_push', url: 'rtmp://127.0.0.1:9/live/x', enabled: true, placement: { priority: 'high' } });
+      await post(`/streams/${s.id}/inputs`, { protocol: 'rtmp_pull', url: 'rtmp://127.0.0.1:9/live/y', enabled: true, placement: { labels: [{ op: 'eq', key: 'zone', value: 'nowhere' }] } });
+    }, token);
+    await waitApi('/grid', (g) => g && g.workloads.some((w) => w.state === 'unschedulable') && g.workloads.some((w) => w.state === 'running'), 10000);
+    await page.goto(`${base}/console/#/grid`);
+    await page.getByTestId('grid-board').or(page.getByTestId('grid-empty')).first().waitFor({ timeout: 10000 });
+    const cols = await page.getByTestId('grid-col').count();
+    const nodes = (await apiGet('/grid')).body;
+    const rows = await page.locator('[data-testid="grid-table"] tbody tr').count();
+    check('grid: one column per node, one row per workload', cols === nodes.nodes.length && rows === nodes.workloads.length, `cols=${cols} rows=${rows} api=${nodes.nodes.length}/${nodes.workloads.length}`);
+    if (nodes.workloads.length) {
+      await page.getByTestId('grid-state-filter').getByRole('radio').nth(4).click();
+      await page.waitForFunction(() => location.hash.includes('state=unschedulable'));
+      await page.getByTestId('grid-col-unplaced').waitFor({ timeout: 5000 });
+      const why = await page.getByTestId('grid-col-unplaced').textContent();
+      const shown = await page.locator('[data-testid="grid-table"] tbody tr').count();
+      check('grid: state filter (URL-stateful) shows the unplaceable workload with its reason', shown === 1 && /grid-probe/.test(why) && /ラベル/.test(why), why);
+    }
+    await shot('21-grid');
+  });
+
+  await step('ops: dashboard attention and on air', async () => {
+    await page.goto(`${base}/console/#/`);
+    await page.getByTestId('health-strip').waitFor({ timeout: 8000 });
+    const onair = await page.getByTestId('health-onair').textContent();
+    check('dashboard: on-air count in the health strip', /配信中/.test(onair), onair);
+    await shot('22-dashboard');
+  });
+  await step('ops: mobile', async () => {
+    const m = await browser.newContext({ viewport: { width: 390, height: 844 }, deviceScaleFactor: 2, isMobile: true, hasTouch: true, locale: 'ja-JP', timezoneId: 'Asia/Tokyo' });
+    await m.addInitScript((tok) => sessionStorage.setItem('senca.console.token', tok), token);
+    const mp = await m.newPage();
+    mp.on('pageerror', (e) => errors.push(`ops mobile pageerror: ${e.message}`));
+    const small = [];
+    for (const r of ['/', '/nodes', '/grid', '/audit', '/tokens', '/secrets']) {
+      await mp.goto(`${base}/console/#${r}`);
+      await mp.locator('main h1').first().waitFor({ timeout: 10000 });
+      await sleep(800);
+      const s = await mp.evaluate(() => [...document.querySelectorAll('main button, main a.btn, main select, main input:not([type=checkbox]):not([type=radio])')]
+        .filter((el) => el.offsetParent && !el.closest('.copy-field, .search, .segmented, details:not([open])'))
+        .map((el) => [el.getBoundingClientRect().height, (el.getAttribute('aria-label') || el.textContent || el.tagName).trim().slice(0, 30)])
+        .filter(([hgt]) => hgt < 43.5));
+      small.push(...s.map(([hgt, n]) => `${r} ${n} ${hgt.toFixed(0)}px`));
+      await mp.screenshot({ path: path.join(work, `23-mobile${r.replace(/\W+/g, '_')}.png`), fullPage: true });
+    }
+    check('ops pages on 390px: touch targets ≥ 44px', small.length === 0, small.slice(0, 8).join(' | '));
+    await m.close();
+  });
+  // ================================================================ 運用と設定 ここまで
+
   // ---------------------------------------------------------------- 狭い画面（390×844）: 引き出しのメニュー・横にはみ出さない・表はカード
   await step('mobile', async () => {
     const m = await browser.newContext({ viewport: { width: 390, height: 844 }, deviceScaleFactor: 2, isMobile: true, hasTouch: true, locale: 'ja-JP', timezoneId: 'Asia/Tokyo' });
@@ -970,7 +1473,7 @@ const EXPECTED_FAIL = [
     const mp = await m.newPage();
     mp.on('pageerror', (e) => errors.push(`mobile pageerror: ${e.message}`));
     const widths = {};
-    for (const r of ['/', '/streams', '/recordings', '/schedules', '/tokens', '/secrets', '/nodes', '/send', `/streams/${env.whep264}`, '/_styleguide']) {
+    for (const r of ['/', '/streams', '/recordings', '/schedules', '/tokens', '/secrets', '/nodes', '/grid', '/audit', '/send', `/streams/${env.whep264}`, '/_styleguide']) {
       await mp.goto(`${base}/console/#${r}`);
       await mp.locator('main h1').first().waitFor({ timeout: 10000 });
       await sleep(600);
@@ -981,7 +1484,7 @@ const EXPECTED_FAIL = [
     await mp.goto(`${base}/console/#/streams`);
     await mp.getByTestId('streams-table').waitFor();
     const card = await mp.locator('[data-testid="streams-table"] tbody tr').first().evaluate((tr) => getComputedStyle(tr).display);
-    check('mobile: tables become cards', card === 'block', card);
+    check('mobile: tables become cards', card === 'block' || card === 'grid', card);
     const menu = mp.getByTestId('menu-button');
     const box = await menu.boundingBox();
     await menu.click();
@@ -1028,6 +1531,17 @@ EOF
   kill $P 2>/dev/null; wait $P 2>/dev/null
 ) &
 PUB_PID=$!
+
+# 送り手（配信まわりの試験）: 作成の後の案内で鍵が書かれたら H.264 を送る（「待っています」→「受信しています」）
+(
+  for _ in $(seq 6000); do [ -s "$W/setupkey.txt" ] && break; [ -e "$W/stop-all" ] && exit 0; sleep 0.2; done
+  [ -s "$W/setupkey.txt" ] || exit 0
+  "$FFMPEG" -v error -re -stream_loop -1 -i "$W/h264.flv" -c copy -f flv "rtmp://127.0.0.1:$RTMP/live/$(cat "$W/setupkey.txt")" >>"$W/pubsetup.log" 2>&1 &
+  P=$!
+  for _ in $(seq 600); do [ -e "$W/stop-all" ] && break; sleep 0.5; done
+  kill $P 2>/dev/null; wait $P 2>/dev/null
+) &
+FEED_PIDS+=($!)
 
 # ==== BEGIN ログインとユーザー（ADR-0017）: 試験用の IdP と 2 台のノード（tools/interop/console_auth.cjs が使う） ====
 AUTH_OK=0

@@ -481,6 +481,8 @@ All of these require the `node:admin` scope (not included in `tenant:admin`).
 
 ### `GET /api/v1/grid`
 
+The console's Grid page shows placement per node and why a workload cannot be placed (drain and device disable are on the Nodes & devices page).
+
 ```json
 {
   "scheduler": "<node-id> or null",

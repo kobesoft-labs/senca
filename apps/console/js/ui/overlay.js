@@ -105,10 +105,11 @@ function restoreFocus(opener) {
  * build(close) は本文の要素を返す。actions(close) は下のボタンを返す。
  * @param {string} title
  * @param {(close: (v?: any) => void) => Node|Node[]} build
- * dismissible: false なら Escape・×・背景では閉じない（期限切れの入り直しのように、選んでもらうもの）。
- * @param {{actions?: (close) => Node[], wide?: boolean, icon?: string, kind?: 'danger'|'warn'|'info', testid?: string, initialFocus?: string, dismissible?: boolean}} [o]
+ * dismissible: false なら Escape・×・背景では閉じず、×も出さない（期限切れの入り直しのように、選んでもらうもの）。
+ * beforeClose() が false を返すと、Escape・×・背景では閉じない（一度だけ見せる値をまだ写していないときなど）。
+ * @param {{actions?: (close) => Node[], wide?: boolean, icon?: string, kind?: 'danger'|'warn'|'info', testid?: string, initialFocus?: string, beforeClose?: () => boolean, dismissible?: boolean}} [o]
  */
-export function modal(title, build, { actions, wide, icon: iconName, kind, testid, initialFocus, dismissible = true } = {}) {
+export function modal(title, build, { actions, wide, icon: iconName, kind, testid, initialFocus, beforeClose, dismissible = true } = {}) {
   return new Promise((resolve) => {
     const titleId = nextId('dlg-title');
     const dlg = h('dialog', { 'aria-labelledby': titleId, class: wide ? 'wide' : null, 'data-testid': testid });
@@ -122,21 +123,21 @@ export function modal(title, build, { actions, wide, icon: iconName, kind, testi
       restoreFocus(opener);
       resolve(v);
     };
-    dlg.addEventListener('cancel', (e) => { e.preventDefault(); if (dismissible) close(undefined); });
+    const dismiss = () => { if (dismissible && (!beforeClose || beforeClose() !== false)) close(undefined); };
+    dlg.addEventListener('cancel', (e) => { e.preventDefault(); dismiss(); });
     // 背景（::backdrop）のクリックで閉じる
     dlg.addEventListener('mousedown', (e) => {
-      if (e.target !== dlg || !dismissible) return;
+      if (e.target !== dlg) return;
       const r = dlg.getBoundingClientRect();
-      if (e.clientX < r.left || e.clientX > r.right || e.clientY < r.top || e.clientY > r.bottom) close(undefined);
+      if (e.clientX < r.left || e.clientX > r.right || e.clientY < r.top || e.clientY > r.bottom) dismiss();
     });
     const body = build(close);
     dlg.append(
       h('div', { class: 'dlg-head' },
         iconName ? h('div', { class: ['dlg-icon', kind] }, icon(iconName)) : null,
         h('h2', { id: titleId }, title),
-        dismissible ? h('button', { type: 'button', class: 'ghost icon-only sm dlg-close', 'aria-label': t('common.close'), onClick: () => close(undefined) }, icon('close')) : null),
+        dismissible ? h('button', { type: 'button', class: 'ghost icon-only sm dlg-close', 'aria-label': t('common.close'), onClick: () => dismiss() }, icon('close')) : null),
       h('div', { class: 'dlg-body' }, body),
-      // Element.append は null を文字列にするので、無いときは何も足さない
       ...(actions ? [h('div', { class: 'dlg-foot' }, actions(close))] : []),
     );
     document.body.appendChild(dlg);

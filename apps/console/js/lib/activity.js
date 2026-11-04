@@ -1,7 +1,7 @@
 // 受け取った SSE イベントの直近 50 件（ダッシュボードの「最近の出来事」）。
 
 import { on, emit } from './bus.js';
-import { t } from '../i18n/index.js';
+import { t, has } from '../i18n/index.js';
 
 const MAX = 50;
 const items = [];
@@ -21,10 +21,7 @@ export function recent() {
   return items.slice();
 }
 
-const KNOWN = ['stream.created', 'stream.updated', 'stream.deleted', 'recording.updated', 'recording.deleted',
-  'schedule.created', 'schedule.updated', 'schedule.deleted', 'schedule.run', 'node.updated', 'resync'];
-
 /** イベントの種類 → 画面の言葉（activity.<種類>。知らないものは種類のまま）。 */
 export function label(type) {
-  return KNOWN.includes(type) ? t(`activity.${type}`) : type;
+  return has(`activity.${type}`) ? t(`activity.${type}`) : type;
 }
