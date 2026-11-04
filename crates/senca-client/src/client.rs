@@ -106,7 +106,7 @@ impl ClientBuilder {
         self
     }
 
-    /// `User-Agent` の前に付ける（`myapp/1.0 senca-client-rust/0.0.1`）。
+    /// `User-Agent` の前に付ける（`myapp/1.0 senca-client-rust/0.0.2`）。
     pub fn user_agent(mut self, ua: impl Into<String>) -> Self {
         self.user_agent = format!("{} {USER_AGENT}", ua.into());
         self

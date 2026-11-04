@@ -8,7 +8,7 @@ export const Senca: Readonly<{
      * @returns {Promise<Session>}
      */
     connect: (options: import("./realtime/session.js").ConnectOptions) => Promise<Session>;
-    version: "0.0.1";
+    version: "0.0.2";
 }>;
 export type ConnectOptions = import("./realtime/session.js").ConnectOptions;
 export type ReconnectOptions = import("./realtime/session.js").ReconnectOptions;

@@ -1,6 +1,6 @@
 # Changelog / 変更履歴
 
-## Unreleased / 未リリース
+## v0.0.2 — 2026-11-04
 
 ### Added / 追加
 
@@ -22,6 +22,14 @@
   プレビューとプログラムのモニター・シーンのタイル・T バー・メーター付きのミキサー・誤操作を防ぐモードを備えます。運用は、はじめの手順と
   「確認が要ること」があるダッシュボード、ノードとデバイス、新しいグリッドと監査ログの画面、役割で選べる API トークンです。
   新しくルーム（参加者の様子・参加トークン・このブラウザからの参加）とメディアパイプライン（目的から選ぶ作成）の画面を足しました
+- Console sign-in and user management: a login page that adapts to the node (SSO buttons, username/password, API token),
+  a first-administrator wizard, a two-step code step with recovery codes, forced password change and MFA enrolment, a re-login
+  dialog that keeps the current page, an Account page (password, MFA with a locally generated QR code, recovery codes, signed-in
+  devices) and a Users page (roles, temporary passwords, reset MFA, sessions, last-admin protection)
+  ／ 管理画面のログインとユーザーの管理: ノードの設定に合わせたログインの画面（SSO のボタン・ユーザー名とパスワード・API トークン）、最初の管理者の
+  作成、2 段階認証のコードと回復コード、パスワードの変更・2 段階認証の登録が必要なときの案内、今の画面のまま入り直せるダイアログ、アカウントの
+  画面（パスワード・その場で作る QR コードでの 2 段階認証・回復コード・ログイン中の端末）、ユーザーの画面（役割・仮のパスワード・2 段階認証の
+  解除・セッション・最後の管理者の保護）を足しました
 
 - Container images on GitHub Container Registry, `ghcr.io/kobesoft-labs/senca`, for linux/amd64 and linux/arm64 (Raspberry Pi 4/5
   with a 64-bit OS): `latest` (standard: royalty-free codecs and the VA-API runtime), `slim` (no codec libraries; pass-through

@@ -138,7 +138,7 @@ SENCA は、メディアデータを次の方針で扱います。
 
 ## 1.5 動作確認の状況
 
-このガイドの対象は v0.0.1 です。開発の状況は [docs/dev/ROADMAP.md](../../dev/ROADMAP.md) に、標準規格ごとのテストの状況は
+このガイドの対象は v0.0.2 です。開発の状況は [docs/dev/ROADMAP.md](../../dev/ROADMAP.md) に、標準規格ごとのテストの状況は
 [適合台帳](../../dev/conformance/ledger.md) に、リリース前に行う確認は [docs/dev/RELEASE.md](../../dev/RELEASE.md) にまとめています。
 
 **独立した他の実装との相互接続を確認しているもの**:

@@ -45,13 +45,13 @@ SDK_NAME: "@senca/sdk"
 ### `SDK_VERSION`
 
 ```ts
-SDK_VERSION: "0.0.1"
+SDK_VERSION: "0.0.2"
 ```
 
 ### `Senca`
 
 ```ts
-Senca: Readonly<{ connect: (options: ConnectOptions) => Promise<Session>; version: "0.0.1"; }>
+Senca: Readonly<{ connect: (options: ConnectOptions) => Promise<Session>; version: "0.0.2"; }>
 ```
 
 入口（`Senca.connect()`）。

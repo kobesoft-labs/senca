@@ -20,7 +20,7 @@ import { compactStats, encodingsFor, preferCodec, simulcastLayers, summarizeStat
 import { InboundMessage, Participant, Publication, RemoteTrack } from './objects.js';
 
 export const SDK_NAME = '@senca/sdk';
-export const SDK_VERSION = '0.0.1';
+export const SDK_VERSION = '0.0.2';
 
 /** @typedef {import('./protocol.js').Role} Role */
 /** @typedef {import('./protocol.js').Kind} Kind */

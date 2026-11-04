@@ -142,7 +142,7 @@ name, and `?` to list the keyboard shortcuts.
 
 ## 1.5 Verification status
 
-This guide covers v0.0.1. Progress is tracked in [docs/dev/ROADMAP.md](../../dev/ROADMAP.md) (Japanese), per-standard test
+This guide covers v0.0.2. Progress is tracked in [docs/dev/ROADMAP.md](../../dev/ROADMAP.md) (Japanese), per-standard test
 status in the [conformance ledger](../../dev/conformance/ledger.md) (Japanese), and the checks done before a release in
 [docs/dev/RELEASE.en.md](../../dev/RELEASE.en.md).
 

@@ -13,7 +13,7 @@ export function toBase64(b: Uint8Array): string;
 /** @param {string} s */
 export function fromBase64(s: string): Uint8Array<ArrayBuffer>;
 export const SDK_NAME: "@senca/sdk";
-export const SDK_VERSION: "0.0.1";
+export const SDK_VERSION: "0.0.2";
 /** 部屋のセッション。`Senca.connect()` が返す。 */
 export class Session {
     /** @internal @param {ConnectOptions} options */

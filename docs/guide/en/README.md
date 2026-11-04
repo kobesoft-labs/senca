@@ -3,7 +3,7 @@
 English | [日本語](../ja/README.md)
 
 How to run, use and operate SENCA, a media server for live streaming, recording and real-time communication.
-This guide covers version v0.0.1.
+This guide covers version v0.0.2.
 
 If you are new to SENCA, start with [1. Overview](01-overview.md) for the overall architecture, then try it out with
 [2. Quickstart](02-quickstart.md).
