@@ -125,7 +125,8 @@ export type ClientOptions = {
      */
     baseUrl: string;
     /**
-     * API トークン（`senca_...`）か JWT。関数なら要求のたびに呼ぶ
+     * API トークン（`senca_...`）・ログインのセッション（`sencas_...`）・JWT。関数なら要求のたびに呼ぶ。
+     * ログインだけをするなら省いてよい（ログインの操作は認証なしで使えます）
      */
     token?: string | (() => string | Promise<string>) | undefined;
     /**
@@ -179,6 +180,10 @@ export type RequestOptions = {
     as?: "blob" | "json" | "response" | undefined;
     retry?: boolean | RetryOptions | undefined;
     timeoutMs?: number | undefined;
+    /**
+     * fetch の credentials（既定 `omit`。クッキーを送る `POST /auth/exchange` だけ `same-origin`）
+     */
+    credentials?: RequestCredentials | undefined;
 };
 /**
  * 応答（本文と見出し）。

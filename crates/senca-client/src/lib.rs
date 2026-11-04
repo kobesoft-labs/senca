@@ -7,6 +7,8 @@
 //! - 誤りは problem+json を読んだ [`ApiError`]（[`Error::Api`]）。送り直してよい誤りは指数バックオフで送り直す
 //! - SSE（`GET /events`）は [`EventStream`]（`Last-Event-ID` でつなぎ直す）
 //! - リアルタイムの部屋（[`rooms`]、`client.rooms()`）と、そのメディアパイプライン（[`media_pipelines`]、`client.media_pipelines()`）
+//! - ログインと本人の操作（`client.auth()`: パスワード・TOTP・OIDC のコードの交換・セッション）と利用者の管理（`client.users()`）。
+//!   ログインで得たセッションの値は [`SencaClient::with_token`] で使う
 //!
 //! HTTP/1.1 は senca-http、TLS は senca-tls（外部の HTTP クライアントに依らない）。
 //!
@@ -44,7 +46,7 @@ pub use models::ProblemCode;
 pub use pagination::{ListOptions, Page, Paginator};
 pub use media_pipelines::MediaPipelines;
 pub use rooms::Rooms;
-pub use resources::{Inputs, Nodes, Outputs, Pipelines, Recordings, Schedules, Secrets, Streams, Tokens};
+pub use resources::{Auth, Inputs, LoginOutcome, Nodes, Outputs, Pipelines, Recordings, Schedules, Secrets, Streams, Tokens, Users};
 pub use sse::{EventStream, EventsOptions, ServerEvent, SseEvent, SseParser};
 
 /// `*Patch` の `Option<Option<T>>`（省く・null・値）を serde で読み書きする。

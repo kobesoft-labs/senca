@@ -505,6 +505,145 @@ export class MediaPipelines extends Collection {
   }
 }
 
+/** @typedef {import('./openapi.gen.js').User} User */
+/** @typedef {import('./openapi.gen.js').UserCreate} UserCreate */
+/** @typedef {import('./openapi.gen.js').UserPatch} UserPatch */
+/** @typedef {import('./openapi.gen.js').Session} Session */
+/** @typedef {import('./openapi.gen.js').LoginSuccess} LoginSuccess */
+/** @typedef {import('./openapi.gen.js').LoginMfaRequired} LoginMfaRequired */
+
+/**
+ * ログインと本人の操作（`/auth/...`）。`providers`・`login`・`loginMfa`・`exchange` は認証なしで使えます（token を省いた client でよい）。
+ * ログインで得た `token`（`sencas_...`）は `client.setToken(token)` で以後の要求に使います。
+ */
+export class Auth {
+  /** @internal @param {Http} http */
+  constructor(http) {
+    /** @private */
+    this.http = http;
+  }
+
+  /** ログインの方法（パスワード・IdP の一覧・最初の管理者が要るか）。 @param {CallOptions} [o] @returns {Promise<import('./openapi.gen.js').AuthProviders>} */
+  async providers(o = {}) {
+    return (await this.http.request('GET', '/auth/providers', { signal: o.signal })).data;
+  }
+
+  /**
+   * パスワードでログインします。`status: 'mfa_required'` なら `loginMfa()` に `mfa_token` を渡します。
+   * @param {import('./openapi.gen.js').LoginRequest} body
+   * @param {CallOptions} [o]
+   * @returns {Promise<LoginSuccess | LoginMfaRequired>}
+   */
+  async login(body, o = {}) {
+    return (await this.http.request('POST', '/auth/login', { body, signal: o.signal, idempotencyKey: false })).data;
+  }
+
+  /** 2 つ目の要素（TOTP のコードか回復コード）でログインします。 @param {import('./openapi.gen.js').LoginMfaRequest} body @param {CallOptions} [o] @returns {Promise<LoginSuccess>} */
+  async loginMfa(body, o = {}) {
+    return (await this.http.request('POST', '/auth/login/mfa', { body, signal: o.signal, idempotencyKey: false })).data;
+  }
+
+  /**
+   * OIDC の一度きりのコード（`/console/#/auth/complete?code=...`）をセッションに替えます。ログインを始めたブラウザーのクッキー（`senca_oidc`）を送るため、
+   * 管理画面と同じオリジンから呼びます（Node.js からは `cookie` に `senca_oidc=...` を渡します）。
+   * @param {string} code
+   * @param {CallOptions & {cookie?: string}} [o]
+   * @returns {Promise<LoginSuccess>}
+   */
+  async exchange(code, o = {}) {
+    const headers = o.cookie ? { Cookie: o.cookie } : undefined;
+    return (await this.http.request('POST', '/auth/exchange', { body: { code }, headers, credentials: 'same-origin', signal: o.signal, idempotencyKey: false })).data;
+  }
+
+  /**
+   * OIDC のログインを始める URL（ブラウザーで開くと IdP へリダイレクトします）。`returnTo` は管理画面のパス（`/console/...`）。
+   * @param {string} provider
+   * @param {string} [returnTo]
+   * @returns {string}
+   */
+  oidcStartUrl(provider, returnTo) {
+    return this.http.url(`/auth/oidc/${enc(provider)}/start`, { return_to: returnTo });
+  }
+
+  /** OIDC のコールバックの URL（IdP に登録する redirect URI の既定値。ブラウザーが IdP から戻る先です）。 @param {string} provider @returns {string} */
+  oidcCallbackUrl(provider) {
+    return this.http.url(`/auth/oidc/${enc(provider)}/callback`);
+  }
+
+  /** 自分の情報（主体・テナント・権限・セッション・先に済ませること）。 @param {CallOptions} [o] @returns {Promise<import('./openapi.gen.js').Me>} */
+  async me(o = {}) {
+    return (await this.http.request('GET', '/auth/me', { signal: o.signal })).data;
+  }
+
+  /** ログアウト（今のセッションを失効させます）。 @param {CallOptions} [o] @returns {Promise<void>} */
+  async logout(o = {}) {
+    await this.http.request('POST', '/auth/logout', { signal: o.signal, idempotencyKey: false });
+  }
+
+  /** 自分のパスワードを変えます（ほかのセッションは失効します）。 @param {import('./openapi.gen.js').PasswordChange} body @param {CallOptions} [o] @returns {Promise<void>} */
+  async changePassword(body, o = {}) {
+    await this.http.request('POST', '/auth/password', { body, signal: o.signal });
+  }
+
+  /** TOTP の登録を始めます（`secret`・`otpauth_uri` はこの応答でだけ返ります）。 @param {import('./openapi.gen.js').MfaSetupRequest} body @param {CallOptions} [o] @returns {Promise<import('./openapi.gen.js').MfaSetup>} */
+  async setupTotp(body, o = {}) {
+    return (await this.http.request('POST', '/auth/mfa/totp/setup', { body, signal: o.signal })).data;
+  }
+
+  /** 確認コードで TOTP を有効にします（回復コードはこの応答でだけ返ります）。 @param {import('./openapi.gen.js').MfaConfirmRequest} body @param {CallOptions} [o] @returns {Promise<import('./openapi.gen.js').MfaConfirmResult>} */
+  async confirmTotp(body, o = {}) {
+    return (await this.http.request('POST', '/auth/mfa/totp/confirm', { body, signal: o.signal })).data;
+  }
+
+  /** 自分の MFA を解除します（`password` か `code`）。 @param {import('./openapi.gen.js').MfaReauth} body @param {CallOptions} [o] @returns {Promise<void>} */
+  async disableMfa(body, o = {}) {
+    await this.http.request('POST', '/auth/mfa/disable', { body, signal: o.signal });
+  }
+
+  /** 回復コードを作り直します。 @param {import('./openapi.gen.js').MfaReauth} body @param {CallOptions} [o] @returns {Promise<import('./openapi.gen.js').RecoveryCodes>} */
+  async regenerateRecoveryCodes(body, o = {}) {
+    return (await this.http.request('POST', '/auth/mfa/recovery-codes', { body, signal: o.signal })).data;
+  }
+
+  /** 自分のセッションの一覧。 @param {ListOptions} [o] @returns {Paginator<Session>} */
+  sessions(o = {}) {
+    return new Paginator(async (cursor, signal) => (await this.http.request('GET', '/auth/sessions', { query: { limit: o.limit, cursor: cursor ?? undefined }, signal })).data, { signal: o.signal, cursor: o.cursor });
+  }
+
+  /** 自分のセッションを失効させます。 @param {string} id @param {CallOptions} [o] @returns {Promise<void>} */
+  async revokeSession(id, o = {}) {
+    await this.http.request('DELETE', `/auth/sessions/${enc(id)}`, { signal: o.signal });
+  }
+}
+
+/** 利用者の管理（`/users`、`tenant:admin`）。 @extends {Collection<User, UserCreate, UserPatch>} */
+export class Users extends Collection {
+  /** @internal @param {Http} http */
+  constructor(http) {
+    super(http, '/users');
+  }
+
+  /** パスワードを再設定します（`password` を省くと仮のパスワードが `temporary_password` で返ります）。 @param {string} id @param {import('./openapi.gen.js').UserPasswordReset} [body] @param {CreateOptions} [o] @returns {Promise<import('./openapi.gen.js').UserPasswordResetResult>} */
+  async resetPassword(id, body = {}, o = {}) {
+    return (await this.http.request('POST', `/users/${enc(id)}/password`, { body, signal: o.signal, idempotencyKey: o.idempotencyKey })).data;
+  }
+
+  /** MFA を外します。 @param {string} id @param {CallOptions} [o] @returns {Promise<void>} */
+  async resetMfa(id, o = {}) {
+    await this.http.request('DELETE', `/users/${enc(id)}/mfa`, { signal: o.signal });
+  }
+
+  /** 利用者のセッションの一覧。 @param {string} id @param {ListOptions} [o] @returns {Paginator<Session>} */
+  sessions(id, o = {}) {
+    return new Paginator(async (cursor, signal) => (await this.http.request('GET', `/users/${enc(id)}/sessions`, { query: { limit: o.limit, cursor: cursor ?? undefined }, signal })).data, { signal: o.signal, cursor: o.cursor });
+  }
+
+  /** 利用者のセッションをすべて失効させます。 @param {string} id @param {CallOptions} [o] @returns {Promise<void>} */
+  async revokeSessions(id, o = {}) {
+    await this.http.request('DELETE', `/users/${enc(id)}/sessions`, { signal: o.signal });
+  }
+}
+
 /**
  * 監査ログの絞り込み（`GET /audit`）。時刻は RFC 3339 の文字列か Date。
  * @typedef {{
@@ -571,6 +710,15 @@ export class SencaClient {
     this.mediaPipelines = new MediaPipelines(this.http);
     /** 監査ログ（読み出しだけ）。 */
     this.audit = new Audit(this.http);
+    /** ログインと本人の操作。 */
+    this.auth = new Auth(this.http);
+    /** 利用者の管理。 */
+    this.users = new Users(this.http);
+  }
+
+  /** 以後の要求の認証の値を替えます（ログインで得たセッションの値 `sencas_...` など）。 @param {string | (() => string | Promise<string>) | undefined} token */
+  setToken(token) {
+    this.http.token = token;
   }
 
   /** API の base（`.../api/v1`）。 */

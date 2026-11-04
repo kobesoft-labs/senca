@@ -17,6 +17,9 @@ getrandom.workspace = true
 ed25519-dalek = { version = "2", default-features = false, features = ["std"] }
 p256 = { version = "0.13", default-features = false, features = ["ecdsa", "std"] }
 rsa = { version = "0.9", default-features = false, features = ["std", "sha2"] }
+# 利用者のパスワード（Argon2id、PHC 文字列）と TOTP（RFC 6238）
+argon2 = { version = "0.5", default-features = false, features = ["alloc", "password-hash", "std"] }
+totp-rs = { version = "5.7", default-features = false }
 
 [lints]
 workspace = true

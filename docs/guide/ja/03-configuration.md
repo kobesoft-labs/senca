@@ -86,6 +86,37 @@ API の応答（`ingest`）や再生 URL に含める、外部から見た URL �
 
 詳しくは [12. セキュリティ](12-security.md) を参照してください。
 
+### 認証（利用者のログイン・OIDC）
+
+| オプション | 値 | 既定 | 説明 |
+|---|---|---|---|
+| `--auth-session-idle` | 秒 | `28800`（8 時間） | ログインのセッションを、最後に使ってからこの時間使わなければ失効させます（10〜2592000） |
+| `--auth-session-lifetime` | 秒 | `604800`（7 日） | ログインのセッションの最長の寿命（10〜31536000、`--auth-session-idle` 以上） |
+| `--auth-require-mfa` | — | 無効 | パスワードでログインする利用者に、認証アプリ（TOTP）の確認コードを必須にします。未登録の利用者は、ログインの後に登録を求められます |
+| `--auth-password-login` | `on`・`off` | `on` | `off` でパスワードでのログインを止めます（OIDC だけにする） |
+| `--auth-mfa-issuer` | 名前 | `SENCA` | 認証アプリに表示する発行者の名前（1〜64 文字、`:` は使えません） |
+| `--recovery-admin-token` | — | 無効 | 起動時に回復用の管理者トークンを `control/recovery-admin-token` に書き出します（24 時間で失効。ファイルがあれば作りません） |
+| `--oidc-config` | FILE | なし | OIDC の IdP の一覧（JSON、`{"providers": [...]}`） |
+| `--oidc-issuer` | URL | なし | IdP が 1 つのときの発行者。`--oidc-client-id` と組で使います |
+| `--oidc-client-id` | 文字列 | なし | クライアント ID |
+| `--oidc-client-secret-file` | FILE | なし | クライアントシークレットのファイル（無ければ public client） |
+| `--oidc-id` | 名前 | `oidc` | URL に入る IdP の名前（英小文字・数字・`-`・`_`） |
+| `--oidc-display-name` | 文字列 | `--oidc-id` の値 | ログインのボタンに出す名前 |
+| `--oidc-scopes` | 文字列 | `openid email profile` | 要求するスコープ（空白かカンマ区切り。`openid` は必須） |
+| `--oidc-redirect-url` | URL | `{--public-http-url}/api/v1/auth/oidc/{id}/callback` | IdP に登録したリダイレクト URI |
+| `--oidc-allowed-domain` | ドメイン | なし | ログインを許すメールアドレスのドメイン（繰り返し指定できます） |
+| `--oidc-tenant`・`--oidc-tenant-claim` | 名前 | `default` | 利用者を置くテナント、またはテナントを決めるクレームの名前（どちらか一方） |
+| `--oidc-role-map` | `CLAIM=VALUE:ROLE` | なし | クレームが値を含むときの役割（`admin`・`operator`・`viewer`）か権限（繰り返し指定できます） |
+| `--oidc-default-role` | 役割 | なし | 対応に当たらないときの役割（無ければログインを断ります） |
+| `--oidc-no-sync-roles` | — | — | ログインのたびに役割を決め直すのをやめます |
+| `--oidc-auto-provision` | — | 無効 | 初めてログインした人の利用者を自動で作ります |
+| `--oidc-allow-unverified-email` | — | — | `email_verified` の無いメールアドレスも使います |
+| `--oidc-username-claim` | 名前 | `preferred_username` | 自動で作る利用者の名前に使うクレーム |
+| `--oidc-prompt`・`--oidc-max-age` | 文字列・秒 | なし | 認可の要求の `prompt`・`max_age` |
+
+`--oidc-config` の項目と IdP ごとの設定の例は [12.15](12-security.md#1215-oidc-のシングルサインオン) を見てください。
+`--oidc-*` と `--oidc-config` を一緒に指定すると、両方の IdP を使います。
+
 ### コーデック・キャプチャ
 
 | オプション | 値 | 既定 | 説明 |
@@ -138,6 +169,7 @@ Webhook の宛先は、`--egress-allow` のポリシーで検査します（プ�
 | `--rate-limit-token` | N | `200` | 管理 API の、API トークン（JWT は subject）ごとの 1 秒あたりの要求数（一時的には 2 倍まで） |
 | `--rate-limit-auth-failures` | N | `30` | 認証に失敗してよい回数（送信元の IP アドレスごと、1 分あたり）。使い切ると、正しいトークンでも 429 になります |
 | `--rate-limit-connect` | N | `30` | 接続の開始（`/signaling`・WHIP・WHEP・SSE）の、送信元の IP アドレスごとの 1 秒あたりの数（一時的には 2 倍まで） |
+| `--rate-limit-login` | N | `10` | ログインに失敗してよい回数（送信元の IP アドレスごと、1 分あたり）。アカウントごとの待ちは別に数えます（[12.13](12-security.md#1213-利用者のアカウントとログイン)） |
 
 ### その他
 
@@ -165,6 +197,9 @@ Webhook の宛先は、`--egress-allow` のポリシーで検査します（プ�
 - `--rooms-auth-webhook`・`--rooms-event-webhook` が http/https の URL ではない、または `--rooms-webhook-secret-file` がない。
   秘密のファイルを読み込めない、または 16 バイト未満。
 - クラスターの設定の `node_id` が 0、`peers` に自分が含まれていない、`peers` が 1〜7 台の範囲外。
+- `--auth-session-idle`・`--auth-session-lifetime` が範囲外、`--auth-mfa-issuer` の形が違う。
+- OIDC の IdP の `id` の形が違う・重なっている、`issuer`・`redirect_url` が http/https の URL ではない、`client_id` がない、`scopes` に `openid` がない、
+  `tenant` と `tenant_claim` を両方指定した、`role_mappings`・`default_role` の役割が分からない、`client_secret_file` を読み込めないか空、IdP が 17 個以上。
 
 ファイルを読み込めない、待ち受けを開始できない、クラスターの共有シークレットが 16 文字未満、S3 の認証情報がない、などの場合は、起動の途中で
 `fatal: ...` と出力して終了コード 1 で終了します。
@@ -201,6 +236,11 @@ Webhook の宛先は、`--egress-allow` のポリシーで検査します（プ�
 | `rooms_auth_webhook`・`rooms_event_webhook` | 同名のオプション | 文字列または `null` |
 | `rooms_auth_mode` | `--rooms-auth-mode` | `"after_token"` または `"only"` |
 | `rooms_webhook_secret_file` | 同名のオプション | 文字列または `null` |
+| `rate_limit_ip`・`rate_limit_token`・`rate_limit_auth_failures`・`rate_limit_connect`・`rate_limit_login` | `--rate-limit-*` | 数値 |
+| `auth_session_idle_secs`・`auth_session_lifetime_secs` | `--auth-session-idle`・`--auth-session-lifetime` | 数値 |
+| `auth_require_mfa`・`auth_password_login` | `--auth-require-mfa`・`--auth-password-login` | 真偽値 |
+| `auth_mfa_issuer` | `--auth-mfa-issuer` | 文字列 |
+| `oidc_providers` | `--oidc-*`・`--oidc-config` | IdP の配列（[12.15](12-security.md#1215-oidc-のシングルサインオン) の項目） |
 | `audit_log_max_bytes`・`audit_log_keep` | `--audit-log-max-bytes`・`--audit-log-keep` | 数値 |
 | `recording_storage` | `--recording-storage`・`--s3-*`・`--recording-keep-local` | `{"uri", "endpoint", "region", "addressing", "credentials_file", "part_size", "keep_local_secs"}`（どれも省略できます） |
 
@@ -321,6 +361,7 @@ Webhook の宛先は、`--egress-allow` のポリシーで検査します（プ�
 | `control/raft/` | クラスターでの Raft のデータ（`hardstate`・`snap-*.snap`・`log/*.seg`）。クラスターでは `control/log` は使いません |
 | `control/secret-key` | 秘密値を暗号化する鍵（32 バイト、0600）。なければ初回に作成します。クラスターでは、いずれか 1 台の鍵がクラスター共通の鍵になり、クラスターの共有シークレットで暗号化して全ノードへ複製されます |
 | `control/bootstrap-admin-token` | 最初の管理者トークンの値（0600）。初回の起動時にだけ作成します |
+| `control/recovery-admin-token` | 回復用の管理者トークンの値（0600）。`--recovery-admin-token` で起動したときに作成します。使い終わったら削除してください |
 | `recordings/{録画 ID}/index.jsonl` | 録画のインデックス（追記のみの JSON Lines: `begin`・`init`・`segment`・`gap`・`end`） |
 | `recordings/{録画 ID}/thumbnail.jpg`・`thumbnail.json` | 録画のサムネイルとその情報 |
 | `recordings/.trash-{録画 ID}` | 削除処理中の録画（一時的なもの） |

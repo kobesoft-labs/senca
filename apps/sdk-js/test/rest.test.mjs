@@ -226,6 +226,13 @@ const COVERAGE = {
   patchRoomParticipant: (c) => c.rooms.participants('r').updateMetadata, disconnectRoomParticipant: (c) => c.rooms.participants('r').disconnect,
   createMediaPipeline: (c) => c.mediaPipelines.create, listMediaPipelines: (c) => c.mediaPipelines.list, getMediaPipeline: (c) => c.mediaPipelines.get,
   patchMediaPipeline: (c) => c.mediaPipelines.update, deleteMediaPipeline: (c) => c.mediaPipelines.delete,
+  getAuthProviders: (c) => c.auth.providers, login: (c) => c.auth.login, loginMfa: (c) => c.auth.loginMfa, exchangeLoginCode: (c) => c.auth.exchange,
+  startOidcLogin: (c) => c.auth.oidcStartUrl, oidcCallback: (c) => c.auth.oidcCallbackUrl, getMe: (c) => c.auth.me, logout: (c) => c.auth.logout,
+  changePassword: (c) => c.auth.changePassword, setupTotp: (c) => c.auth.setupTotp, confirmTotp: (c) => c.auth.confirmTotp, disableMfa: (c) => c.auth.disableMfa,
+  regenerateRecoveryCodes: (c) => c.auth.regenerateRecoveryCodes, listMySessions: (c) => c.auth.sessions, revokeMySession: (c) => c.auth.revokeSession,
+  createUser: (c) => c.users.create, listUsers: (c) => c.users.list, getUser: (c) => c.users.get, updateUser: (c) => c.users.update, deleteUser: (c) => c.users.delete,
+  resetUserPassword: (c) => c.users.resetPassword, resetUserMfa: (c) => c.users.resetMfa, listUserSessions: (c) => c.users.sessions,
+  revokeUserSessions: (c) => c.users.revokeSessions,
 };
 
 test('openapi.yaml のすべての操作に SDK のメソッドがある', () => {
@@ -263,6 +270,34 @@ test('操作のパスと SDK の要求のパスが一致する（代表）', asy
   await expect('getMediaPipeline', () => c.mediaPipelines.get('m1'), { id: 'm1' });
   await expect('patchMediaPipeline', () => c.mediaPipelines.update('m1', { egress: [] }, { ifMatch: 1 }), { id: 'm1' });
   await expect('deleteMediaPipeline', () => c.mediaPipelines.delete('m1'), { id: 'm1' });
+  await expect('loginMfa', () => c.auth.loginMfa({ mfa_token: 't', code: '123456' }), {});
+  await expect('revokeMySession', () => c.auth.revokeSession('s1'), { id: 's1' });
+  await expect('updateUser', () => c.users.update('u1', { disabled: true }, { ifMatch: 1 }), { id: 'u1' });
+  await expect('resetUserPassword', () => c.users.resetPassword('u1'), { id: 'u1' });
+  await expect('resetUserMfa', () => c.users.resetMfa('u1'), { id: 'u1' });
+  await expect('listUserSessions', () => c.users.sessions('u1').first(), { id: 'u1' });
+  await expect('revokeUserSessions', () => c.users.revokeSessions('u1'), { id: 'u1' });
+});
+
+test('auth: ログインは token なし・Idempotency-Key なし、exchange はクッキーを送る、setToken でセッションに替える', async () => {
+  const { fetch, calls } = fakeFetch((req) => json(200, req.url.pathname === '/api/v1/auth/login'
+    ? { status: 'ok', token: 'sencas_abc', pending: [] }
+    : { status: 'ok', token: 'sencas_def', pending: [], return_to: '/console/' }));
+  const seen = [];
+  const c = new SencaClient({ baseUrl: 'http://node.test', fetch: (u, init) => { seen.push(init.credentials); return fetch(u, init); } });
+  const r = await c.auth.login({ username: 'alice', password: 'pw' });
+  assert.equal(r.status, 'ok');
+  assert.equal(calls[0].headers.get('authorization'), null);
+  assert.equal(calls[0].headers.get('idempotency-key'), null);
+  await c.auth.exchange('code1', { cookie: 'senca_oidc=x' });
+  assert.equal(calls[1].url.pathname, '/api/v1/auth/exchange');
+  assert.deepEqual(calls[1].body, { code: 'code1' });
+  assert.deepEqual(seen, ['omit', 'same-origin']);
+  c.setToken(r.token);
+  await c.auth.me();
+  assert.equal(calls[2].headers.get('authorization'), 'Bearer sencas_abc');
+  assert.equal(c.auth.oidcStartUrl('kc', '/console/#/x'), 'http://node.test/api/v1/auth/oidc/kc/start?return_to=%2Fconsole%2F%23%2Fx');
+  assert.equal(c.auth.oidcCallbackUrl('kc'), 'http://node.test/api/v1/auth/oidc/kc/callback');
 });
 
 test('mediaPipelines: list の room、stop は読んで If-Match で desired_state を書く', async () => {

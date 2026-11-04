@@ -1025,6 +1025,431 @@ pub struct TokenList {
     pub next_cursor: Option<String>,
 }
 
+/// 役割（決まった権限の組）です。`admin` = `tenant:admin`、`operator` = `stream:read`・`stream:write`・`publish`・`subscribe`・`recording:read`、
+/// `viewer` = `stream:read`・`recording:read`・`subscribe`。
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
+pub enum Role {
+    #[serde(rename = "admin")]
+    Admin,
+    #[serde(rename = "operator")]
+    Operator,
+    #[serde(rename = "viewer")]
+    Viewer,
+    /// この版の SDK が知らない値（サーバーが値を足したとき）。
+    #[serde(other)]
+    Unknown,
+}
+
+impl Role {
+    /// JSON での値（`Unknown` は `None`）。
+    pub fn as_str(self) -> Option<&'static str> {
+        match self {
+            Role::Admin => Some("admin"),
+            Role::Operator => Some("operator"),
+            Role::Viewer => Some("viewer"),
+            Role::Unknown => None,
+        }
+    }
+}
+
+/// セッションで先に済ませることです。`password_change` は仮のパスワード（`POST /auth/password` で変えます）、
+/// `mfa_enrollment` は `--auth-require-mfa` で TOTP が未登録（`POST /auth/mfa/totp/setup`・`confirm` で登録します）。
+/// どちらかがある間は、`GET /auth/me`・`POST /auth/logout`・`POST /auth/password`・`POST /auth/mfa/totp/setup`・`POST /auth/mfa/totp/confirm`・
+/// `GET /auth/sessions`・`DELETE /auth/sessions/{id}` のほかは 403（`details: {reason: "pending", pending: [...]}`）です。
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
+pub enum PendingAction {
+    #[serde(rename = "password_change")]
+    PasswordChange,
+    #[serde(rename = "mfa_enrollment")]
+    MfaEnrollment,
+    /// この版の SDK が知らない値（サーバーが値を足したとき）。
+    #[serde(other)]
+    Unknown,
+}
+
+impl PendingAction {
+    /// JSON での値（`Unknown` は `None`）。
+    pub fn as_str(self) -> Option<&'static str> {
+        match self {
+            PendingAction::PasswordChange => Some("password_change"),
+            PendingAction::MfaEnrollment => Some("mfa_enrollment"),
+            PendingAction::Unknown => None,
+        }
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, Default)]
+pub struct AuthProviders {
+    /// パスワードでログインする利用者に TOTP を必須にしているか（`--auth-require-mfa`）
+    pub mfa_required: bool,
+    pub oidc: Vec<AuthProvidersOidcItem>,
+    /// パスワードでのログインを受け付けるか（`--auth-password-login`）
+    pub password: bool,
+    /// 利用者がまだ 1 人もいない（最初の管理者を作る画面を出します）
+    pub setup_required: bool,
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, Default)]
+pub struct AuthProvidersOidcItem {
+    /// ログインのボタンに出す名前
+    pub display_name: String,
+    pub id: String,
+    /// ブラウザーで開く URL（`/api/v1/auth/oidc/{id}/start`。`?return_to=` を付けられます）
+    pub start_url: String,
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, Default)]
+pub struct LoginRequest {
+    pub password: String,
+    /// 利用者のテナント（省略時は `default`）
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub tenant: Option<String>,
+    /// 大文字・小文字を区別しません
+    pub username: String,
+}
+
+/// `code` か `recovery_code` のどちらか 1 つを指定します（両方・どちらも無しは 400）。
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, Default)]
+pub struct LoginMfaRequest {
+    /// 認証アプリの 6 桁のコード
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub code: Option<String>,
+    pub mfa_token: String,
+    /// 回復コード（`xxxx-xxxx-xxxx-xxxx`。大文字・小文字・`-`・空白は問いません）
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub recovery_code: Option<String>,
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, Default)]
+pub struct ExchangeRequest {
+    /// `/console/#/auth/complete?code=` のコード
+    pub code: String,
+}
+
+pub type LoginResult = Value;
+
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct LoginSuccess {
+    pub pending: Vec<PendingAction>,
+    /// OIDC で `start` に渡した戻り先（`POST /auth/exchange` のときだけ）
+    #[serde(default)]
+    pub return_to: Option<String>,
+    /// 実際に持つ権限（`tenant:admin` を展開したもの）
+    pub scopes: Vec<Scope>,
+    pub session: Session,
+    pub status: Value,
+    pub tenant: String,
+    /// セッションの値（`Authorization: Bearer` に使います）。この応答でだけ返します。
+    pub token: String,
+    pub user: User,
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, Default)]
+pub struct LoginMfaRequired {
+    pub expires_at: Timestamp,
+    pub methods: Vec<LoginMfaRequiredMethodsItem>,
+    /// `POST /auth/login/mfa` に渡す値（5 分）
+    pub mfa_token: String,
+    pub status: Value,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
+pub enum LoginMfaRequiredMethodsItem {
+    #[serde(rename = "totp")]
+    Totp,
+    #[serde(rename = "recovery_code")]
+    RecoveryCode,
+    /// この版の SDK が知らない値（サーバーが値を足したとき）。
+    #[serde(other)]
+    Unknown,
+}
+
+impl LoginMfaRequiredMethodsItem {
+    /// JSON での値（`Unknown` は `None`）。
+    pub fn as_str(self) -> Option<&'static str> {
+        match self {
+            LoginMfaRequiredMethodsItem::Totp => Some("totp"),
+            LoginMfaRequiredMethodsItem::RecoveryCode => Some("recovery_code"),
+            LoginMfaRequiredMethodsItem::Unknown => None,
+        }
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct Session {
+    pub created_at: Timestamp,
+    /// この要求のセッションか
+    pub current: bool,
+    /// 使っていても失効する時刻（`--auth-session-lifetime`、既定 7 日）
+    pub expires_at: Timestamp,
+    /// セッションの ID（値ではありません。失効させるときに使います）
+    pub id: String,
+    /// このまま使わなければ失効する時刻（`--auth-session-idle`、既定 8 時間）
+    pub idle_expires_at: Timestamp,
+    /// ログインした送信元の IP アドレス
+    #[serde(default)]
+    pub ip: Option<String>,
+    /// 最後に使った時刻（合意ログへの書き込みを減らすため、待ち時間の 1/16 を 30 秒〜5 分に収めた間隔（待ち時間の 1/4 まで）でだけ進めます）
+    pub last_seen_at: Timestamp,
+    pub method: SessionMethod,
+    /// 2 つ目の要素（TOTP・回復コード）を通ったか
+    pub mfa: bool,
+    /// OIDC の IdP の ID
+    #[serde(default)]
+    pub provider: Option<String>,
+    /// 利用者の ID
+    pub user: String,
+    #[serde(default)]
+    pub user_agent: Option<String>,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
+pub enum SessionMethod {
+    #[serde(rename = "password")]
+    Password,
+    #[serde(rename = "oidc")]
+    Oidc,
+    /// この版の SDK が知らない値（サーバーが値を足したとき）。
+    #[serde(other)]
+    Unknown,
+}
+
+impl SessionMethod {
+    /// JSON での値（`Unknown` は `None`）。
+    pub fn as_str(self) -> Option<&'static str> {
+        match self {
+            SessionMethod::Password => Some("password"),
+            SessionMethod::Oidc => Some("oidc"),
+            SessionMethod::Unknown => None,
+        }
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, Default)]
+pub struct SessionList {
+    pub items: Vec<Session>,
+    #[serde(default)]
+    pub next_cursor: Option<String>,
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, Default)]
+pub struct User {
+    pub created_at: Timestamp,
+    pub disabled: bool,
+    #[serde(default)]
+    pub display_name: Option<String>,
+    /// 役割と個別の権限から決まる、実際に持つ権限
+    pub effective_scopes: Vec<Scope>,
+    #[serde(default)]
+    pub email: Option<String>,
+    pub generation: i64,
+    /// パスワードでログインできるか（OIDC だけの利用者は false）
+    pub has_password: bool,
+    pub id: String,
+    #[serde(default)]
+    pub last_login_at: Option<String>,
+    pub mfa: UserMfa,
+    /// 次のログインでパスワードの変更を求めるか
+    pub must_change_password: bool,
+    /// 結び付いた IdP の利用者
+    pub oidc: Vec<UserOidcItem>,
+    #[serde(default)]
+    pub password_changed_at: Option<String>,
+    pub roles: Vec<Role>,
+    /// 役割のほかに個別に渡した権限
+    pub scopes: Vec<Scope>,
+    pub updated_at: Timestamp,
+    pub username: String,
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, Default)]
+pub struct UserMfa {
+    pub enabled: bool,
+    #[serde(default)]
+    pub enrolled_at: Option<String>,
+    pub recovery_codes_remaining: u64,
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, Default)]
+pub struct UserOidcItem {
+    pub provider: String,
+    /// ID トークンの `sub`
+    pub subject: String,
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, Default)]
+pub struct UserList {
+    pub items: Vec<User>,
+    #[serde(default)]
+    pub next_cursor: Option<String>,
+}
+
+/// `roles` か `scopes` を 1 つ以上指定します。
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, Default)]
+pub struct UserCreate {
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub disabled: Option<bool>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub display_name: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub email: Option<String>,
+    /// 次のログインでパスワードの変更を求める（`password` があるときだけ）
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub must_change_password: Option<bool>,
+    /// 12〜256 文字。利用者名・メールアドレスと同じものは不可。省くとパスワードの無い利用者になります
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub password: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub roles: Option<Vec<Role>>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub scopes: Option<Vec<Scope>>,
+    pub username: String,
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, Default)]
+pub struct UserPatch {
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub disabled: Option<bool>,
+    #[serde(default, skip_serializing_if = "Option::is_none", with = "crate::double_option")]
+    pub display_name: Option<Option<String>>,
+    #[serde(default, skip_serializing_if = "Option::is_none", with = "crate::double_option")]
+    pub email: Option<Option<String>>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub roles: Option<Vec<Role>>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub scopes: Option<Vec<Scope>>,
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, Default)]
+pub struct UserPasswordReset {
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub must_change_password: Option<bool>,
+    /// 省くと仮のパスワードを作ります
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub password: Option<String>,
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, Default)]
+pub struct UserPasswordResetResult {
+    /// ノードが作った仮のパスワード（`password` を渡したときは null）
+    #[serde(default)]
+    pub temporary_password: Option<String>,
+    /// Idempotency-Key による再送で値を伏せたとき
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub temporary_password_redacted: Option<Value>,
+    pub user: User,
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct Me {
+    pub auth_method: MeAuthMethod,
+    pub pending: Vec<PendingAction>,
+    /// 実際に持つ権限
+    pub scopes: Vec<Scope>,
+    #[serde(default)]
+    pub session: Option<Session>,
+    /// 監査ログの `subject`（`user:{id}`・`token:{id}`・JWT の `sub`）
+    pub subject: String,
+    pub tenant: String,
+    #[serde(default)]
+    pub user: Option<User>,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
+pub enum MeAuthMethod {
+    #[serde(rename = "session")]
+    Session,
+    #[serde(rename = "api_token")]
+    ApiToken,
+    #[serde(rename = "jwt")]
+    Jwt,
+    /// この版の SDK が知らない値（サーバーが値を足したとき）。
+    #[serde(other)]
+    Unknown,
+}
+
+impl MeAuthMethod {
+    /// JSON での値（`Unknown` は `None`）。
+    pub fn as_str(self) -> Option<&'static str> {
+        match self {
+            MeAuthMethod::Session => Some("session"),
+            MeAuthMethod::ApiToken => Some("api_token"),
+            MeAuthMethod::Jwt => Some("jwt"),
+            MeAuthMethod::Unknown => None,
+        }
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, Default)]
+pub struct PasswordChange {
+    pub current_password: String,
+    /// 12〜256 文字。利用者名・メールアドレス・今のパスワードと同じものは不可
+    pub new_password: String,
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, Default)]
+pub struct MfaSetupRequest {
+    /// 今のパスワード（必須）
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub password: Option<String>,
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, Default)]
+pub struct MfaSetup {
+    pub algorithm: Value,
+    pub digits: Value,
+    /// `POST /auth/mfa/totp/confirm` に渡す値（10 分）
+    #[serde(default)]
+    pub enrollment_token: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub enrollment_token_redacted: Option<Value>,
+    pub expires_at: Timestamp,
+    /// `otpauth://totp/{発行者}:{メールアドレスか利用者名}?secret=...&issuer=...`（QR コードにします）
+    #[serde(default)]
+    pub otpauth_uri: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub otpauth_uri_redacted: Option<Value>,
+    pub period: Value,
+    /// TOTP の秘密（base32、パディングなし。手で入力するとき）
+    #[serde(default)]
+    pub secret: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub secret_redacted: Option<Value>,
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, Default)]
+pub struct MfaConfirmRequest {
+    pub code: String,
+    pub enrollment_token: String,
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, Default)]
+pub struct MfaConfirmResult {
+    /// 回復コード 10 個（この応答でだけ返します）
+    #[serde(default)]
+    pub recovery_codes: Option<Vec<String>>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub recovery_codes_redacted: Option<Value>,
+    pub user: User,
+}
+
+/// 本人確認。`password` か `code`（TOTP の 6 桁、または回復コード）のどちらか 1 つ。
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, Default)]
+pub struct MfaReauth {
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub code: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub password: Option<String>,
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, Default)]
+pub struct RecoveryCodes {
+    #[serde(default)]
+    pub recovery_codes: Option<Vec<String>>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub recovery_codes_redacted: Option<Value>,
+}
+
 /// 監査ログの 1 件（`audit.log` の 1 行に `node`・`node_name` を足したもの）。秘密情報やリクエストの本文は含みません。
 /// 操作によってフィールドが増えることがあります。
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize, Default)]
@@ -1039,7 +1464,7 @@ pub struct AuditEntry {
     pub request_id: String,
     /// 対象の資源の ID（装置・参加者などは `{ノード}/{装置}`・`{部屋}/{接続}` の形）
     pub resource: String,
-    /// 操作した主体。API トークンなら `token:{ID}`、JWT なら `sub` の値
+    /// 操作した主体。API トークンなら `token:{ID}`、ログインのセッションなら `user:{ID}`（ログインの失敗で利用者が分からないときは `anonymous`）、JWT なら `sub` の値
     pub subject: String,
     pub tenant: String,
     pub ts: Timestamp,
@@ -3482,6 +3907,12 @@ pub enum SseEventDataType {
     MediaPipelineUpdated,
     #[serde(rename = "media_pipeline.deleted")]
     MediaPipelineDeleted,
+    #[serde(rename = "user.created")]
+    UserCreated,
+    #[serde(rename = "user.updated")]
+    UserUpdated,
+    #[serde(rename = "user.deleted")]
+    UserDeleted,
     #[serde(rename = "node.down")]
     NodeDown,
     #[serde(rename = "node.up")]
@@ -3544,6 +3975,9 @@ impl SseEventDataType {
             SseEventDataType::RoomDeleted => Some("room.deleted"),
             SseEventDataType::MediaPipelineUpdated => Some("media_pipeline.updated"),
             SseEventDataType::MediaPipelineDeleted => Some("media_pipeline.deleted"),
+            SseEventDataType::UserCreated => Some("user.created"),
+            SseEventDataType::UserUpdated => Some("user.updated"),
+            SseEventDataType::UserDeleted => Some("user.deleted"),
             SseEventDataType::NodeDown => Some("node.down"),
             SseEventDataType::NodeUp => Some("node.up"),
             SseEventDataType::DeviceDown => Some("device.down"),
