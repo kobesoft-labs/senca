@@ -18,7 +18,7 @@ CARGO=${CARGO:-$HOME/.cargo/bin/cargo}
 
 # 作る（ノードは別の人も触っているので、壊れていたら少し待って作り直す）
 for i in 1 2 3 4 5; do
-  (cd "$ROOT" && CARGO_TARGET_DIR="$SDK_TARGET" "$CARGO" build -q -p senca-sdk --examples) && break
+  (cd "$ROOT" && CARGO_TARGET_DIR="$SDK_TARGET" "$CARGO" build -q -p senca-sdk --lib --examples) && break
   [ "$i" = 5 ] && { echo "sdk build failed"; exit 1; }
   echo "sdk build failed (try $i; the workspace may be mid-edit), retrying"; sleep 20
 done

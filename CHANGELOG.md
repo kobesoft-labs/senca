@@ -4,6 +4,25 @@
 
 ### Added / 追加
 
+- Web console redesign: a design system (tokens, light/dark/system themes, Lucide icons, accessible components), a grouped
+  sidebar that becomes a drawer on phones, a command palette (Ctrl/⌘+K) and keyboard shortcuts (`?`), Japanese/English switching,
+  and guided flows for first-time users. Streams: guided creation with a "connect your encoder" step that flips to "receiving"
+  when video arrives, tabs on the detail page, restream presets (YouTube, Twitch, Facebook, RTMP, SRT, cloud) with inline secrets,
+  recordings with thumbnails and range export, a 7-day schedule timetable with live conflict checks, and a better browser sender.
+  Pipelines: a list, templates and a node-graph editor (compatible-port hints, undo/redo, keyboard operation, outline view,
+  live validation, plan view). Switcher: preview/program monitors, scene tiles, T-bar, mixer with meters, safety mode.
+  Operations: a dashboard with a getting-started checklist and "needs attention" items, nodes and devices, and new Grid and
+  Audit log pages; API tokens by role. New Rooms (live participants, join tokens, test join from the browser) and Media
+  pipelines (guided creation by use case) pages
+  ／ 管理画面を作り直しました。デザインの土台（色・明暗・アイコン・アクセシブルな部品）、まとまりごとのサイドバー（スマートフォンでは引き出し）、
+  コマンドパレット（Ctrl/⌘+K）とショートカット（`?`）、日本語・英語の切り替え、はじめての人向けの案内があります。配信は、作成からエンコーダーの
+  接続までを案内し、映像が届くと「受信中」に変わります。詳細はタブにまとめ、YouTube・Twitch・Facebook・RTMP・SRT・クラウドへの同時配信を
+  その場で秘密値を作って設定できます。録画はサムネイルと範囲を決めた書き出し、予約は 7 日分の時間割と入力中の重なりの確認に対応しました。
+  パイプラインは一覧・ひな形・グラフの編集（つなげるポートの案内・元に戻す・キーボード操作・部品の一覧・その場の検査・計画）、スイッチャーは
+  プレビューとプログラムのモニター・シーンのタイル・T バー・メーター付きのミキサー・誤操作を防ぐモードを備えます。運用は、はじめの手順と
+  「確認が要ること」があるダッシュボード、ノードとデバイス、新しいグリッドと監査ログの画面、役割で選べる API トークンです。
+  新しくルーム（参加者の様子・参加トークン・このブラウザからの参加）とメディアパイプライン（目的から選ぶ作成）の画面を足しました
+
 - Container images on GitHub Container Registry, `ghcr.io/kobesoft-labs/senca`, for linux/amd64 and linux/arm64 (Raspberry Pi 4/5
   with a 64-bit OS): `latest` (standard: royalty-free codecs and the VA-API runtime), `slim` (no codec libraries; pass-through
   only) and `gpu` (amd64; Intel and AMD GPU drivers). Built natively per architecture by `.github/workflows/docker.yml`
