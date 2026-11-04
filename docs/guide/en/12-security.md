@@ -1,20 +1,23 @@
 # 12. Security
 
-Authentication and scopes, credentials for publishers and viewers (stream keys, signed URLs, join tokens), secret
-storage, egress restrictions, cluster mTLS and the codec worker sandbox.
+Authentication and scopes, user accounts and login (password, MFA, OIDC), credentials for publishers and viewers
+(stream keys, signed URLs, join tokens), secret storage, egress restrictions, cluster mTLS and the codec worker sandbox.
 
 - Related pages: [3. Configuration](03-configuration.md), [9. Cluster and grid](09-cluster-grid.md), [10. Realtime rooms](10-rooms.md), [13. Operations](13-operations.md), [15. Management API and SDKs](15-api-and-sdks.md)
-- Rationale: [ADR-0002 Dependencies and cryptography](../../dev/adr/0002-dependencies-and-crypto.md), [ADR-0007 Inputs, outputs, secrets and egress](../../dev/adr/0007-inputs-outputs-egress.md), [ADR-0009 Distributed control plane](../../dev/adr/0009-cluster.md)
+- Rationale: [ADR-0002 Dependencies and cryptography](../../dev/adr/0002-dependencies-and-crypto.md), [ADR-0017 User accounts, login sessions and OIDC](../../dev/adr/0017-users-sessions-oidc.md) (Japanese), [ADR-0007 Inputs, outputs, secrets and egress](../../dev/adr/0007-inputs-outputs-egress.md), [ADR-0009 Distributed control plane](../../dev/adr/0009-cluster.md)
 
 ## 12.1 Authenticating to the management API
 
 The management API (`/api/v1/...`) and SSE (`/api/v1/events`) use `Authorization: Bearer <value>`.
 
-- A value starting with `senca_` is an **API token**; anything else is treated as a **JWT** (only when `--jwks` is set).
+- A value starting with `senca_` is an **API token**, one starting with `sencas_` is a user's **login session**
+  ([12.13](#1213-user-accounts-and-login)), and anything else is treated as a **JWT** (only when `--jwks` is set).
 - Failures return 401 with `WWW-Authenticate: Bearer`. The reason (unknown token, expired, bad signature, ...) is
   never put in the response; the node logs it as `auth failed: <reason> request_id=...`.
-- Served without authentication: `/healthz`, `/readyz`, the static files of the console and sender page, and signed
-  playback URLs (`/s/...`). WHIP authenticates with the stream key, WHEP with the playback signature, and room
+- Served without authentication: `/healthz`, `/readyz`, the static files of the console and sender page, signed
+  playback URLs (`/s/...`), and the login operations (`GET /api/v1/auth/providers`, `POST /api/v1/auth/login`,
+  `POST /api/v1/auth/login/mfa`, `POST /api/v1/auth/exchange`, `GET /api/v1/auth/oidc/{id}/start`,
+  `GET /api/v1/auth/oidc/{id}/callback`). WHIP authenticates with the stream key, WHEP with the playback signature, and room
   signaling with a join token.
 
 ### API tokens
@@ -48,7 +51,8 @@ Per-operation scopes are listed in [15. Management API and SDKs](15-api-and-sdks
 
 Every resource belongs to a tenant, and resources of other tenants are invisible (404). The first admin token
 belongs to tenant `default`. Since API tokens can only be created inside the creator's tenant,
-**additional tenants come from JWTs** (the tenant is a JWT claim).
+**additional tenants come from JWTs or OIDC** (the tenant is a JWT claim, or comes from the OIDC IdP configuration,
+[12.15](#1215-oidc-single-sign-on)).
 
 ### The bootstrap admin token
 
@@ -72,23 +76,8 @@ the seconds to wait in `Retry-After` and the limit that was hit in `details.limi
 | `token` | API token (subject for JWTs) | management API | 200 per second (`--rate-limit-token`) |
 | `auth_failures` | client IP address | failed authentication (management API, SSE, wrong WHIP tokens and stream keys) | 30 per minute (`--rate-limit-auth-failures`) |
 | `connect` | client IP address | new connections (`/signaling`, WHIP, WHEP, SSE) | 30 per second (`--rate-limit-connect`) |
-
-- Per-second limits allow short bursts of up to twice the rate.
-- An IP address that has used up its authentication failures gets 429 even with a valid token until it recovers.
-- The client IP address is the peer of the TCP connection the node accepted. Behind a reverse proxy, also limit requests at the proxy.
-- Each limit can be disabled with `0` ([3. Configuration](03-configuration.md)).
-
-### Request rate limits
-
-To stop brute force and overuse, the node counts requests and answers 429 (`RATE_LIMITED`) above a limit. The response carries
-the seconds to wait in `Retry-After` and the limit that was hit in `details.limit`. Limits are counted per node (not summed over a cluster).
-
-| `details.limit` | Counted per | Applies to | Default (option) |
-|---|---|---|---|
-| `ip` | client IP address | management API (`/api/v1`), counted before authentication | 300 per second (`--rate-limit-ip`) |
-| `token` | API token (subject for JWTs) | management API | 200 per second (`--rate-limit-token`) |
-| `auth_failures` | client IP address | failed authentication (management API, SSE, wrong WHIP tokens and stream keys) | 30 per minute (`--rate-limit-auth-failures`) |
-| `connect` | client IP address | new connections (`/signaling`, WHIP, WHEP, SSE) | 30 per second (`--rate-limit-connect`) |
+| `login` | client IP address | failed logins (password, codes, OIDC) | 10 per minute (`--rate-limit-login`) |
+| `login_account` | account (tenant and username) | failed passwords and codes | 5, then waits doubling from 1 second (up to 15 minutes) |
 
 - Per-second limits allow short bursts of up to twice the rate.
 - An IP address that has used up its authentication failures gets 429 even with a valid token until it recovers.
@@ -270,7 +259,8 @@ Without `tls_*`, nodes talk plain TCP and authenticate each other only with the 
 
 - The single-node `control/log` and `control/snapshot.json`, and `control/raft/` in a cluster, contain the playback
   key (hex, unencrypted), token and stream-key hashes, and sealed secrets. With the playback key, an attacker can
-  forge playback URLs and room join tokens.
+  forge playback URLs and room join tokens. They also contain users' password hashes (Argon2id), hashes of login
+  sessions and recovery codes, and encrypted authenticator secrets.
 - The node creates `secret-key` and `bootstrap-admin-token` with mode 0600 and sets `control/` to mode 0700 at every
   start, so other local users cannot read the control files. Recordings and segments follow the umask. Run the node as
   a dedicated user and consider `chmod 700` on the whole data directory (the Docker image runs as the dedicated user `senca` with data in a volume).
@@ -324,6 +314,378 @@ Every state-changing management API call is appended to `data_dir/audit.log` as 
 {"action":"stream.create","request_id":"req_...","resource":"<resource ID>","subject":"token:<token ID>","tenant":"default","ts":"2026-11-03T01:10:15.531Z"}
 ```
 
-`subject` is `token:{ID}` for API tokens and the `sub` claim for JWTs. Secrets and request bodies are never written.
-Responses remembered for Idempotency-Key replay have `stream_key`, `token` and `secret` removed before storage
-(a replayed response shows `null` plus `*_redacted: true`).
+`subject` is `token:{ID}` for API tokens, `user:{user ID}` for login sessions and the `sub` claim for JWTs. Secrets
+and request bodies are never written. Responses remembered for Idempotency-Key replay have `stream_key`, `token`,
+`secret`, `temporary_password`, `recovery_codes`, `otpauth_uri`, `enrollment_token` and `mfa_token` removed before
+storage (a replayed response shows `null` plus `*_redacted: true`).
+
+Logins and user operations are recorded with the following `action` values (passwords, codes, recovery codes and
+session values are never written).
+
+| `action` | Meaning |
+|---|---|
+| `auth.login` | A login, with `outcome` (`success`, `failure`, `mfa_required`, `callback`), `method` (`password`, `password+totp`, `password+recovery_code`, `oidc:{id}`), `reason` and `ip`. A failure with an unknown username is recorded with `subject: anonymous`, and the attempted username is not recorded |
+| `auth.logout`, `auth.session.revoke` | Logout, revoking one of your own sessions |
+| `auth.password.change` | Changing your own password |
+| `auth.mfa.enable`, `auth.mfa.disable`, `auth.mfa.recovery_codes`, `auth.mfa.recovery_code_used` | Registering and disabling MFA, regenerating recovery codes, using a recovery code |
+| `user.create`, `user.update`, `user.delete` | Creating, changing (whether roles or scopes changed, disabling) and deleting users. `by: "oidc:{id}"` when OIDC created the user or recomputed its roles |
+| `user.password.reset`, `user.mfa.reset`, `user.sessions.revoke`, `user.oidc.link` | An administrator resetting a password, removing MFA, revoking sessions; linking to an IdP user |
+
+## 12.13 User accounts and login
+
+When people use the console or the management API, create **user accounts** for them instead of handing out API
+tokens. There are two ways to log in, and both can be enabled at the same time:
+
+- **Password** (optionally with a code from an authenticator app, [12.14](#1214-multi-factor-authentication-mfa))
+- **OIDC single sign-on** (Google Workspace, Microsoft Entra ID, Keycloak, Auth0, ...; [12.15](#1215-oidc-single-sign-on))
+
+Logging in returns a **session** (a value starting with `sencas_`). Use it in `Authorization: Bearer` just like an
+API token.
+
+### Users
+
+- Users belong to a tenant. Users of other tenants are invisible (404). A tenant can have up to 1000 users.
+- A username is 1–64 characters of letters, digits and `. _ @ + -`. Usernames are case-insensitive (`Alice` and
+  `alice` are the same username). Email addresses must also be unique within a tenant.
+- The password is optional. A user without a password logs in with OIDC only.
+- A user's permissions are the union of their **roles** and individually granted scopes.
+
+| Role | Scopes |
+|---|---|
+| `admin` | `tenant:admin` (everything except `node:admin`) |
+| `operator` | `stream:read`, `stream:write`, `publish`, `subscribe`, `recording:read` |
+| `viewer` | `stream:read`, `recording:read`, `subscribe` |
+
+  Scopes that no role includes (`recording:delete`, `node:admin`, ...) are granted individually with `scopes`.
+  Changes to roles and scopes take effect immediately.
+
+### Creating the first administrator
+
+If `setup_required` in `GET /api/v1/auth/providers` (no authentication needed) is `true`, there are no users yet.
+The console then shows a "create the first administrator" screen. With the API, create the user with the bootstrap
+admin token ([12.1](#121-authenticating-to-the-management-api)):
+
+```sh
+TOKEN=$(cat /var/lib/senca/control/bootstrap-admin-token)
+curl -s -X POST http://127.0.0.1:8080/api/v1/users \
+  -H "Authorization: Bearer $TOKEN" -H 'Content-Type: application/json' \
+  -d '{"username": "alice", "email": "alice@example.com", "password": "a long password that is hard to guess", "roles": ["admin"]}'
+```
+
+The bootstrap admin token keeps working after users exist. See [12.1](#121-authenticating-to-the-management-api)
+for how to replace it.
+
+### Passwords
+
+- 12–256 characters (counted as characters, so any language works). The username and email address cannot be used as
+  the password. Passwords are used exactly as given, without Unicode normalization.
+- The server stores only an Argon2id hash (19 MiB, 2 iterations, parallelism 1, a per-user salt). The parameters are
+  recorded inside the hash, so when they are raised in a future version, the hash is replaced with one using the new
+  parameters at the next login.
+- Users change their own password with `POST /api/v1/auth/password` (the current password is required). All their
+  other sessions are then revoked; the session that made the change stays.
+- Administrators reset a password with `POST /api/v1/users/{id}/password`. Without a password in the body, the node
+  generates a 20-character temporary password and returns it in that response only. A user who logs in with a
+  temporary password cannot do anything else until they change it (`pending: ["password_change"]`).
+
+### Logging in with a password
+
+```sh
+curl -s -X POST http://127.0.0.1:8080/api/v1/auth/login -H 'Content-Type: application/json' \
+  -d '{"username": "alice", "password": "a long password that is hard to guess"}'
+# → {"status": "ok", "token": "sencas_...", "session": {...}, "user": {...}, "pending": [], ...}
+```
+
+- For users of a tenant other than `default`, add `"tenant": "acme"` to the body.
+- Users who registered an authenticator app get `{"status": "mfa_required", "mfa_token": "..."}` instead
+  ([12.14](#1214-multi-factor-authentication-mfa)).
+- An unknown user, a wrong password and a disabled user all get the same 401. The node does the same amount of hashing
+  for unknown users, so neither the response nor its timing reveals whether a user exists.
+- **Failure limits**: 10 failures per minute per client IP address (`--rate-limit-login`) and 5 failures per account.
+  From the 6th failure, the account waits 1 s, 2 s, 4 s, ... (up to 15 minutes; the count starts over after an hour
+  without failures). While it waits, even the correct password gets 429 (`details.limit` is `login_account`). The
+  IP address limit shows up as `details.limit: login`. Both are counted per node.
+- `--auth-password-login off` disables password login (OIDC only).
+
+### Sessions
+
+- A session expires after 8 hours without use (`--auth-session-idle`), and 7 days after login even while in use
+  (`--auth-session-lifetime`).
+- Sessions are also revoked on logout (`POST /api/v1/auth/logout`), password change or reset, when the user is
+  disabled or deleted, and when the user's roles or scopes change.
+- Users list their own sessions with `GET /api/v1/auth/sessions` (with the IP address and browser they logged in
+  from) and revoke one with `DELETE /api/v1/auth/sessions/{id}`. Administrators use `GET` and
+  `DELETE /api/v1/users/{id}/sessions`. Each user can have up to 20 sessions; beyond that the oldest is removed.
+- The server stores only the SHA-256 of the session value. In a cluster, sessions are replicated to every node, so a
+  session from a login on any node works on every node.
+- The last-used time is recorded every few minutes (every 5 minutes by default), not on every request, to keep writes
+  to the cluster's consensus log low. The idle expiry can therefore come up to that much earlier.
+- The `subject` in the audit log is `user:{user ID}`. `GET /api/v1/auth/me` shows your user, tenant, scopes and the
+  session's expiry.
+
+### Managing users
+
+Managing users requires `tenant:admin` (`/api/v1/users`).
+
+| Operation | API |
+|---|---|
+| Create, list, get | `POST /users`, `GET /users`, `GET /users/{id}` |
+| Change roles, scopes, disabled, display name, email | `PATCH /users/{id}` (`If-Match` required) |
+| Delete | `DELETE /users/{id}` |
+| Reset the password | `POST /users/{id}/password` |
+| Remove MFA (lost authenticator) | `DELETE /users/{id}/mfa` |
+| List sessions, revoke all sessions | `GET /users/{id}/sessions`, `DELETE /users/{id}/sessions` |
+
+- **You can only grant scopes you hold yourself** (403). Only a principal with `node:admin` can grant `node:admin`.
+  You also cannot change, delete or reset the password of a user who holds a scope you do not have (for example a
+  user with `node:admin`) (403).
+- **The last administrator of a tenant** (an enabled user with `tenant:admin`) cannot be deleted, disabled or demoted
+  (409). Create another administrator first.
+- Creating, changing and deleting users is published on SSE (`GET /api/v1/events`) as `user.created`, `user.updated`
+  and `user.deleted` (only to principals with `tenant:admin`).
+
+## 12.14 Multi-factor authentication (MFA)
+
+Users who log in with a password can register an authenticator app (TOTP: Google Authenticator, Microsoft
+Authenticator, 1Password, ...) as a second factor.
+
+1. `POST /api/v1/auth/mfa/totp/setup` (body: the current password, `{"password": "..."}`) returns `otpauth_uri` (for
+   a QR code), `secret` (to type in by hand) and `enrollment_token`. The secret is shown only this once.
+2. After adding it to the app, send the 6-digit code to `POST /api/v1/auth/mfa/totp/confirm`
+   (`{"enrollment_token": "...", "code": "123456"}`) to enable MFA.
+3. Have the user store the **10 recovery codes** (`xxxx-xxxx-xxxx-xxxx`) from the response in a safe place. They are
+   also shown only this once.
+
+Logging in once MFA is enabled:
+
+```sh
+curl -s -X POST .../api/v1/auth/login -d '{"username": "alice", "password": "..."}'      # → {"status": "mfa_required", "mfa_token": "..."}
+curl -s -X POST .../api/v1/auth/login/mfa -d '{"mfa_token": "...", "code": "123456"}'   # → {"status": "ok", "token": "sencas_..."}
+```
+
+- A recovery code can be used instead of the app (`{"mfa_token": "...", "recovery_code": "abcd-efgh-jkmn-pqrs"}`).
+  Each recovery code works once.
+- The same code cannot be used twice (of the codes that change every 30 seconds, only ones later than the last used
+  code are accepted). Clock drift of up to 30 seconds either way is tolerated.
+- Regenerating recovery codes (`POST /api/v1/auth/mfa/recovery-codes`) and disabling MFA
+  (`POST /api/v1/auth/mfa/disable`) need the current password or a code (`{"password": "..."}` or `{"code": "..."}`).
+- On a node started with `--auth-require-mfa`, MFA is mandatory for users who log in with a password. Users who have
+  not registered get a session with `pending: ["mfa_enrollment"]` and cannot do anything else until they register.
+  MFA cannot be disabled on such a node.
+- The authenticator secret is encrypted with the same key as secrets ([12.5](#125-secrets)). Only hashes of recovery
+  codes are stored.
+- SENCA's MFA does not apply to users who log in with OIDC. Configure MFA at the IdP.
+
+## 12.15 OIDC single sign-on
+
+The node acts as an OpenID Connect relying party and users authenticate on the IdP's login page (authorization code
+flow, always with PKCE (S256), `state` and `nonce`).
+
+### Flow
+
+1. The login button opens `oidc[].start_url` from `GET /api/v1/auth/providers`
+   (`/api/v1/auth/oidc/{id}/start?return_to=/console/...`) in the browser.
+2. The node redirects to the IdP. The in-flight values are kept in an encrypted cookie (`senca_oidc`, HttpOnly,
+   10 minutes).
+3. When the IdP redirects back to `/api/v1/auth/oidc/{id}/callback`, the node fetches and validates the ID token,
+   determines the user and redirects to the console at `/console/#/auth/complete?code=...` (or `?error=...` on
+   failure).
+4. The console sends `POST /api/v1/auth/exchange` (`{"code": "..."}`) from the same browser and receives a session.
+   The code is valid once, for 60 seconds.
+
+In a cluster, steps 1, 3 and 4 may each reach a different node (the cookie is encrypted with the cluster-wide key).
+
+### On the IdP side
+
+- Register `{public URL}/api/v1/auth/oidc/{id}/callback` as the **redirect URI** (`{public URL}` is
+  `--public-http-url`). To use a different URL, for example behind a reverse proxy, set `redirect_url`. When
+  `--public-http-url` is `https://`, the cookie gets `Secure`.
+- A client with a client secret (confidential client) is recommended. Put the secret in a file and point
+  `client_secret_file` at it. Clients without a secret (public clients) also work.
+- The default scopes are `openid email profile`.
+
+### On the SENCA side
+
+For one IdP use startup options; for several, use a JSON file (`--oidc-config`).
+
+```sh
+senca-node ... --public-http-url https://senca.example.com \
+  --oidc-id keycloak --oidc-display-name "Company account" \
+  --oidc-issuer https://sso.example.com/realms/media --oidc-client-id senca \
+  --oidc-client-secret-file /etc/senca/keycloak-client-secret \
+  --oidc-role-map groups=senca-admins:admin --oidc-default-role viewer --oidc-auto-provision
+```
+
+The `--oidc-config` file has the form `{"providers": [ ... ]}`, and each entry has these fields:
+
+| Field | Default | Meaning |
+|---|---|---|
+| `id` | (required) | Name used in URLs (lowercase letters, digits, `-`, `_`; 1–32 characters) |
+| `display_name` | `id` | Name shown on the login button |
+| `issuer` | (required) | Issuer URL. The node fetches `{issuer}/.well-known/openid-configuration` |
+| `client_id` | (required) | Client ID |
+| `client_secret_file` | none | File with the client secret (surrounding whitespace is removed). Without it, a public client |
+| `scopes` | `["openid", "email", "profile"]` | Scopes to request (`openid` is required) |
+| `redirect_url` | `{--public-http-url}/api/v1/auth/oidc/{id}/callback` | Redirect URI registered at the IdP |
+| `allowed_email_domains` | `[]` (no restriction) | Email domains allowed to log in |
+| `require_email_verified` | `true` | When the email address is used (domain restriction, linking to existing users), require `email_verified: true` |
+| `tenant` | `default` | Tenant the users belong to |
+| `tenant_claim` | none | Name of the claim that decides the tenant (cannot be combined with `tenant`) |
+| `role_mappings` | `[]` | List of `{"claim", "value", "role"}`. If the claim contains the value, the user gets the role (`admin`, `operator`, `viewer`) or scope |
+| `default_role` | none | Role when no mapping matches. Without it, the login is refused |
+| `sync_roles` | `true` | Recompute roles from `role_mappings` at every login (only when `role_mappings` is set) |
+| `auto_provision` | `false` | Create a user automatically on first login |
+| `username_claim` | `preferred_username` | Claim used for the username of automatically created users (falls back to `email`, then `sub`) |
+| `prompt`, `max_age` | none | Passed through in the authorization request (with `max_age`, `auth_time` is checked too) |
+
+The startup options are `--oidc-id`, `--oidc-display-name`, `--oidc-issuer`, `--oidc-client-id`,
+`--oidc-client-secret-file`, `--oidc-scopes`, `--oidc-redirect-url`, `--oidc-allowed-domain` (repeatable),
+`--oidc-tenant`, `--oidc-tenant-claim`, `--oidc-role-map CLAIM=VALUE:ROLE` (repeatable), `--oidc-default-role`,
+`--oidc-no-sync-roles`, `--oidc-auto-provision`, `--oidc-allow-unverified-email`, `--oidc-username-claim`,
+`--oidc-prompt` and `--oidc-max-age` ([3. Configuration](03-configuration.md)).
+
+### How the user is determined
+
+1. If a SENCA user is linked to the IdP user (the ID token's `sub`), that user.
+2. Otherwise, a user with the same email address is looked up and linked (only when the email address is verified).
+   If an administrator creates a user with an email address in advance, that user is linked the first time the
+   person logs in with OIDC.
+3. Otherwise, with `auto_provision: true` a new user (without a password) is created. With `false`, the login is
+   refused (`error=no_account`).
+
+- With `role_mappings`, roles are recomputed at every login. Join nested claims with `.` (for example Keycloak's
+  `realm_access.roles`). The IdP configuration may also grant `node:admin`.
+- Without `role_mappings`, `default_role` is used when a user is created automatically, and later role changes are
+  made in SENCA (console or API).
+- The list of `error` values on failure (`email_domain_not_allowed`, `no_role`, `account_disabled`, ...) is in the
+  OpenAPI description of `GET /auth/oidc/{provider}/callback`.
+
+### ID token validation
+
+- The node fetches only the configured issuer's discovery document and the JWKS and token endpoint listed in it
+  (it never connects to URLs found in tokens). A discovery document whose `issuer` differs from the configuration,
+  or one that lists an `http://` endpoint when the issuer is `https://`, is not used.
+- Discovery and JWKS are cached for an hour. A token with an unknown `kid` triggers a JWKS refetch, so key rotation
+  is picked up.
+- Checked: the signature (EdDSA, ES256, RS256; the algorithm is decided by the key type, and `none` and HS algorithms
+  are rejected), `iss`, `aud` (must contain `client_id`), `exp`, `nbf`, `iat` (within 10 minutes), `nonce`, `azp`
+  (when present, and required when `aud` has several values) and `sub`. Clock drift of up to 60 seconds is tolerated.
+- The issuer is a destination configured by the administrator, so the egress checks of
+  [12.6](#126-egress-restrictions-ssrf-protection) (`--egress-allow`) are not applied to it. A Keycloak on an internal
+  network works without adding an allow rule.
+
+### Google (Google Workspace)
+
+1. In the Google Cloud console under "APIs & Services" → "Credentials", create an OAuth client ID of type "Web
+   application". Add `https://senca.example.com/api/v1/auth/oidc/google/callback` to "Authorized redirect URIs".
+2. Save the client secret in a file.
+3. Google ID tokens carry no group information, so restrict users by domain and assign roles in SENCA.
+
+```json
+{"providers": [{
+  "id": "google", "display_name": "Sign in with Google",
+  "issuer": "https://accounts.google.com",
+  "client_id": "1234567890-abcdefg.apps.googleusercontent.com",
+  "client_secret_file": "/etc/senca/google-client-secret",
+  "allowed_email_domains": ["example.com"],
+  "auto_provision": true, "default_role": "viewer"
+}]}
+```
+
+Create the people who should be administrators in advance with `POST /api/v1/users`
+(`{"username": "alice", "email": "alice@example.com", "roles": ["admin"]}`); they are linked on their first login.
+
+### Microsoft Entra ID
+
+1. In the Entra admin center under "App registrations", register a new application and add
+   `https://senca.example.com/api/v1/auth/oidc/entra/callback` as a redirect URI of the "Web" platform. Create a
+   client secret under "Certificates & secrets".
+2. To decide roles by group, add a "groups claim" under "Token configuration" (security groups, group ID in the ID
+   token). The `groups` claim then contains the groups' object IDs.
+3. Use the tenant-specific issuer `https://login.microsoftonline.com/{tenant ID}/v2.0` (`common` and
+   `organizations` do not work).
+
+```json
+{"providers": [{
+  "id": "entra", "display_name": "Sign in with Microsoft",
+  "issuer": "https://login.microsoftonline.com/00000000-0000-0000-0000-000000000000/v2.0",
+  "client_id": "11111111-2222-3333-4444-555555555555",
+  "client_secret_file": "/etc/senca/entra-client-secret",
+  "auto_provision": true,
+  "role_mappings": [
+    {"claim": "groups", "value": "aaaaaaaa-0000-0000-0000-000000000001", "role": "admin"},
+    {"claim": "groups", "value": "aaaaaaaa-0000-0000-0000-000000000002", "role": "operator"}
+  ],
+  "default_role": "viewer"
+}]}
+```
+
+- Entra ID tokens do not include `email_verified`, and users can sometimes change `email`. By default, linking by
+  email address and `allowed_email_domains` therefore do not apply (restricting domains gives
+  `error=email_not_verified`). As in the example, use the tenant-specific issuer to limit logins to your organization
+  and decide roles by group. Set `"require_email_verified": false` only when your organization manages the email
+  addresses and you want to link existing users by email.
+- When a user belongs to many groups (more than 200 in an ID token), the `groups` claim is omitted. In that case,
+  configure the app to emit only the groups assigned to the application.
+
+### Keycloak
+
+1. Create a client in the realm (Client authentication ON, Standard flow ON). Add
+   `https://senca.example.com/api/v1/auth/oidc/keycloak/callback` to "Valid redirect URIs" and save the secret from
+   "Credentials" in a file.
+2. To decide roles by group, add a "Group Membership" mapper to a client scope (Token Claim Name `groups`, Full group
+   path OFF, Add to ID token ON). To use realm roles, turn on Add to ID token for the "realm roles" mapper of the
+   "roles" scope (the claim is `realm_access.roles`).
+
+```json
+{"providers": [{
+  "id": "keycloak", "display_name": "Company account",
+  "issuer": "https://sso.example.com/realms/media",
+  "client_id": "senca",
+  "client_secret_file": "/etc/senca/keycloak-client-secret",
+  "auto_provision": true,
+  "role_mappings": [
+    {"claim": "groups", "value": "senca-admins", "role": "admin"},
+    {"claim": "realm_access.roles", "value": "senca-operator", "role": "operator"}
+  ],
+  "default_role": "viewer"
+}]}
+```
+
+In Keycloak, a user's email address counts as verified only when "Email verified" is ON for that user.
+
+### Auth0 and others
+
+- The Auth0 issuer is `https://{domain}/` (including the trailing `/`). Use the application type "Regular Web
+  Application" and add the redirect URI to "Allowed Callback URLs".
+- Other IdPs work if they support discovery (`/.well-known/openid-configuration`), the authorization code flow and
+  PKCE with S256. ID tokens must be signed with EdDSA, ES256 or RS256.
+
+### Tenants from claims
+
+To serve several organizations from one SENCA, the tenant can come from an IdP claim (`"tenant_claim": "org"`). The
+claim value must be 1–64 characters of letters, digits and `. _ -`. Since API tokens can only be created inside the
+creator's tenant, the first administrator of a new tenant comes from this or from a JWT.
+
+## 12.16 When nobody can log in
+
+- **Another administrator exists**: they use `POST /api/v1/users/{id}/password` (reset the password) or
+  `DELETE /api/v1/users/{id}/mfa` (remove MFA).
+- **You have an admin token**: on the node's server, run the following. It re-enables the user, removes MFA and
+  prints a temporary password; the user must change it at the next login.
+
+  ```sh
+  senca-node reset-password --data-dir /var/lib/senca --username alice
+  # temporary password for alice: Xk3... (20 characters)
+  ```
+
+  It calls the running node's management API (default `http://127.0.0.1:8080`, change with `--api`) with the token in
+  `{data-dir}/control/bootstrap-admin-token` (or `recovery-admin-token` if that does not exist). Pass a token in
+  another file with `--token-file`. If the user does not exist, `--create-admin` creates an administrator. Because it
+  goes through the API, it works in a cluster too.
+- **No admin token either** (the bootstrap token was deleted or its value lost): restart one node with
+  `--recovery-admin-token`. The node writes an admin token for tenant `default` (`tenant:admin`, `node:admin`, expires
+  in 24 hours) to `control/recovery-admin-token` (mode 0600). Run `reset-password` above with it, then delete the file
+  and restart without the option (no new token is created while the file exists). Anyone who can change the data
+  directory and the startup arguments can already read the whole control state, so this does not grant additional
+  privileges.

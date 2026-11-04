@@ -91,6 +91,37 @@ In a cluster, use the same values on every node.
 
 See [12. Security](12-security.md).
 
+### Authentication (user login and OIDC)
+
+| Option | Value | Default | Meaning |
+|---|---|---|---|
+| `--auth-session-idle` | seconds | `28800` (8 hours) | A login session expires after this long without use (10–2592000) |
+| `--auth-session-lifetime` | seconds | `604800` (7 days) | Maximum lifetime of a login session (10–31536000, at least `--auth-session-idle`) |
+| `--auth-require-mfa` | — | off | Require an authenticator app (TOTP) code for users who log in with a password. Users without one are asked to register after logging in |
+| `--auth-password-login` | `on`, `off` | `on` | `off` disables password login (OIDC only) |
+| `--auth-mfa-issuer` | name | `SENCA` | Issuer name shown in authenticator apps (1–64 characters, no `:`) |
+| `--recovery-admin-token` | — | off | At startup, write a recovery admin token to `control/recovery-admin-token` (expires in 24 hours; not created while the file exists) |
+| `--oidc-config` | FILE | none | List of OIDC IdPs (JSON, `{"providers": [...]}`) |
+| `--oidc-issuer` | URL | none | Issuer when there is a single IdP. Used together with `--oidc-client-id` |
+| `--oidc-client-id` | string | none | Client ID |
+| `--oidc-client-secret-file` | FILE | none | File with the client secret (without it, a public client) |
+| `--oidc-id` | name | `oidc` | IdP name used in URLs (lowercase letters, digits, `-`, `_`) |
+| `--oidc-display-name` | string | the `--oidc-id` value | Name shown on the login button |
+| `--oidc-scopes` | string | `openid email profile` | Scopes to request (separated by spaces or commas; `openid` is required) |
+| `--oidc-redirect-url` | URL | `{--public-http-url}/api/v1/auth/oidc/{id}/callback` | Redirect URI registered at the IdP |
+| `--oidc-allowed-domain` | domain | none | Email domain allowed to log in (repeatable) |
+| `--oidc-tenant`, `--oidc-tenant-claim` | name | `default` | Tenant for the users, or the name of the claim that decides it (one or the other) |
+| `--oidc-role-map` | `CLAIM=VALUE:ROLE` | none | Role (`admin`, `operator`, `viewer`) or scope given when the claim contains the value (repeatable) |
+| `--oidc-default-role` | role | none | Role when no mapping matches (without it, the login is refused) |
+| `--oidc-no-sync-roles` | — | — | Stop recomputing roles at every login |
+| `--oidc-auto-provision` | — | off | Create a user automatically on first login |
+| `--oidc-allow-unverified-email` | — | — | Also use email addresses without `email_verified` |
+| `--oidc-username-claim` | name | `preferred_username` | Claim used for the username of automatically created users |
+| `--oidc-prompt`, `--oidc-max-age` | string, seconds | none | `prompt` and `max_age` of the authorization request |
+
+See [12.15](12-security.md#1215-oidc-single-sign-on) for the `--oidc-config` fields and per-IdP examples. When both
+`--oidc-*` and `--oidc-config` are given, both sets of IdPs are used.
+
 ### Codecs and capture
 
 | Option | Value | Default | Meaning |
@@ -143,6 +174,7 @@ Requests over a limit get 429 (`RATE_LIMITED` with `Retry-After`; see [12. Secur
 | `--rate-limit-token` | N | `200` | Management API requests per second per API token (per subject for JWTs), with bursts up to twice that |
 | `--rate-limit-auth-failures` | N | `30` | Failed authentications allowed per client IP address per minute. Once used up, even a valid token gets 429 |
 | `--rate-limit-connect` | N | `30` | New connections (`/signaling`, WHIP, WHEP, SSE) per second per client IP address (bursts up to twice that) |
+| `--rate-limit-login` | N | `10` | Failed logins allowed per client IP address per minute. The per-account wait is counted separately ([12.13](12-security.md#1213-user-accounts-and-login)) |
 
 ### Other
 
@@ -166,7 +198,11 @@ The node refuses to start (exit code 2) when:
 - a `--webrtc-public-ip` value is not an IP address, is `0.0.0.0`, `::` or a multicast address, or more than 8 are given; `--events-retain` is over 1000000;
 - `--rooms-auth-webhook` or `--rooms-event-webhook` is not an http/https URL, or is given without `--rooms-webhook-secret-file`;
   the secret file cannot be read or is shorter than 16 bytes;
-- the cluster configuration has `node_id` 0, does not list itself in `peers`, or has fewer than 1 or more than 7 peers.
+- the cluster configuration has `node_id` 0, does not list itself in `peers`, or has fewer than 1 or more than 7 peers;
+- `--auth-session-idle` or `--auth-session-lifetime` is out of range, or `--auth-mfa-issuer` is malformed;
+- an OIDC IdP has a malformed or duplicate `id`, an `issuer` or `redirect_url` that is not an http/https URL, no
+  `client_id`, no `openid` in `scopes`, both `tenant` and `tenant_claim`, an unknown role in `role_mappings` or
+  `default_role`, or a `client_secret_file` that cannot be read or is empty; or more than 16 IdPs are configured.
 
 Problems found later during startup (unreadable files, a listener that cannot be bound, a cluster secret shorter
 than 16 characters, missing S3 credentials, and so on) end the process with `fatal: ...` and exit code 1.
@@ -199,6 +235,11 @@ The `--config FILE` JSON is an object with the keys below. Every key is optional
 | `net_mbps` | `--net-mbps` | number |
 | `labels` | `--label` | object mapping string to string |
 | `capacity_cpu_millis`, `capacity_memory_mb` | same names | number or `null` |
+| `rate_limit_ip`, `rate_limit_token`, `rate_limit_auth_failures`, `rate_limit_connect`, `rate_limit_login` | `--rate-limit-*` | number |
+| `auth_session_idle_secs`, `auth_session_lifetime_secs` | `--auth-session-idle`, `--auth-session-lifetime` | number |
+| `auth_require_mfa`, `auth_password_login` | `--auth-require-mfa`, `--auth-password-login` | boolean |
+| `auth_mfa_issuer` | `--auth-mfa-issuer` | string |
+| `oidc_providers` | `--oidc-*`, `--oidc-config` | array of IdPs (fields as in [12.15](12-security.md#1215-oidc-single-sign-on)) |
 | `recording_storage` | `--recording-storage`, `--s3-*`, `--recording-keep-local` | `{"uri", "endpoint", "region", "addressing", "credentials_file", "part_size", "keep_local_secs"}` (all optional) |
 | `rooms_cascade` | `--rooms-cascade` | boolean |
 | `rooms_auth_webhook`, `rooms_event_webhook` | same names | string or `null` |
@@ -323,6 +364,7 @@ Contents of `--data-dir`. The node creates what it needs.
 | `control/raft/` | Raft storage in a cluster (`hardstate`, `snap-*.snap`, `log/*.seg`). `control/log` is not used in a cluster |
 | `control/secret-key` | Key that seals stored secrets (32 bytes, mode 0600). Created on first start if missing. In a cluster, one node's key becomes the cluster-wide key, wrapped with the cluster secret and replicated |
 | `control/bootstrap-admin-token` | Value of the first admin token (mode 0600). Written only on the very first start |
+| `control/recovery-admin-token` | Value of a recovery admin token (mode 0600). Written when the node starts with `--recovery-admin-token`. Delete it when you are done |
 | `recordings/{recording ID}/index.jsonl` | Recording index (append-only JSON Lines: `begin`, `init`, `segment`, `gap`, `end`) |
 | `recordings/{recording ID}/thumbnail.jpg`, `thumbnail.json` | Recording thumbnail and its metadata |
 | `recordings/.trash-{recording ID}` | Deletion in progress (temporary) |
