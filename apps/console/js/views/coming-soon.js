@@ -11,7 +11,7 @@ const INFO = {
   rooms: { api: '/api/v1/rooms', guide: '10-rooms.md' },
   'media-pipelines': { api: '/api/v1/media-pipelines', guide: '11-media-pipelines.md' },
   grid: { api: '/api/v1/grid', guide: '09-cluster-grid.md' },
-  audit: { api: null, guide: '13-operations.md' },
+  audit: { api: '/api/v1/audit', guide: '12-security.md' },
   users: { api: null, guide: '12-security.md' },
 };
 
