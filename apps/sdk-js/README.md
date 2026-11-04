@@ -162,7 +162,8 @@ await senca.rooms.participants('daily').updateMetadata(connectionId, { name: 'Al
 利用できるリソースは次のとおりです。`streams`（`rotateKey`・`playbackUrl`・`startRecording`・`plan`・`snapshot`・`snapshots`）・
 `recordings`（`stop`・`playbackUrl`・`thumbnail`・`exportMp4`）・`schedules`（`check`・`runs`）・`tokens`・`inputs`・`outputs`（ストリームごとに作成）・
 `secrets`・`pipelines`（`validate`・`control`）・`nodes`（`drain`・`undrain`・`devices.disable/enable`）・`rooms`（`participants(id)`・`sendMessage`・
-`stats`・`createToken`）・`mediaPipelines`（部屋の書き出し・録画・合成・外部への送信・文字起こし。`list({room})`・`start`・`stop`）。
+`stats`・`createToken`）・`mediaPipelines`（部屋の書き出し・録画・合成・外部への送信・文字起こし。`list({room})`・`start`・`stop`）・
+`audit`（監査ログ。新しい順で、`list({since, until, action, subject, resource, q, node})`・`listPage`）。
 このほかに `capabilities()`・`devices()`・`grid()`・`events()` があります。API 仕様のすべての操作に対応する SDK のメソッドがあります
 （`test/rest.test.mjs` が `operations.gen.js` と照合しています）。SDK にメソッドがない操作は、`senca.request(method, path, opts)` で呼び出せます。
 

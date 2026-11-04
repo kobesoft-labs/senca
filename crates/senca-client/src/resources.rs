@@ -46,6 +46,11 @@ impl SencaClient {
     }
 
     pub(crate) async fn op_page<T: DeserializeOwned>(&self, path: String, opts: &ListOptions) -> Result<Page<T>> {
+        self.op_page_as(path, opts).await
+    }
+
+    /// 一覧の 1 頁を任意の型で読む（`items`・`next_cursor` のほかにフィールドがある一覧）。
+    pub(crate) async fn op_page_as<T: DeserializeOwned>(&self, path: String, opts: &ListOptions) -> Result<T> {
         self.json(opts.apply(Call::new(Method::Get, path))).await.map(|v| v.value)
     }
 
@@ -85,6 +90,10 @@ impl SencaClient {
     /// 部屋のメディアパイプライン（書き出し・録画・合成・送り出し・文字起こし）。
     pub fn media_pipelines(&self) -> crate::media_pipelines::MediaPipelines {
         crate::media_pipelines::MediaPipelines(self.clone())
+    }
+    /// 監査ログ（`/audit`、読み出しだけ）。
+    pub fn audit(&self) -> crate::audit::Audit {
+        crate::audit::Audit(self.clone())
     }
 
     /// 能力（`GET /capabilities`）。

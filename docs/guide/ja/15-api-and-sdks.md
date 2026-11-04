@@ -340,7 +340,7 @@ try {
   `recordings`（`stop`・`playbackUrl`・`thumbnail`・`exportMp4`。作成は `streams.startRecording`）・`schedules`（`check`・`runs`）・
   `tokens`・`inputs`・`outputs`（`create(streamId, body)`・`list(streamId)`）・`secrets`・`pipelines`（`validate`・`control`）・
   `nodes`（`drain`・`undrain`・`devices.disable/enable`）・`rooms`（`createToken`・`participants(id).list/get/updateMetadata/disconnect`・
-  `sendMessage`・`stats`）・`mediaPipelines`（`list({room})`・`start`・`stop`）。クライアント自体のメソッドとして `capabilities()`・`devices()`・
+  `sendMessage`・`stats`）・`mediaPipelines`（`list({room})`・`start`・`stop`）・`audit`（`list({since, action, ...})`・`listPage`。監査ログ）。クライアント自体のメソッドとして `capabilities()`・`devices()`・
   `grid()`・`events()` があります。型の無いリクエストは `senca.request(method, path, opts)` で送れます。
 - 共通のメソッド: `create`・`list`（`Paginator`。`for await` で全件を取得）・`listPage`（1 ページ）・`get`・`update`（`ifMatch` が必須。無いと
   `TypeError`）・`modify`・`delete`（`ifMatch` は任意）。
@@ -441,6 +441,7 @@ client.streams().delete(&s.id, s.if_match()).await?;
 | `nodes()` | `list`・`get`・`drain`・`undrain`・`disable_device`・`enable_device` |
 | `rooms()` | `create`・`create_with`・`list`・`list_with`・`list_page`・`get`・`update`・`delete`・`issue_token`・`send_message`・`stats`・`participants`・`participants_with`・`participant`・`update_participant`・`disconnect` |
 | `media_pipelines()` | `create`・`create_with`・`list`・`list_with`（`ListOptions::room`）・`list_page`・`get`・`update`・`set_state`・`delete` |
+| `audit()` | `list(&AuditQuery)`・`list_with`・`list_page`（監査ログ、[12.12](12-security.md#1212-監査ログ)） |
 | クライアント | `capabilities`・`grid`・`devices`・`events`・`healthz`・`readyz`・`fetch_signed`（署名付きの再生パス。307 をたどります）・`request_json`（型の無いリクエスト） |
 
 - **バージョン情報付きの応答**: `get`・`create`・`update` は `Versioned<T>`（`value`・`etag`・`replayed`・`request_id`。`Deref` で中身を参照できます）を返します。`update` の

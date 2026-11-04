@@ -97,6 +97,15 @@ REST（problem+json、RFC 9457）の誤り。`code` は problem の `code`（`NO
 | `stack?: string` |  |
 | `cause?: unknown` |  |
 
+### `Audit`
+
+監査ログ（読み出しだけ。新しい順。クラスターでは全ノードの分を合わせて返す）。
+
+| メンバー | 説明 |
+|---|---|
+| `list(o?: ListOptions & AuditFilter): Paginator<AuditEntry>` | 一覧（cursor を自動でたどる）。`action` は完全一致、`.` か `*` で終われば前方一致。`tenant` は別のテナント・`*` に node:admin が要る。 |
+| `listPage(o?: ListOptions & AuditFilter): Promise<AuditList>` | 一覧の 1 頁（`unavailable_nodes` は答えなかったノード。項目が `limit` より少なくても `next_cursor` があれば続きがある）。 |
+
 ### `Collection`
 
 create・list・get・update・delete を持つ資源。
@@ -352,6 +361,7 @@ text/event-stream の解析器（行を足すと、まとまったイベント�
 | `nodes: Nodes` |  |
 | `rooms: Rooms` | リアルタイムの部屋。 |
 | `mediaPipelines: MediaPipelines` | 部屋のメディアパイプライン（書き出し・録画・合成・送り出し・文字起こし）。 |
+| `audit: Audit` | 監査ログ（読み出しだけ）。 |
 | `baseUrl: string` | API の base（`.../api/v1`）。 |
 | `capabilities(o?: CallOptions): Promise<import("./openapi.gen.js").Capabilities>` | 対応版・コーデック・機能。 |
 | `devices(o?: CallOptions): Promise<import("./openapi.gen.js").Devices>` | 全ノードのハードウェア。 |

@@ -1,5 +1,33 @@
 // 生成物: apps/sdk-js/scripts/gen_types.py が docs/api/openapi.yaml から作る。手で直さない。
-// 管理 API v1 の components.schemas（133 個）。
+// 管理 API v1 の components.schemas（135 個）。
+
+/**
+ * 監査ログの 1 件（`audit.log` の 1 行に `node`・`node_name` を足したもの）。秘密情報やリクエストの本文は含みません。
+ * 操作によってフィールドが増えることがあります。
+ */
+export type AuditEntry = {
+  /** 操作の種類（`stream.create`・`token.delete`・`node.drain` など。`{資源}.{操作}` の形） */
+  action: string;
+  /** 記録したノード（要求を受けたノード）の ID */
+  node: string;
+  /** 記録したノードの名前 */
+  node_name: string;
+  /** 要求 ID（応答の `X-Request-Id`） */
+  request_id: string;
+  /** 対象の資源の ID（装置・参加者などは `{ノード}/{装置}`・`{部屋}/{接続}` の形） */
+  resource: string;
+  /** 操作した主体。API トークンなら `token:{ID}`、JWT なら `sub` の値 */
+  subject: string;
+  tenant: string;
+  ts: Timestamp;
+};
+
+export type AuditList = {
+  items: AuditEntry[];
+  next_cursor: string | null;
+  /** 時間内に答えなかったノードの ID（その記録は含まれません。単一ノードでは常に空） */
+  unavailable_nodes: string[];
+};
 
 export type Capabilities = {
   api_version: "v1";
@@ -331,13 +359,13 @@ export type LabelSelector = {
   values: string[];
 };
 
-/** standard = HLS、low = LL-HLS（part は min(500 ms, segment_ms / 4)）、interactive = WebRTC・MoQ 向け（LL-HLS の part は 200 ms、出だしの待ちと送りの溜まりを小さくする） */
+/** standard = HLS、low = LL-HLS（part は min(500 ms, segment_ms / 4)）、interactive = WebRTC・MoQ 向け（LL-HLS の part は 200 ms。開始時の待ち時間と送信のバッファーを小さくします） */
 export type LatencyProfile = "standard" | "low" | "interactive";
 
 export type Limits = {
-  /** 入力のビットレートの上限（直近 3 秒の平均）。5 秒続けて超えたら送り手を切り、10 秒は新しい送り手を断る */
+  /** 入力のビットレートの上限（直近 3 秒の平均）。5 秒続けて超えると配信者を切断し、その後 10 秒間は新しい配信者を受け付けません */
   max_ingress_bps?: number | null;
-  /** ノードごとの同時の視聴者の上限（最近プレイリストを取得した HLS のクライアントと、RTMP・SRT・RTSP・WHEP・MoQ の接続の合計）。超える新しい視聴は断る（HLS・WHEP・RTSP は 503） */
+  /** ノードごとの同時の視聴者の上限（最近プレイリストを取得した HLS のクライアントと、RTMP・SRT・RTSP・WHEP・MoQ の接続の合計）。上限を超える新しい視聴は断ります（HLS・WHEP・RTSP は 503） */
   max_viewers?: number | null;
 };
 
@@ -349,7 +377,7 @@ export type LiveInfo = {
   tracks: Array<Record<string, unknown>>;
   /** rtmp・srt など */
   transport: string;
-  /** このノードの視聴者の数（`limits.max_viewers` で数えるもの）。`hls` は最近プレイリストを取得した別々の HLS のクライアント */
+  /** このノードの視聴者の数（`limits.max_viewers` で数えるもの）。`hls` は最近プレイリストを取得した HLS のクライアントの数です */
   viewers?: {
     hls?: number;
     moq?: number;
@@ -359,7 +387,7 @@ export type LiveInfo = {
     total?: number;
     webrtc?: number;
   };
-  /** hub の購読の数（中継・録画以外の内部の購読も含む目安） */
+  /** ストリームの内部の購読の数（中継・録画以外の内部の購読も含む目安） */
   viewers_hint: number;
 };
 

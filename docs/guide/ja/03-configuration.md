@@ -147,6 +147,8 @@ Webhook の宛先は、`--egress-allow` のポリシーで検査します（プ�
 | `--data-dir` | DIR | `out`（カレントディレクトリからの相対パス） | データディレクトリ（[3.6](#36-データディレクトリ)）。必ず指定してください |
 | `--log-json` | — | 無効 | ノードのログを 1 行 1 JSON の形式で標準出力に出力します（[13. 運用](13-operations.md)） |
 | `--events-retain` | N | `4096` | SSE（`GET /api/v1/events`）でつなぎ直したときに再送するため、ノードが残しておく直近のイベントの数（0〜1000000）。[15. API と SDK](15-api-and-sdks.md) を参照 |
+| `--audit-log-max-bytes` | バイト | `67108864`（64 MiB） | 監査ログ（`audit.log`）がこの大きさになったら回転します。`0` で回転しません。[12.12](12-security.md#1212-監査ログ) を参照 |
+| `--audit-log-keep` | N | `8` | 回転した監査ログ（`audit.log.{N}`）を残す数（1〜1000）。古いものから削除します |
 
 ### 起動時の検査
 
@@ -159,6 +161,7 @@ Webhook の宛先は、`--egress-allow` のポリシーで検査します（プ�
 - `--recording-storage` が `local` でも `s3://BUCKET[/PREFIX]` でもない、`--s3-endpoint`・`--s3-region`・`--s3-addressing` の形式が誤っている、
   `--s3-part-size` が 5 MiB〜5 GiB の範囲外。
 - `--webrtc-public-ip` が IP アドレスではない、`0.0.0.0`・`::`・マルチキャストのアドレス、または 9 個以上。`--events-retain` が 1000000 を超える。
+- `--audit-log-max-bytes` が 1〜4095（0 か 4096 以上にしてください）、または `--audit-log-keep` が 1〜1000 の範囲外。
 - `--rooms-auth-webhook`・`--rooms-event-webhook` が http/https の URL ではない、または `--rooms-webhook-secret-file` がない。
   秘密のファイルを読み込めない、または 16 バイト未満。
 - クラスターの設定の `node_id` が 0、`peers` に自分が含まれていない、`peers` が 1〜7 台の範囲外。
@@ -198,6 +201,7 @@ Webhook の宛先は、`--egress-allow` のポリシーで検査します（プ�
 | `rooms_auth_webhook`・`rooms_event_webhook` | 同名のオプション | 文字列または `null` |
 | `rooms_auth_mode` | `--rooms-auth-mode` | `"after_token"` または `"only"` |
 | `rooms_webhook_secret_file` | 同名のオプション | 文字列または `null` |
+| `audit_log_max_bytes`・`audit_log_keep` | `--audit-log-max-bytes`・`--audit-log-keep` | 数値 |
 | `recording_storage` | `--recording-storage`・`--s3-*`・`--recording-keep-local` | `{"uri", "endpoint", "region", "addressing", "credentials_file", "part_size", "keep_local_secs"}`（どれも省略できます） |
 
 注意点:
@@ -311,7 +315,7 @@ Webhook の宛先は、`--egress-allow` のポリシーで検査します（プ�
 | パス | 内容 |
 |---|---|
 | `node-id` | このノードの ID（128 bit、16 進数）。初回の起動時に作成し、以後は変わりません |
-| `audit.log` | 監査ログ（1 行 1 JSON、追記） |
+| `audit.log`・`audit.log.{N}` | 監査ログ（1 行 1 JSON、追記。`.{N}` は回転したもの。[12.12](12-security.md#1212-監査ログ)） |
 | `control/log` | 単一ノードでの制御状態の追記ログ（1 件ごとに fsync） |
 | `control/snapshot.json` | 単一ノードでの制御状態のスナップショット。ログが 1000 件を超えると作り直し、ログを空にします |
 | `control/raft/` | クラスターでの Raft のデータ（`hardstate`・`snap-*.snap`・`log/*.seg`）。クラスターでは `control/log` は使いません |

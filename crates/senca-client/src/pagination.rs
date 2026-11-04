@@ -145,14 +145,12 @@ impl<T: DeserializeOwned + Send + 'static> Stream for Paginator<T> {
                     self.fut = None;
                     match r {
                         Ok(p) => {
-                            // 空の頁で cursor が進まないなら終える（無限に回らない）
-                            if p.items.is_empty() || p.next_cursor == self.next {
+                            // cursor が進まないなら終える（無限に回らない）。項目が空でも cursor が進めば続ける
+                            // （`GET /audit` は、ノードが読む量の上限に達すると空の頁と続きの cursor を返すことがある）
+                            if p.next_cursor == self.next {
                                 self.next = None;
                             } else {
                                 self.next = p.next_cursor;
-                            }
-                            if p.items.is_empty() {
-                                self.done = true;
                             }
                             self.buf.extend(p.items);
                         }

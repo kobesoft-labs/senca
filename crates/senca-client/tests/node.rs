@@ -231,6 +231,17 @@ async fn against_real_node() {
     assert!(nodes.iter().any(|n| n.is_self));
     let grid = client.grid().await.unwrap();
     assert!(!grid.nodes.is_empty());
+    // 監査ログ: いま消したトークンの記録が新しい順に読める（limit=1 で cursor を辿る）
+    let q = senca_client::AuditQuery { action: Some("token.".into()), resource: Some(t.id.clone()), ..Default::default() };
+    let entries = client.audit().list_with(&q, ListOptions::default().limit(1)).collect_all().await.unwrap();
+    assert_eq!(entries.iter().map(|e| e.action.as_str()).collect::<Vec<_>>(), ["token.delete", "token.create"]);
+    assert!(entries.iter().all(|e| !e.node.is_empty() && e.tenant == "default"));
+    let page = client.audit().list_page(&senca_client::AuditQuery::default(), &ListOptions::default().limit(2)).await.unwrap();
+    assert_eq!(page.items.len(), 2);
+    assert!(page.next_cursor.is_some() && page.unavailable_nodes.is_empty());
+    // 消したトークンでは読めない
+    let e = reader.audit().list(&Default::default()).collect_all().await.unwrap_err();
+    assert_eq!(e.code(), Some(ProblemCode::AuthFailed));
 
     // 部屋
     use senca_client::models::{RoomCreate, RoomPatch, RoomSettings, RoomTokenRequestRole};
