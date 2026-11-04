@@ -8,27 +8,49 @@ senca-node --console-dir apps/console ...   # → http://<node>/console/
 tools/interop/console.sh                    # 配信の形・構文・ロジック（辞書・書式・検索・色）・ヘッドレス Chrome での操作と再生
 ```
 
-ログインは API トークン（初回は `{data-dir}/control/bootstrap-admin-token`）。トークンは sessionStorage にだけ置く。
+ログインはユーザーのアカウント（パスワードと 2 段階認証、OIDC のシングルサインオン）か API トークン・JWT（下の「ログインとユーザー」）。
+セッション・トークンの値は sessionStorage にだけ置く。
 部品の見本は **`#/_styleguide`**（メニューには出さない。コマンドパレットの「スタイルガイド」からも開ける）。
 
 ## 構成
 
 | 場所 | 中身 |
 |---|---|
-| `index.html` | 外枠。CSS を 5 つ、`js/boot.js`（最初の描画の前に明暗と言語を `<html>` に入れる）、`js/main.js`。インラインのスクリプト・スタイルは無い（CSP） |
+| `index.html` | 外枠。CSS を 6 つ、`js/boot.js`（最初の描画の前に明暗と言語を `<html>` に入れる）、`js/main.js`。インラインのスクリプト・スタイルは無い（CSP） |
 | `css/tokens.css` | デザイントークン（色・文字・間隔・角丸・影・動き・フォーカス）。値はここだけに置く |
 | `css/base.css`・`css/components.css`・`css/shell.css`・`css/views.css` | 土台と補助クラス・部品・外枠・画面ごとの見た目（再生・パイプライン・スイッチャー・スタイルガイド） |
-| `js/main.js` | 経路の切り替え、ログイン状態、SSE の開始、言語を変えたときの作り直し |
+| `css/auth.css` | ログイン・先に済ませる手続き・アカウント・ユーザーの画面 |
+| `js/main.js` | 経路の切り替え、ログインの流れ（/auth/me → pending → 外枠）、入り直し、SSE の開始、言語を変えたときの作り直し |
 | `js/nav.js` | 画面の一覧（経路・メニューのグループ・アイコン・`g` のショートカットのキー・準備中） |
 | `js/shell.js` | 左のメニューと上の帯（パンくず・検索・接続の状態・言語・明暗・アカウント） |
 | `js/palette.js`・`js/shortcuts.js`・`js/lib/fuzzy.js` | コマンドパレット、キーボードのショートカット、あいまい検索 |
 | `js/i18n/` | `t()`・`tn()` と辞書（`ja/*.js`・`en/*.js`、画面ごとのファイル） |
 | `js/ui/` | 部品（下の一覧）。入口は `js/ui/index.js` |
 | `js/lib/` | `dom.js`（`h()` など）・`icons.js`・`format.js`（Intl の書式）・`theme.js`・`ui.js`（エラーの表示・`load()`）・`recent.js`・`guide.js`・`bus.js`・`live.js` など |
-| `js/api/` | `client.js`（fetch の包み。problem+json を `ApiError` に、401 はログインへ）・`resources.js`・`sse.js`・`pipelines.js` |
+| `js/api/` | `client.js`（fetch の包み。problem+json を `ApiError` に、401 は入り直してから送り直す、403 の pending を知らせる）・`auth.js`（/auth・/users）・`resources.js`・`sse.js`・`pipelines.js` |
 | `js/player/` | MSE の HLS 再生（fMP4 だけ）: `m3u8.js`・`mp4.js`・`hls.js`、WebRTC の再生 `whep.js`、`widget.js`（自動 = WHEP → だめなら HLS） |
 | `js/pipeline/model.js` | senca-pipeline のグラフ JSON と編集用のモデルの行き来・ポートの型・検査。画面に依存しない |
 | `js/views/` | 画面。`render(main, params, ctx)` を持ち、片付けの関数を返してよい（`ctx = { caps, navigate, setCrumbs, nav }`）。準備中のページは `coming-soon.js` |
+
+## ログインとユーザー（ADR-0017）
+
+| 場所 | 中身 |
+|---|---|
+| `js/views/login.js` | ログインの画面。`GET /auth/providers` で出し分ける: SSO のボタン・パスワード・2 段階認証（6 桁・回復コード）・API トークン、利用者がいなければ最初の管理者を作る手順。`#/auth/complete?code=…`（コードを替える）・`?error=…`（理由の説明と再試行） |
+| `js/views/auth-forced.js` | `pending`（`password_change`・`mfa_enrollment`）が済むまで出す画面。ログインの直後はそのときのパスワードをメモリに持ち、聞き直さない |
+| `js/views/reauth.js` | 使っている途中の 401 で出す「もう一度ログイン」のダイアログ（閉じられない。ログアウトは選べる） |
+| `js/views/account.js`・`users.js` | `#/account`（プロフィール・パスワード・2 段階認証・ログイン中の端末）、`#/users`（tenant:admin） |
+| `js/views/auth-parts.js` | パスワードの欄（表示の切り替え・Caps Lock）・強さの目安・6 桁の欄（本物の input は 1 つ）・QR・IdP の印・回復コード・認証アプリの登録の流れ |
+| `js/lib/session.js` | 今の主体（`GET /auth/me`）・`hasScope()`・行き先（return_to）。`/auth/me` の無い古いノードでは JWT の claim から推し量る |
+| `js/lib/qr.js`・`password.js`・`useragent.js` | QR コードの生成（バイトモード・誤り訂正 M、外のサービスは使わない）、パスワードの強さ（長さと文字の種類だけ）と仮のパスワード、User-Agent から端末の名前 |
+
+- 起動: `#/auth/complete` なら先に扱う（コードは URL からすぐ消す）→ 値が無ければログインの画面 → `GET /auth/me` → `pending` があれば手続き → `GET /capabilities` → 外枠。
+- 行き先: ハッシュはログインの間も変えないので、ログインの後に開こうとしていたページが出る。OIDC は `return_to=/console/#/…` で戻す。ログアウトは `#/` に戻す。
+- 401: `client.js` が `setReauthHandler` の関数（`main.js`）を待ち、入り直せたら同じ要求を 1 回だけ送り直す（401 の要求は処理されていないので POST でも重ならない）。画面の入力はそのまま残る。
+- メニューの項目に `scope` を書くと、その権限が無いと分かっている主体には出さない（今は「ユーザー」だけ）。
+- 赤は使わない: パスワードの強さの「弱い」は琥珀、失敗の待ち時間は warn。QR コードだけは読み取りのため SVG の中で白地に黒を固定する。
+- 試験: `tools/interop/console.sh` の C（QR を `tools/interop/qr_decode.py` で読み戻す・パスワードの強さ・User-Agent）と D の「ログインとユーザー」の区切り
+  （`tools/interop/console_auth.cjs`。試験用の IdP `oidc_mock.py` と 2 台のノードを使う）。
 
 ## デザインの決まり
 

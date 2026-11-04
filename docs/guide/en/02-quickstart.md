@@ -196,7 +196,7 @@ ffprobe -v error -show_entries stream=codec_name,width,height -of compact "http:
 
 In a browser, use an HLS player such as hls.js (responses on signed URLs carry `Access-Control-Allow-Origin: *`).
 Playback in Safari and on iOS is not verified at present ([1.5 Verification status](01-overview.md#15-verification-status)).
-The console is at `http://127.0.0.1:8080/console/` (log in with an API token). Its player handles fMP4 HLS and WHEP
+The console is at `http://127.0.0.1:8080/console/`. The first time you open it, it asks you to create the first administrator: paste the admin token above, then choose a username and password (you can also keep signing in with the API token; see [12.13](12-security.md#1213-user-accounts-and-login)). Its player handles fMP4 HLS and WHEP
 only, so it cannot play a stream that uses the default TS container; see `hls.container` in
 [4. Ingest and playback](04-ingest-playback.md).
 

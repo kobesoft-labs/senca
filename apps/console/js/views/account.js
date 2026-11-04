@@ -304,7 +304,7 @@ export async function render(root) {
     profileBox,
     securityBox,
     me && me.auth_method === 'session'
-      ? panel({ title: t('account.sessions.title'), icon: 'laptop', description: t('account.sessions.lead'), testid: 'account-sessions', flush: true,
+      ? panel({ title: t('account.sessions.title'), icon: 'laptop', description: t('account.sessions.lead'), testid: 'account-sessions', flush: true, class: 'sessions-panel',
         actions: [iconButton('refresh', t('common.refresh'), { size: 'sm', onClick: () => refreshSessions() }), othersBtn] }, sessionsBox)
       : null);
   try { await reloadMe(); } catch { /* 前の値で出す */ }

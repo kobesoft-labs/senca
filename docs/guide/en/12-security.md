@@ -489,6 +489,28 @@ Managing users requires `tenant:admin` (`/api/v1/users`).
 - Creating, changing and deleting users is published on SSE (`GET /api/v1/events`) as `user.created`, `user.updated`
   and `user.deleted` (only to principals with `tenant:admin`).
 
+### In the console
+
+The console's sign-in page (`/console/`) adapts to how the node is set up.
+
+- **No users yet**: you see a "Welcome to SENCA" page. Paste the bootstrap admin token, then choose the administrator's username and password;
+  you're signed in right away.
+- **Normally**: there is a "Continue with …" button for each identity provider and a username/password form. Users with an authenticator app are then
+  asked for the 6-digit code ("Use a recovery code" switches to a recovery code). When sign-in is being throttled, the page counts down until you can try again.
+- **API tokens and JWTs**: "Sign in with an API token" at the bottom of the page still lets you paste a token.
+- The page you were trying to open (such as `#/streams/...`) opens after you sign in, including after OIDC.
+- After signing in with a temporary password, or on a node with `--auth-require-mfa` when no authenticator app is registered yet, the console first asks you
+  to change the password or set up the app. Nothing else is available until that's done ("Sign out" at the top right lets you leave).
+- If your session expires while you're working, a "Please sign in again" dialog appears on top of the current page. Sign in and carry on where you left off.
+
+Open **Account** from the account menu at the right end of the top bar to change your password, set up an authenticator app (the QR code is generated in your
+browser), regenerate recovery codes or turn two-step verification off, and see and sign out your signed-in devices.
+
+Administrators manage users under **Users** in the left menu. When adding a user you pick a role (Administrator, Operator, Viewer) with a short explanation of each;
+"Generate a temporary password" shows the password once, and the user chooses their own at first sign-in. Changing roles, disabling, resetting the password,
+removing two-step verification, viewing and revoking sessions, and deleting are in each row's "…" menu. Trying to demote, disable or delete the last
+administrator explains why it isn't allowed and what to do instead.
+
 ## 12.14 Multi-factor authentication (MFA)
 
 Users who log in with a password can register an authenticator app (TOTP: Google Authenticator, Microsoft

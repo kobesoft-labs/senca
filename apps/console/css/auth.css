@@ -166,6 +166,8 @@ dialog .mfa-enroll { min-height: 120px; }
 .device-cell { display: flex; align-items: center; gap: var(--sp-3); min-width: 0; }
 .device-icon { width: 36px; height: 36px; flex: none; border-radius: var(--r-md); display: grid; place-items: center; background: var(--surface-2); color: var(--text-2); }
 .device-text { min-width: 0; }
+/* ログイン中の端末の見出し: 狭い画面ではボタンを題の下に回す（題が細くつぶれないように） */
+.sessions-panel > .panel-head .panel-title { flex: 1 1 280px; }
 
 /* ---------------------------------------------------------------- ユーザーの画面 */
 .users-toolbar { display: flex; flex-wrap: wrap; align-items: flex-end; gap: var(--sp-2) var(--sp-3); margin-bottom: var(--sp-4); }

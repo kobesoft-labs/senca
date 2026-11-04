@@ -7,7 +7,7 @@ const BROWSERS = [
   [/\bSamsungBrowser\/(\d+)/, 'Samsung Internet'],
   [/\bFirefox\/(\d+)|\bFxiOS\/(\d+)/, 'Firefox'],
   [/\bCriOS\/(\d+)/, 'Chrome'],
-  [/\bChrome\/(\d+)/, 'Chrome'],
+  [/\b(?:Headless)?Chrome\/(\d+)/, 'Chrome'],
   [/\bVersion\/(\d+)[^ ]* (?:Mobile\/\S+ )?Safari\//, 'Safari'],
   [/^curl\//, 'curl'],
   [/\bsenca-(?:sdk|client|js)\b/i, 'SENCA SDK'],
