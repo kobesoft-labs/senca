@@ -407,7 +407,6 @@ SSE の `id` を持たず、`Last-Event-ID` による再開の対象外です。
 [シグナリング v1](../../realtime/signaling.md) の仕様にあっても、現在の senca-node では使えないものがあります。
 
 - **ノードの `overflow_redirect`**: 設定できません（ノードが満員なら `room_full` になります）。
-- **`settings.recording`**: 方針を示す値で、録画は始まりません（録画には [11](11-media-pipelines.md) のメディアパイプラインを使います）。
 - **参加者が自分の metadata を変更するメッセージ**: シグナリング v1 にはありません。アプリケーションのサーバーから `PATCH /rooms/{id}/participants/{connection_id}` で変更してください。
 - **再開（resume）**: 切断されたら、新しい接続として入り直します。
 

@@ -408,7 +408,6 @@ With `--rooms-event-webhook URL` and `--rooms-webhook-secret-file FILE`, each no
 Some features are described in the [Signaling v1](../../realtime/signaling.en.md) specification but are not yet available in `senca-node`:
 
 - **Node `overflow_redirect`**: cannot be configured (a full node answers `room_full`).
-- **`settings.recording`**: a policy value only; it does not start recording (use media pipelines, [11](11-media-pipelines.md)).
 - **A message for participants to change their own metadata**: Signaling v1 has none; change it from your application server with `PATCH /rooms/{id}/participants/{connection_id}`.
 - **Resume**: after a disconnect, the client rejoins as a new connection.
 

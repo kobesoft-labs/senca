@@ -1448,6 +1448,10 @@ export type RoomPermissions = {
  */
 export type RoomSettings = {
   audio_codec?: "opus";
+  /** この部屋の認証 Webhook の URL（`http://`・`https://`）。ノードの `--rooms-auth-webhook` より優先します。署名のシークレットはノードの設定のものです。無ければ応答から省きます */
+  auth_webhook_url?: string | null;
+  /** カスケード。true なら、部屋を配置したノード（home）以外のノードにつないだ参加者も、そのノード（edge）で受け付けます（ノード間の中継で home とつなぎます）。false なら配置先へ redirect します。false のときは応答から省きます */
+  cascade?: boolean;
   /** 使用を許可する DataChannel のラベルのパターン（`#` で始まります。末尾の `*` は前方一致） */
   data_labels?: string[];
   /** E2EE（SFrame）の部屋。SFU は中身を見ずに転送するため、合成や合成の録画はできません */
