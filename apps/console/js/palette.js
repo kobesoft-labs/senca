@@ -61,6 +61,8 @@ function staticItems({ navigate, logout }) {
     { id: 'act:new-stream', icon: 'plus', label: t('palette.newStream'), keywords: ['new stream', 'create'], run: go('#/streams?new=1') },
     { id: 'act:new-schedule', icon: 'calendar', label: t('palette.newSchedule'), keywords: ['new schedule'], run: go('#/schedules?new=1') },
     { id: 'act:new-token', icon: 'key', label: t('palette.newToken'), keywords: ['new token'], run: go('#/tokens?new=1') },
+    { id: 'act:new-user', icon: 'user-plus', label: t('palette.newUser'), keywords: ['new user', 'invite', 'ユーザー'], run: go('#/users?new=1') },
+    { id: 'act:account', icon: 'user', label: t('palette.account'), keywords: ['account', 'profile', 'password', 'mfa', '2fa', 'アカウント', 'パスワード'], run: go('#/account') },
     { id: 'act:new-secret', icon: 'secrets', label: t('palette.newSecret'), keywords: ['secret'], run: go('#/secrets') },
     { id: 'act:new-pipeline', icon: 'pipelines', label: t('palette.newPipeline'), keywords: ['pipeline'], run: go('#/pipelines') },
     { id: 'act:send', icon: 'camera', label: t('palette.sendFromBrowser'), keywords: ['whip', 'camera'], run: go('#/send') },

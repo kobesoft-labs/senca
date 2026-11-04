@@ -1,6 +1,7 @@
 // 画面の一覧（経路・メニュー・パンくず・コマンドパレット・「g ○」のショートカットの元）。
 // 画面を足すときは ROUTES と NAV_GROUPS に 1 行ずつ足し、辞書（js/i18n/*/nav.js）に nav.<id> を足す。
 // soon: true の画面は「準備中」のページになる（実装したら soon を消し、load を本物にする）。
+// scope を書いた項目は、その権限が無いと分かっている主体（GET /auth/me）にはメニューで出さない。
 
 export const NAV_GROUPS = [
   { id: 'overview', items: [
@@ -28,7 +29,7 @@ export const NAV_GROUPS = [
   { id: 'settings', items: [
     { id: 'tokens', href: '#/tokens', icon: 'key', key: 'k' },
     { id: 'secrets', href: '#/secrets', icon: 'secrets', key: 'e' },
-    { id: 'users', href: '#/users', icon: 'users', key: 'u', soon: true },
+    { id: 'users', href: '#/users', icon: 'users', key: 'u', scope: 'tenant:admin' },
   ] },
 ];
 
@@ -55,7 +56,8 @@ export const ROUTES = [
   { re: /^\/media-pipelines(\/.*)?$/, nav: 'media-pipelines', load: soon },
   { re: /^\/grid\/?$/, nav: 'grid', load: soon },
   { re: /^\/audit\/?$/, nav: 'audit', load: soon },
-  { re: /^\/users(\/.*)?$/, nav: 'users', load: soon },
+  { re: /^\/users\/?$/, nav: 'users', load: () => import('./views/users.js') },
+  { re: /^\/account\/?$/, nav: null, load: () => import('./views/account.js') },
   { re: /^\/_styleguide\/?$/, nav: null, load: () => import('./views/styleguide.js') },
 ];
 

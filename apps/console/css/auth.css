@@ -1,0 +1,223 @@
+/* ログイン・先に済ませる手続き・入り直し・アカウント・ユーザーの見た目。値は tokens.css のものだけを使う
+ * （QR コードだけは、読み取りのために SVG の中で白地に黒を固定している: js/views/auth-parts.js）。 */
+
+/* ---------------------------------------------------------------- ログインの画面の枠 */
+.auth-page {
+  min-height: 100vh; min-height: 100dvh; display: flex; flex-direction: column;
+  background:
+    radial-gradient(900px 520px at 85% -10%, var(--accent-soft), transparent 65%),
+    radial-gradient(700px 480px at -10% 110%, var(--surface-2), transparent 60%),
+    var(--bg);
+}
+.auth-top { display: flex; align-items: center; justify-content: space-between; gap: var(--sp-3); padding: var(--sp-4) var(--sp-6); flex-wrap: wrap; }
+.auth-top .brand { display: flex; align-items: center; gap: var(--sp-3); }
+.auth-tools { display: flex; align-items: center; gap: var(--sp-2); flex-wrap: wrap; justify-content: flex-end; }
+.auth-main { flex: 1; display: flex; flex-direction: column; align-items: center; justify-content: center; padding: var(--sp-4) var(--sp-4) var(--sp-12); }
+.auth-main:focus { outline: none; }
+.auth-card {
+  width: min(420px, 100%); background: var(--surface); border: 1px solid var(--border); border-radius: var(--r-xl);
+  box-shadow: var(--shadow-3); padding: var(--sp-8);
+}
+.auth-card.wide { width: min(620px, 100%); }
+.auth-head { text-align: center; margin-bottom: var(--sp-6); }
+.auth-head h1 { font-size: var(--fs-xl); margin: 0; }
+.auth-lead { color: var(--text-2); font-size: var(--fs-sm); margin: var(--sp-2) auto 0; max-width: 34em; }
+.auth-icon {
+  width: 48px; height: 48px; margin: 0 auto var(--sp-4); border-radius: var(--r-lg); display: grid; place-items: center;
+  background: var(--neutral-soft); color: var(--neutral-text);
+}
+.auth-icon .icon { width: 24px; height: 24px; }
+.auth-icon.accent { background: var(--accent-soft); color: var(--accent-soft-text); }
+.auth-icon.warn { background: var(--warn-soft); color: var(--warn-text); }
+.auth-card > .alert { margin-bottom: var(--sp-4); }
+.auth-form { display: grid; gap: var(--sp-4); }
+.auth-form .field { margin: 0; }
+.auth-error:empty { display: none; }
+.auth-row { display: flex; justify-content: center; gap: var(--sp-3); flex-wrap: wrap; }
+.auth-alt { margin-top: var(--sp-6); padding-top: var(--sp-4); border-top: 1px solid var(--border); display: flex; justify-content: center; }
+.auth-alt button.link { display: inline-flex; align-items: center; gap: var(--sp-2); }
+.auth-foot { color: var(--text-3); font-size: var(--fs-xs); margin: var(--sp-6) 0 0; text-align: center; max-width: 420px; }
+.auth-loading { padding: var(--sp-4) 0; }
+.auth-who {
+  display: flex; align-items: center; gap: var(--sp-2); width: fit-content; max-width: 100%; margin: calc(-1 * var(--sp-2)) auto var(--sp-5);
+  padding: var(--sp-1) var(--sp-3); border-radius: var(--r-full); background: var(--surface-2); border: 1px solid var(--border); font-size: var(--fs-sm);
+}
+.auth-who .icon { color: var(--text-3); }
+.auth-progress { text-align: center; font-size: var(--fs-xs); font-weight: var(--fw-semibold); color: var(--accent-text); letter-spacing: .04em; margin-bottom: var(--sp-3); }
+.auth-actions { display: flex; justify-content: flex-end; gap: var(--sp-2); margin-top: var(--sp-5); flex-wrap: wrap; }
+.auth-h2 { font-size: var(--fs-lg); margin: var(--sp-2) 0 0; }
+
+/* SSO */
+.sso-list { display: grid; gap: var(--sp-2); }
+.sso-btn { justify-content: center; position: relative; }
+.sso-btn .icon { width: 18px; height: 18px; }
+.auth-divider { display: flex; align-items: center; gap: var(--sp-3); margin: var(--sp-5) 0; color: var(--text-3); font-size: var(--fs-xs); }
+.auth-divider::before, .auth-divider::after { content: ""; flex: 1; height: 1px; background: var(--border); }
+
+/* 最初の管理者の手順 */
+.auth-stepper { list-style: none; padding: 0; margin: 0 0 var(--sp-6); display: flex; justify-content: center; align-items: center; gap: var(--sp-2); flex-wrap: wrap; }
+.auth-stepper li { display: flex; align-items: center; gap: var(--sp-2); font-size: var(--fs-xs); color: var(--text-3); }
+.auth-stepper li + li::before { content: ""; width: 28px; height: 1px; background: var(--border-strong); margin-right: var(--sp-1); }
+.auth-stepper .n {
+  width: 22px; height: 22px; border-radius: 50%; display: grid; place-items: center; font-weight: var(--fw-bold);
+  border: 1px solid var(--border-strong); color: var(--text-2); background: var(--surface);
+}
+.auth-stepper .n .icon { width: 13px; height: 13px; }
+.auth-stepper li.current { color: var(--text); font-weight: var(--fw-semibold); }
+.auth-stepper li.current .n { background: var(--accent); border-color: var(--accent); color: var(--accent-fg); }
+.auth-stepper li.done .n { background: var(--accent-soft); border-color: var(--accent-border); color: var(--accent-soft-text); }
+
+/* OIDC の失敗 */
+.oidc-error { text-align: center; margin-bottom: var(--sp-5); }
+.oidc-error p:first-child { font-size: var(--fs-md); }
+
+/* ---------------------------------------------------------------- パスワードの欄 */
+.pw-field { position: relative; }
+.pw-field input { width: 100%; padding-right: 44px; }
+.pw-field .pw-eye { position: absolute; right: 3px; top: 50%; transform: translateY(-50%); color: var(--text-3); }
+.pw-field .pw-eye:hover { color: var(--text); }
+.caps-hint { display: flex; align-items: center; gap: var(--sp-1); color: var(--warn-text); font-size: var(--fs-xs); margin-top: var(--sp-1); }
+.pw-strength { margin-top: var(--sp-2); }
+.pw-bars { display: grid; grid-template-columns: repeat(4, 1fr); gap: var(--sp-1); }
+.pw-bar { height: 4px; border-radius: var(--r-full); background: var(--surface-3); transition: background var(--dur) var(--ease); }
+.pw-strength[data-kind="none"] .pw-bar.on { background: var(--border-strong); }
+.pw-strength[data-kind="weak"] .pw-bar.on { background: var(--warn); }
+.pw-strength[data-kind="good"] .pw-bar.on { background: var(--ok); }
+.pw-text { font-size: var(--fs-xs); color: var(--text-2); margin-top: var(--sp-1); }
+.pw-label { font-weight: var(--fw-medium); }
+.pw-strength[data-kind="weak"] .pw-label { color: var(--warn-text); }
+.pw-strength[data-kind="good"] .pw-label { color: var(--ok-text); }
+.pw-tip { color: var(--text-3); margin-left: var(--sp-1); }
+
+/* ---------------------------------------------------------------- 6 桁のコード */
+.otp { position: relative; width: fit-content; margin: var(--sp-2) auto 0; }
+.otp-slots { display: flex; align-items: center; gap: var(--sp-2); }
+.otp-slot {
+  width: 44px; height: 54px; display: grid; place-items: center; border: 1px solid var(--border-strong); border-radius: var(--r-md);
+  background: var(--surface); font-family: var(--mono); font-size: 24px; font-weight: var(--fw-semibold); color: var(--text);
+  transition: border-color var(--dur-fast) var(--ease), box-shadow var(--dur-fast) var(--ease);
+}
+.otp-slot.active { border-color: var(--focus); box-shadow: 0 0 0 3px var(--focus-halo); }
+.otp-slot.active:not(.filled)::after { content: ""; width: 2px; height: 24px; background: var(--text); animation: otp-caret 1.1s steps(2, start) infinite; }
+@keyframes otp-caret { to { visibility: hidden; } }
+.otp-sep { width: 8px; height: 2px; border-radius: 1px; background: var(--border-strong); }
+.otp.invalid .otp-slot { border-color: var(--danger); }
+.otp-input {
+  position: absolute; inset: 0; width: 100%; height: 100%; opacity: 0; border: 0; padding: 0; margin: 0;
+  font-size: 16px; caret-color: transparent; cursor: text;
+}
+.mfa-pane > p { text-align: center; }
+.mfa-steps .otp { margin-left: 0; }
+
+/* ---------------------------------------------------------------- 認証アプリの登録 */
+.steps { list-style: none; counter-reset: step; padding: 0; margin: 0; display: grid; gap: var(--sp-5); }
+.steps > li { counter-increment: step; position: relative; padding-left: 38px; }
+.steps > li::before {
+  content: counter(step); position: absolute; left: 0; top: -1px; width: 26px; height: 26px; border-radius: 50%;
+  display: grid; place-items: center; background: var(--accent-soft); color: var(--accent-soft-text); font-weight: var(--fw-bold); font-size: var(--fs-xs);
+}
+.steps p { margin: 0 0 var(--sp-2); }
+.step-title { font-weight: var(--fw-semibold); margin-bottom: var(--sp-1); }
+.mfa-qr { display: flex; gap: var(--sp-5); align-items: flex-start; flex-wrap: wrap; margin-top: var(--sp-2); }
+.qr-frame { border: 1px solid var(--border); border-radius: var(--r-md); overflow: hidden; line-height: 0; flex: none; }
+.qr { display: block; max-width: none; }
+.mfa-manual { flex: 1 1 200px; min-width: 0; }
+.mfa-secret {
+  display: flex; align-items: center; gap: var(--sp-1); padding: var(--sp-1) var(--sp-1) var(--sp-1) var(--sp-3);
+  background: var(--surface-2); border: 1px solid var(--border); border-radius: var(--r-md); margin-bottom: var(--sp-2);
+}
+.mfa-secret code { flex: 1; background: none; border: 0; padding: 0; font-size: var(--fs-md); letter-spacing: .04em; word-spacing: .15em; overflow-wrap: anywhere; }
+dialog .mfa-enroll { min-height: 120px; }
+
+/* 回復コード */
+.recovery .alert { margin-bottom: var(--sp-3); }
+.recovery-list {
+  list-style: none; margin: 0 0 var(--sp-3); padding: var(--sp-3) var(--sp-4); display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: var(--sp-2) var(--sp-6);
+  background: var(--surface-2); border: 1px solid var(--border); border-radius: var(--r-md);
+}
+.recovery-list code { background: none; border: 0; padding: 0; font-size: var(--fs-md); letter-spacing: .04em; }
+.recovery-confirm { display: flex; align-items: center; justify-content: space-between; gap: var(--sp-3); flex-wrap: wrap; margin-top: var(--sp-4); padding-top: var(--sp-4); border-top: 1px solid var(--border); }
+
+/* ---------------------------------------------------------------- アバター・アカウントのメニュー */
+.avatar.md { width: 36px; height: 36px; font-size: var(--fs-sm); }
+.avatar.lg { width: 40px; height: 40px; font-size: var(--fs-sm); }
+.avatar.lg .icon { width: 20px; height: 20px; }
+.avatar.xl { width: 64px; height: 64px; font-size: var(--fs-2xl); }
+.avatar.xl .icon { width: 28px; height: 28px; }
+.avatar.off { background: var(--surface-3); color: var(--text-3); }
+.acct-card { display: grid; gap: var(--sp-3); width: 280px; max-width: calc(100vw - 48px); padding: var(--sp-1) var(--sp-1) var(--sp-2); }
+.acct-head { display: flex; align-items: center; gap: var(--sp-3); min-width: 0; }
+.acct-names { display: grid; min-width: 0; }
+.acct-meta { display: grid; grid-template-columns: auto 1fr; gap: var(--sp-1) var(--sp-3); margin: 0; font-size: var(--fs-xs); }
+.acct-meta dt { color: var(--text-3); }
+.acct-meta dd { margin: 0; color: var(--text-2); min-width: 0; overflow-wrap: anywhere; }
+.acct-tags { gap: var(--sp-1); }
+.menu-note { max-width: 260px; margin: var(--sp-1) var(--sp-2); white-space: normal; }
+
+/* ---------------------------------------------------------------- アカウントの画面 */
+.profile { display: flex; align-items: center; gap: var(--sp-4); margin-bottom: var(--sp-5); min-width: 0; }
+.profile-text { display: grid; gap: var(--sp-1); min-width: 0; }
+.profile-name { font-size: var(--fs-xl); font-weight: var(--fw-bold); }
+.account-security { margin-bottom: var(--sp-4); }
+.account-security .panel { display: flex; flex-direction: column; align-items: flex-start; gap: var(--sp-3); margin: 0; }
+.account-security .panel > p, .account-security .panel > .kv { margin: 0; }
+.account-security .panel-head { width: 100%; margin-bottom: 0; }
+.account-security .panel > .kv { width: 100%; }
+.device-cell { display: flex; align-items: center; gap: var(--sp-3); min-width: 0; }
+.device-icon { width: 36px; height: 36px; flex: none; border-radius: var(--r-md); display: grid; place-items: center; background: var(--surface-2); color: var(--text-2); }
+.device-text { min-width: 0; }
+
+/* ---------------------------------------------------------------- ユーザーの画面 */
+.users-toolbar { display: flex; flex-wrap: wrap; align-items: flex-end; gap: var(--sp-2) var(--sp-3); margin-bottom: var(--sp-4); }
+.users-toolbar .search { flex: 1 1 240px; max-width: 340px; }
+.users-filters { display: flex; flex-wrap: wrap; gap: var(--sp-2); }
+.users-filters .filter { display: grid; gap: 2px; }
+.users-filters select { min-width: 128px; }
+.users-summary { align-self: center; }
+.user-cell { display: flex; align-items: center; gap: var(--sp-3); min-width: 0; }
+.user-text { min-width: 0; display: grid; }
+.user-cell .user-name { font-weight: var(--fw-semibold); color: var(--text); padding: 0; height: auto; min-height: 0; text-align: left; }
+.user-cell .user-name:hover { color: var(--accent-text); }
+
+/* 役割のカード */
+.role-chooser { border: 0; padding: 0; margin: 0; min-width: 0; }
+.role-chooser legend { font-weight: var(--fw-medium); font-size: var(--fs-sm); margin-bottom: var(--sp-2); padding: 0; }
+.role-cards { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: var(--sp-2); }
+.role-card {
+  display: grid; grid-template-columns: auto auto minmax(0, 1fr); gap: var(--sp-3); align-items: start; padding: var(--sp-3);
+  border: 1px solid var(--border); border-radius: var(--r-lg); background: var(--surface); cursor: pointer;
+  transition: border-color var(--dur-fast) var(--ease), background var(--dur-fast) var(--ease);
+}
+.role-card:hover { border-color: var(--border-strong); }
+.role-card input { margin-top: 8px; }
+.role-card:has(input:checked) { border-color: var(--accent); background: var(--accent-soft); box-shadow: inset 0 0 0 1px var(--accent); }
+.role-card:has(input:focus-visible) { outline: 2px solid var(--focus); outline-offset: 2px; }
+.role-card:has(input:disabled) { opacity: .55; cursor: not-allowed; }
+.role-icon { width: 32px; height: 32px; border-radius: var(--r-md); display: grid; place-items: center; background: var(--surface-2); color: var(--text-2); }
+.role-card:has(input:checked) .role-icon { background: var(--surface); color: var(--accent-text); }
+.role-text { display: grid; gap: 2px; }
+.scope-list { display: grid; gap: var(--sp-1); margin-top: var(--sp-3); padding: var(--sp-3); border: 1px dashed var(--border-strong); border-radius: var(--r-md); }
+.pw-modes { border: 0; padding: 0; margin: 0; display: grid; gap: var(--sp-2); }
+.pw-modes legend { font-weight: var(--fw-medium); font-size: var(--fs-sm); margin-bottom: var(--sp-1); padding: 0; }
+.radio-row { display: flex; align-items: flex-start; gap: var(--sp-3); cursor: pointer; }
+.radio-row input { margin-top: 4px; }
+.radio-row > span { display: grid; gap: 1px; }
+
+/* ---------------------------------------------------------------- 狭い画面 */
+@media (max-width: 640px) {
+  .role-cards { grid-template-columns: 1fr; }
+  .recovery-list { grid-template-columns: 1fr; }
+}
+@media (max-width: 520px) {
+  .auth-top { padding: var(--sp-3) var(--sp-4); }
+  .auth-top .brand-text small { display: none; }
+  .auth-main { justify-content: flex-start; padding: var(--sp-2) var(--sp-3) var(--sp-8); }
+  .auth-card { padding: var(--sp-6) var(--sp-5); border-radius: var(--r-lg); box-shadow: var(--shadow-2); }
+  .otp-slots { gap: 6px; }
+  .otp-slot { width: 40px; height: 50px; font-size: 22px; }
+  .mfa-qr { justify-content: center; }
+  .steps > li { padding-left: 34px; }
+  .users-toolbar .search { max-width: none; flex-basis: 100%; }
+  .users-filters { display: grid; grid-template-columns: 1fr 1fr; width: 100%; }
+  .users-filters select { min-width: 0; width: 100%; }
+}

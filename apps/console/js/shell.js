@@ -10,32 +10,15 @@ import { attachMenu, tooltip } from './ui/overlay.js';
 import { breadcrumbs } from './ui/layout.js';
 import { NAV_GROUPS, navItem } from './nav.js';
 import { MOD, showShortcutHelp } from './shortcuts.js';
-import { getToken } from './api/client.js';
 import { request } from './api/client.js';
 import { guideUrl } from './lib/guide.js';
+import { getMe, guessMe, hasScope, displayName, initials, signInMethod } from './lib/session.js';
 
 const SIDEBAR_STORE = 'senca.console.sidebar';
 const narrow = () => globalThis.matchMedia && globalThis.matchMedia('(max-width: 768px)').matches;
 
-/** トークンから分かる利用者の情報（JWT なら claim、API トークンなら末尾 4 文字だけ）。 */
-export function identity(tok = getToken()) {
-  if (!tok) return null;
-  const parts = tok.split('.');
-  if (parts.length === 3) {
-    try {
-      const json = JSON.parse(atob(parts[1].replace(/-/g, '+').replace(/_/g, '/')));
-      const scopes = Array.isArray(json.scopes) ? json.scopes : typeof json.scope === 'string' ? json.scope.split(/\s+/).filter(Boolean) : null;
-      return {
-        kind: 'jwt', name: json.name || json.preferred_username || json.email || json.sub || 'JWT',
-        tenant: json.tenant || json.tenant_id || json.org || null, scopes, exp: json.exp ? new Date(json.exp * 1000) : null,
-      };
-    } catch { /* API トークンとして扱う */ }
-  }
-  return { kind: 'token', name: `senca_…${tok.slice(-4)}`, tenant: null, scopes: null };
-}
-
 let probed = null;
-/** 権限を確かめる（JWT の claim に無いとき。メニューを初めて開いたときに 1 回）。 */
+/** 権限を確かめる（/auth/me の無い古いノードで、JWT の claim にも無いとき。メニューを初めて開いたときに 1 回）。 */
 async function probeScopes() {
   if (probed) return probed;
   const ok = async (p) => { try { await request('GET', p, { query: { limit: 1 } }); return true; } catch { return false; } };
@@ -52,6 +35,34 @@ async function probeScopes() {
   return scopes;
 }
 
+/** 利用者のアバター（頭文字。API トークン・JWT は鍵の印）。 */
+export function avatar(who, { size } = {}) {
+  const el = h('span', { class: ['avatar', size].filter(Boolean).join(' '), 'aria-hidden': 'true' });
+  if (who && who.user) el.textContent = initials(displayName(who));
+  else el.append(icon(who && (who.auth_method === 'api_token' || who.auth_method === 'jwt') ? 'key' : 'user'));
+  return el;
+}
+
+/** アカウントのメニューの上の欄（名前・利用者名・テナント・ログインの方法・権限）。 */
+function identityCard(who, scopes, caps) {
+  const m = signInMethod(who);
+  const u = who && who.user;
+  const sub = u ? [u.username !== displayName(who) ? u.username : null, u.email].filter(Boolean).join(' · ') : who && who.subject;
+  const tags = u
+    ? (u.roles.length ? u.roles.map((r) => h('span', { class: 'tag' }, t(`users.role.${r}`))) : null)
+    : scopes && scopes.length ? scopes.map((x) => h('span', { class: 'tag' }, x)) : h('span', { class: 'small muted' }, t('identity.noScopes'));
+  return h('div', { class: 'acct-card', 'data-testid': 'identity' },
+    h('div', { class: 'acct-head' }, avatar(who, { size: 'lg' }),
+      h('div', { class: 'acct-names' },
+        h('strong', { class: 'truncate', 'data-testid': 'identity-name' }, displayName(who)),
+        sub ? h('span', { class: 'small muted truncate' }, sub) : null)),
+    h('dl', { class: 'acct-meta' },
+      h('dt', null, t('identity.tenant')), h('dd', null, who && who.tenant ? h('code', null, who.tenant) : t('identity.tenantFromToken')),
+      h('dt', null, t('identity.signedInWith')), h('dd', { 'data-testid': 'identity-method' }, m.provider ? t('auth.method.ssoNamed', { name: m.provider }) : t(`auth.method.${m.key}`)),
+      h('dt', null, t('identity.node')), h('dd', null, h('code', null, caps ? caps.node.slice(0, 12) : '—'))),
+    tags ? h('div', { class: 'row acct-tags' }, tags) : null);
+}
+
 /**
  * @param {{caps: object, navigate: (href: string) => void, logout: () => void, palette: () => void}} o
  * @returns {{main: HTMLElement, setActive: (nav: string|null) => void, setCrumbs: (items) => void, toggleSidebar: () => void, closeDrawer: () => void, destroy: () => void}}
@@ -64,7 +75,7 @@ export function buildShell(root, { caps, logout, palette }) {
   // ---------------------------------------------------------------- 左のメニュー
   const links = [];
   const navEl = h('nav', { class: 'nav', id: 'nav', 'aria-label': t('shell.mainNav') },
-    NAV_GROUPS.map((g) => h('div', { class: 'nav-group', role: 'group', 'aria-labelledby': g.id === 'overview' ? null : `ng-${g.id}`, 'aria-label': g.id === 'overview' ? t(`navGroup.${g.id}`) : null },
+    NAV_GROUPS.map((g) => ({ ...g, items: g.items.filter((it) => !it.scope || hasScope(it.scope) !== false) })).filter((g) => g.items.length).map((g) => h('div', { class: 'nav-group', role: 'group', 'aria-labelledby': g.id === 'overview' ? null : `ng-${g.id}`, 'aria-label': g.id === 'overview' ? t(`navGroup.${g.id}`) : null },
       g.id === 'overview' ? null : h('span', { class: 'nav-group-label', id: `ng-${g.id}` }, t(`navGroup.${g.id}`)),
       h('ul', null, g.items.map((it) => {
         const a = h('a', { href: it.href, dataset: { nav: it.id }, 'data-testid': `nav-${it.id}` },
@@ -129,24 +140,17 @@ export function buildShell(root, { caps, logout, palette }) {
   ]);
   offs.push(on('theme', syncThemeIcon));
 
-  const who = identity();
   const userBtn = h('button', { type: 'button', class: 'user-btn', 'aria-label': t('shell.account'), 'data-testid': 'user-menu' },
-    h('span', { class: 'avatar', 'aria-hidden': 'true' }, icon('user')), icon('chevron-down', { size: 'sm' }));
-  tooltip(userBtn, t('shell.account'));
+    avatar(getMe() || guessMe()), icon('chevron-down', { size: 'sm' }));
+  tooltip(userBtn, () => `${t('shell.account')}: ${displayName(getMe() || guessMe())}`);
+  offs.push(on('me', (me) => { if (me) userBtn.firstChild.replaceWith(avatar(me)); }));
   attachMenu(userBtn, async () => {
+    const who = getMe() || guessMe();
     const scopes = (who && who.scopes) || await probeScopes();
     return [
-      { node: h('div', { class: 'stack', 'data-testid': 'identity' },
-        h('div', { class: 'row' }, h('span', { class: 'avatar' }, icon('user')),
-          h('div', { class: 'stack', style: { gap: '0' } },
-            h('strong', null, who ? who.name : '—'),
-            h('span', { class: 'small muted' }, who && who.kind === 'jwt' ? t('identity.jwt') : t('identity.apiToken')))),
-        h('div', { class: 'small muted' }, t('identity.tenant'), ': ', who && who.tenant ? h('code', null, who.tenant) : t('identity.tenantFromToken')),
-        h('div', { class: 'small muted' }, t('identity.node'), ': ', h('code', null, caps ? caps.node.slice(0, 12) : '—')),
-        h('div', { class: 'row', style: { gap: '4px' } }, scopes.length
-          ? scopes.map((s) => h('span', { class: 'tag' }, s))
-          : h('span', { class: 'small muted' }, t('identity.noScopes')))) },
+      { node: identityCard(who, scopes, caps) },
       { separator: true },
+      { label: t('shell.accountPage'), icon: 'user', testid: 'menu-account', onSelect: () => { location.hash = '#/account'; } },
       { label: t('shell.shortcuts'), icon: 'keyboard', kbd: '?', onSelect: () => showShortcutHelp() },
       { label: t('shell.guide'), icon: 'book', onSelect: () => window.open(guideUrl('README.md'), '_blank', 'noopener,noreferrer') },
       { separator: true },

@@ -16,6 +16,9 @@ import nodes from './nodes.js';
 import tokens from './tokens.js';
 import secrets from './secrets.js';
 import activity from './activity.js';
+import auth from './auth.js';
+import account from './account.js';
+import users from './users.js';
 
 export default {
   ...core,
@@ -34,4 +37,7 @@ export default {
   ...tokens,
   ...secrets,
   ...activity,
+  ...auth,
+  ...account,
+  ...users,
 };
