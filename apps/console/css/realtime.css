@@ -216,7 +216,9 @@ a.use-card:hover, button.use-card:hover { border-color: var(--accent-border); ba
 
 /* 狭い画面: 数のタイルは 2 列 */
 @media (max-width: 560px) {
-  [data-testid="room-stats"], [data-testid="rooms-stats"] { grid-template-columns: repeat(2, minmax(0, 1fr)); gap: var(--sp-3); }
+  .grid.cards[data-testid="room-stats"], .grid.cards[data-testid="rooms-stats"] { grid-template-columns: repeat(2, minmax(0, 1fr)); gap: var(--sp-3); }
+  .mp-new-layout .segmented, .room-form .segmented, [data-testid="token-dialog"] .segmented { display: flex; flex-wrap: wrap; width: 100%; overflow: visible; }
+  .mp-new-layout .segmented .seg-btn, .room-form .segmented .seg-btn, [data-testid="token-dialog"] .segmented .seg-btn { flex: 1 1 auto; }
   [data-testid="room-stats"] .stat-value, [data-testid="rooms-stats"] .stat-value { font-size: var(--fs-2xl); }
   [data-testid="room-stats"] .stat-sub, [data-testid="rooms-stats"] .stat-sub { white-space: normal; }
 }
