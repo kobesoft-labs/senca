@@ -25,6 +25,13 @@ unsafe_code = "deny"
 [workspace.lints.clippy]
 all = { level = "warn", priority = -1 }
 
+# パスワードのハッシュ（Argon2id）は最適化なしだと 1 回に数秒かかる。開発用のビルドでも最適化する
+[profile.dev.package.argon2]
+opt-level = 3
+
+[profile.dev.package.blake2]
+opt-level = 3
+
 [profile.release]
 debug = 1
 lto = "thin"

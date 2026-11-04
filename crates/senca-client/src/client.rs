@@ -283,6 +283,8 @@ pub(crate) struct Call {
     /// API の外（`/healthz` など。`/api/v1` を前に付けない・認証しない）。
     pub outside_api: bool,
     pub max_body: usize,
+    /// 追加のヘッダー（`POST /auth/exchange` の Cookie など）。
+    pub headers: Vec<(String, String)>,
 }
 
 impl Call {
@@ -297,6 +299,7 @@ impl Call {
             accept: "application/json",
             outside_api: false,
             max_body: 16 * 1024 * 1024,
+            headers: Vec::new(),
         }
     }
 
@@ -347,7 +350,8 @@ fn encode_query(s: &str) -> String {
 }
 
 impl SencaClient {
-    /// `base_url` は `https://host[:port]`（`/api/v1` は足す）か `https://host/api/v1`。`token` は API トークンか JWT。
+    /// `base_url` は `https://host[:port]`（`/api/v1` は足す）か `https://host/api/v1`。`token` は API トークン・JWT・
+    /// ログインのセッションの値（`sencas_...`）。ログインだけをするなら [`SencaClient::builder`] でトークンなしに作る。
     pub fn new(base_url: &str, token: impl Into<String>) -> Result<SencaClient> {
         SencaClient::builder(base_url).token(token).build()
     }
@@ -360,6 +364,23 @@ impl SencaClient {
             retry: RetryPolicy::default(),
             user_agent: USER_AGENT.to_string(),
             roots: TlsRoots::System,
+        }
+    }
+
+    /// 同じ宛先・設定で、認証の値だけを替えたクライアント（ログインで得たセッションの値 `sencas_...` を使うとき）。
+    pub fn with_token(&self, token: impl Into<String>) -> SencaClient {
+        let i = &self.inner;
+        SencaClient {
+            inner: Arc::new(Inner {
+                origin: i.origin.clone(),
+                api_path: i.api_path.clone(),
+                token: Some(token.into()),
+                timeout: i.timeout,
+                retry: i.retry,
+                user_agent: i.user_agent.clone(),
+                roots: i.roots.clone(),
+                tls: OnceLock::new(),
+            }),
         }
     }
 
@@ -467,7 +488,7 @@ impl SencaClient {
     }
 
     async fn execute_once(&self, call: &Call, idem: Option<&str>) -> Result<(u16, Vec<(String, String)>, Bytes)> {
-        let req = self.raw_request(call, idem, &[])?;
+        let req = self.raw_request(call, idem, &call.headers)?;
         let tls = self.tls(&req.url)?;
         let timeout = self.inner.timeout;
         let max = call.max_body;

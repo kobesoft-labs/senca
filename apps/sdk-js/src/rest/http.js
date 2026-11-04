@@ -16,7 +16,8 @@ import { backoffDelay, linkedController, sleep } from '../internal/async.js';
 /**
  * @typedef {object} ClientOptions
  * @property {string} baseUrl `https://node.example`（`/api/v1` は足す）か `https://node.example/api/v1`
- * @property {string | (() => string | Promise<string>)} [token] API トークン（`senca_...`）か JWT。関数なら要求のたびに呼ぶ
+ * @property {string | (() => string | Promise<string>)} [token] API トークン（`senca_...`）・ログインのセッション（`sencas_...`）・JWT。関数なら要求のたびに呼ぶ。
+ *   ログインだけをするなら省いてよい（ログインの操作は認証なしで使えます）
  * @property {typeof fetch} [fetch] 既定は globalThis.fetch
  * @property {boolean | RetryOptions} [retry] 既定 true（3 回まで）
  * @property {number} [timeoutMs] 1 回の要求の時間切れ（既定 30000、SSE には使わない）
@@ -41,6 +42,7 @@ import { backoffDelay, linkedController, sleep } from '../internal/async.js';
  * @property {'json' | 'response' | 'blob'} [as] 応答の読み方（既定 json）
  * @property {boolean | RetryOptions} [retry]
  * @property {number} [timeoutMs]
+ * @property {RequestCredentials} [credentials] fetch の credentials（既定 `omit`。クッキーを送る `POST /auth/exchange` だけ `same-origin`）
  */
 
 /**
@@ -185,7 +187,7 @@ export class Http {
     /** @type {Response} */
     let res;
     try {
-      res = await this.fetch(url, { method, headers: o.headers, body: o.bodyText, signal: ctl.signal, cache: 'no-store', credentials: 'omit' });
+      res = await this.fetch(url, { method, headers: o.headers, body: o.bodyText, signal: ctl.signal, cache: 'no-store', credentials: o.credentials ?? 'omit' });
     } catch (e) {
       if (o.signal?.aborted) throw abortReason(o.signal);
       const timedOut = ctl.signal.aborted;
