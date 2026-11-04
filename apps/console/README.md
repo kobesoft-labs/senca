@@ -15,9 +15,10 @@ tools/interop/console.sh                    # 配信の形・構文・ロジッ�
 
 | 場所 | 中身 |
 |---|---|
-| `index.html` | 外枠。CSS を 8 つ、`js/boot.js`（最初の描画の前に明暗と言語を `<html>` に入れる）、`js/main.js`。インラインのスクリプト・スタイルは無い（CSP） |
+| `index.html` | 外枠。CSS を 9 つ、`js/boot.js`（最初の描画の前に明暗と言語を `<html>` に入れる）、`js/main.js`。インラインのスクリプト・スタイルは無い（CSP） |
 | `css/tokens.css` | デザイントークン（色・文字・間隔・角丸・影・動き・フォーカス）。値はここだけに置く |
-| `css/base.css`・`css/components.css`・`css/shell.css`・`css/views.css`・`css/streaming.css` | 土台と補助クラス・部品・外枠・画面ごとの見た目（再生・パイプライン・スイッチャー・スタイルガイド）・配信まわりの画面と、そこで足した部品 |
+| `css/base.css`・`css/components.css`・`css/shell.css`・`css/views.css`・`css/streaming.css` | 土台と補助クラス・部品・外枠・画面ごとの見た目（再生・スタイルガイド）・配信まわりの画面と、そこで足した部品 |
+| `css/pipelines.css` | パイプライン（一覧・ひな形・グラフ・検査器・シーン）とスイッチャー。部品の分類の色 `--k-*` とポートの型の色 `--pt-*` もここで明暗ごとに決める |
 | `css/ops.css` | 運用と設定の画面（ダッシュボード・ノードとデバイス・グリッド・監査ログ・API トークン・秘密値）。中身は `.ops-view` で包む（狭い画面では小さいボタンも 44px） |
 | `css/realtime.css` | ルーム・メディアパイプラインの画面と、そこで足した部品（折りたたみ・コードの見本・用途のカード・参加者のカード・時系列） |
 | `js/main.js` | 経路の切り替え、ログイン状態、SSE の開始、言語を変えたときの作り直し |
@@ -31,7 +32,7 @@ tools/interop/console.sh                    # 配信の形・構文・ロジッ�
 | `js/lib/realtime.js` | ルームとメディアパイプラインの画面に依存しない計算（状態・設定の差分・トラックの要約・SDK のコード・用途 → 作成の本文・作られるもの・出来事の文）。`console.sh` の C で試す |
 | `js/vendor/senca-sdk` | `../../../sdk-js/src` へのリンク（ブラウザー SDK をそのまま配る。写しは持たない）。コンテナイメージでは `/opt/senca/sdk-js/src` に置いてリンクを生かす |
 | `js/player/` | MSE の HLS 再生（fMP4 だけ）: `m3u8.js`・`mp4.js`・`hls.js`、WebRTC の再生 `whep.js`、`widget.js`（自動 = WHEP → だめなら HLS。`poster` で止まっている間の画、大きな再生ボタン） |
-| `js/pipeline/model.js` | senca-pipeline のグラフ JSON と編集用のモデルの行き来・ポートの型・検査。画面に依存しない |
+| `js/pipeline/` | `model.js`（グラフ JSON と編集用のモデル・ポートの型・検査・つなげるかの下見・自動の配置・元に戻す用の写し・写しと貼り付け。画面に依存しない）・`templates.js`（ひな形）・`canvas.js`（グラフの面）・`inspector.js`（検査器）・`plan.js`（計画と問題の説明）・`scenes.js`（シーンの編集と配置の絵）・`gallery.js`（ひな形を選ぶダイアログ）・`streams.js`（stream を選ぶ・作る）・`store.js`（このブラウザに置くもの）・`editor.js`（編集の画面）・`status.js` |
 | `js/views/` | 画面。`render(main, params, ctx)` を持ち、片付けの関数を返してよい（`ctx = { caps, navigate, setCrumbs, nav }`）。準備中のページは `coming-soon.js` |
 
 ## デザインの決まり
@@ -158,12 +159,20 @@ tools/interop/console.sh                    # 配信の形・構文・ロジッ�
 
 ## パイプラインとスイッチャー
 
-- グラフは `crates/senca-pipeline/src/model.rs` の JSON（知らない項目は拒否される）。部品の位置はグラフに入れられないので、
-  このブラウザの localStorage（`senca.console.pipeline-layout.v1`、パイプラインの id ごと）に置く。保存前の下書きも localStorage。
-- 保存 = `POST /pipelines`（止めた状態で作る）か `PATCH`（If-Match）。検証 = `POST /pipelines/{id}/validate` に編集中のグラフを送る
-  （保存前のグラフも検証できる）。問題は problem+json の `details.issues`（`{code, node, message}`）を一覧にし、部品を赤くする。
-- 開始・停止 = `PATCH {desired_state}`。スイッチャーは CUT・TAKE・FADE を `take`（トランジション付き）、シーンのクリックを
-  `set_preview`、ダブルクリックを `switch_program` に。T バーは途中の位置を送れないので、端まで動かした時間のトランジションで take。
+- 経路: 一覧 `#/pipelines`（`?new=1&template=<id>` でひな形のダイアログ）、編集 `#/pipelines/{id}`（下書きは `#/pipelines/pl_…`）、スイッチャー `#/production?pipeline={id}`。
+- グラフは `crates/senca-pipeline/src/model.rs` の JSON（知らない項目は拒否される）。部品の位置・下書き・保存済みのものの未保存の変更・写した部品は
+  グラフに入れられないので、このブラウザの localStorage に置く（`js/pipeline/store.js`）。
+- 保存 = `POST /pipelines`（止めた状態で作る）か `PATCH`（If-Match。412 なら「読み直す／上書き」を選ばせる）。保存済みのものは変更のたびに 1.2 秒待って
+  `POST /pipelines/{id}/validate` に編集中のグラフを送り、計画と問題（problem+json の `details.issues`）を出し直す。問題の `code` には平易な説明と直し方を添える
+  （`pipelines.code.*`・`pipelines.fix.*`）。この画面の検査も同じ code を使う（`POLICY_REJECTED`・`CAPACITY_UNAVAILABLE`・`UNCONSUMED_OUTPUT`）。
+- 実行の帯の primary は「次にすること」の 1 つ（下書きか未保存なら保存、保存済みで止まっていれば開始）。
+- グラフの面: ポートの形はエンコード済み（菱形）とデコード済み（丸）、色は映像（青）と音声（緑）。線を引く間はつなげる点だけが光り、つなげない点では理由を出す。
+  小さく表示しているときは名前だけを大きく出す（`lod-low`）。キーボードだけでも、Tab・矢印・Enter と検査器の「つなぐ元」「つなぐ先」で編集でき、
+  「部品の一覧」のタブがグラフの文字の代わりになる。
+- 元に戻す・やり直すは編集用のモデルの写し（`serialize`・`restore`）を 120 回分まで持つ。部品の移動はグラフを変えないので「未保存」にしない。
+- スイッチャー: CUT・AUTO を `take`（トランジション付き）、シーンの押下を `set_preview`、ダブルクリックと Shift＋数字を `switch_program` に。
+  T バーは途中の位置を送れないので、端から端まで動かした時間のトランジションで take（次は反対の端から）。安全装置を入れると CUT・AUTO は 2 回で確定、直接のカットは効かない。
+  タリーの色はプログラム = `--live`、プレビュー = `--tally-preview`。シーンのタイルの絵は、合成の入力をたどった元の stream の静止画（`GET /streams/{id}/snapshot`、10 秒ごと）を配置どおりに描く。
 - ノードは status（`event: status`）とメーター（`event: meters`）を同じ `status` 欄に入れることがあるので、`event` で読み分ける。
 
 ## WebRTC

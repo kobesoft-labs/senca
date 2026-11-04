@@ -137,7 +137,7 @@ export function modal(title, build, { actions, wide, icon: iconName, kind, testi
         h('h2', { id: titleId }, title),
         h('button', { type: 'button', class: 'ghost icon-only sm dlg-close', 'aria-label': t('common.close'), onClick: () => dismiss() }, icon('close'))),
       h('div', { class: 'dlg-body' }, body),
-      actions ? h('div', { class: 'dlg-foot' }, actions(close)) : null,
+      ...(actions ? [h('div', { class: 'dlg-foot' }, actions(close))] : []),
     );
     document.body.appendChild(dlg);
     dlg.showModal();

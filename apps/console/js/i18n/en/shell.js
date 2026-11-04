@@ -117,7 +117,7 @@ export default {
   'palette.gridUnplaced': 'Show workloads that could not be placed',
   'palette.audit24h': 'Audit log for the last 24 hours',
   'palette.tokensExpiring': 'API tokens expiring soon',
-  'palette.newPipeline': 'Create a pipeline',
+  'palette.newPipeline': 'Create a pipeline from a template…',
   'palette.sendFromBrowser': 'Go live from this browser’s camera',
   'palette.themeLight': 'Theme: switch to light',
   'palette.themeDark': 'Theme: switch to dark',

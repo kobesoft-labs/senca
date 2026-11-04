@@ -117,7 +117,7 @@ export default {
   'palette.gridUnplaced': '配置できていないワークロードを見る',
   'palette.audit24h': '24 時間の監査ログを見る',
   'palette.tokensExpiring': '期限が近い API トークンを見る',
-  'palette.newPipeline': 'パイプラインを作成',
+  'palette.newPipeline': 'ひな形からパイプラインを作る…',
   'palette.sendFromBrowser': 'このブラウザのカメラから送る',
   'palette.themeLight': 'テーマ: ライトにする',
   'palette.themeDark': 'テーマ: ダークにする',

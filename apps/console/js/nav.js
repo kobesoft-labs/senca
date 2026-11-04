@@ -48,6 +48,7 @@ export const ROUTES = [
   { re: /^\/tokens\/?$/, nav: 'tokens', load: () => import('./views/tokens.js') },
   { re: /^\/nodes\/?$/, nav: 'nodes', load: () => import('./views/nodes.js') },
   { re: /^\/pipelines\/?$/, nav: 'pipelines', load: () => import('./views/pipelines.js') },
+  { re: /^\/pipelines\/([^/]+)$/, nav: 'pipelines', load: () => import('./views/pipelines.js') },
   { re: /^\/production\/?$/, nav: 'production', load: () => import('./views/production.js') },
   { re: /^\/secrets\/?$/, nav: 'secrets', load: () => import('./views/secrets.js') },
   { re: /^\/send\/?$/, nav: 'send', load: () => import('./views/send.js') },
