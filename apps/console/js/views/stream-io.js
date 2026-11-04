@@ -9,11 +9,11 @@ import { t } from '../i18n/index.js';
 import { button, iconButton, badge, alert, emptyState, dataTable, kvList, formField } from '../ui/index.js';
 
 export const INPUT_PROTOCOLS = [['rtmp_pull', 'RTMP（pull）'], ['rtsp_pull', 'RTSP（pull）'], ['srt_pull', 'SRT（pull）'], ['hls_pull', 'HLS（pull）']];
-export const OUTPUT_PROTOCOLS = [['rtmp_push', 'RTMP（push）'], ['srt_push', 'SRT（push）'], ['whip_push', 'WHIP（push）'], ['paas', 'PaaS']];
+export const OUTPUT_PROTOCOLS = [['rtmp_push', 'RTMP（push）'], ['srt_push', 'SRT（push）'], ['paas', 'PaaS']];
 export const PROVIDERS = [['cloudflare_stream', 'Cloudflare Stream'], ['aws_ivs', 'Amazon IVS'], ['aws_medialive', 'AWS Elemental MediaLive']];
 const URL_HINT = {
   rtmp_pull: 'rtmp://host/app/key', rtsp_pull: 'rtsp://camera/stream1', srt_pull: 'srt://host:port?streamid=…', hls_pull: 'http(s)://cdn.example/live/index.m3u8',
-  rtmp_push: 'rtmp://host/app', srt_push: 'srt://host:port', whip_push: 'http(s)://host/whip/endpoint',
+  rtmp_push: 'rtmp://host/app', srt_push: 'srt://host:port',
 };
 
 const STATE_KIND = { active: 'ok', connecting: 'warn', starting: 'warn', backoff: 'warn', waiting_input: null, provisioning: 'warn', error: 'danger' };
@@ -29,7 +29,7 @@ export function ioStatus(st, enabled) {
     st.last_error ? h('div', { class: 'small field-error' }, st.last_error) : null);
 }
 
-const parseOptions = (text) => {
+export const parseOptions = (text) => {
   const o = {};
   for (const line of String(text || '').split('\n')) {
     const s = line.trim();
@@ -40,7 +40,7 @@ const parseOptions = (text) => {
   }
   return o;
 };
-const showOptions = (o) => Object.entries(o || {}).map(([k, v]) => `${k}=${v}`).join('\n');
+export const showOptions = (o) => Object.entries(o || {}).map(([k, v]) => `${k}=${v}`).join('\n');
 
 async function secretChoices() {
   try {
@@ -105,7 +105,7 @@ async function ioDialog(kind, cur, streamId) {
       formField({ label: t('io.protocol'), input: proto }), provField, urlField,
       formField({ label: t('io.credential'), input: credSel, hint: secretsList ? t('io.credentialHint') : t('io.credentialNoList') }),
       h('label', { class: 'check' }, enabled, t('io.enabled')),
-      formField({ label: 'options', input: options }), hint),
+      formField({ label: t('io.options'), input: options }), hint),
     errBox,
   ], {
     wide: true,
@@ -141,6 +141,7 @@ export function ioSection(kind, streamId) {
   const add = async () => { if (await ioDialog(kind, null, streamId)) { toast(t(`io.added.${k}`), 'ok'); reload(); } };
   const reload = () => load(box, async () => {
     const { data } = await api.list(streamId);
+    toolbar.hidden = !data.items.length;
     if (!data.items.length) {
       return emptyState({
         compact: true, icon: isOut ? 'upload' : 'download', title: t(`io.empty.${k}`), body: t(`io.emptyBody.${k}`),
@@ -170,11 +171,10 @@ export function ioSection(kind, streamId) {
       ],
     });
   }, { kind: 'table' });
-  const el = h('div', null,
-    h('div', { class: 'toolbar' },
-      button(t(`io.add.${k}`), { icon: 'plus', onClick: add }),
-      iconButton('refresh', t('common.refresh'), { variant: 'secondary', onClick: () => reload() })),
-    box);
+  const toolbar = h('div', { class: 'toolbar', hidden: true },
+    button(t(`io.add.${k}`), { icon: 'plus', onClick: add }),
+    iconButton('refresh', t('common.refresh'), { variant: 'secondary', onClick: () => reload() }));
+  const el = h('div', null, toolbar, box);
   reload();
   return { el, reload };
 }

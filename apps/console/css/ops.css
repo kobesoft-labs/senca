@@ -29,7 +29,11 @@
 .mini-list li > a:hover { color: var(--accent-text); }
 .quiet { display: grid; gap: var(--sp-2); justify-items: start; padding: var(--sp-2) 0; }
 .quiet p { margin: 0; }
-[data-nav-item]:focus-visible { outline: 2px solid var(--focus); outline-offset: 2px; }
+.node-card[data-active], .wl-chip[data-active] { box-shadow: 0 0 0 2px var(--accent); }
+.audit-entry[data-active] { background: var(--accent-soft); }
+.audit-entry { cursor: pointer; }
+.node-card[data-active]:focus, .wl-chip[data-active]:focus, .audit-entry[data-active]:focus { outline: none; }
+.node-card[data-active]:focus-visible, .wl-chip[data-active]:focus-visible, .audit-entry[data-active]:focus-visible { outline: 2px solid var(--focus); outline-offset: 2px; }
 
 /* ---------------------------------------------------------------- ダッシュボード: 様子の帯 */
 .health { margin-bottom: var(--sp-5); }

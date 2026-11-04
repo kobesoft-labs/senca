@@ -95,8 +95,6 @@ export default {
   'shortcuts.help': 'この一覧を開く',
   'shortcuts.search': 'ページ内の検索へ',
   'shortcuts.sidebar': 'メニューを畳む・広げる',
-  'shortcuts.listMove': '一覧で次・前の項目へ',
-  'shortcuts.listOpen': '一覧の項目を開く',
   'shortcuts.close': 'ダイアログ・メニューを閉じる',
 
   'palette.label': 'コマンドパレット',
@@ -158,4 +156,10 @@ export default {
   'soon.api': 'API の説明',
   'soon.guide': '手引きを読む',
   'soon.back': 'ダッシュボードへ戻る',
+  'shortcuts.listMove': '一覧で次・前の行へ',
+  'shortcuts.listOpen': '一覧で選んだ行を開く',
+  'shortcuts.create': '一覧で新しく作る',
+  'palette.liveStreams': '配信中の配信を見る',
+  'palette.upcoming': 'これからの予約を見る',
+  'palette.legalHold': '法的保全の録画を見る',
 };

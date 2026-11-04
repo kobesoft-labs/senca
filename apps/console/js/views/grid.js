@@ -12,11 +12,10 @@ import { grid as gridApi } from '../api/ops.js';
 import { loadNames, forgetNames, ioInfo, shortId } from '../lib/names.js';
 import { fmtNumber, fmtPercent } from '../lib/format.js';
 import { refreshOn } from '../lib/live.js';
-import { listNav } from '../lib/listnav.js';
 import { t, tn, has } from '../i18n/index.js';
 import { icon } from '../lib/icons.js';
 import { guideUrl } from '../lib/guide.js';
-import { button, pageHeader, panel, statusPill, badge, alert, helpHint, meter, skeleton, emptyState, dataTable, segmented, searchBox, tooltip } from '../ui/index.js';
+import { listNav, button, pageHeader, panel, statusPill, badge, alert, helpHint, meter, skeleton, emptyState, dataTable, segmented, searchBox, tooltip } from '../ui/index.js';
 
 const KIND_ICON = { ingest: 'download', egress: 'upload', pipeline: 'pipelines', room: 'rooms', recording: 'record', transcode: 'zap', capture: 'camera', relay: 'move', media_pipeline: 'media-pipelines' };
 const STATE_ICON = { running: 'success', degraded: 'trending-down', pending: 'hourglass', unschedulable: 'ban' };
@@ -141,7 +140,7 @@ export async function render(root, _p, { caps }) {
     const reasonCode = w.reason && w.reason.code;
     const moved = ['node_down', 'device_down', 'draining', 'constraint_changed', 'preempted', 'overcommitted'].includes(reasonCode);
     const el = h(i.href ? 'a' : 'div', {
-      class: ['wl-chip', `st-${w.state}`].join(' '), href: i.href, 'data-nav-item': '', tabindex: i.href ? null : '-1', 'data-testid': 'grid-chip', 'data-workload': w.id,
+      class: ['wl-chip', `st-${w.state}`].join(' '), href: i.href, 'data-key': w.id, 'data-testid': 'grid-chip', 'data-workload': w.id,
     },
     h('span', { class: 'wl-icon' }, icon(KIND_ICON[w.kind] || 'circle')),
     h('span', { class: 'wl-text' },
@@ -272,7 +271,7 @@ export async function render(root, _p, { caps }) {
     panel({ title: t('grid.board'), icon: 'layout-grid', description: t('grid.boardDesc'), testid: 'grid-board-panel' }, boardBox),
     panel({ title: t('grid.list'), icon: 'list', testid: 'grid-list-panel' }, listBox));
   await refresh();
-  const offNav = listNav(root, { selector: '.grid-board [data-nav-item]' });
+  const offNav = listNav(root, { rows: () => [...root.querySelectorAll('.grid-board .wl-chip')], open: (el) => { if (el.getAttribute('href')) location.hash = el.getAttribute('href'); } });
   const offLive = refreshOn(['grid.', 'node.', 'device.', 'input.', 'output.', 'pipeline.', 'room.'], refresh, { wait: 700 });
   return () => { disposed = true; offNav(); offLive(); };
 }

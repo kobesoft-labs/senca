@@ -15,10 +15,9 @@ import { loadNames, forgetNames, shortId } from '../lib/names.js';
 import { CATEGORIES, categoryOf, actionLabel, resourceHref, subjectTokenId } from '../lib/audit-actions.js';
 import { fmtTime, fmtClock, fmtDate, fmtNumber, wallToUtcIso, utcToWall, localZone } from '../lib/format.js';
 import { refreshOn } from '../lib/live.js';
-import { listNav } from '../lib/listnav.js';
 import { t, tn } from '../i18n/index.js';
 import { icon } from '../lib/icons.js';
-import { button, pageHeader, panel, badge, alert, helpHint, skeleton, emptyState, segmented, searchBox, attachMenu, kvList, loadingLine } from '../ui/index.js';
+import { listNav, button, pageHeader, panel, badge, alert, helpHint, skeleton, emptyState, segmented, searchBox, attachMenu, kvList, loadingLine } from '../ui/index.js';
 
 const PAGE_WANT = 50;
 const MAX_EXPORT = 20000;
@@ -187,7 +186,7 @@ export async function render(root) {
     const resText = name || (e.resource ? shortId(e.resource) : '');
     const details = h('div', { class: 'ae-details', hidden: true });
     const toggle = button(t('audit.details'), { variant: 'ghost', size: 'sm', iconOnly: true, icon: 'chevron-down', attrs: { 'aria-expanded': 'false' }, class: 'ae-toggle' });
-    const li = h('li', { class: 'audit-entry', 'data-nav-item': '', tabindex: '-1', 'data-action': e.action, 'data-testid': 'audit-entry' },
+    const li = h('li', { class: 'audit-entry', 'data-key': `${e.request_id}|${e.ts}|${e.action}|${e.node}`, 'data-action': e.action, 'data-testid': 'audit-entry' },
       h('div', { class: 'ae-row' },
         h('time', { class: 'ae-time num', datetime: e.ts, title: fmtTime(e.ts) }, fmtClock(e.ts)),
         h('span', { class: `ae-icon cat-${c ? c.id : 'other'}` }, icon(c ? c.icon : 'activity')),
@@ -380,7 +379,7 @@ export async function render(root) {
 
   const io = new IntersectionObserver((es) => { if (es.some((x) => x.isIntersecting)) loadMore(); }, { rootMargin: '400px 0px' });
   io.observe(sentinel);
-  const offNav = listNav(list, { selector: '.audit-entry', onOpen: (el) => el.open && el.open() });
+  const offNav = listNav(list, { rows: () => [...list.querySelectorAll('.audit-entry')], open: (el) => el.open && el.open() });
   // 新しい操作が届いたら、先頭から読み直す（読み進めていないときだけ）
   const offLive = refreshOn(['stream.', 'recording.', 'schedule.', 'token.', 'secret.', 'input.', 'output.', 'pipeline.', 'node.updated', 'device.disabled', 'device.enabled', 'room.updated', 'room.deleted'], () => {
     if (state && state.items.length <= PAGE_WANT && window.scrollY < 200 && !list.querySelector('.audit-entry.open')) restart();

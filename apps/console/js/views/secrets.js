@@ -11,10 +11,9 @@ import { load, modal, confirmDialog, reportError, errorBox, toast, copyField } f
 import { secrets, streams, inputs, outputs, listAll } from '../api/resources.js';
 import { fmtTime, fmtRelative, idemKey } from '../lib/format.js';
 import { forgetNames } from '../lib/names.js';
-import { listNav } from '../lib/listnav.js';
 import { t, tn } from '../i18n/index.js';
 import { icon } from '../lib/icons.js';
-import { button, setLoading, pageHeader, panel, dataTable, emptyState, formField, alert, helpHint, searchBox, badge, loadingLine } from '../ui/index.js';
+import { listNav, button, setLoading, pageHeader, panel, dataTable, emptyState, formField, alert, helpHint, searchBox, badge, loadingLine } from '../ui/index.js';
 import { onPageKey } from '../shortcuts.js';
 
 const NAME_RE = /^[A-Za-z0-9._-]{1,64}$/;
@@ -250,7 +249,7 @@ export async function render(root) {
       sort: { key: 'name', dir: 'asc' },
       rowKey: (x) => x.name,
       columns: [
-        { key: 'name', label: t('common.name'), primary: true, sort: (x) => x.name, render: (x) => h('span', { class: 'token-name', 'data-nav-item': '', tabindex: '-1' }, icon('secrets'), h('strong', null, x.name)) },
+        { key: 'name', label: t('common.name'), primary: true, sort: (x) => x.name, render: (x) => h('span', { class: 'token-name' }, icon('secrets'), h('strong', null, x.name)) },
         { label: t('secrets.ref'), render: (x) => copyField(x.ref, t('secrets.refLabel', { name: x.name })) },
         { label: t('secrets.usedIn'), wrap: true, render: usageCell },
         { key: 'created', label: t('common.created'), sort: (x) => x.created_at, render: (x) => h('span', { title: fmtTime(x.created_at) }, fmtRelative(x.created_at)) },
@@ -310,6 +309,6 @@ export async function render(root) {
     history.replaceState(history.state, '', `${location.pathname}${location.search}#/secrets`);
     create();
   }
-  const offs = [onPageKey('n', create), listNav(box)];
+  const offs = [onPageKey('n', create), listNav(box, { rows: () => [...box.querySelectorAll('tbody tr')], open: (tr) => { const d = tr.querySelector('details.usage'); if (d) d.open = !d.open; } })];
   return () => offs.forEach((f) => f());
 }

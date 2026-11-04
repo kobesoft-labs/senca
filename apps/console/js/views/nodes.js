@@ -10,11 +10,10 @@ import { system } from '../api/resources.js';
 import { grid as gridApi } from '../api/ops.js';
 import { fmtTime, fmtRelative, fmtNumber, fmtPercent } from '../lib/format.js';
 import { refreshOn } from '../lib/live.js';
-import { listNav } from '../lib/listnav.js';
 import { t, has } from '../i18n/index.js';
 import { icon } from '../lib/icons.js';
 import { guideUrl } from '../lib/guide.js';
-import { button, pageHeader, panel, statusPill, badge, alert, helpHint, meter, skeleton, emptyState, tooltip } from '../ui/index.js';
+import { listNav, button, pageHeader, panel, statusPill, badge, alert, helpHint, meter, skeleton, emptyState, tooltip } from '../ui/index.js';
 
 /** GPU のプロバイダー（無いのが普通なので、使えなくても赤にしない）。 */
 export const HW_PROVIDERS = ['nvidia', 'intel-vpl', 'amd-amf', 'vaapi'];
@@ -50,7 +49,7 @@ function providerInfo(p) {
   };
 }
 
-export async function render(root, _p, { caps }) {
+export async function render(root, _p, { caps, navigate }) {
   root = root.appendChild(h('div', { class: 'ops-view' }));
   const summaryBox = h('div');
   const nodesBox = h('div', null, skeleton({ kind: 'cards', rows: 3 }));
@@ -119,7 +118,7 @@ export async function render(root, _p, { caps }) {
     };
     const stateBadge = !up ? badge(t('nodes.state.down'), 'danger', { dot: true }) : draining ? statusPill('draining') : statusPill('accepting');
     const isLeader = scheduler && scheduler === n.id;
-    return h('article', { class: ['node-card', 'card', !up && 'is-down', draining && 'is-draining'].filter(Boolean).join(' '), 'data-node': n.id, 'data-testid': 'node-card', 'data-nav-item': '', tabindex: '-1', 'aria-labelledby': `node-${n.id}` },
+    return h('article', { class: ['node-card', 'card', !up && 'is-down', draining && 'is-draining'].filter(Boolean).join(' '), 'data-node': n.id, 'data-key': n.id, 'data-testid': 'node-card', 'aria-labelledby': `node-${n.id}` },
       h('header', { class: 'node-head' },
         h('span', { class: 'node-icon' }, icon('nodes')),
         h('div', { class: 'node-title' },
@@ -327,7 +326,7 @@ export async function render(root, _p, { caps }) {
       panel({ title: t('nodes.caps'), icon: 'zap', description: t('nodes.capsDesc'), testid: 'nodes-codecs' }, codecBox)));
   drawCodecs();
   await refresh();
-  const offNav = listNav(nodesBox);
+  const offNav = listNav(nodesBox, { rows: () => [...nodesBox.querySelectorAll('.node-card')], open: (el) => navigate(`/grid?node=${encodeURIComponent(el.dataset.key)}`) });
   const offLive = refreshOn(['node.', 'device.', 'grid.'], refresh, { wait: 600 });
   return () => { disposed = true; offNav(); offLive(); };
 }

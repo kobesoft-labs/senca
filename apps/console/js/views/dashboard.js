@@ -259,7 +259,7 @@ export async function render(root, _params, { caps }) {
   const drawAttention = (items) => {
     if (!items.length) { replace(attentionBox); return; }
     const order = { danger: 0, warn: 1, info: 2 };
-    const rows = items.slice().sort((a, b) => order[a.kind] - order[b.kind]).map((a) => h('li', { class: `att-item ${a.kind}`, 'data-nav-item': '', tabindex: '-1' },
+    const rows = items.slice().sort((a, b) => order[a.kind] - order[b.kind]).map((a) => h('li', { class: `att-item ${a.kind}` },
       h('span', { class: 'att-icon' }, icon(a.icon)),
       h('div', { class: 'att-text' }, h('strong', null, a.title), a.body ? h('span', null, a.body) : null),
       a.action ? (a.action.href
@@ -315,7 +315,7 @@ export async function render(root, _params, { caps }) {
     replace(onAirBox, h('ul', { class: 'onair-grid', 'data-testid': 'onair-list' }, live.map((s) => {
       const v = viewersOf(s);
       return h('li', { 'data-stream': s.id },
-        h('a', { class: 'onair-card', href: `#/streams/${encodeURIComponent(s.id)}`, 'data-nav-item': '' },
+        h('a', { class: 'onair-card', href: `#/streams/${encodeURIComponent(s.id)}` },
           thumb(s),
           h('div', { class: 'onair-body' },
             h('div', { class: 'onair-title' }, h('strong', { class: 'truncate' }, s.name), recBy.has(s.id) ? badge(t('status.recording'), 'rec') : null),
@@ -336,7 +336,7 @@ export async function render(root, _params, { caps }) {
     const now = d.recs.value.data.items.filter((r) => r.state === 'recording');
     replace(recBox, now.length
       ? h('ul', { class: 'mini-list' }, now.slice(0, 6).map((r) => h('li', null,
-        h('a', { href: `#/recordings/${encodeURIComponent(r.id)}`, 'data-nav-item': '' }, badge(t('status.recording'), 'rec'), h('span', { class: 'truncate' }, r.name || nameOf.get(r.stream) || r.id.slice(0, 8))),
+        h('a', { href: `#/recordings/${encodeURIComponent(r.id)}` }, badge(t('status.recording'), 'rec'), h('span', { class: 'truncate' }, r.name || nameOf.get(r.stream) || r.id.slice(0, 8))),
         h('span', { class: 'num muted js-since', 'data-since': r.started_at }, fmtDuration(Date.now() - new Date(r.started_at).getTime())))))
       : h('p', { class: 'muted small quiet' }, t('dashboard.recordingEmpty')));
   };
@@ -351,7 +351,7 @@ export async function render(root, _params, { caps }) {
     const actionText = (a) => (has(`schedules.action.${a}`) ? t(`schedules.action.${a}`) : a);
     replace(schedBox, up.length
       ? h('ul', { class: 'mini-list' }, up.slice(0, 6).map((s) => h('li', null,
-        h('a', { href: `#/schedules/${encodeURIComponent(s.id)}`, 'data-nav-item': '' },
+        h('a', { href: `#/schedules/${encodeURIComponent(s.id)}` },
           s.state === 'running' ? statusPill('running') : h('span', { class: 'tag' }, actionText(s.action)),
           h('span', { class: 'truncate' }, s.name || s.id.slice(0, 8))),
         h('span', { class: 'muted small nowrap', title: fmtTime(s.start_at) }, s.state === 'running' ? t('dashboard.endsIn', { rel: fmtRelative(s.end_at) }) : fmtRelative(s.start_at)))))

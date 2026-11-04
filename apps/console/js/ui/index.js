@@ -11,3 +11,6 @@ export { tabs } from './tabs.js';
 export { toast } from './toast.js';
 export { checklist, checklistDismissed, resetChecklist } from './onboarding.js';
 export { icon, ICON_NAMES } from '../lib/icons.js';
+export { sparkline } from './chart.js';
+export { choiceCards } from './choice.js';
+export { listNav } from './listnav.js';

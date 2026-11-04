@@ -9,10 +9,9 @@ import { load, modal, confirmDialog, reportError, errorBox, toast, copyField } f
 import { tokens, SCOPES, listAll } from '../api/resources.js';
 import { fmtTime, fmtRelative, wallToUtcIso, localZone, idemKey } from '../lib/format.js';
 import { forgetNames } from '../lib/names.js';
-import { listNav } from '../lib/listnav.js';
 import { t } from '../i18n/index.js';
 import { icon } from '../lib/icons.js';
-import { button, setLoading, pageHeader, dataTable, emptyState, badge, formField, helpHint, alert, segmented, searchBox, panel } from '../ui/index.js';
+import { listNav, button, setLoading, pageHeader, dataTable, emptyState, badge, formField, helpHint, alert, segmented, searchBox, panel } from '../ui/index.js';
 import { onPageKey } from '../shortcuts.js';
 
 /** 役割のひな形（何に使うか → 権限）。 */
@@ -243,7 +242,7 @@ export async function render(root) {
       sort: { key: 'created', dir: 'desc' },
       rowKey: (x) => x.id,
       columns: [
-        { key: 'name', label: t('common.name'), primary: true, sort: (x) => x.name, render: (x) => h('span', { class: 'token-name', 'data-nav-item': '', tabindex: '-1' }, icon('key'), h('strong', null, x.name)) },
+        { key: 'name', label: t('common.name'), primary: true, sort: (x) => x.name, render: (x) => h('span', { class: 'token-name' }, icon('key'), h('strong', null, x.name)) },
         { key: 'role', label: t('tokens.col.role'), sort: (x) => roleOf(x.scopes), render: roleBadge },
         { label: t('tokens.scopes'), wrap: true, render: (x) => h('div', { class: 'scope-chips' }, x.scopes.map((s) => h('code', { title: t(`tokens.scope.${s}`) }, s))) },
         { key: 'created', label: t('common.created'), sort: (x) => x.created_at, render: (x) => h('span', { title: fmtTime(x.created_at) }, fmtRelative(x.created_at)) },
@@ -293,7 +292,7 @@ export async function render(root) {
     history.replaceState(history.state, '', `${location.pathname}${location.search}#/tokens`);
     issue();
   }
-  const offs = [onPageKey('n', issue), listNav(box)];
+  const offs = [onPageKey('n', issue), listNav(box, { rows: () => [...box.querySelectorAll('tbody tr')], open: (tr) => { const b = tr.querySelector('[data-testid="token-revoke"]'); if (b) b.focus(); } })];
   return () => offs.forEach((f) => f());
 }
 
