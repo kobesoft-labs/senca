@@ -9,7 +9,7 @@
 import { h, replace, select, debounce } from '../lib/dom.js';
 import { errorBox } from '../lib/ui.js';
 import { grid as gridApi } from '../api/ops.js';
-import { loadNames, ioInfo, shortId } from '../lib/names.js';
+import { loadNames, forgetNames, ioInfo, shortId } from '../lib/names.js';
 import { fmtNumber, fmtPercent } from '../lib/format.js';
 import { refreshOn } from '../lib/live.js';
 import { listNav } from '../lib/listnav.js';
@@ -61,7 +61,16 @@ export async function render(root, _p, { caps }) {
   const info = (w) => names.get(w.id) || { name: w.id.replace(/^[a-z_]+:/, '').slice(0, 10), sub: kindLabel(w.kind), href: null };
 
   const resolveNames = async () => {
-    const nm = await loadNames(['stream', 'pipeline']);
+    let nm = await loadNames(['stream', 'pipeline']);
+    // 表を読んだ後に作られた配信・パイプラインがあれば、表を読み直す
+    const ios = await Promise.all(data.workloads.map((w) => (/^(input|output):/.test(w.id) ? ioInfo(...w.id.split(':')) : null)));
+    const stale = ios.some((io) => io && !nm('stream', io.stream))
+      || data.workloads.some((w) => w.id.startsWith('pipeline:') && !nm('pipeline', w.id.slice(9)));
+    if (stale) {
+      forgetNames('stream');
+      forgetNames('pipeline');
+      nm = await loadNames(['stream', 'pipeline']);
+    }
     await Promise.all(data.workloads.map(async (w) => {
       if (names.has(w.id)) return;
       const [type, ...rest] = w.id.split(':');

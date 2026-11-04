@@ -11,7 +11,7 @@ import { h, replace, select, debounce } from '../lib/dom.js';
 import { errorBox, downloadBlob, reportError, toast, copyField } from '../lib/ui.js';
 import { system } from '../api/resources.js';
 import { audit as auditApi, auditFill } from '../api/ops.js';
-import { loadNames, shortId } from '../lib/names.js';
+import { loadNames, forgetNames, shortId } from '../lib/names.js';
 import { CATEGORIES, categoryOf, actionLabel, resourceHref, subjectTokenId } from '../lib/audit-actions.js';
 import { fmtTime, fmtClock, fmtDate, fmtNumber, wallToUtcIso, utcToWall, localZone } from '../lib/format.js';
 import { refreshOn } from '../lib/live.js';
@@ -366,6 +366,7 @@ export async function render(root) {
     panel({ testid: 'audit-panel', class: 'audit-panel' }, body));
 
   // 名前とノードを先に読む（失敗してもかまわない）
+  forgetNames();
   const [nm, ns] = await Promise.all([
     loadNames(['stream', 'recording', 'schedule', 'token', 'secret', 'pipeline', 'node']),
     system.nodes().then((r) => r.data.items).catch(() => null),
