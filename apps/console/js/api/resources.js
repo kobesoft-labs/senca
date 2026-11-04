@@ -38,7 +38,7 @@ export const recordings = {
   stop: (id) => post(`/recordings/${enc(id)}/stop`, undefined, { idempotencyKey: idemKey() }),
   playbackUrl: (id, ttl) => post(`/recordings/${enc(id)}/playback-url`, ttl ? { ttl_secs: ttl } : undefined),
   thumbnail: (id) => request('GET', `/recordings/${enc(id)}/thumbnail`, { as: 'blob' }),
-  exportMp4: (id, signal) => request('GET', `/recordings/${enc(id)}/export.mp4`, { as: 'response', signal }),
+  exportMp4: (id, signal, { start, end } = {}) => request('GET', `/recordings/${enc(id)}/export.mp4`, { as: 'response', signal, query: { start, end } }),
 };
 
 export const schedules = {
