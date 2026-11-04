@@ -139,12 +139,13 @@ pub struct AuditLog {
     dir: PathBuf,
     max_bytes: u64,
     keep: usize,
-    lock: Mutex<()>,
+    /// 書き込みのロック。中身は「今の `audit.log` の終わりを確かめた」（起動の後の最初の書き込みで確かめる）。
+    lock: Mutex<bool>,
 }
 
 impl AuditLog {
     pub fn new(dir: &Path, max_bytes: u64, keep: usize) -> AuditLog {
-        AuditLog { dir: dir.to_path_buf(), max_bytes, keep: keep.max(1), lock: Mutex::new(()) }
+        AuditLog { dir: dir.to_path_buf(), max_bytes, keep: keep.max(1), lock: Mutex::new(false) }
     }
 
     fn active_path(&self) -> PathBuf {
@@ -172,11 +173,19 @@ impl AuditLog {
 
     /// 1 行を追記する（`line` は改行を含まない JSON）。大きさが上限を超えたら回転する。
     pub fn append(&self, line: &str) -> std::io::Result<()> {
-        let _g = self.lock.lock().unwrap_or_else(|e| e.into_inner());
-        let mut buf = Vec::with_capacity(line.len() + 1);
+        let mut checked = self.lock.lock().unwrap_or_else(|e| e.into_inner());
+        let mut buf = Vec::with_capacity(line.len() + 2);
+        let mut f = std::fs::OpenOptions::new().create(true).append(true).read(!*checked).open(self.active_path())?;
+        if !*checked {
+            // 前のプロセスが行の途中で止まっていたら、改行を足してから書く（書きかけの行は読み飛ばされ、次の行がつながらない）。
+            // 回転した後の新しいファイルはこのプロセスが書くので、確かめるのは起動の後の 1 回だけ
+            if !ends_with_newline_or_empty(&f)? {
+                buf.push(b'\n');
+            }
+            *checked = true;
+        }
         buf.extend_from_slice(line.as_bytes());
         buf.push(b'\n');
-        let mut f = std::fs::OpenOptions::new().create(true).append(true).open(self.active_path())?;
         f.write_all(&buf)?;
         if self.max_bytes > 0 && f.metadata()?.len() >= self.max_bytes {
             drop(f);
@@ -270,6 +279,19 @@ impl AuditLog {
         page.next = None;
         page
     }
+}
+
+/// ファイルが空か、改行で終わっているか。
+fn ends_with_newline_or_empty(f: &File) -> std::io::Result<bool> {
+    let len = f.metadata()?.len();
+    if len == 0 {
+        return Ok(true);
+    }
+    let mut last = [0u8; 1];
+    let mut r = f;
+    r.seek(SeekFrom::Start(len - 1))?;
+    r.read_exact(&mut last)?;
+    Ok(last[0] == b'\n')
 }
 
 /// 1 行を読む。JSON のオブジェクトで、`ts`（RFC 3339）と `action`（文字列）があるものだけ。
@@ -574,6 +596,27 @@ mod tests {
         // 小さい上限でもくり返せば同じ
         let (got, _) = all(&log, &Filter::default(), 10, 100);
         assert_eq!(got, ids([1, 0].into_iter()));
+        let _ = std::fs::remove_dir_all(&d);
+    }
+
+    #[test]
+    fn a_torn_last_line_does_not_swallow_the_next_entry() {
+        let d = tmp("torn");
+        // 前のプロセスが行の途中で止まった
+        let torn = line(0, "default", "stream.create", "token:a");
+        std::fs::write(d.join(FILE), format!("{}\n{}", line(1, "default", "stream.create", "token:a"), &torn[..torn.len() / 2])).unwrap();
+        let log = AuditLog::new(&d, 0, 1);
+        log.append(&line(2, "default", "stream.create", "token:a")).unwrap();
+        log.append(&line(3, "default", "stream.create", "token:a")).unwrap();
+        let (got, _) = all(&log, &Filter::default(), 10, SCAN_BUDGET);
+        assert_eq!(got, ids([3, 2, 1].into_iter()));
+        let text = std::fs::read_to_string(d.join(FILE)).unwrap();
+        assert_eq!(text.lines().count(), 4);
+        assert!(text.ends_with('\n'));
+        // 改行で終わっているファイルには足さない
+        let log = AuditLog::new(&d, 0, 1);
+        log.append(&line(4, "default", "stream.create", "token:a")).unwrap();
+        assert_eq!(std::fs::read_to_string(d.join(FILE)).unwrap().lines().count(), 5);
         let _ = std::fs::remove_dir_all(&d);
     }
 
