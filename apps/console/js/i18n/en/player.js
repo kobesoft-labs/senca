@@ -50,4 +50,6 @@ export default {
   'player.autoplayBlocked': 'Press play (autoplay was blocked)',
   'player.ended': 'Loaded to the end',
   'player.segmentRetry': 'Cannot read a segment ({reason}). Retrying',
+
+  'player.playOverlay': 'Play preview',
 };

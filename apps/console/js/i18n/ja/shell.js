@@ -152,4 +152,10 @@ export default {
   'soon.api': 'API の説明',
   'soon.guide': '手引きを読む',
   'soon.back': 'ダッシュボードへ戻る',
+  'shortcuts.listMove': '一覧で次・前の行へ',
+  'shortcuts.listOpen': '一覧で選んだ行を開く',
+  'shortcuts.create': '一覧で新しく作る',
+  'palette.liveStreams': '配信中の配信を見る',
+  'palette.upcoming': 'これからの予約を見る',
+  'palette.legalHold': '法的保全の録画を見る',
 };

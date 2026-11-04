@@ -3,9 +3,10 @@
 import { h, replace, select } from '../lib/dom.js';
 import { load, confirmDialog, reportError, errorBox, toast } from '../lib/ui.js';
 import { schedules, streams } from '../api/resources.js';
-import { fmtTime, fmtTimeIn, wallToUtcIso, utcToWall, zoneChoices, localZone } from '../lib/format.js';
+import { fmtTime, fmtTimeIn, fmtRelative, fmtDurationText, wallToUtcIso, utcToWall, zoneChoices, localZone } from '../lib/format.js';
 import { refreshOn } from '../lib/live.js';
-import { actionLabel, schedBadge, describeRecurrence } from './schedules.js';
+import { actionLabel, schedBadge, describeRecurrence, occurrences, whenText, ACTION_ICON } from './schedules.js';
+import { icon } from '../lib/icons.js';
 import { t } from '../i18n/index.js';
 import { button, pageHeader, panel, kvList, dataTable, formField } from '../ui/index.js';
 import { rememberRecent, forgetRecent } from '../lib/recent.js';
@@ -16,6 +17,7 @@ export async function render(root, [id], { navigate }) {
   let etag = null;
   let streamName = null;
   const head = h('div');
+  const hero = h('div');
   const info = h('div');
   const edit = h('div');
   const runs = h('div');
@@ -81,6 +83,22 @@ export async function render(root, [id], { navigate }) {
         button(t('common.delete'), { variant: 'danger', icon: 'trash', onClick: remove }),
       ].filter(Boolean),
     }));
+    // いつ・何を・次はいつ（この端末の時刻と、予約のタイムゾーン）
+    const now = Date.now();
+    const next = occurrences(sch, now, now + 400 * 86400_000, 5);
+    const nextOne = active ? next[0] : null;
+    replace(hero, h('section', { class: 'sched-hero', 'data-testid': 'sched-hero' },
+      h('div', { class: `sh-icon act-${sch.action}` }, icon(ACTION_ICON[sch.action] || 'clock')),
+      h('div', { class: 'sh-main' },
+        h('div', { class: 'sh-kicker' }, actionLabel(sch.action), ' · ', h('a', { href: `#/streams/${encodeURIComponent(sch.stream)}` }, streamName || sch.stream.slice(0, 10))),
+        h('div', { class: 'sh-when' }, nextOne ? whenText(nextOne.start, nextOne.end, tz) : whenText(new Date(sch.start_at).getTime(), new Date(sch.end_at).getTime(), tz)),
+        h('div', { class: 'sh-sub' },
+          nextOne
+            ? (nextOne.start <= now ? t('schedules.tt.now') : t('schedules.detail.nextIn', { rel: fmtRelative(new Date(nextOne.start).toISOString()) }))
+            : t('schedules.detail.noMore'),
+          ` · ${fmtDurationText(new Date(sch.end_at) - new Date(sch.start_at))} · ${describeRecurrence(sch.recurrence)}`)),
+      active && sch.recurrence && next.length > 1 ? h('div', { class: 'sh-next' }, h('div', { class: 'small muted' }, t('schedules.detail.upcoming')),
+        h('ol', null, next.slice(1).map((o) => h('li', { class: 'num' }, whenText(o.start, o.end, tz))))) : null));
     const withTz = (iso) => [fmtTime(iso), tz ? h('span', { class: 'muted small' }, ` / ${fmtTimeIn(iso, tz)}（${tz}）`) : null];
     replace(info, kvList([
       ['ID', h('code', null, sch.id)],
@@ -167,6 +185,7 @@ export async function render(root, [id], { navigate }) {
 
   root.append(
     head,
+    hero,
     h('div', { class: 'grid cols-2' },
       panel({ title: t('schedules.detail.info'), icon: 'info' }, info),
       panel({ title: t('schedules.detail.edit'), icon: 'edit' }, edit)),
