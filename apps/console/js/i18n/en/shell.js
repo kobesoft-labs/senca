@@ -113,7 +113,7 @@ export default {
   'palette.newSchedule': 'Create a new schedule',
   'palette.newToken': 'Issue an API token',
   'palette.newSecret': 'Create a secret',
-  'palette.newPipeline': 'Create a pipeline',
+  'palette.newPipeline': 'Create a pipeline from a template…',
   'palette.sendFromBrowser': 'Go live from this browser’s camera',
   'palette.themeLight': 'Theme: switch to light',
   'palette.themeDark': 'Theme: switch to dark',

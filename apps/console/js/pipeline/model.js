@@ -7,6 +7,8 @@
 // - 入力の参照は `"部品"` か `"部品.ポート"`（source は video・audio、compose は program・preview、ほかは out）
 // - 場所（どのノードで動かすか）は持たない（REQ-005）。画面の位置はグラフに入れられないので、画面側が別に覚える。
 // - 取り込んだグラフの、この画面で編集しない項目（compose の images、board の corners など）はそのまま残す。
+// - 編集の道具: つなげるかの下見（checkConnect）・自動の配置（autoLayout）・元に戻す用の写し（serialize / restore）・
+//   写しと貼り付け（copyNodes / pasteNodes）。
 
 import { t as tr } from '../i18n/index.js';
 
@@ -22,7 +24,14 @@ const resolveOptions = (opts) => opts.map((o) => (Array.isArray(o) && typeof o[1
 export const PORT_LABEL = {};
 for (const k of ['ev', 'ea', 'v', 'a', 'raw', 'enc']) Object.defineProperty(PORT_LABEL, k, { get: () => tr(`pipelines.port.${k}`), enumerable: true });
 
+/** ポートの型の見た目: media = video・audio・any（色）、encoded = 符号化済みか（形: 菱形か丸）。 */
+export function portLook(type) {
+  const media = type === 'ev' || type === 'v' ? 'video' : type === 'ea' || type === 'a' ? 'audio' : 'any';
+  return { media, encoded: type === 'ev' || type === 'ea' || type === 'enc' };
+}
+
 const VIDEO_CODECS = ['av1', 'vp9', 'vp8', 'h264', 'h265'];
+const codecOpts = (list) => list.map((c) => [c, `pipelines.codec.${c}`]);
 const AUDIO_CODECS = ['opus', 'aac', 'pcma', 'pcmu'];
 const ENCODE_CODECS = ['av1', 'vp9', 'vp8', 'h264', 'h265', 'opus'];
 const FILTERS = ['bilinear', 'nearest', 'bicubic', 'lanczos3', 'area'];
@@ -31,123 +40,157 @@ const TRANSITION_KEYS = ['cut', 'fade', 'wipe_left', 'wipe_right'];
 export const transitions = () => TRANSITION_KEYS.map((k) => [k, tr(`pipelines.transition.${k}`)]);
 /** ロイヤリティのあるコーデック（royalty_free の stream が関わると使えない。REQ-007）。 */
 export const ROYALTY_CODECS = new Set(['h264', 'h265', 'aac']);
+/** ハードウェア（GPU）が無いと扱えないコーデック（無ければノードの検証で CAPACITY_UNAVAILABLE）。 */
+export const GPU_CODECS = new Set(['h264', 'h265']);
 
 const num = (path, key, extra = {}) => withLabel({ path, type: 'number', ...extra }, key);
 const sel = (path, key, options, extra = {}) => {
   const o = withLabel({ path, type: 'select', ...extra }, key);
   return Object.defineProperty(o, 'options', { get: () => resolveOptions(typeof options === 'function' ? options() : options), enumerable: true });
 };
-const chk = (path, key, def) => withLabel({ path, type: 'check', def }, key);
+const chk = (path, key, def, extra = {}) => withLabel({ path, type: 'check', def, ...extra }, key);
+/** 説明の文（検査器で欄の下に出す）。 */
+const help = (f, key) => Object.defineProperty(f, 'help', { get: () => tr(key), enumerable: true });
+/** 詳しい設定（検査器で「詳しい設定」の中に畳む）。 */
+const adv = (f) => Object.assign(f, { advanced: true });
 
 /**
  * 部品の種類。
+ * - cat: 分類（色の名前。css の --k-<cat>）・icon: アイコン・desc: 説明の鍵
  * - in: 入力ポート（固定）。名前付きの入力（compose・audio_mix）は部品ごとの `ins` から作る。
  * - out: 出力ポートの名前（型は outType で上流から決める）。
  * - fields: 検査器に出す設定（path はグラフの中の場所）。
  */
 export const KINDS = {
   source: {
-    color: '#2f80ed', in: [], out: ['video', 'audio'],
+    cat: 'input', icon: 'streams', in: [], out: ['video', 'audio'],
     fields: [
-      withLabel({ path: 'stream', type: 'stream', required: true }, 'pipelines.f.source.stream'),
-      sel('video.codec', 'pipelines.f.source.video.codec', ['', ...VIDEO_CODECS]),
-      num('video.track', 'pipelines.f.source.video.track', { min: 0, when: (p) => !!p['video.codec'] }),
-      num('video.width', 'pipelines.f.source.video.width', { min: 16, when: (p) => !!p['video.codec'] }),
-      num('video.height', 'pipelines.f.source.video.height', { min: 16, when: (p) => !!p['video.codec'] }),
-      num('video.fps', 'pipelines.f.source.video.fps', { min: 1, step: 'any', when: (p) => !!p['video.codec'] }),
-      sel('audio.codec', 'pipelines.f.source.audio.codec', ['', ...AUDIO_CODECS]),
-      num('audio.track', 'pipelines.f.source.audio.track', { min: 0, when: (p) => !!p['audio.codec'] }),
-      num('audio.sample_rate', 'pipelines.f.source.audio.sample_rate', { min: 8000, when: (p) => !!p['audio.codec'] }),
-      num('audio.channels', 'pipelines.f.source.audio.channels', { min: 1, max: 8, when: (p) => !!p['audio.codec'] }),
+      help(withLabel({ path: 'stream', type: 'stream', required: true }, 'pipelines.f.source.stream'), 'pipelines.h.source.stream'),
+      help(sel('video.codec', 'pipelines.f.source.video.codec', [['', 'pipelines.notUsed'], ...codecOpts(VIDEO_CODECS)]), 'pipelines.h.source.codec'),
+      adv(num('video.track', 'pipelines.f.source.video.track', { min: 0, when: (p) => !!p['video.codec'] })),
+      adv(num('video.width', 'pipelines.f.source.video.width', { min: 16, when: (p) => !!p['video.codec'] })),
+      adv(num('video.height', 'pipelines.f.source.video.height', { min: 16, when: (p) => !!p['video.codec'] })),
+      adv(num('video.fps', 'pipelines.f.source.video.fps', { min: 1, step: 'any', when: (p) => !!p['video.codec'] })),
+      sel('audio.codec', 'pipelines.f.source.audio.codec', [['', 'pipelines.notUsed'], ...codecOpts(AUDIO_CODECS)]),
+      adv(num('audio.track', 'pipelines.f.source.audio.track', { min: 0, when: (p) => !!p['audio.codec'] })),
+      adv(num('audio.sample_rate', 'pipelines.f.source.audio.sample_rate', { min: 8000, when: (p) => !!p['audio.codec'] })),
+      adv(num('audio.channels', 'pipelines.f.source.audio.channels', { min: 1, max: 8, when: (p) => !!p['audio.codec'] })),
     ],
     defaults: { 'video.codec': 'vp9' },
   },
   decode: {
-    color: '#8e44ad', in: [['input', ['ev', 'ea', 'enc']]], out: ['out'],
-    fields: [num('max_width', 'pipelines.f.decode.max_width', { min: 16 }), num('max_height', 'pipelines.f.decode.max_height', { min: 16 }), num('threads', 'pipelines.f.decode.threads', { min: 0, def: 0 })],
+    cat: 'decode', icon: 'expand', in: [['input', ['ev', 'ea', 'enc']]], out: ['out'],
+    fields: [
+      help(adv(num('max_width', 'pipelines.f.decode.max_width', { min: 16 })), 'pipelines.h.decode.max'),
+      adv(num('max_height', 'pipelines.f.decode.max_height', { min: 16 })),
+      help(adv(num('threads', 'pipelines.f.decode.threads', { min: 0, def: 0 })), 'pipelines.h.threads'),
+    ],
   },
   board: {
-    color: '#16a085', in: [['input', ['v', 'raw']]], out: ['out'],
+    cat: 'video', icon: 'presentation', in: [['input', ['v', 'raw']]], out: ['out'],
     fields: [
       sel('params.mode', 'pipelines.f.board.params.mode', [['whiteboard', 'pipelines.opt.whiteboard'], ['blackboard', 'pipelines.opt.blackboard']], { def: 'whiteboard' }),
-      chk('params.auto_detect', 'pipelines.f.board.params.auto_detect', false),
-      num('params.redetect_frames', 'pipelines.f.board.params.redetect_frames', { min: 0, def: 0 }),
+      help(chk('params.auto_detect', 'pipelines.f.board.params.auto_detect', false), 'pipelines.h.board.auto_detect'),
+      adv(num('params.redetect_frames', 'pipelines.f.board.params.redetect_frames', { min: 0, def: 0 })),
       num('params.output_width', 'pipelines.f.board.params.output_width', { min: 16, def: 1280 }),
       num('params.output_height', 'pipelines.f.board.params.output_height', { min: 16, def: 720 }),
-      chk('params.enhance', 'pipelines.f.board.params.enhance', true),
-      num('params.stroke_gain', 'pipelines.f.board.params.stroke_gain', { step: 'any' }),
-      num('params.chroma_gain', 'pipelines.f.board.params.chroma_gain', { step: 'any' }),
+      help(chk('params.enhance', 'pipelines.f.board.params.enhance', true), 'pipelines.h.board.enhance'),
+      adv(num('params.stroke_gain', 'pipelines.f.board.params.stroke_gain', { step: 'any' })),
+      adv(num('params.chroma_gain', 'pipelines.f.board.params.chroma_gain', { step: 'any' })),
       chk('params.invert_to_white', 'pipelines.f.board.params.invert_to_white', false),
-      chk('params.clahe', 'pipelines.f.board.params.clahe', false),
+      adv(chk('params.clahe', 'pipelines.f.board.params.clahe', false)),
     ],
   },
   scale: {
-    color: '#16a085', in: [['input', ['v', 'raw']]], out: ['out'],
-    fields: [num('width', 'pipelines.f.scale.width', { min: 16, required: true, def: 1280 }), num('height', 'pipelines.f.scale.height', { min: 16, required: true, def: 720 }), sel('filter', 'pipelines.f.scale.filter', FILTERS, { def: 'bilinear' })],
+    cat: 'video', icon: 'scaling', in: [['input', ['v', 'raw']]], out: ['out'],
+    fields: [
+      num('width', 'pipelines.f.scale.width', { min: 16, required: true, def: 1280 }),
+      num('height', 'pipelines.f.scale.height', { min: 16, required: true, def: 720 }),
+      help(adv(sel('filter', 'pipelines.f.scale.filter', FILTERS, { def: 'bilinear' })), 'pipelines.h.scale.filter'),
+    ],
   },
   crop: {
-    color: '#16a085', in: [['input', ['v', 'raw']]], out: ['out'],
-    fields: [num('x', 'pipelines.f.crop.x', { min: 0, required: true, def: 0 }), num('y', 'pipelines.f.crop.y', { min: 0, required: true, def: 0 }), num('width', 'pipelines.f.crop.width', { min: 2, required: true, def: 640 }), num('height', 'pipelines.f.crop.height', { min: 2, required: true, def: 360 })],
+    cat: 'video', icon: 'crop', in: [['input', ['v', 'raw']]], out: ['out'],
+    fields: [
+      help(num('x', 'pipelines.f.crop.x', { min: 0, required: true, def: 0 }), 'pipelines.h.crop'),
+      num('y', 'pipelines.f.crop.y', { min: 0, required: true, def: 0 }),
+      num('width', 'pipelines.f.crop.width', { min: 2, required: true, def: 640 }),
+      num('height', 'pipelines.f.crop.height', { min: 2, required: true, def: 360 }),
+    ],
   },
   compose: {
-    color: '#d35400', named: true, out: ['program', 'preview'],
+    cat: 'compose', icon: 'layers', named: true, out: ['program', 'preview'],
     accept: ['v', 'raw'],
     fields: [
       num('canvas.width', 'pipelines.f.compose.canvas.width', { min: 16, required: true, def: 1280 }),
       num('canvas.height', 'pipelines.f.compose.canvas.height', { min: 16, required: true, def: 720 }),
-      num('canvas.fps_num', 'pipelines.f.compose.canvas.fps_num', { min: 1, required: true, def: 30 }),
-      num('canvas.fps_den', 'pipelines.f.compose.canvas.fps_den', { min: 1, def: 1 }),
+      help(num('canvas.fps_num', 'pipelines.f.compose.canvas.fps_num', { min: 1, required: true, def: 30 }), 'pipelines.h.compose.fps'),
+      adv(num('canvas.fps_den', 'pipelines.f.compose.canvas.fps_den', { min: 1, def: 1 })),
       withLabel({ path: 'canvas.background', type: 'color', def: '#000000' }, 'pipelines.f.compose.canvas.background'),
-      withLabel({ path: 'program', type: 'scene', required: true }, 'pipelines.f.compose.program'),
-      withLabel({ path: 'preview', type: 'scene' }, 'pipelines.f.compose.preview'),
-      sel('transition.kind', 'pipelines.f.compose.transition.kind', transitions, { def: 'cut' }),
+      help(withLabel({ path: 'program', type: 'scene', required: true }, 'pipelines.f.compose.program'), 'pipelines.h.compose.program'),
+      help(withLabel({ path: 'preview', type: 'scene' }, 'pipelines.f.compose.preview'), 'pipelines.h.compose.preview'),
+      help(sel('transition.kind', 'pipelines.f.compose.transition.kind', transitions, { def: 'cut' }), 'pipelines.h.compose.transition'),
       num('transition.duration_ms', 'pipelines.f.compose.transition.duration_ms', { min: 0, def: 0 }),
-      num('missing.hold_ms', 'pipelines.f.compose.missing.hold_ms', { min: 0, def: 2000 }),
-      withLabel({ path: 'missing.slate_color', type: 'color', def: '#000000' }, 'pipelines.f.compose.missing.slate_color'),
-      num('threads', 'pipelines.f.compose.threads', { min: 0, def: 0 }),
+      help(adv(num('missing.hold_ms', 'pipelines.f.compose.missing.hold_ms', { min: 0, def: 2000 })), 'pipelines.h.compose.missing'),
+      adv(withLabel({ path: 'missing.slate_color', type: 'color', def: '#000000' }, 'pipelines.f.compose.missing.slate_color')),
+      adv(num('threads', 'pipelines.f.compose.threads', { min: 0, def: 0 })),
     ],
   },
   audio_mix: {
-    color: '#d35400', named: true, out: ['out'], accept: ['a', 'raw'],
-    fields: [num('master_gain_db', 'pipelines.f.audio_mix.master_gain_db', { step: 0.5, def: 0 }), chk('limiter', 'pipelines.f.audio_mix.limiter', true)],
+    cat: 'audio', icon: 'sliders', named: true, out: ['out'], accept: ['a', 'raw'],
+    fields: [
+      num('master_gain_db', 'pipelines.f.audio_mix.master_gain_db', { step: 0.5, def: 0 }),
+      help(chk('limiter', 'pipelines.f.audio_mix.limiter', true), 'pipelines.h.audio_mix.limiter'),
+    ],
   },
   encode: {
-    color: '#c0392b', in: [['input', ['v', 'a', 'raw']]], out: ['out'],
+    cat: 'encode', icon: 'shrink', in: [['input', ['v', 'a', 'raw']]], out: ['out'],
     fields: [
-      sel('codec', 'pipelines.f.encode.codec', ENCODE_CODECS, { required: true, def: 'av1' }),
-      num('bitrate_kbps', 'pipelines.f.encode.bitrate_kbps', { min: 1, required: true, def: 2000 }),
-      num('gop', 'pipelines.f.encode.gop', { min: 1 }),
-      chk('low_latency', 'pipelines.f.encode.low_latency', true),
-      sel('rate_control', 'pipelines.f.encode.rate_control', ['cbr', 'vbr'], { def: 'cbr' }),
-      num('width', 'pipelines.f.encode.width', { min: 16 }),
-      num('height', 'pipelines.f.encode.height', { min: 16 }),
-      num('frame_ms', 'pipelines.f.encode.frame_ms', { min: 2.5, step: 'any', when: (p) => p.codec === 'opus' }),
-      num('threads', 'pipelines.f.encode.threads', { min: 0, def: 0 }),
+      help(sel('codec', 'pipelines.f.encode.codec', codecOpts(ENCODE_CODECS), { required: true, def: 'av1' }), 'pipelines.h.encode.codec'),
+      help(num('bitrate_kbps', 'pipelines.f.encode.bitrate_kbps', { min: 1, required: true, def: 2000 }), 'pipelines.h.encode.bitrate'),
+      help(num('gop', 'pipelines.f.encode.gop', { min: 1 }), 'pipelines.h.encode.gop'),
+      help(chk('low_latency', 'pipelines.f.encode.low_latency', true), 'pipelines.h.encode.low_latency'),
+      adv(sel('rate_control', 'pipelines.f.encode.rate_control', ['cbr', 'vbr'], { def: 'cbr' })),
+      adv(num('width', 'pipelines.f.encode.width', { min: 16 })),
+      adv(num('height', 'pipelines.f.encode.height', { min: 16 })),
+      adv(num('frame_ms', 'pipelines.f.encode.frame_ms', { min: 2.5, step: 'any', when: (p) => p.codec === 'opus' })),
+      adv(num('threads', 'pipelines.f.encode.threads', { min: 0, def: 0 })),
     ],
   },
   snapshot_on_change: {
-    color: '#7f8c8d', in: [['input', ['v', 'raw']]], out: [],
+    cat: 'output', icon: 'camera', in: [['input', ['v', 'raw']]], out: [],
     fields: [
       sel('params.mode', 'pipelines.f.snapshot_on_change.params.mode', [['whiteboard', 'pipelines.opt.whiteboard'], ['blackboard', 'pipelines.opt.blackboard']], { def: 'whiteboard' }),
-      chk('params.enabled', 'pipelines.f.snapshot_on_change.params.enabled', true),
-      num('params.analysis_fps', 'pipelines.f.snapshot_on_change.params.analysis_fps', { min: 0, step: 'any', def: 2 }),
-      num('params.stable_frames', 'pipelines.f.snapshot_on_change.params.stable_frames', { min: 1, def: 3 }),
-      num('params.change_fraction', 'pipelines.f.snapshot_on_change.params.change_fraction', { min: 0, step: 'any', def: 0.004 }),
-      num('params.jpeg_quality', 'pipelines.f.snapshot_on_change.params.jpeg_quality', { min: 1, max: 100, def: 85 }),
+      help(chk('params.enabled', 'pipelines.f.snapshot_on_change.params.enabled', true), 'pipelines.h.snapshot.enabled'),
+      adv(num('params.analysis_fps', 'pipelines.f.snapshot_on_change.params.analysis_fps', { min: 0, step: 'any', def: 2 })),
+      adv(num('params.stable_frames', 'pipelines.f.snapshot_on_change.params.stable_frames', { min: 1, def: 3 })),
+      help(adv(num('params.change_fraction', 'pipelines.f.snapshot_on_change.params.change_fraction', { min: 0, step: 'any', def: 0.004 })), 'pipelines.h.snapshot.change'),
+      adv(num('params.jpeg_quality', 'pipelines.f.snapshot_on_change.params.jpeg_quality', { min: 1, max: 100, def: 85 })),
     ],
   },
   sink: {
-    color: '#27ae60', in: [[L('pipelines.port.in1'), ['ev', 'ea', 'enc']], [L('pipelines.port.in2'), ['ev', 'ea', 'enc']]], out: [],
-    fields: [withLabel({ path: 'stream', type: 'stream', required: true }, 'pipelines.f.sink.stream')],
+    cat: 'output', icon: 'live', in: [[L('pipelines.port.in1'), ['ev', 'ea', 'enc']], [L('pipelines.port.in2'), ['ev', 'ea', 'enc']]], out: [],
+    fields: [help(withLabel({ path: 'stream', type: 'stream', required: true }, 'pipelines.f.sink.stream'), 'pipelines.h.sink.stream')],
   },
 };
 
-for (const [type, k] of Object.entries(KINDS)) withLabel(k, `pipelines.kind.${type}`);
+for (const [type, k] of Object.entries(KINDS)) {
+  withLabel(k, `pipelines.kind.${type}`);
+  Object.defineProperty(k, 'desc', { get: () => tr(`pipelines.kd.${type}`), enumerable: true });
+}
+
+/** 部品の置き場の分け方（左の一覧の見出し）。 */
+export const PALETTE_GROUPS = [
+  ['in', ['source']],
+  ['process', ['decode', 'board', 'scale', 'crop']],
+  ['mix', ['compose', 'audio_mix']],
+  ['out', ['encode', 'sink', 'snapshot_on_change']],
+];
 
 export const OPTION_FIELDS = [
-  sel('clock', 'pipelines.f.options.clock', [['realtime', 'pipelines.opt.realtime'], ['input', 'pipelines.opt.input']], { def: 'realtime' }),
+  help(sel('clock', 'pipelines.f.options.clock', [['realtime', 'pipelines.opt.realtime'], ['input', 'pipelines.opt.input']], { def: 'realtime' }), 'pipelines.h.options.clock'),
   sel('overflow', 'pipelines.f.options.overflow', [['drop', 'pipelines.opt.drop'], ['block', 'pipelines.opt.block']], { def: 'drop' }),
-  num('latency_ms', 'pipelines.f.options.latency_ms', { min: 0, def: 100 }),
+  help(num('latency_ms', 'pipelines.f.options.latency_ms', { min: 0, def: 100 }), 'pipelines.h.options.latency'),
   num('missing_timeout_ms', 'pipelines.f.options.missing_timeout_ms', { min: 1, def: 2000 }),
   num('block_timeout_ms', 'pipelines.f.options.block_timeout_ms', { min: 1, def: 2000 }),
   num('input_queue_aus', 'pipelines.f.options.input_queue_aus', { min: 1, def: 256 }),
@@ -156,13 +199,22 @@ export const OPTION_FIELDS = [
   num('commit_timeout_ms', 'pipelines.f.options.commit_timeout_ms', { min: 1, def: 10000 }),
 ];
 
-export const NODE_W = 180;
-const PORT_STEP = 18;
+// ---------------------------------------------------------------- 部品の形（画面の座標）
+
+export const NODE_W = 188;
+export const NODE_HEAD = 48;
+const ROW = 22;
+export const GRID = 20;
 
 /** 部品の高さ（ポートの数で伸びる）。 */
 export function nodeHeight(n) {
-  const k = Math.max(inPorts(n).length, outPorts(n).length);
-  return Math.max(60, (k + 1) * PORT_STEP);
+  const k = Math.max(inPorts(n).length, outPorts(n).length, 1);
+  return NODE_HEAD + 4 + k * ROW + 8;
+}
+
+/** ポートの中心の、部品の左上からの位置。 */
+export function portOffset(n, dir, i) {
+  return { x: dir === 'out' ? NODE_W : 0, y: NODE_HEAD + 4 + i * ROW + ROW / 2 };
 }
 
 /** 入力ポート: [{name, accept}] */
@@ -195,19 +247,29 @@ export function emptyPipeline(name = 'new-pipeline') {
 const SHORT = { source: 'src', decode: 'dec', board: 'board', scale: 'scale', crop: 'crop', compose: 'prod', audio_mix: 'mix', encode: 'enc', snapshot_on_change: 'snap', sink: 'out' };
 
 /** 部品名（グラフの id）の候補。 */
-export function freshName(pl, type) {
-  const base = SHORT[type] || type;
-  for (let i = 1; ; i += 1) {
-    const name = `${base}${i}`;
-    if (!pl.nodes.some((n) => n.name === name)) return name;
+export function freshName(pl, type, base) {
+  const taken = new Set(pl.nodes.map((n) => n.name));
+  if (base && !taken.has(base)) return base;
+  if (!base) {
+    for (let i = 1; ; i += 1) {
+      const name = `${SHORT[type] || type}${i}`;
+      if (!taken.has(name)) return name;
+    }
+  }
+  const stem = base.replace(/_\d+$/, '').slice(0, 58);
+  for (let i = 2; ; i += 1) {
+    const name = `${stem}_${i}`;
+    if (!taken.has(name)) return name;
   }
 }
+
+const snap = (v) => Math.round(v / GRID) * GRID;
 
 export function addNode(pl, type, x, y) {
   const k = KINDS[type];
   const p = { ...(k.defaults || {}) };
   for (const f of k.fields) if (f.def !== undefined && p[f.path] === undefined) p[f.path] = f.def;
-  const n = { id: uid('n'), type, name: freshName(pl, type), x: Math.round(x / 10) * 10, y: Math.round(y / 10) * 10, p, extra: {} };
+  const n = { id: uid('n'), type, name: freshName(pl, type), x: snap(x), y: snap(y), p, extra: {} };
   if (type === 'compose') {
     n.ins = [{ name: 'cam1' }, { name: 'cam2' }];
     n.p.scenes = {
@@ -235,8 +297,19 @@ export function removeNamedInput(pl, n, index) {
   for (const e of pl.edges) if (e.to.node === n.id && e.to.port > index) e.to.port -= 1;
 }
 
+/** 名前付きの入力を足す（compose・audio_mix）。名前を返す。 */
+export function addNamedInput(n, base = 'in') {
+  let k = n.ins.length + 1;
+  while (n.ins.some((x) => x.name === `${base}${k}`)) k += 1;
+  const name = `${base}${k}`;
+  n.ins.push(n.type === 'audio_mix' ? { name, gain_db: 0, mute: false, solo: false, pan: 0, delay_ms: 0 } : { name });
+  return name;
+}
+
 const byId = (pl, id) => pl.nodes.find((m) => m.id === id);
 const incoming = (pl, id, port) => pl.edges.find((e) => e.to.node === id && e.to.port === port);
+export const nodeById = byId;
+export const edgeInto = incoming;
 
 /** 出力ポートの型（上流をたどって決める）。 */
 export function outType(pl, ref, seen = new Set()) {
@@ -266,26 +339,80 @@ export function compatible(t, accept) {
   return false;
 }
 
-export function connect(pl, from, to) {
-  if (from.node === to.node) return { ok: false, reason: tr('pipelines.v.sameNode') };
+/** 受け口の説明（「映像（生）」など、最初の 1 つ）。 */
+const acceptLabel = (accept) => accept.map((x) => PORT_LABEL[x]).filter(Boolean)[0] || '';
+
+/**
+ * つなげるかの下見（モデルは変えない）。{ok, reason?, code?}
+ * code: same・noInput・incompatible・taken・cycle（taken は置き換えればつなげる）
+ */
+export function checkConnect(pl, from, to) {
+  if (from.node === to.node) return { ok: false, code: 'same', reason: tr('pipelines.v.sameNode') };
   const tn = byId(pl, to.node);
-  if (!tn) return { ok: false, reason: tr('pipelines.v.noNode') };
+  if (!tn) return { ok: false, code: 'noInput', reason: tr('pipelines.v.noNode') };
   const port = inPorts(tn)[to.port];
-  if (!port) return { ok: false, reason: tr('pipelines.v.noInput') };
+  if (!port) return { ok: false, code: 'noInput', reason: tr('pipelines.v.noInput') };
   const t = outType(pl, from);
   if (!compatible(t, port.accept)) {
     const hint = (t === 'ev' || t === 'ea') && port.accept.includes('v') ? tr('pipelines.v.needDecode')
-      : (t === 'v' || t === 'a') && port.accept.includes('ev') ? tr('pipelines.v.needEncode') : '';
-    return { ok: false, reason: tr('pipelines.v.incompatible', { from: PORT_LABEL[t] || t, to: port.accept.map((x) => PORT_LABEL[x]).filter(Boolean)[0] || '', hint }) };
+      : (t === 'v' || t === 'a') && port.accept.includes('ev') ? tr('pipelines.v.needEncode')
+        : t === 'v' && port.accept.includes('a') && !port.accept.includes('v') ? tr('pipelines.v.needAudio')
+          : t === 'a' && port.accept.includes('v') && !port.accept.includes('a') ? tr('pipelines.v.needVideo') : '';
+    return { ok: false, code: 'incompatible', reason: tr('pipelines.v.incompatible', { from: PORT_LABEL[t] || t || '?', to: acceptLabel(port.accept), hint }) };
   }
-  if (incoming(pl, to.node, to.port)) return { ok: false, reason: tr('pipelines.v.taken') };
+  const taken = incoming(pl, to.node, to.port);
+  pl.edges.push({ id: '__probe', from: { ...from }, to: { ...to } });
+  const cyc = hasCycle(pl);
+  pl.edges.pop();
+  if (cyc) return { ok: false, code: 'cycle', reason: tr('pipelines.v.cycleEdge') };
+  if (taken) return { ok: false, code: 'taken', reason: tr('pipelines.v.taken'), replace: taken };
+  return { ok: true };
+}
+
+/** つなぐ。replace: true なら、入力に既にある線を置き換える。 */
+export function connect(pl, from, to, { replace = false } = {}) {
+  const c = checkConnect(pl, from, to);
+  if (!c.ok && !(replace && c.code === 'taken')) return c;
+  if (c.code === 'taken') pl.edges = pl.edges.filter((e) => e !== c.replace);
   const e = { id: uid('e'), from: { ...from }, to: { ...to } };
   pl.edges.push(e);
-  if (hasCycle(pl)) {
-    pl.edges.pop();
-    return { ok: false, reason: tr('pipelines.v.cycleEdge') };
-  }
   return { ok: true, edge: e };
+}
+
+/** 出力 from につなげる入力の一覧: [{node, port, name, taken}] */
+export function connectTargets(pl, from) {
+  const out = [];
+  for (const m of pl.nodes) {
+    inPorts(m).forEach((port, i) => {
+      const c = checkConnect(pl, from, { node: m.id, port: i });
+      if (c.ok || c.code === 'taken') out.push({ node: m.id, port: i, name: port.name, taken: c.code === 'taken' });
+    });
+  }
+  return out;
+}
+
+/** 入力 to につなげる出力の一覧: [{node, port, name, type}] */
+export function connectSources(pl, to) {
+  const out = [];
+  for (const m of pl.nodes) {
+    outPorts(m).forEach((o, i) => {
+      const from = { node: m.id, port: i };
+      const c = checkConnect(pl, from, to);
+      if (c.ok || c.code === 'taken') out.push({ node: m.id, port: i, name: o.name, type: outType(pl, from) });
+    });
+  }
+  return out;
+}
+
+/** 型 type の線を受けられる部品の種類（線を何もない所へ落としたときの候補）。 */
+export function kindsAccepting(type) {
+  return Object.entries(KINDS).filter(([, k]) => (k.named ? compatible(type, k.accept) : k.in.some(([, acc]) => compatible(type, acc)))).map(([t]) => t);
+}
+
+/** 型 type を出せる部品の種類（入力から逆に線を引いたときの候補）。 */
+export function kindsProducing(accept) {
+  const can = { source: ['ev', 'ea'], decode: ['v', 'a'], board: ['v'], scale: ['v'], crop: ['v'], compose: ['v'], audio_mix: ['a'], encode: ['ev', 'ea'] };
+  return Object.entries(can).filter(([, ts]) => ts.some((t) => compatible(t, accept))).map(([t]) => t);
 }
 
 export function hasCycle(pl) {
@@ -312,17 +439,17 @@ export function referencedStreams(pl) {
 
 /**
  * この画面での検査（保存前）。ノードの検証（POST /pipelines/{id}/validate）の方が正。
- * issues: [{level: 'error'|'warn', node?, edge?, text}]
+ * issues: [{level: 'error'|'warn', node?, edge?, text, code?}]
  * @param {object} pl
  * @param {{royaltyFree?: boolean}} [opt] royalty_free の stream が関わるか
  */
 export function validate(pl, opt = {}) {
   const issues = [];
-  const err = (text, node, edge) => issues.push({ level: 'error', node, edge, text });
-  const warn = (text, node) => issues.push({ level: 'warn', node, text });
+  const err = (text, node, edge, code) => issues.push({ level: 'error', node, edge, text, code });
+  const warn = (text, node, code) => issues.push({ level: 'warn', node, text, code });
   if (!isPipelineName(pl.name)) err(tr('pipelines.v.pipelineName'));
-  if (!pl.nodes.some((n) => n.type === 'source')) err(tr('pipelines.v.noSource'));
-  if (!pl.nodes.some((n) => n.type === 'sink' || n.type === 'snapshot_on_change')) err(tr('pipelines.v.noSink'));
+  if (!pl.nodes.some((n) => n.type === 'source')) err(tr('pipelines.v.noSource'), undefined, undefined, 'noSource');
+  if (!pl.nodes.some((n) => n.type === 'sink' || n.type === 'snapshot_on_change')) err(tr('pipelines.v.noSink'), undefined, undefined, 'noSink');
   if (hasCycle(pl)) err(tr('pipelines.v.cycle'));
   const names = new Map();
   for (const n of pl.nodes) {
@@ -334,11 +461,11 @@ export function validate(pl, opt = {}) {
     const tn = byId(pl, e.to.node);
     const port = tn && inPorts(tn)[e.to.port];
     const t = outType(pl, e.from);
-    if (!port || !compatible(t, port.accept)) err(tr('pipelines.v.badEdge', { type: PORT_LABEL[t] || t, node: tn ? tn.name : '?' }), undefined, e.id);
+    if (!port || !compatible(t, port.accept)) err(tr('pipelines.v.badEdge', { type: PORT_LABEL[t] || t, node: tn ? tn.name : '?' }), tn && tn.id, e.id);
     const fn = byId(pl, e.from.node);
     if (fn && fn.type === 'source') {
       const kind = e.from.port === 0 ? 'video' : 'audio';
-      if (!fn.p[`${kind}.codec`]) err(tr('pipelines.v.noCodec', { node: fn.name, kind }), fn.id, e.id);
+      if (!fn.p[`${kind}.codec`]) err(tr('pipelines.v.noCodec', { node: fn.name, kind: tr(`pipelines.media.${kind}`) }), fn.id, e.id);
     }
   }
   for (const n of pl.nodes) {
@@ -347,7 +474,7 @@ export function validate(pl, opt = {}) {
     ports.forEach((port, i) => {
       if (incoming(pl, n.id, i)) return;
       if (n.type === 'sink' && i === 1) return;
-      err(tr('pipelines.v.unconnected', { node: n.name, port: port.name }), n.id);
+      err(tr('pipelines.v.unconnected', { node: n.name, port: port.name }), n.id, undefined, 'unconnected');
     });
     if (k.named) {
       if (!n.ins.length) err(tr('pipelines.v.noIns', { node: n.name }), n.id);
@@ -362,12 +489,12 @@ export function validate(pl, opt = {}) {
     outPorts(n).forEach((o, i) => {
       if (n.type === 'compose' && i === 1) return;
       if (n.type === 'source' && !n.p[`${o.name}.codec`]) return;
-      if (!pl.edges.some((e) => e.from.node === n.id && e.from.port === i)) err(tr('pipelines.v.unused', { node: n.name, port: o.name }), n.id);
+      if (!pl.edges.some((e) => e.from.node === n.id && e.from.port === i)) err(tr('pipelines.v.unused', { node: n.name, port: o.name }), n.id, undefined, 'UNCONSUMED_OUTPUT');
     });
     for (const f of k.fields) {
       if (f.when && !f.when(n.p)) continue;
       const v = n.p[f.path];
-      if (f.required && empty(v)) err(tr('pipelines.v.missingField', { node: n.name, field: f.label }), n.id);
+      if (f.required && empty(v)) err(tr('pipelines.v.missingField', { node: n.name, field: f.label }), n.id, undefined, 'missing');
       if (f.type === 'number' && !empty(v)) {
         const x = Number(v);
         if (Number.isNaN(x) || (f.min !== undefined && x < f.min) || (f.max !== undefined && x > f.max)) err(tr('pipelines.v.range', { node: n.name, field: f.label }), n.id);
@@ -393,13 +520,28 @@ export function validate(pl, opt = {}) {
       const kinds = [0, 1].map((i) => incoming(pl, n.id, i)).filter(Boolean).map((e) => outType(pl, e.from));
       if (kinds.filter((t) => t === 'ev').length > 1 || kinds.filter((t) => t === 'ea').length > 1) err(tr('pipelines.v.sinkTracks', { node: n.name }), n.id);
     }
+    if (n.type === 'encode' && n.p.codec === 'opus') {
+      const e = incoming(pl, n.id, 0);
+      if (e && outType(pl, e.from) === 'v') err(tr('pipelines.v.opusVideo', { node: n.name }), n.id);
+    } else if (n.type === 'encode' && n.p.codec) {
+      const e = incoming(pl, n.id, 0);
+      if (e && outType(pl, e.from) === 'a') err(tr('pipelines.v.videoCodecAudio', { node: n.name, codec: n.p.codec }), n.id);
+    }
     if (opt.royaltyFree) {
       const codecs = n.type === 'encode' ? [n.p.codec] : n.type === 'source' ? [n.p['video.codec'], n.p['audio.codec']] : [];
-      for (const c of codecs) if (c && ROYALTY_CODECS.has(c)) err(tr('pipelines.v.royalty', { node: n.name, codec: c }), n.id);
+      for (const c of codecs) if (c && ROYALTY_CODECS.has(c)) err(tr('pipelines.v.royalty', { node: n.name, codec: c }), n.id, undefined, 'POLICY_REJECTED');
     }
   }
-  if (pl.nodes.some((n) => n.type === 'encode' && n.p.codec === 'h264') && !opt.royaltyFree) {
-    warn(tr('pipelines.v.h264hw'));
+  // GPU が要るコーデック（符号化と、source の映像を復号するとき）
+  for (const n of pl.nodes) {
+    let codec = null;
+    if (n.type === 'encode' && GPU_CODECS.has(n.p.codec)) codec = n.p.codec;
+    if (n.type === 'decode') {
+      const e = incoming(pl, n.id, 0);
+      const up = e && byId(pl, e.from.node);
+      if (up && up.type === 'source' && e.from.port === 0 && GPU_CODECS.has(up.p['video.codec'])) codec = up.p['video.codec'];
+    }
+    if (codec && !(opt.royaltyFree && ROYALTY_CODECS.has(codec))) warn(tr('pipelines.v.gpu', { node: n.name, codec: codec.toUpperCase().replace('H26', 'H.26') }), n.id, 'CAPACITY_UNAVAILABLE');
   }
   return issues;
 }
@@ -440,15 +582,6 @@ function prune(o) {
   return o;
 }
 
-/** 深いマージ（b の値が勝つ。配列は置き換え）。 */
-function merge(a, b) {
-  const out = { ...a };
-  for (const [k, v] of Object.entries(b || {})) {
-    out[k] = v && typeof v === 'object' && !Array.isArray(v) && out[k] && typeof out[k] === 'object' && !Array.isArray(out[k]) ? merge(out[k], v) : v;
-  }
-  return out;
-}
-
 const clone = (v) => (v === undefined ? undefined : JSON.parse(JSON.stringify(v)));
 
 function fieldValue(f, v) {
@@ -457,7 +590,8 @@ function fieldValue(f, v) {
   return v;
 }
 
-function refOf(pl, from) {
+/** 出力ポートの参照の文字列（`cam.video`・`prod`・`prod.preview`・`dec`）。 */
+export function refOf(pl, from) {
   const n = byId(pl, from.node);
   if (!n) return null;
   const port = outPorts(n)[from.port];
@@ -508,8 +642,29 @@ export function toGraph(pl) {
   return g;
 }
 
-/** 部品の位置を自動で決める（上流からの深さで列、同じ列は上から）。 */
-function autoLayout(pl) {
+/** 実行の順（上流から。輪があれば残りを後ろに付ける）。部品の id の配列。 */
+export function topoOrder(pl) {
+  const indeg = new Map(pl.nodes.map((n) => [n.id, 0]));
+  for (const e of pl.edges) if (indeg.has(e.to.node)) indeg.set(e.to.node, indeg.get(e.to.node) + 1);
+  const q = pl.nodes.filter((n) => !indeg.get(n.id)).map((n) => n.id);
+  const out = [];
+  while (q.length) {
+    const id = q.shift();
+    out.push(id);
+    for (const e of pl.edges.filter((x) => x.from.node === id)) {
+      indeg.set(e.to.node, indeg.get(e.to.node) - 1);
+      if (indeg.get(e.to.node) === 0) q.push(e.to.node);
+    }
+  }
+  for (const n of pl.nodes) if (!out.includes(n.id)) out.push(n.id);
+  return out;
+}
+
+/**
+ * 部品の位置を自動で決める: 上流からの深さで列に分け、列の中は上流の位置の平均（重心）で並べて線の交差を減らす。
+ * ids を渡すとその部品だけを動かす（ほかは今の位置のまま）。
+ */
+export function autoLayout(pl, { x0 = 40, y0 = 40, colGap = 72, rowGap = 28 } = {}) {
   const depth = new Map();
   const d = (id, seen = new Set()) => {
     if (depth.has(id)) return depth.get(id);
@@ -520,14 +675,43 @@ function autoLayout(pl) {
     depth.set(id, v);
     return v;
   };
-  const rows = new Map();
+  for (const n of pl.nodes) d(n.id);
+  // 終端（sink・snapshot）は一番右の列にそろえる
+  const maxD = Math.max(0, ...depth.values());
+  for (const n of pl.nodes) if ((n.type === 'sink' || n.type === 'snapshot_on_change') && !pl.edges.some((e) => e.from.node === n.id)) depth.set(n.id, Math.max(depth.get(n.id), maxD));
+  const cols = new Map();
   for (const n of pl.nodes) {
-    const c = d(n.id);
-    const r = rows.get(c) || 0;
-    rows.set(c, r + 1);
-    n.x = 30 + c * 220;
-    n.y = 30 + r * 110;
+    const c = depth.get(n.id);
+    if (!cols.has(c)) cols.set(c, []);
+    cols.get(c).push(n);
   }
+  const order = [...cols.keys()].sort((a, b) => a - b);
+  const centerY = new Map();
+  for (const c of order) {
+    const col = cols.get(c);
+    const key = (n) => {
+      const ups = pl.edges.filter((e) => e.to.node === n.id).map((e) => {
+        const u = byId(pl, e.from.node);
+        return (centerY.get(e.from.node) ?? 0) + (u ? portOffset(u, 'out', e.from.port).y : 0);
+      });
+      return ups.length ? ups.reduce((a, b) => a + b, 0) / ups.length : pl.nodes.indexOf(n) * 1000;
+    };
+    const keyed = col.map((n) => [key(n), n]).sort((a, b) => a[0] - b[0]);
+    let y = y0;
+    for (const [, n] of keyed) {
+      n.x = x0 + c * (NODE_W + colGap);
+      n.y = snap(y);
+      centerY.set(n.id, n.y);
+      y = n.y + nodeHeight(n) + rowGap;
+    }
+  }
+  // 列ごとに縦の真ん中をそろえる
+  const heights = order.map((c) => { const col = cols.get(c); const last = col.reduce((m, n) => Math.max(m, n.y + nodeHeight(n)), 0); return last - y0; });
+  const tallest = Math.max(0, ...heights);
+  order.forEach((c, i) => {
+    const off = snap((tallest - heights[i]) / 2);
+    if (off > 0) for (const n of cols.get(c)) n.y += off;
+  });
 }
 
 /**
@@ -598,6 +782,83 @@ export function positionsOf(pl) {
   return Object.fromEntries(pl.nodes.map((n) => [n.name, [n.x, n.y]]));
 }
 
+// ---------------------------------------------------------------- 元に戻す・写しと貼り付け
+
+/** 編集の状態の写し（元に戻す・やり直すに使う）。 */
+export function serialize(pl) {
+  return JSON.stringify({ name: pl.name, options: pl.options, nodes: pl.nodes, edges: pl.edges });
+}
+
+export function restore(pl, s) {
+  const v = JSON.parse(s);
+  pl.name = v.name;
+  pl.options = v.options;
+  pl.nodes = v.nodes;
+  pl.edges = v.edges;
+}
+
+/** 選んだ部品（と、その間の線）の写し。 */
+export function copyNodes(pl, ids) {
+  const set = new Set(ids);
+  const nodes = pl.nodes.filter((n) => set.has(n.id));
+  const index = new Map(nodes.map((n, i) => [n.id, i]));
+  return {
+    kind: 'senca.pipeline.clip.v1',
+    nodes: nodes.map((n) => clone({ type: n.type, name: n.name, x: n.x, y: n.y, p: n.p, extra: n.extra, ins: n.ins })),
+    edges: pl.edges.filter((e) => set.has(e.from.node) && set.has(e.to.node)).map((e) => ({ from: { i: index.get(e.from.node), port: e.from.port }, to: { i: index.get(e.to.node), port: e.to.port } })),
+  };
+}
+
+/** 写しを貼り付ける（名前が重なれば新しい名前にする）。新しい部品の id の配列を返す。 */
+export function pasteNodes(pl, clip, { dx = 40, dy = 40 } = {}) {
+  if (!clip || clip.kind !== 'senca.pipeline.clip.v1' || !Array.isArray(clip.nodes)) return [];
+  const made = [];
+  for (const c of clip.nodes) {
+    if (!KINDS[c.type]) { made.push(null); continue; }
+    const name = pl.nodes.some((m) => m.name === c.name) ? freshName(pl, c.type, c.name) : c.name;
+    const n = { id: uid('n'), type: c.type, name, x: snap(c.x + dx), y: snap(c.y + dy), p: clone(c.p) || {}, extra: clone(c.extra) || {} };
+    if (c.ins) n.ins = clone(c.ins);
+    pl.nodes.push(n);
+    made.push(n);
+  }
+  for (const e of clip.edges || []) {
+    const a = made[e.from.i];
+    const b = made[e.to.i];
+    if (a && b) pl.edges.push({ id: uid('e'), from: { node: a.id, port: e.from.port }, to: { node: b.id, port: e.to.port } });
+  }
+  return made.filter(Boolean).map((n) => n.id);
+}
+
+// ---------------------------------------------------------------- 入力の stream と配信中のトラック
+
+/**
+ * 配信中の stream のトラック（GET /streams の live.tracks）を source の設定に入れる。
+ * 変えた項目の一覧（['video.codec', …]）を返す。
+ */
+export function applyLiveTracks(n, tracks) {
+  if (!n || n.type !== 'source' || !Array.isArray(tracks)) return [];
+  const changed = [];
+  const set = (k, v) => { if (v !== undefined && v !== null && n.p[k] !== v) { n.p[k] = v; changed.push(k); } };
+  const video = tracks.find((x) => VIDEO_CODECS.includes(x.codec));
+  const audio = tracks.find((x) => AUDIO_CODECS.includes(x.codec));
+  if (video) {
+    set('video.codec', video.codec);
+    if (video.width) set('video.width', video.width);
+    if (video.height) set('video.height', video.height);
+  }
+  if (audio) set('audio.codec', audio.codec);
+  else if (n.p['audio.codec'] && tracks.length) { n.p['audio.codec'] = ''; changed.push('audio.codec'); }
+  return changed;
+}
+
+/** トラックの短い説明（「VP9 640×360 · Opus」）。 */
+export function describeTracks(tracks) {
+  if (!Array.isArray(tracks) || !tracks.length) return '';
+  return tracks.map((x) => `${String(x.codec || '?').toUpperCase().replace('H26', 'H.26')}${x.width ? ` ${x.width}×${x.height}` : ''}`).join(' · ');
+}
+
+// ---------------------------------------------------------------- 例とスイッチャー
+
 /** 例: 2 本の VP9 を PinP に合成して AV1 ＋ Opus で出す（tools/interop/node.sh の J と同じ形）。 */
 export function sampleGraph(streams = {}) {
   const { a = '', b = '', out = '' } = streams;
@@ -657,4 +918,34 @@ export function sinkOrigins(graph) {
     const hit = (s.inputs || []).map((r) => trace(r)).find(Boolean) || { from: null, compose: null };
     return { sink: s.id, stream: s.stream, ...hit };
   });
+}
+
+/**
+ * 合成の入力の名前 → 元の stream の id（上流の source までたどる。サムネイルに使う）。
+ * @returns {Record<string, string>}
+ */
+export function composeInputStreams(graph, composeId) {
+  const nodes = new Map(((graph && graph.nodes) || []).map((n) => [n.id, n]));
+  const c = nodes.get(composeId);
+  if (!c || c.type !== 'compose') return {};
+  const trace = (ref, seen = new Set()) => {
+    if (!ref) return null;
+    const id = String(ref).split('.')[0];
+    const n = nodes.get(id);
+    if (!n || seen.has(id)) return null;
+    seen.add(id);
+    if (n.type === 'source') return n.stream || null;
+    if (n.input) return trace(n.input, seen);
+    return null;
+  };
+  return Object.fromEntries(Object.entries(c.inputs || {}).map(([name, ref]) => [name, trace(ref)]).filter(([, s]) => s));
+}
+
+/** パイプラインの入力・出力の stream（一覧の「入力 → 出力」）。 */
+export function graphStreams(graph) {
+  const ns = (graph && graph.nodes) || [];
+  return {
+    inputs: [...new Set(ns.filter((n) => n.type === 'source').map((n) => n.stream).filter(Boolean))],
+    outputs: [...new Set(ns.filter((n) => n.type === 'sink').map((n) => n.stream).filter(Boolean))],
+  };
 }

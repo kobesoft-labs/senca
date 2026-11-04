@@ -113,7 +113,7 @@ export default {
   'palette.newSchedule': '新しい予約を作成',
   'palette.newToken': 'API トークンを発行',
   'palette.newSecret': '秘密値を作成',
-  'palette.newPipeline': 'パイプラインを作成',
+  'palette.newPipeline': 'ひな形からパイプラインを作る…',
   'palette.sendFromBrowser': 'このブラウザのカメラから送る',
   'palette.themeLight': 'テーマ: ライトにする',
   'palette.themeDark': 'テーマ: ダークにする',
