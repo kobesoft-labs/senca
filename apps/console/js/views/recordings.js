@@ -129,7 +129,7 @@ export async function render(root, _p, { navigate }) {
           h('div', { class: 'sc-sub' },
             r.name ? (names.has(r.stream) ? names.get(r.stream) : h('code', null, r.stream.slice(0, 10))) : fmtTime(r.started_at),
             r.gaps && r.gaps.length ? [' · ', h('span', { class: 'text-warn' }, t('recordings.gapsN', { n: r.gaps.length }))] : null),
-          h('div', { class: 'sc-mobile' }, recBadge(r), h('span', { class: 'num' }, fmtDuration(r.duration_ms)), h('span', { class: 'num' }, fmtBytes(r.bytes)), r.legal_hold ? badge(t('recordings.legalHold'), 'accent', { icon: 'shield' }) : null))),
+          h('div', { class: 'sc-mobile' }, recBadge(r), h('span', { class: 'num' }, fmtBytes(r.bytes)), r.legal_hold ? badge(t('recordings.legalHold'), 'accent', { icon: 'shield' }) : null))),
     },
     { key: 'state', label: t('common.state'), class: 'hide-sm', sort: (r) => r.state, render: recBadge },
     { key: 'started', label: t('recordings.col.started'), class: 'hide-sm', sort: (r) => r.started_at, render: (r) => h('span', { title: fmtTime(r.started_at) }, fmtDate(r.started_at), ' ', h('span', { class: 'muted small' }, fmtHm(r.started_at))) },

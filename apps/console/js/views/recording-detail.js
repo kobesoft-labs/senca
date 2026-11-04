@@ -7,7 +7,7 @@
 import { h, replace } from '../lib/dom.js';
 import { confirmDialog, reportError, errorBox, toast, downloadBlob } from '../lib/ui.js';
 import { recordings, streams } from '../api/resources.js';
-import { fmtTime, fmtDuration, fmtDurationText, fmtBytes, utcToWall, wallToUtcIso, localZone, fmtHm } from '../lib/format.js';
+import { fmtTime, fmtDuration, fmtDurationText, fmtBytes, utcToWall, wallToUtcIso, localZone, fmtHm, fmtClock } from '../lib/format.js';
 import { refreshOn } from '../lib/live.js';
 import { recBadge, recTitle } from './recordings.js';
 import { playerWidget } from '../player/widget.js';
@@ -94,6 +94,7 @@ export async function render(root, [id], { navigate }) {
     const del = button(t('common.delete'), { variant: 'danger', icon: 'trash', testid: 'rec-delete', onClick: remove, attrs: { disabled: rec.legal_hold } });
     if (rec.legal_hold) tooltip(del, t('recordings.holdBlocksDelete'));
     replace(head, pageHeader({
+      testid: 'rec-header',
       title: recTitle(rec),
       crumbs: [{ label: t('nav.recordings'), href: '#/recordings' }, { label: recTitle(rec) }],
       badges: [recBadge(rec), rec.legal_hold ? badge(t('recordings.legalHold'), 'accent', { icon: 'shield' }) : null],
@@ -239,7 +240,7 @@ export async function render(root, [id], { navigate }) {
     const sr = selRange();
     replace(timeline,
       track,
-      h('div', { class: 'tl-scale small muted num' }, h('span', null, fmtHm(rec.started_at)), h('span', null, fmtDuration(d * 1000)), h('span', null, rec.ended_at ? fmtHm(rec.ended_at) : '')),
+      h('div', { class: 'tl-scale small muted num' }, h('span', null, fmtClock(rec.started_at)), h('span', null, fmtDuration(d * 1000)), h('span', null, rec.ended_at ? fmtClock(rec.ended_at) : '')),
       h('div', { class: 'tl-ranges' },
         h('label', { class: 'tl-range' }, h('span', null, t('recordings.tl.start'), ' ', h('strong', { class: 'num' }, fmtDuration((sel.a ?? 0) * 1000))), rangeInput('a')),
         h('label', { class: 'tl-range' }, h('span', null, t('recordings.tl.end'), ' ', h('strong', { class: 'num' }, fmtDuration((sel.b ?? d) * 1000))), rangeInput('b'))),
@@ -247,7 +248,7 @@ export async function render(root, [id], { navigate }) {
         fromPlayer('a'), fromPlayer('b'),
         sr ? button(t('recordings.tl.clear'), { size: 'sm', variant: 'ghost', icon: 'close', testid: 'rec-range-clear', onClick: () => { sel = { a: null, b: null }; renderTimeline(); renderExport(); } }) : null,
         h('span', { class: 'hint tl-sum', 'data-testid': 'rec-range-summary' }, sr
-          ? t('recordings.tl.selected', { from: fmtHm(sr.start), to: fmtHm(sr.end), dur: fmtDurationText((sr.b - sr.a) * 1000) })
+          ? t('recordings.tl.selected', { from: fmtClock(sr.start), to: fmtClock(sr.end), dur: fmtDurationText((sr.b - sr.a) * 1000) })
           : t('recordings.tl.whole'))));
     // 再生の位置を時間軸に出す
     const v = video();

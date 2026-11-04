@@ -457,3 +457,12 @@ a.sc-name:hover { color: var(--accent-text); }
 .sh-sub { font-size: var(--fs-sm); color: var(--text-2); }
 .sh-next { flex: 0 1 280px; font-size: var(--fs-sm); }
 .sh-next ol { margin: var(--sp-1) 0 0; padding-left: 1.2em; color: var(--text-2); display: grid; gap: 2px; }
+
+/* 狭い画面: 録画の詳細の見出しの「削除」は幅いっぱいにしない（取り消せない操作をいちばん目立たせない） */
+@media (max-width: 768px) {
+  [data-testid="rec-header"] .ph-actions { justify-content: flex-end; }
+  [data-testid="rec-header"] .ph-actions > button.danger { flex: 0 0 auto; }
+  .date-range .inline { display: grid; grid-template-columns: minmax(0, 1fr) auto minmax(0, 1fr); }
+  .date-range input { width: 100%; }
+  .filters-row .refresh { display: none; }
+}
