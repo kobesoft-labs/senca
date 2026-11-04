@@ -21,7 +21,7 @@ export function pullProtocolOf(url) {
   if (u.startsWith('rtsp://') || u.startsWith('rtsps://')) return 'rtsp_pull';
   if (u.startsWith('rtmp://') || u.startsWith('rtmps://')) return 'rtmp_pull';
   if (u.startsWith('srt://')) return 'srt_pull';
-  if (u.startsWith('http://') || u.startsWith('https://')) return 'hls_pull';
+  if (/^https?:\/\//.test(u)) return 'hls_pull';
   return null;
 }
 

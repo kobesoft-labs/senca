@@ -66,7 +66,7 @@ export default {
   'streams.detail.outputs': 'Restream destinations',
   'streams.detail.outputsDesc': 'Send this stream to YouTube, Twitch, any RTMP or SRT destination, or a cloud service at the same time. Sending starts and stops with the stream.',
   'streams.detail.plan': 'Transcoding and resource plan',
-  'streams.detail.planIntro': 'Get the plan to see how each output handles the input codecs (pass through, remux, transcode or unsupported).',
+  'streams.detail.planIntro': 'How each output handles the input codecs (pass through, remux, transcode or unsupported)',
   'streams.detail.gallery': 'Saved snapshots',
   'streams.detail.recentRecordings': 'Recent recordings',
   'streams.detail.stop': 'Stop accepting',

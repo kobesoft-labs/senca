@@ -122,7 +122,7 @@ export async function render(root, _params, { caps, navigate }) {
         streamThumb(s),
         h('div', { class: 'sc-text' },
           h('a', { class: 'sc-name', href: `#/streams/${encodeURIComponent(s.id)}` }, s.name),
-          h('div', { class: 'sc-sub', 'data-live': 'sub' }, streamSubline(s)),
+          h('div', { class: ['sc-sub', streamState(s) !== 'live' && 'idle'].filter(Boolean).join(' '), 'data-live': 'sub' }, streamSubline(s)),
           // 狭い画面のカードで出す 1 行（状態・ビットレート・視聴者・録画）
           h('div', { class: 'sc-mobile' }, stateBadge(s),
             streamState(s) === 'live' ? h('span', { class: 'num', 'data-live': 'bitrate-m' }, fmtBps(s.live.bitrate_bps)) : null,

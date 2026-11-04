@@ -206,7 +206,7 @@ export async function render(root, [id], { caps, navigate }) {
         h('div', { class: 'sig-mark' }, icon('check')),
         h('div', { class: 'sig-text' },
           h('strong', null, t('streams.setup.receiving')),
-          h('span', null, `${sum.text} · ${fmtBps(stream.live.bitrate_bps)}`)),
+          h('span', null, stream.live.bitrate_bps ? `${sum.text} · ${fmtBps(stream.live.bitrate_bps)}` : sum.text)),
         button(t('streams.setup.openOverview'), { variant: 'primary', icon: 'arrow-right', testid: 'setup-done', onClick: () => finishSetup('overview') }));
     }
     if (st === 'stopped') {
@@ -308,7 +308,7 @@ export async function render(root, [id], { caps, navigate }) {
     const trackRow = (kind, ic, main, sub) => h('div', { class: 'track-row' }, h('span', { class: 'tr-icon' }, icon(ic)), h('div', null, h('div', { class: 'tr-kind' }, kind), h('strong', null, main), sub ? h('div', { class: 'tr-sub' }, sub) : null));
     replace(healthBox,
       h('div', { class: 'health-grid', 'data-testid': 'health' },
-        stat(t('streams.col.bitrate'), fmtBps(live.bitrate_bps),
+        stat(t('streams.col.bitrate'), live.bitrate_bps ? fmtBps(live.bitrate_bps) : '—',
           stats ? t('streams.health.range', { min: fmtBps(stats.min), max: fmtBps(stats.max) }) : t('streams.health.collecting'),
           h('div', { class: 'h-spark' }, sparkline({ values: healthSamples(id), width: 240, height: 44, label: t('streams.health.sparkLabel', { now: fmtBps(live.bitrate_bps) }), testid: 'bitrate-spark' }))),
         stat(t('streams.col.viewers'), v !== null ? fmtNumber(v) : String(live.viewers_hint), vparts.length ? vparts.join(' · ') : v !== null ? t('streams.health.viewersNone') : t('streams.health.viewersHint')),

@@ -76,4 +76,5 @@ export default {
   'send.whip403': 'この配信に送る権限がありません',
   'send.whip422': 'この配信の方針では、選んだコーデックを受け付けません（royalty_free なら VP8・VP9・AV1）',
   'send.stats.time': '配信時間',
+  'send.previewOff': 'カメラをオフにする',
 };

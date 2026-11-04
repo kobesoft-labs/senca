@@ -72,7 +72,8 @@ export function occurrences(s, from, to, max = 60) {
     if (r.freq === 'weekly') {
       if (r.weekdays && r.weekdays.length) { if (!r.weekdays.includes(wd)) continue; } else if (i % 7 !== 0) continue;
     }
-    const st = new Date(wallToUtcIso(`${day.toISOString().slice(0, 10)}T${time}`, tz)).getTime();
+    // 壁時計は分までなので、秒以下は 1 回目と同じにする
+    const st = new Date(wallToUtcIso(`${day.toISOString().slice(0, 10)}T${time}`, tz)).getTime() + (((first % 60_000) + 60_000) % 60_000);
     if (st < first) continue;
     n += 1;
     if (r.count && n > r.count) break;

@@ -76,4 +76,5 @@ export default {
   'send.whip403': 'Not allowed to send to this stream',
   'send.whip422': 'This stream\'s policy doesn\'t accept the selected codec (royalty_free needs VP8, VP9 or AV1)',
   'send.stats.time': 'Time live',
+  'send.previewOff': 'Turn off camera',
 };

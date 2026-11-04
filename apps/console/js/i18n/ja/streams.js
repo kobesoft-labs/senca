@@ -66,7 +66,7 @@ export default {
   'streams.detail.outputs': '同時配信の送り先',
   'streams.detail.outputsDesc': 'この配信を YouTube・Twitch・ほかの RTMP や SRT・クラウドのサービスへ同時に送ります。配信が始まると自動で送り始め、終わると止めます。',
   'streams.detail.plan': '変換・資源の計画',
-  'streams.detail.planIntro': '「計画を取る」で、入力のコーデックに対する出力ごとの扱い（そのまま・再多重化・変換・不可）を確かめます。',
+  'streams.detail.planIntro': '入力のコーデックに対する出力ごとの扱い（そのまま・再多重化・変換・不可）',
   'streams.detail.gallery': '保存した静止画',
   'streams.detail.recentRecordings': '最近の録画',
   'streams.detail.stop': '受け付けを止める',

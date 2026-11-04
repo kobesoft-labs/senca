@@ -79,7 +79,17 @@ export async function render(root) {
     icon('camera'),
     h('strong', null, t('send.offTitle')),
     h('span', null, t('send.offBody')));
-  const previewBtn = button(t('send.preview'), { icon: 'camera', testid: 'send-preview', onClick: () => openPreview() });
+  const previewBtn = button(t('send.preview'), {
+    icon: 'camera', testid: 'send-preview',
+    onClick: () => {
+      if (media && !pc) { releaseMedia(); setStatus('idle', t('send.idle')); return null; }
+      return openPreview();
+    },
+  });
+  const syncPreviewBtn = () => {
+    const l = previewBtn.querySelector('.btn-label');
+    if (l) l.textContent = media && !pc ? t('send.previewOff') : t('send.preview');
+  };
   const startBtn = button(t('send.start'), { variant: 'primary', icon: 'record', testid: 'send-start', size: 'lg' });
   const stopBtn = button(t('send.stop'), { icon: 'stop', testid: 'send-stop', size: 'lg', attrs: { disabled: true } });
   const camField = formField({ label: t('send.cameraDev'), input: camSel });
@@ -89,6 +99,7 @@ export async function render(root) {
     statusEl.dataset.state = state;
     statusEl.textContent = text;
     onAir.dataset.state = state === 'live' ? 'live' : media ? 'preview' : 'off';
+    syncPreviewBtn();
     replace(onAir, state === 'live' ? [h('span', { class: 'dot live' }), t('send.chipLive')] : media ? [icon('eye', { size: 'sm' }), t('send.chipPreview')] : [icon('eye-off', { size: 'sm' }), t('send.chipOff')]);
   };
   const showError = (msg, title) => replace(errBox, msg ? alert('error', msg, { title: title || t('send.errTitle') }) : null);
