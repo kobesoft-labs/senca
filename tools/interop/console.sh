@@ -420,7 +420,7 @@ const waitFile = async (f, ms) => { const end = Date.now() + ms; while (Date.now
 const EXPECTED_FAIL = [
   [/401/, /\/api\/v1\/capabilities$/], // 間違ったトークンでのログイン
   [/412/, /\/api\/v1\/recordings\/[^/?]+$/], // 古い ETag
-  [/40[49]|503/, /\/api\/v1\/streams\/[^/]+\/snapshot(\?|$)/], // 今の画が無い・作れない
+  [/40[49]|422|503/, /\/api\/v1\/streams\/[^/]+\/snapshot(\?|$)/], // 今の画が無い・作れない
   [/404/, /\/s\/\d+\/[^/]+\/live\/[^/]+\/(index|master)\.m3u8/], // 送り手を止めた後のライブ・字幕の無い master
   [/409/, /\/api\/v1\/secrets\/[^/?]+$/], // 使われている秘密値の削除
   [/400/, /\/api\/v1\/inputs\/[^/?]+$/], // URL に資格情報を入れた入力の変更
@@ -480,7 +480,19 @@ const EXPECTED_FAIL = [
     check('login with bootstrap token → dashboard (token only in sessionStorage)', stored);
     await page.locator('[data-testid="sse-status"][data-state="open"]').waitFor({ timeout: 10000 });
     check('SSE over fetch connected', true);
-    await page.getByText('dav1d').first().waitFor({ timeout: 5000 }).then(() => check('dashboard shows devices', true)).catch(() => check('dashboard shows devices (no codec worker)', true, 'no providers'));
+    await page.getByTestId('health-strip').waitFor({ timeout: 8000 });
+    check('dashboard health strip', await page.getByTestId('health-summary').isVisible());
+    // ---- 運用と設定: はじめの手順（新しいノード） ----
+    const fresh = page.getByTestId('checklist-getting-started');
+    await fresh.waitFor({ timeout: 5000 });
+    const freshState = await fresh.evaluate((el) => ({
+      streamDone: el.querySelector('[data-step="stream"]').classList.contains('done'),
+      href: el.querySelector('[data-step="stream"] a.primary')?.getAttribute('href'),
+      steps: el.querySelectorAll('li[data-step]').length,
+    }));
+    const haveStreams = ((await apiGet('/streams')).body.items || []).length > 0;
+    check('onboarding checklist on first login: 6 steps, progress from real state', freshState.steps === 6 && freshState.streamDone === haveStreams && (haveStreams || freshState.href === '#/streams?new=1'), JSON.stringify(freshState));
+    // ---- ここまで ----
     await shot('01-dashboard');
   });
 
@@ -490,13 +502,14 @@ const EXPECTED_FAIL = [
     await page.getByTestId('streams-create').click();
     const dlg = page.getByRole('dialog');
     await dlg.getByLabel('名前', { exact: true }).fill('browser-av1');
-    await dlg.getByRole('combobox', { name: 'コーデックの方針' }).selectOption('royalty_free');
-    await dlg.getByLabel('publish が始まったら自動で録画する').check();
+    await dlg.getByTestId('stream-advanced').locator('summary').click();
+    await dlg.getByTestId('stream-codec').selectOption('royalty_free');
+    await dlg.getByTestId('stream-autorecord').check();
     await dlg.getByTestId('stream-create-submit').click();
     await page.getByRole('heading', { name: 'browser-av1' }).waitFor({ timeout: 10000 });
-    key = await page.getByLabel('ストリームキー', { exact: true }).inputValue();
+    key = await page.getByTestId('setup-key').inputValue();
     check('create stream via form → detail with one-time stream key', /^sk_/.test(key), key ? 'sk_…' : 'none');
-    check('one-time key warning shown', await page.getByText('この鍵はもう表示されません').isVisible());
+    check('one-time key warning shown', await page.getByTestId('key-once').isVisible());
     fs.writeFileSync(path.join(work, 'key.txt'), key);
   });
 
@@ -520,13 +533,15 @@ const EXPECTED_FAIL = [
   });
 
   await step('snapshot and plan', async () => {
-    await page.getByRole('button', { name: '今の画を取る' }).click();
-    const img = page.locator('img[alt="今の画（静止画）"]');
-    await page.waitForFunction(() => { const i = document.querySelector('img[alt="今の画（静止画）"]'); return (i && i.naturalWidth > 0) || document.querySelector('.snap-msg .alert'); }, null, { timeout: 15000 });
-    const w = await img.evaluate((i) => i.naturalWidth);
-    const msg = await page.locator('.snap-msg').textContent().catch(() => '');
+    await page.getByTestId('grab-frame').click();
+    const img = page.locator('dialog img[alt="今の画（静止画）"]');
+    await page.waitForFunction(() => { const i = document.querySelector('dialog img[alt="今の画（静止画）"]'); return (i && i.naturalWidth > 0) || document.querySelector('[data-testid="grab-error"]'); }, null, { timeout: 15000 });
+    const w = await img.evaluate((i) => i.naturalWidth).catch(() => 0);
+    const msg = await page.getByTestId('grab-error').textContent().catch(() => '');
     check('snapshot via auth fetch → blob image (or reasoned message)', w === 640 || /今の画/.test(msg), `width=${w} ${msg}`);
-    await page.getByRole('button', { name: '計画を取る' }).click();
+    await page.keyboard.press('Escape');
+    await page.getByRole('tab', { name: '同時配信' }).click();
+    await page.locator('details.panel-disclosure summary').click();
     await page.getByRole('cell', { name: 'recording' }).first().waitFor({ timeout: 5000 });
     check('transform plan table', true);
   });
@@ -573,12 +588,11 @@ const EXPECTED_FAIL = [
     await page.goto(`${base}/console/#/schedules`);
     await page.getByTestId('schedules-create').click();
     const dlg = page.getByRole('dialog');
-    await dlg.getByLabel('タイムゾーン').selectOption('Asia/Tokyo');
+    await dlg.getByLabel('タイムゾーン', { exact: true }).selectOption('Asia/Tokyo');
     await dlg.getByLabel('名前（任意）').fill('browser-sched');
-    await dlg.getByRole('button', { name: '検査（重なりを確かめる）' }).click();
-    await dlg.getByText('検査に通りました').waitFor({ timeout: 5000 });
-    check('schedule check (POST /schedules/check)', true);
-    await dlg.getByRole('button', { name: '検査して作成' }).click();
+    await dlg.locator('[data-testid="sched-check"] [data-state="ok"]').waitFor({ timeout: 8000 });
+    check('schedule check runs automatically while filling the form (POST /schedules/check)', true);
+    await dlg.getByTestId('schedule-create-submit').click();
     await page.getByRole('heading', { name: 'browser-sched' }).waitFor({ timeout: 10000 });
     check('schedule created → detail', true);
     await page.getByRole('button', { name: '取り消す' }).click();
@@ -590,23 +604,36 @@ const EXPECTED_FAIL = [
   await step('tokens', async () => {
     await page.goto(`${base}/console/#/tokens`);
     await page.getByTestId('tokens-create').click();
-    const dlg = page.getByRole('dialog');
-    await dlg.getByLabel('名前').fill('browser-ro');
-    await dlg.getByRole('button', { name: '発行' }).click();
-    const val = await page.getByRole('dialog').getByRole('textbox', { name: '「browser-ro」のトークン' }).inputValue();
-    check('token created and shown once', /^senca_/.test(val));
-    await page.getByRole('button', { name: '控えました' }).click();
-    await page.getByRole('cell', { name: 'browser-ro', exact: true }).waitFor();
+    const dlg = page.getByTestId('token-create-dialog');
+    await dlg.getByTestId('token-name').fill('browser-ro');
+    await dlg.locator('label.role-card', { has: page.getByTestId('token-role-encoder') }).click();
+    const pubOnly = await dlg.evaluate((d) => [...d.querySelectorAll('[data-testid^="token-scope-"]')].filter((i) => i.checked).map((i) => i.value).join(','));
+    await dlg.locator('label.role-card', { has: page.getByTestId('token-role-viewer') }).click();
+    await dlg.getByTestId('token-create-submit').click();
+    const reveal = page.getByTestId('token-reveal-dialog');
+    const val = await reveal.getByTestId('token-value').inputValue();
+    check('token create: role preset → scopes, value revealed once', /^senca_/.test(val) && pubOnly === 'publish', pubOnly);
+    // 写さずに閉じようとすると一度止まる
+    await page.keyboard.press('Escape');
+    await page.getByTestId('token-not-copied').waitFor({ timeout: 3000 });
+    const still = await reveal.isVisible();
+    await reveal.getByTestId('token-reveal-done').click();
+    await reveal.waitFor({ state: 'detached', timeout: 3000 });
+    check('token reveal: closing without copying warns first, second close works', still);
+    const row = page.locator('[data-testid="tokens-table"] tr', { hasText: 'browser-ro' });
+    await row.waitFor();
+    check('token row shows role and expiry (90 days by default)', /見るだけ/.test(await row.textContent()) && /日後|か月後|月後/.test(await row.textContent()), await row.textContent());
   });
 
   await step('nodes', async () => {
     await page.goto(`${base}/console/#/nodes`);
-    await page.getByRole('button', { name: 'drain', exact: true }).click();
-    await page.getByRole('dialog').getByRole('button', { name: 'drain' }).click();
-    await page.getByRole('button', { name: 'drain を解除' }).waitFor({ timeout: 5000 });
-    await page.getByRole('button', { name: 'drain を解除' }).click();
-    await page.getByRole('dialog').getByRole('button', { name: '解除' }).click();
-    await page.getByRole('button', { name: 'drain', exact: true }).waitFor({ timeout: 5000 });
+    await page.getByTestId('node-card').first().waitFor();
+    await page.getByTestId('node-drain').first().click();
+    await page.getByTestId('confirm-ok').click();
+    await page.getByTestId('node-undrain').first().waitFor({ timeout: 5000 });
+    await page.getByTestId('node-undrain').first().click();
+    await page.getByTestId('confirm-ok').click();
+    await page.getByTestId('node-drain').first().waitFor({ timeout: 5000 });
     check('node drain / undrain', true);
   });
 
@@ -614,52 +641,57 @@ const EXPECTED_FAIL = [
   const SECRET_VALUE = 'sv-' + Math.random().toString(36).slice(2);
   await step('secrets create', async () => {
     await page.goto(`${base}/console/#/secrets`);
-    await page.getByLabel('名前', { exact: true }).fill('sinkkey');
-    await page.getByLabel('値（表示・保存しません）').fill(SECRET_VALUE);
-    await page.getByRole('button', { name: '作成' }).click();
+    await page.getByTestId('secrets-create').click();
+    await page.getByTestId('secret-name').fill('sinkkey');
+    await page.getByTestId('secret-value').fill(SECRET_VALUE);
+    await page.getByTestId('secret-create-submit').click();
     await page.getByRole('textbox', { name: 'sinkkey の参照' }).waitFor({ timeout: 5000 });
     const ref = await page.getByRole('textbox', { name: 'sinkkey の参照' }).inputValue();
     const leaked = await page.evaluate((v) => document.body.innerHTML.includes(v) || [...Object.values(localStorage), ...Object.values(sessionStorage)].some((x) => x.includes(v)), SECRET_VALUE);
-    const valEmpty = (await page.getByLabel('値（表示・保存しません）').inputValue()) === '';
-    check('secret created (write-only; value not in DOM/storage, field cleared)', ref === 'secret:sinkkey' && !leaked && valEmpty, `ref=${ref} leaked=${leaked}`);
+    const dialogGone = (await page.getByTestId('secret-create-dialog').count()) === 0;
+    check('secret created (write-only; value not in DOM/storage, dialog closed)', ref === 'secret:sinkkey' && !leaked && dialogGone, `ref=${ref} leaked=${leaked}`);
     await shot('07-secrets');
   });
 
   await step('outputs and inputs CRUD', async () => {
-    await page.goto(`${base}/console/#/streams/${env.whep264}`);
+    await page.goto(`${base}/console/#/streams/${env.whep264}?tab=restream`);
     await page.getByRole('heading', { name: 'whep264' }).waitFor();
-    const outSec = page.locator('section', { has: page.getByRole('heading', { name: '出力（push・PaaS）' }) });
-    await outSec.getByRole('button', { name: '出力を追加' }).first().click();
+    const outSec = page.getByTestId('restream-list');
+    await outSec.getByTestId('restream-add').click();
     let dlg = page.getByRole('dialog');
-    await dlg.getByLabel('方式').selectOption('rtmp_push');
-    await dlg.getByLabel('URL').fill('rtmp://127.0.0.1:9/app');
-    await dlg.getByLabel('資格情報（秘密値）').selectOption('secret:sinkkey');
-    await dlg.getByRole('button', { name: '追加' }).click();
-    await outSec.getByRole('cell', { name: 'rtmp://127.0.0.1:9/app' }).waitFor({ timeout: 8000 });
-    await outSec.getByRole('button', { name: '再読み込み' }).click();
-    await outSec.locator('td .badge').first().waitFor({ timeout: 8000 });
-    const st = await outSec.locator('td .badge').first().textContent();
+    await dlg.locator('label', { has: page.getByTestId('restream-dest-rtmp') }).click();
+    await dlg.getByTestId('restream-url').fill('rtmp://127.0.0.1:9/app');
+    await dlg.getByTestId('restream-key-mode').getByRole('radio', { name: '保存した秘密値を使う' }).click();
+    await dlg.getByTestId('restream-secret').selectOption('secret:sinkkey');
+    await dlg.getByTestId('restream-save').click();
+    await outSec.locator('li[data-output]', { hasText: 'rtmp://127.0.0.1:9/app' }).waitFor({ timeout: 8000 });
+    await outSec.locator('li[data-output] .dest-status .badge').first().waitFor({ timeout: 8000 });
+    const st = await outSec.locator('li[data-output] .dest-status .badge').first().textContent();
     check('output created (rtmp_push + secret ref) with status', true, `status=${st}`);
-    await outSec.getByRole('button', { name: '編集' }).click();
+    await outSec.getByTestId('restream-edit').click();
     dlg = page.getByRole('dialog');
-    await dlg.getByLabel('URL').fill('rtmp://127.0.0.1:9/app2');
-    await dlg.getByRole('button', { name: '保存' }).click();
-    await outSec.getByRole('cell', { name: 'rtmp://127.0.0.1:9/app2' }).waitFor({ timeout: 8000 });
-    await outSec.getByRole('button', { name: '無効にする' }).click();
+    await dlg.getByTestId('restream-url').fill('rtmp://127.0.0.1:9/app2');
+    await dlg.getByTestId('restream-save').click();
+    await outSec.locator('li[data-output]', { hasText: 'rtmp://127.0.0.1:9/app2' }).waitFor({ timeout: 8000 });
+    await outSec.getByTestId('restream-toggle').uncheck();
     await outSec.locator('.badge', { hasText: '無効' }).waitFor({ timeout: 8000 });
     check('output edit (PATCH If-Match) and disable', true);
     // 使われている秘密値は消せない
     await page.goto(`${base}/console/#/secrets`);
     await clearToasts();
-    await page.getByRole('button', { name: '秘密値 sinkkey を削除' }).click();
+    const skRow = page.locator('[data-testid="secrets-table"] tr[data-key="sinkkey"]');
+    await skRow.locator('details.usage').waitFor({ timeout: 10000 });
+    await skRow.getByTestId('secret-delete').click();
+    await page.getByTestId('secret-in-use').waitFor({ timeout: 5000 });
+    const where = await page.getByTestId('secret-in-use').textContent();
+    await page.keyboard.press('Escape');
+    check('secret in use → delete explains where it is used', /whep264/.test(where), where);
+    await page.goto(`${base}/console/#/streams/${env.whep264}?tab=restream`);
+    await outSec.getByTestId('restream-delete').click();
     await page.getByRole('dialog').getByRole('button', { name: '削除' }).click();
-    await toastText(/消せません/);
-    check('secret in use → 409 explained', true);
-    await page.goto(`${base}/console/#/streams/${env.whep264}`);
-    await outSec.getByRole('button', { name: /出力 rtmp_push を削除/ }).click();
-    await page.getByRole('dialog').getByRole('button', { name: '削除' }).click();
-    await outSec.getByText('出力はありません').waitFor({ timeout: 8000 });
+    await outSec.getByTestId('restream-empty').waitFor({ timeout: 8000 });
     check('output delete', true);
+    await page.goto(`${base}/console/#/streams/${env.whep264}?tab=connect`);
     const inSec = page.locator('section', { has: page.getByRole('heading', { name: '入力（pull）' }) });
     await inSec.getByRole('button', { name: '入力を追加' }).first().click();
     dlg = page.getByRole('dialog');
@@ -682,14 +714,16 @@ const EXPECTED_FAIL = [
     await inSec.getByText('入力はありません').waitFor({ timeout: 8000 });
     check('input delete', true);
     await page.goto(`${base}/console/#/secrets`);
-    await page.getByRole('button', { name: '秘密値 sinkkey を削除' }).click();
-    await page.getByRole('dialog').getByRole('button', { name: '削除' }).click();
-    await page.getByText('秘密値はありません').waitFor({ timeout: 5000 });
-    check('secret delete after unused', true);
+    await page.locator('[data-testid="secrets-table"] tr[data-key="sinkkey"]').getByText('使われていません').waitFor({ timeout: 10000 });
+    await page.locator('[data-testid="secrets-table"] tr[data-key="sinkkey"]').getByTestId('secret-delete').click();
+    await page.getByRole('dialog').getByRole('textbox').fill('sinkkey');
+    await page.getByTestId('confirm-ok').click();
+    await page.getByTestId('secrets-empty').waitFor({ timeout: 5000 });
+    check('secret delete after unused (type the name to confirm)', true);
   });
 
   await step('captions settings', async () => {
-    await page.goto(`${base}/console/#/streams/${env.whep264}`);
+    await page.goto(`${base}/console/#/streams/${env.whep264}?tab=playback`);
     await page.getByRole('heading', { name: 'whep264' }).waitFor();
     await page.getByRole('button', { name: '字幕の設定を編集' }).click();
     const dlg = page.getByRole('dialog');
@@ -872,7 +906,7 @@ const EXPECTED_FAIL = [
     await page.goto(`${base}/console/#/send?stream=${env.whipcam}`);
     await page.getByRole('heading', { name: 'このブラウザから送る' }).waitFor();
     await page.getByLabel('ストリームキー（保存しません）').fill(env.whipkey);
-    await page.getByLabel('大きさ').selectOption('640x360');
+    await page.getByLabel('大きさ', { exact: true }).selectOption('640x360');
     await page.getByTestId('send-start').click();
     await page.locator('.player-status[data-state="live"]').waitFor({ timeout: 20000 });
     await page.waitForFunction(() => Number((document.querySelector('[data-stats]') || {}).dataset?.frames || 0) > 30, null, { timeout: 15000 });
@@ -886,6 +920,161 @@ const EXPECTED_FAIL = [
     await page.locator('.player-status[data-state="idle"]').waitFor({ timeout: 5000 });
     check('WHIP stop (DELETE session)', true);
   });
+
+  // ================================================================ 配信まわりの流れ（配信・録画・予約・送信の画面の作り直し）ここから
+  await step('streaming: create → connect step → signal flips by itself', async () => {
+    await page.goto(`${base}/console/#/streams`);
+    await page.getByTestId('streams-create').click();
+    const dlg = page.getByTestId('stream-create-dialog');
+    await dlg.getByLabel('名前', { exact: true }).fill('setup-flow');
+    const cards = await dlg.locator('[data-testid="stream-source"] input[type="radio"]').count();
+    await dlg.getByTestId('stream-create-submit').click();
+    await page.getByTestId('setup').waitFor({ timeout: 10000 });
+    const waiting = await page.getByTestId('setup-signal').getAttribute('data-state');
+    const k = await page.getByTestId('setup-key').inputValue();
+    const url = await page.getByTestId('setup-rtmp-url').inputValue();
+    const masked = await page.getByTestId('setup-key').evaluate((el) => el.classList.contains('masked'));
+    check('streaming: guided create (4 source choices) lands on the connect step with server URL and masked one-time key', cards === 4 && waiting === 'waiting' && /^sk_/.test(k) && /^rtmp:\/\//.test(url) && masked, `${cards} ${waiting} ${url}`);
+    fs.writeFileSync(path.join(work, 'setupkey.txt'), k);
+    await page.locator('[data-testid="setup-signal"][data-state="live"]').waitFor({ timeout: 40000 });
+    const text = await page.getByTestId('setup-signal').textContent();
+    check('streaming: "waiting for signal" flips to "receiving" without reload when the encoder starts', /H\.264/.test(text), text.slice(0, 120));
+    await page.getByTestId('setup-done').click();
+    await page.getByTestId('setup').waitFor({ state: 'detached' });
+    await page.getByTestId('health').waitFor({ timeout: 8000 });
+    const hash = await page.evaluate(() => location.hash);
+    check('streaming: finishing the setup shows the overview with signal health (URL without ?setup)', !/setup=/.test(hash), hash);
+    await shot('20-setup-live');
+  });
+
+  await step('streaming: list filter, URL state and keyboard', async () => {
+    await page.goto(`${base}/console/#/streams?state=live`);
+    await page.getByTestId('streams-table').waitFor();
+    await sleep(500);
+    const states = await page.locator('[data-testid="streams-table"] tbody tr td:nth-child(2) .badge.live').count();
+    const rows = await page.locator('[data-testid="streams-table"] tbody tr').count();
+    const checked = await page.locator('[data-testid="streams-state-filter"] [aria-checked="true"]').getAttribute('data-value');
+    check('streaming: ?state=live filter restores from the URL and shows only live streams', rows > 0 && rows === states && checked === 'live', `${rows} rows, ${states} live`);
+    await page.getByTestId('streams-filter').fill('zzz-no-such');
+    await page.getByTestId('streams-nomatch').waitFor();
+    check('streaming: search with no match explains and offers to clear', /q=zzz-no-such/.test(await page.evaluate(() => location.hash)));
+    await page.getByTestId('streams-nomatch').getByRole('button').click();
+    await page.getByTestId('streams-table').waitFor();
+    await page.evaluate(() => document.activeElement.blur());
+    await page.keyboard.press('j');
+    const active = await page.locator('[data-testid="streams-table"] tbody tr[data-active]').getAttribute('data-key');
+    await page.keyboard.press('Enter');
+    await page.waitForFunction((id) => location.hash.startsWith(`#/streams/${id}`), active, { timeout: 5000 });
+    check('streaming: J selects a row and Enter opens it', !!active, active);
+  });
+
+  await step('streaming: restream to YouTube with a key saved inline as a secret', async () => {
+    await page.goto(`${base}/console/#/streams/${env.whep264}?tab=restream`);
+    await page.getByTestId('restream-list').waitFor();
+    await page.getByTestId('restream-add').first().click();
+    const dlg = page.getByTestId('restream-dialog');
+    const url = await dlg.getByTestId('restream-url').inputValue();
+    const KEY = 'yt-' + Math.random().toString(36).slice(2);
+    await dlg.getByTestId('restream-key').fill(KEY);
+    await dlg.getByTestId('restream-secret-name').fill('browser-yt-key');
+    await shot('21-restream-dialog');
+    await dlg.getByTestId('restream-save').click();
+    await page.locator('[data-testid="restream-list"] li[data-output]').first().waitFor({ timeout: 8000 });
+    const outs = (await apiGet(`/streams/${env.whep264}/outputs`)).body.items;
+    const o = outs.find((x) => x.credential_ref === 'secret:browser-yt-key');
+    const secs = (await apiGet('/secrets')).body.items.map((x) => x.ref);
+    const leaked = await page.evaluate((v) => document.body.innerHTML.includes(v) || [...Object.values(localStorage), ...Object.values(sessionStorage)].some((x) => x.includes(v)), KEY);
+    check('streaming: YouTube preset fills the server URL; the pasted key becomes a secret and the output references it (key not kept in the page)', /youtube\.com/.test(url) && o && o.url === url && secs.includes('secret:browser-yt-key') && !leaked, `url=${url} out=${o && o.id} leaked=${leaked}`);
+    const status = await page.locator('[data-testid="restream-list"] li[data-output] .dest-status').first().textContent();
+    check('streaming: each destination shows its status', status.length > 0, status.slice(0, 80));
+    await shot('22-restream');
+    // 片付け（後の試験が「秘密値はありません」を見るので、ここで作ったものは消す）
+    await page.evaluate(async ([id, token]) => {
+      await fetch(`/api/v1/outputs/${id}`, { method: 'DELETE', headers: { Authorization: `Bearer ${token}` } });
+      const s = await (await fetch('/api/v1/secrets', { headers: { Authorization: `Bearer ${token}` } })).json();
+      const x = s.items.find((i) => i.name === 'browser-yt-key');
+      if (x) await fetch(`/api/v1/secrets/${x.id}`, { method: 'DELETE', headers: { Authorization: `Bearer ${token}` } });
+    }, [o.id, token]);
+  });
+
+  await step('streaming: recordings filters (state, period) are URL-stateful', async () => {
+    await page.goto(`${base}/console/#/recordings`);
+    await page.getByTestId('recordings-table').waitFor({ timeout: 10000 });
+    await page.getByTestId('rec-filter-state').getByRole('radio', { name: '確定' }).click();
+    await sleep(300);
+    const badges = await page.locator('[data-testid="recordings-table"] tbody tr td:nth-child(2) .badge').allTextContents();
+    const hash1 = await page.evaluate(() => location.hash);
+    check('streaming: state filter shows only finalized recordings and is kept in the URL', badges.length > 0 && badges.every((b) => /確定/.test(b)) && /state=finalized/.test(hash1), `${badges.join(',')} ${hash1}`);
+    await page.getByTestId('rec-filter-from').fill('2099-01-01');
+    await page.getByTestId('recordings-nomatch').waitFor({ timeout: 5000 });
+    await page.reload();
+    await page.getByTestId('recordings-nomatch').waitFor({ timeout: 10000 });
+    check('streaming: period filter survives a reload (from the URL) and an empty result offers to clear', /from=2099-01-01/.test(await page.evaluate(() => location.hash)));
+    await page.getByTestId('recordings-nomatch').getByRole('button').click();
+    await page.getByTestId('recordings-table').waitFor();
+    await page.getByTestId('rec-row-play').first().click();
+    await page.getByTestId('rec-play-dialog').waitFor();
+    const played = await page.waitForFunction(() => { const v = document.querySelector('[data-testid="rec-play-dialog"] video'); return v && v.currentTime > 0.5; }, null, { timeout: 15000 }).then(() => true).catch(() => false);
+    check('streaming: inline playback from the recordings list', played);
+    await page.keyboard.press('Escape');
+  });
+
+  await step('streaming: recording export of a selected range', async () => {
+    const rec = (await apiGet('/recordings')).body.items.find((r) => r.state === 'finalized' && r.duration_ms > 4000);
+    if (!rec) { check('streaming: range export (skipped: no finalized recording)', false); return; }
+    await page.goto(`${base}/console/#/recordings/${rec.id}`);
+    await page.getByTestId('rec-timeline').waitFor();
+    await page.getByTestId('rec-range-a').evaluate((el) => { el.value = '1'; el.dispatchEvent(new Event('input', { bubbles: true })); });
+    await page.getByTestId('rec-range-b').evaluate((el) => { el.value = '3'; el.dispatchEvent(new Event('input', { bubbles: true })); });
+    const sum = await page.getByTestId('rec-range-summary').textContent();
+    const [dl] = await Promise.all([page.waitForEvent('download', { timeout: 20000 }), page.getByTestId('rec-export').click()]);
+    const p = await dl.path();
+    const size = fs.statSync(p).size;
+    check('streaming: timeline range → export.mp4?start&end (smaller than the whole recording)', size > 1000 && size < rec.bytes && /〜/.test(sum), `${size} < ${rec.bytes} ${sum}`);
+  });
+
+  await step('streaming: schedules timetable and agenda', async () => {
+    const now = Date.now();
+    const iso = (ms) => new Date(ms).toISOString();
+    await page.evaluate(async ([token, body]) => {
+      await fetch('/api/v1/schedules', { method: 'POST', headers: { Authorization: `Bearer ${token}`, 'Content-Type': 'application/json' }, body: JSON.stringify(body) });
+    }, [token, { stream: env.whep264, name: 'tt-daily', action: 'record', start_at: iso(now + 3 * 3600_000), end_at: iso(now + 4 * 3600_000), recurrence: { freq: 'daily', timezone: 'Asia/Tokyo', count: 3 } }]);
+    await page.goto(`${base}/console/#/schedules`);
+    await page.getByTestId('sched-agenda').waitFor({ timeout: 10000 });
+    const blocks = await page.locator('[data-testid="tt-block"]', { hasText: 'tt-daily' }).count();
+    const agenda = await page.getByTestId('sched-agenda').locator('li', { hasText: 'tt-daily' }).count();
+    check('streaming: a daily schedule (count 3) appears 3 times on the 7-day timetable and in the agenda', blocks === 3 && agenda === 3, `${blocks} blocks, ${agenda} agenda`);
+    await shot('23-schedules');
+  });
+
+  await step('streaming: mobile layout (390px)', async () => {
+    const m = await browser.newContext({ viewport: { width: 390, height: 844 }, deviceScaleFactor: 2, isMobile: true, hasTouch: true, locale: 'ja-JP', timezoneId: 'Asia/Tokyo' });
+    await m.addInitScript((tok) => sessionStorage.setItem('senca.console.token', tok), token);
+    const mp = await m.newPage();
+    mp.on('pageerror', (e) => errors.push(`mobile pageerror: ${e.message}`));
+    const over = [];
+    for (const r of [`/streams/${env.whep264}?tab=connect`, `/streams/${env.whep264}?tab=restream`, `/streams/${env.whep264}?tab=recordings`, `/streams/${env.whep264}?tab=settings`, '/recordings', '/schedules', '/schedules?view=all']) {
+      await mp.goto(`${base}/console/#${r}`);
+      await mp.locator('main h1').first().waitFor({ timeout: 10000 });
+      await sleep(700);
+      const w = await mp.evaluate(() => document.documentElement.scrollWidth - window.innerWidth);
+      if (w > 1) over.push(`${r}:${w}`);
+    }
+    check('streaming: no horizontal scrolling on the detail tabs, recordings and schedules', over.length === 0, over.join(' '));
+    await mp.goto(`${base}/console/#/streams`);
+    await mp.getByTestId('streams-table').waitFor();
+    await sleep(500);
+    const card = await mp.locator('[data-testid="streams-table"] tbody tr').first().evaluate((tr) => {
+      const r = tr.getBoundingClientRect();
+      const tds = [...tr.children].filter((td) => getComputedStyle(td).display !== 'none').length;
+      const btns = [...tr.querySelectorAll('button')].filter((b) => b.offsetParent).map((b) => b.getBoundingClientRect());
+      return { h: Math.round(r.height), tds, small: btns.filter((b) => b.width < 44 || b.height < 44).length };
+    });
+    check('streaming: a stream on a phone is a compact card (2 visible cells, under 160px tall, 44px buttons)', card.tds === 2 && card.h < 160 && card.small === 0, JSON.stringify(card));
+    await mp.screenshot({ path: path.join(work, '24-mobile-streams.png'), fullPage: true });
+    await m.close();
+  });
+  // ================================================================ 配信まわりの流れ ここまで
 
   // ---------------------------------------------------------------- 外枠: キーボードだけで動かす（スキップリンク・メニュー・パレット・ショートカット・ダイアログ・言語・明暗）
   await step('shell keyboard', async () => {
@@ -911,7 +1100,7 @@ const EXPECTED_FAIL = [
     await page.getByTestId('streams-filter').focus();
     await page.keyboard.type('gr');
     await sleep(300);
-    check('shortcuts do not fire while typing', await page.evaluate(() => location.hash) === '#/streams' && (await page.getByTestId('streams-filter').inputValue()) === 'gr');
+    check('shortcuts do not fire while typing', /^#\/streams(\?|$)/.test(await page.evaluate(() => location.hash)) && (await page.getByTestId('streams-filter').inputValue()) === 'gr');
     await page.getByTestId('streams-filter').fill('');
     await page.getByTestId('streams-filter').press('Escape');
     await page.evaluate(() => document.activeElement.blur());
@@ -953,9 +1142,9 @@ const EXPECTED_FAIL = [
     await page.getByTestId('stream-create-dialog').waitFor({ state: 'detached' });
     check('dialog keeps focus inside (40 Tabs) and closes with Escape', inside);
     // 確認のダイアログ: 削除は名前を入れるまで押せない
-    await page.goto(`${base}/console/#/streams/${env.whipcam}`);
+    await page.goto(`${base}/console/#/streams/${env.whipcam}?tab=settings`);
     await page.getByRole('heading', { name: 'whipcam', level: 1 }).waitFor();
-    const del = page.locator('.page-header').getByRole('button', { name: '削除' });
+    const del = page.getByTestId('stream-delete');
     await del.focus();
     await page.keyboard.press('Enter');
     const okDisabled = await page.getByTestId('confirm-ok').isDisabled();
@@ -1009,7 +1198,7 @@ const EXPECTED_FAIL = [
     const r = await waitApi(`/rooms/${RT_ROOM}`, (b) => b && b.settings && b.settings.max_participants === 8, 5000);
     await page.getByTestId('participants-empty').waitFor({ timeout: 15000 });
     check('rooms: empty list teaches, create dialog validates inline, room is created with settings and opens its page', emptyFirst === 1 && inlineErr === 'true' && r.metadata.title === '試験のルーム', `${emptyFirst} ${inlineErr}`);
-    await shot('20-room-created');
+    await shot('30-room-created');
   });
   let rtPeer = null;
   await step('rooms: issue join token', async () => {
@@ -1048,7 +1237,7 @@ const EXPECTED_FAIL = [
     const tile = await page.getByTestId('room-tile-participants').locator('.stat-value').textContent();
     const ev = await page.locator('[data-testid="room-events"] .timeline-item').count();
     check('rooms: two participants live on the detail page (this browser marked, simulcast layers with bitrates), remote video plays, activity timeline fills', playing && tile.trim() === '2' && ev >= 2, `${playing} ${tile} ${ev}`);
-    await shot('21-room-live');
+    await shot('31-room-live');
   });
   await step('rooms: send app message', async () => {
     await page.getByTestId('room-message').click();
@@ -1087,7 +1276,7 @@ const EXPECTED_FAIL = [
     await page.getByTestId('mp-table').waitFor();
     const row = await page.locator(`[data-testid="mp-table"] tr[data-key="${mp.id}"]`).count();
     check('media pipelines: "record this room" opens the guided form prefilled, creates the pipeline and lists it', room === RT_ROOM && selected === 'true' && name === `${RT_ROOM}-record` && mp.recording && mp.recording.participants === true && row === 1, `${room} ${selected} ${name}`);
-    await shot('22-media-pipelines');
+    await shot('32-media-pipelines');
     // 用途を切り替えると、作られるものと直すところが変わる（配信先の URL・鍵が無いので作成できない）
     await page.goto(`${base}/console/#/media-pipelines/new?room=${RT_ROOM}&use=broadcast`);
     await page.getByTestId('mp-new-problems').waitFor();
@@ -1098,7 +1287,7 @@ const EXPECTED_FAIL = [
     await page.goto(`${base}/console/#/rooms`);
     await page.getByTestId('rooms-table').waitFor();
     await page.keyboard.press('j');
-    const focused = await page.evaluate(() => document.activeElement && document.activeElement.hasAttribute('data-row-link') && !!document.activeElement.closest('tr.kb-cursor'));
+    const focused = await page.evaluate(() => document.activeElement && document.activeElement.matches('tr[data-active]'));
     await page.keyboard.press('Enter');
     await page.getByTestId('participants-panel').waitFor();
     await page.keyboard.press('Control+k');
@@ -1130,7 +1319,7 @@ const EXPECTED_FAIL = [
     // 「?」は見た目が小さく、押せる範囲を ::after で 44px に広げている
     const hint = await mp.locator('main .help-hint').first().evaluate((el) => { const a = getComputedStyle(el, '::after'); return el.getBoundingClientRect().height + 2 * -parseFloat(a.top); });
     const small = await mp.evaluate(() => [...document.querySelectorAll('main button:not(.help-hint), main a.btn, main select, main summary')].filter((el) => el.offsetParent !== null).map((el) => [el.textContent.trim().slice(0, 20) || el.getAttribute('aria-label'), Math.round(el.getBoundingClientRect().height)]).filter(([, hgt]) => hgt < 44));
-    await mp.screenshot({ path: path.join(work, '23-mobile-room.png'), fullPage: true });
+    await mp.screenshot({ path: path.join(work, '33-mobile-room.png'), fullPage: true });
     await m.close();
     check('rooms: mobile (390px) has no horizontal scrolling and 44px touch targets on rooms and media pipelines', !Object.keys(over).length && !small.length && hint >= 44, JSON.stringify([over, small, hint]));
   });
@@ -1147,6 +1336,125 @@ const EXPECTED_FAIL = [
     check('rooms: delete needs the room ID typed, removes the room and its media pipelines', before && gone, `${before} ${gone}`);
   });
   // ==== リアルタイム: ここまで ====
+  // ================================================================ 運用と設定（ダッシュボード・グリッド・監査ログ）ここから
+  await step('ops: onboarding progress', async () => {
+    await page.goto(`${base}/console/#/?onboarding=1`);
+    const cl = page.getByTestId('checklist-getting-started');
+    await cl.waitFor({ timeout: 8000 });
+    const st = await cl.evaluate((el) => Object.fromEntries([...el.querySelectorAll('li[data-step]')].map((li) => [li.dataset.step, li.classList.contains('done')])));
+    const meter = await cl.locator('[role="meter"]').getAttribute('aria-valuenow');
+    check('onboarding checklist follows real state (stream, send, record, team done)', st.stream && st.send && st.record && st.team && Number(meter) >= 4, `${JSON.stringify(st)} meter=${meter}`);
+    await cl.getByRole('button', { name: 'この案内を閉じる' }).click();
+    await page.getByTestId('onboarding-reopen').waitFor({ timeout: 3000 });
+    await page.getByTestId('onboarding-reopen').click();
+    await cl.waitFor({ timeout: 3000 });
+    check('onboarding checklist: dismiss, then re-open from the header', true);
+  });
+
+  await step('ops: audit filter and pagination', async () => {
+    // 130 件の記録を作る（秘密値の作成と削除）
+    const made = await page.evaluate(async (token) => {
+      const H = { Authorization: `Bearer ${token}`, 'Content-Type': 'application/json' };
+      let n = 0;
+      for (let i = 0; i < 65; i++) {
+        const r = await fetch('/api/v1/secrets', { method: 'POST', headers: { ...H, 'Idempotency-Key': `audit-gen-${i}-${Date.now()}` }, body: JSON.stringify({ name: `audit-gen-${i}`, value: 'x' }) });
+        if (r.ok) { n++; const id = (await r.json()).id; if ((await fetch(`/api/v1/secrets/${id}`, { method: 'DELETE', headers: H })).ok) n++; }
+      }
+      return n;
+    }, token);
+    await page.goto(`${base}/console/#/audit?action=secret.`);
+    await page.getByTestId('audit-entry').first().waitFor({ timeout: 10000 });
+    const first = await page.getByTestId('audit-entry').count();
+    // 下へ進むと続きを読む（終わりまで）
+    for (let i = 0; i < 20; i++) {
+      await page.getByTestId('audit-list').locator('li').last().scrollIntoViewIfNeeded();
+      await sleep(400);
+      if (await page.getByTestId('audit-more').isHidden()) break;
+    }
+    const all = await page.getByTestId('audit-entry').evaluateAll((els) => els.map((e) => e.dataset.action));
+    const onlySecret = all.every((a) => a.startsWith('secret.'));
+    check('audit: action prefix filter + infinite scroll to the end', made === 130 && first >= 50 && all.length >= 130 && first < all.length && onlySecret, `made=${made} first=${first} all=${all.length}`);
+    // 条件は URL に残る。操作の種類を変える
+    await page.getByTestId('audit-action').selectOption('token.');
+    await page.waitForFunction(() => location.hash.includes('action=token.'));
+    await page.getByTestId('audit-entry').first().waitFor({ timeout: 8000 });
+    const tok = await page.getByTestId('audit-entry').evaluateAll((els) => els.map((e) => e.dataset.action));
+    await page.reload();
+    await page.getByTestId('audit-entry').first().waitFor({ timeout: 8000 });
+    const kept = await page.getByTestId('audit-action').inputValue();
+    check('audit: filters are URL-stateful and survive reload', tok.length > 0 && tok.every((a) => a.startsWith('token.')) && kept === 'token.', `${tok.length} ${kept}`);
+    // 主体で絞る（チップで外せる）
+    await page.getByTestId('audit-actor').first().click();
+    await page.getByTestId('chip-subject').waitFor({ timeout: 5000 });
+    check('audit: click an actor to filter by it (removable chip)', /subject=/.test(await page.evaluate(() => location.hash)));
+    // キーボード: J で先頭の記録へ、Enter で詳細を開く
+    await page.locator('main h1').first().click();
+    await page.keyboard.press('j');
+    await page.keyboard.press('Enter');
+    await page.locator('.audit-entry.open').first().waitFor({ timeout: 3000 });
+    check('audit: J and Enter open an entry (shared listNav)', await page.locator('.audit-entry[data-active].open').count() === 1);
+    // 書き出し（今の条件）
+    const [dl] = await Promise.all([page.waitForEvent('download', { timeout: 20000 }), (async () => { await page.getByTestId('audit-export').click(); await page.getByTestId('audit-export-csv').click(); })()]);
+    const csv = fs.readFileSync(await dl.path(), 'utf8').replace(/^﻿/, '').trim().split(/\r\n/);
+    check('audit: CSV export of the current filter', csv[0].startsWith('ts,action,action_label') && csv.length - 1 === tok.length, `${csv.length - 1} rows, ${csv[0].slice(0, 40)}`);
+    await shot('20-audit');
+  });
+
+  await step('ops: grid', async () => {
+    // 配置できるもの 1 つと、ラベルが合わず配置できないもの 1 つ
+    await page.evaluate(async (token) => {
+      const H = { Authorization: `Bearer ${token}`, 'Content-Type': 'application/json' };
+      const post = (p, b) => fetch(`/api/v1${p}`, { method: 'POST', headers: { ...H, 'Idempotency-Key': `${p}-${Math.random()}` }, body: JSON.stringify(b) }).then((r) => r.json());
+      const s = await post('/streams', { name: 'grid-probe' });
+      await post(`/streams/${s.id}/outputs`, { protocol: 'rtmp_push', url: 'rtmp://127.0.0.1:9/live/x', enabled: true, placement: { priority: 'high' } });
+      await post(`/streams/${s.id}/inputs`, { protocol: 'rtmp_pull', url: 'rtmp://127.0.0.1:9/live/y', enabled: true, placement: { labels: [{ op: 'eq', key: 'zone', value: 'nowhere' }] } });
+    }, token);
+    await waitApi('/grid', (g) => g && g.workloads.some((w) => w.state === 'unschedulable') && g.workloads.some((w) => w.state === 'running'), 10000);
+    await page.goto(`${base}/console/#/grid`);
+    await page.getByTestId('grid-board').or(page.getByTestId('grid-empty')).first().waitFor({ timeout: 10000 });
+    const cols = await page.getByTestId('grid-col').count();
+    const nodes = (await apiGet('/grid')).body;
+    const rows = await page.locator('[data-testid="grid-table"] tbody tr').count();
+    check('grid: one column per node, one row per workload', cols === nodes.nodes.length && rows === nodes.workloads.length, `cols=${cols} rows=${rows} api=${nodes.nodes.length}/${nodes.workloads.length}`);
+    if (nodes.workloads.length) {
+      await page.getByTestId('grid-state-filter').getByRole('radio').nth(4).click();
+      await page.waitForFunction(() => location.hash.includes('state=unschedulable'));
+      await page.getByTestId('grid-col-unplaced').waitFor({ timeout: 5000 });
+      const why = await page.getByTestId('grid-col-unplaced').textContent();
+      const shown = await page.locator('[data-testid="grid-table"] tbody tr').count();
+      check('grid: state filter (URL-stateful) shows the unplaceable workload with its reason', shown === 1 && /grid-probe/.test(why) && /ラベル/.test(why), why);
+    }
+    await shot('21-grid');
+  });
+
+  await step('ops: dashboard attention and on air', async () => {
+    await page.goto(`${base}/console/#/`);
+    await page.getByTestId('health-strip').waitFor({ timeout: 8000 });
+    const onair = await page.getByTestId('health-onair').textContent();
+    check('dashboard: on-air count in the health strip', /配信中/.test(onair), onair);
+    await shot('22-dashboard');
+  });
+  await step('ops: mobile', async () => {
+    const m = await browser.newContext({ viewport: { width: 390, height: 844 }, deviceScaleFactor: 2, isMobile: true, hasTouch: true, locale: 'ja-JP', timezoneId: 'Asia/Tokyo' });
+    await m.addInitScript((tok) => sessionStorage.setItem('senca.console.token', tok), token);
+    const mp = await m.newPage();
+    mp.on('pageerror', (e) => errors.push(`ops mobile pageerror: ${e.message}`));
+    const small = [];
+    for (const r of ['/', '/nodes', '/grid', '/audit', '/tokens', '/secrets']) {
+      await mp.goto(`${base}/console/#${r}`);
+      await mp.locator('main h1').first().waitFor({ timeout: 10000 });
+      await sleep(800);
+      const s = await mp.evaluate(() => [...document.querySelectorAll('main button, main a.btn, main select, main input:not([type=checkbox]):not([type=radio])')]
+        .filter((el) => el.offsetParent && !el.closest('.copy-field, .search, .segmented, details:not([open])'))
+        .map((el) => [el.getBoundingClientRect().height, (el.getAttribute('aria-label') || el.textContent || el.tagName).trim().slice(0, 30)])
+        .filter(([hgt]) => hgt < 43.5));
+      small.push(...s.map(([hgt, n]) => `${r} ${n} ${hgt.toFixed(0)}px`));
+      await mp.screenshot({ path: path.join(work, `23-mobile${r.replace(/\W+/g, '_')}.png`), fullPage: true });
+    }
+    check('ops pages on 390px: touch targets ≥ 44px', small.length === 0, small.slice(0, 8).join(' | '));
+    await m.close();
+  });
+  // ================================================================ 運用と設定 ここまで
 
   // ---------------------------------------------------------------- 狭い画面（390×844）: 引き出しのメニュー・横にはみ出さない・表はカード
   await step('mobile', async () => {
@@ -1155,7 +1463,7 @@ const EXPECTED_FAIL = [
     const mp = await m.newPage();
     mp.on('pageerror', (e) => errors.push(`mobile pageerror: ${e.message}`));
     const widths = {};
-    for (const r of ['/', '/streams', '/recordings', '/schedules', '/tokens', '/secrets', '/nodes', '/send', `/streams/${env.whep264}`, '/_styleguide']) {
+    for (const r of ['/', '/streams', '/recordings', '/schedules', '/tokens', '/secrets', '/nodes', '/grid', '/audit', '/send', `/streams/${env.whep264}`, '/_styleguide']) {
       await mp.goto(`${base}/console/#${r}`);
       await mp.locator('main h1').first().waitFor({ timeout: 10000 });
       await sleep(600);
@@ -1166,7 +1474,7 @@ const EXPECTED_FAIL = [
     await mp.goto(`${base}/console/#/streams`);
     await mp.getByTestId('streams-table').waitFor();
     const card = await mp.locator('[data-testid="streams-table"] tbody tr').first().evaluate((tr) => getComputedStyle(tr).display);
-    check('mobile: tables become cards', card === 'block', card);
+    check('mobile: tables become cards', card === 'block' || card === 'grid', card);
     const menu = mp.getByTestId('menu-button');
     const box = await menu.boundingBox();
     await menu.click();
@@ -1213,6 +1521,17 @@ EOF
   kill $P 2>/dev/null; wait $P 2>/dev/null
 ) &
 PUB_PID=$!
+
+# 送り手（配信まわりの試験）: 作成の後の案内で鍵が書かれたら H.264 を送る（「待っています」→「受信しています」）
+(
+  for _ in $(seq 6000); do [ -s "$W/setupkey.txt" ] && break; [ -e "$W/stop-all" ] && exit 0; sleep 0.2; done
+  [ -s "$W/setupkey.txt" ] || exit 0
+  "$FFMPEG" -v error -re -stream_loop -1 -i "$W/h264.flv" -c copy -f flv "rtmp://127.0.0.1:$RTMP/live/$(cat "$W/setupkey.txt")" >>"$W/pubsetup.log" 2>&1 &
+  P=$!
+  for _ in $(seq 600); do [ -e "$W/stop-all" ] && break; sleep 0.5; done
+  kill $P 2>/dev/null; wait $P 2>/dev/null
+) &
+FEED_PIDS+=($!)
 
 docker run --rm --name senca-console-browser-$$ --network host --ipc=host -v "$W:$W" "$IMG" bash -c \
   "node '$W/browser.cjs' '$BASE' '$TOKEN' '$W'; chown -R $(id -u):$(id -g) '$W'" > "$W/browser.log" 2>&1 || true

@@ -8,11 +8,10 @@ import { listAll } from '../api/resources.js';
 import { fmtTime, fmtRelative } from '../lib/format.js';
 import { refreshOn } from '../lib/live.js';
 import { t, tn } from '../i18n/index.js';
-import { button, iconButton, pageHeader, dataTable, emptyState, statusPill, searchBox, helpHint, attachMenu, alert } from '../ui/index.js';
+import { button, iconButton, pageHeader, dataTable, emptyState, statusPill, searchBox, helpHint, attachMenu, alert, listNav } from '../ui/index.js';
 import { icon } from '../lib/icons.js';
 import { guideUrl } from '../lib/guide.js';
 import { onPageKey } from '../shortcuts.js';
-import { listKeys } from '../lib/listnav.js';
 import { invalidatePalette } from '../palette.js';
 import { forgetRecent } from '../lib/recent.js';
 import { pipelineState, pipelineUse, pipelineProducts, USE_CASES } from '../lib/realtime.js';
@@ -124,7 +123,7 @@ export async function render(root, _params, { navigate }) {
 
   const columns = [
     { key: 'name', label: t('common.name'), primary: true, sort: (m) => m.name, render: (m) => h('div', { class: 'cell-stack' },
-      h('span', { class: 'row' }, icon(USE_ICON[pipelineUse(m)], { size: 'sm', class: 'subtle' }), h('a', { href: href(m), 'data-row-link': '', class: 'strong' }, m.name),
+      h('span', { class: 'row' }, icon(USE_ICON[pipelineUse(m)], { size: 'sm', class: 'subtle' }), h('a', { href: href(m), class: 'strong' }, m.name),
         m.managed ? h('span', { class: 'tag', title: t('mp.managedTitle') }, t('mp.managed')) : null),
       h('span', { class: 'small muted' }, t(`mp.use.${pipelineUse(m)}`))) },
     { key: 'room', label: t('mp.col.room'), sort: (m) => m.room, render: (m) => h('a', { href: `#/rooms/${encodeURIComponent(m.room)}`, class: 'mono' }, m.room) },
@@ -198,7 +197,7 @@ export async function render(root, _params, { navigate }) {
   await refresh();
   const offs = [
     onPageKey('n', create),
-    listKeys(box),
+    listNav(box, { rows: () => [...box.querySelectorAll('tbody tr')], open: (tr) => navigate(`/media-pipelines/${encodeURIComponent(tr.dataset.key)}`) }),
     refreshOn(['media_pipeline.', 'room.deleted'], () => refresh()),
   ];
   // 実行の状態（status）はイベントにならないので、見えている間は 5 秒ごとに読む

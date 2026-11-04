@@ -15,9 +15,10 @@ tools/interop/console.sh                    # 配信の形・構文・ロジッ�
 
 | 場所 | 中身 |
 |---|---|
-| `index.html` | 外枠。CSS を 6 つ、`js/boot.js`（最初の描画の前に明暗と言語を `<html>` に入れる）、`js/main.js`。インラインのスクリプト・スタイルは無い（CSP） |
+| `index.html` | 外枠。CSS を 8 つ、`js/boot.js`（最初の描画の前に明暗と言語を `<html>` に入れる）、`js/main.js`。インラインのスクリプト・スタイルは無い（CSP） |
 | `css/tokens.css` | デザイントークン（色・文字・間隔・角丸・影・動き・フォーカス）。値はここだけに置く |
-| `css/base.css`・`css/components.css`・`css/shell.css`・`css/views.css` | 土台と補助クラス・部品・外枠・画面ごとの見た目（再生・パイプライン・スイッチャー・スタイルガイド） |
+| `css/base.css`・`css/components.css`・`css/shell.css`・`css/views.css`・`css/streaming.css` | 土台と補助クラス・部品・外枠・画面ごとの見た目（再生・パイプライン・スイッチャー・スタイルガイド）・配信まわりの画面と、そこで足した部品 |
+| `css/ops.css` | 運用と設定の画面（ダッシュボード・ノードとデバイス・グリッド・監査ログ・API トークン・秘密値）。中身は `.ops-view` で包む（狭い画面では小さいボタンも 44px） |
 | `css/realtime.css` | ルーム・メディアパイプラインの画面と、そこで足した部品（折りたたみ・コードの見本・用途のカード・参加者のカード・時系列） |
 | `js/main.js` | 経路の切り替え、ログイン状態、SSE の開始、言語を変えたときの作り直し |
 | `js/nav.js` | 画面の一覧（経路・メニューのグループ・アイコン・`g` のショートカットのキー・準備中） |
@@ -26,10 +27,10 @@ tools/interop/console.sh                    # 配信の形・構文・ロジッ�
 | `js/i18n/` | `t()`・`tn()` と辞書（`ja/*.js`・`en/*.js`、画面ごとのファイル） |
 | `js/ui/` | 部品（下の一覧）。入口は `js/ui/index.js` |
 | `js/lib/` | `dom.js`（`h()` など）・`icons.js`・`format.js`（Intl の書式）・`theme.js`・`ui.js`（エラーの表示・`load()`）・`recent.js`・`guide.js`・`bus.js`・`live.js` など |
-| `js/api/` | `client.js`（fetch の包み。problem+json を `ApiError` に、401 はログインへ）・`resources.js`・`sse.js`・`pipelines.js`・`realtime.js`（ルーム・メディアパイプライン） |
+| `js/api/` | `client.js`（fetch の包み。problem+json を `ApiError` に、401 はログインへ）・`resources.js`・`sse.js`・`pipelines.js`・`ops.js`（グリッド・装置の無効化・監査ログと `auditFill()`）・`realtime.js`（ルーム・メディアパイプライン） |
 | `js/lib/realtime.js` | ルームとメディアパイプラインの画面に依存しない計算（状態・設定の差分・トラックの要約・SDK のコード・用途 → 作成の本文・作られるもの・出来事の文）。`console.sh` の C で試す |
 | `js/vendor/senca-sdk` | `../../../sdk-js/src` へのリンク（ブラウザー SDK をそのまま配る。写しは持たない）。コンテナイメージでは `/opt/senca/sdk-js/src` に置いてリンクを生かす |
-| `js/player/` | MSE の HLS 再生（fMP4 だけ）: `m3u8.js`・`mp4.js`・`hls.js`、WebRTC の再生 `whep.js`、`widget.js`（自動 = WHEP → だめなら HLS） |
+| `js/player/` | MSE の HLS 再生（fMP4 だけ）: `m3u8.js`・`mp4.js`・`hls.js`、WebRTC の再生 `whep.js`、`widget.js`（自動 = WHEP → だめなら HLS。`poster` で止まっている間の画、大きな再生ボタン） |
 | `js/pipeline/model.js` | senca-pipeline のグラフ JSON と編集用のモデルの行き来・ポートの型・検査。画面に依存しない |
 | `js/views/` | 画面。`render(main, params, ctx)` を持ち、片付けの関数を返してよい（`ctx = { caps, navigate, setCrumbs, nav }`）。準備中のページは `coming-soon.js` |
 
@@ -67,7 +68,7 @@ tools/interop/console.sh                    # 配信の形・構文・ロジッ�
 | `dataTable({columns, rows, empty, caption, sort, rowKey, testid})` | 列: `{key, label, render, sort, class, primary, actions, wrap}`。見出しで並べ替え（`aria-sort`）。狭い画面ではカード（`primary` の列が題）。`el.update(rows)` |
 | `pagination({page, hasPrev, hasNext, onPrev, onNext})` | カーソルのページ送り |
 | `tabs({tabs, label, param})` | WAI-ARIA のタブ。選んだタブは `?tab=` に入る（作り直さない） |
-| `modal(title, build, {actions, wide, icon, kind, testid})` | `<dialog>` の showModal（フォーカスは中に閉じる、Escape・×・背景で閉じる、開いた要素へ戻る） |
+| `modal(title, build, {actions, wide, icon, kind, testid, beforeClose})` | `<dialog>` の showModal（フォーカスは中に閉じる、Escape・×・背景で閉じる、開いた要素へ戻る）。`beforeClose()` が false なら Escape・×・背景では閉じない（一度だけ見せる値を写す前など） |
 | `confirmDialog(title, message, {ok, danger, consequences, requireText})` | message に「何が起きるか」を書く。取り消せない削除は `requireText`（名前を入れるまで押せない） |
 | `toast(msg, kind, {duration, action})` | `action: {label, onClick}` で「元に戻す」「再試行」。`reportError(e, what, {retry})` は失敗を知らせる |
 | `attachMenu(button, items)`・`tooltip(el, text, {kbd})`・`attachPopover(button, content)` | メニュー（↑↓・Escape）、ツールチップ、説明の箱。ダイアログの中でも使える（top layer） |
@@ -77,7 +78,10 @@ tools/interop/console.sh                    # 配信の形・構文・ロジッ�
 | `segmented({options, value, onChange, label})` | 2〜5 個から 1 つ（`radiogroup`） |
 | `searchBox({placeholder, onInput, shortcut})` | `shortcut: true` で `/` で入れるページの検索になる |
 | `copyField(value, label, {secret})` | 写すボタン付き。`secret` は伏せて表示し、目のボタンで見せる |
-| `checklist({id, title, steps})` | はじめの手順。`steps[].done` は実際の状態から計算して渡す。閉じたらこのブラウザでは出さない |
+| `checklist({id, title, steps})` | はじめの手順。`steps[].done` は実際の状態から計算して渡す（`optional` で「任意」の印）。閉じたらこのブラウザでは出さない。`resetChecklist(id)` で開き直す |
+| `choiceCards({label, options, value, onChange, compact})` | 説明つきの大きな選択肢（中身は本物のラジオ）。はじめての人に「どれを選ぶか」を聞くとき（配信の送り方・同時配信の送り先） |
+| `sparkline({values, width, height, label})` | 直近の値の動き（ビットレートなど）。数は横に文字で出し、線は傾向だけ |
+| `listNav(container, {rows, open})` | 一覧のキーボード操作（J・K・↑↓・Enter）と、行のどこを押しても開く。片付けの関数を返す |
 | `codeBlock(text, {label, lang, testid})` | コードの見本（SDK の呼び方・curl）。等幅で横へ流し、右上にコピー。label はコピーの通知と読み上げの名前 |
 
 `lib/dom.js` の `table()`・`field()`・`kv()`・`badge()` は同じ見た目の簡単な版（並べ替え・必須の印は無い）。
@@ -109,10 +113,40 @@ tools/interop/console.sh                    # 配信の形・構文・ロジッ�
 - 試験で選ぶ要素には `data-testid`（`testid`）を付ける。見える文字や役割で選ぶ試験は、言語を変えると壊れるので増やさない。
 - 1 画面の primary のボタンは 1 つ。アイコンだけのボタンには必ず label（ツールチップと読み上げ）。
 - ショートカットは入力中・ダイアログ中は効かない（`isTyping()`）。Ctrl/⌘+K（パレット）・`?`（一覧）・`/`（ページの検索）・`g` → キー（移動）・`[`（メニューを畳む）。
-- 一覧の行は `lib/listnav.js` の `listKeys(container)` で J・K で移れる（行の開くリンクに `data-row-link` を付ける。フォーカスを移すだけなので Enter はリンクのまま）。
+  一覧では `listNav()` で J・K（↑↓）・Enter、作成は `onPageKey('n', …)`。
 - 生で変わる中身（参加者・実行の状態）は見えている間だけ数秒ごとに読み、SSE でもすぐ読み直す。描き直すときはフォーカスのあった要素の `data-testid` へ戻す（押そうとしているボタンを奪わない）。
 - 設定の多い作成は、よく使う項目だけを先に出し、残りは折りたたみ（`room-form.js` の `disclosure()`、`<details>`）に入れる。誤りは欄の `setError()` で出し、畳んだ中の誤りなら開く。
 - 用途から作るもの（メディアパイプライン）は、用途のカード（`useCards()`）→ その用途の設定だけ → 右に「作られるもの・行き先」と直すところを入力に合わせて出す。直すところがあれば作成のボタンを押せなくする。
+
+## 配信まわりの画面（配信・録画・予約・ブラウザから送る）
+
+- 共通の道具は `js/lib/streaming.js`: 状態の読み分け（`streamState`）、受信の要約（`liveSummary`）、ビットレートの履歴（`recordHealth`・`healthSamples`。
+  API に履歴が無いので、このタブで読んだ値を 5 分ぶんメモリに溜める）、今の画・代表画の小さな画像（`liveThumb`・`recordingThumb`、使い回しと失敗の間引き）、
+  URL の `?…` の読み書き（`hashParams`・`setHashParams`。画面を作り直さない）。
+- 一覧の絞り込み・検索・表示の切り替えは URL に残す（`#/streams?state=live&q=…`、`#/recordings?stream=…&state=…&from=…&to=…`、`#/schedules?view=all`）。
+  詳細のタブは `?tab=`（`tabs()`）。コマンドパレットの操作はこの URL を開くだけにする。
+- 狭い画面の一覧は「題の列（`primary`）＋操作」の小さなカードにする。ほかの列には `class: 'hide-sm'` を付け、題の列の中の `.sc-mobile` に要点（状態・数）を並べる。
+- 配信の作成は `views/stream-create.js`（名前と送り方だけを聞き、詳しい設定は畳む）。作ったら `#/streams/{id}?setup=rtmp|srt|whip|pull` で
+  「送り手をつなぐ」を出す。publish の開始は SSE のイベントにならないので、待っている間は 2 秒ごとに読み直して「待っています → 受信しています」を切り替える。
+- ストリームキーはメモリ（`lib/secrets.js`）で詳細へ渡し、画面を離れたら捨てる。「このブラウザから送る」へは `handOffKey()` で渡す（保存しない）。
+- 同時配信（`views/stream-restream.js`）の送り先のひな形は rtmp_push の URL を埋めるだけ。鍵はその場で秘密値（`POST /secrets`）にして `credential_ref` で参照する。
+- 予約の繰り返しはこの画面が展開して時間割に並べる（`occurrences()`。選んだタイムゾーンの壁時計・曜日・回数・終わりの日）。時刻はこの端末のタイムゾーンで出し、
+  予約のタイムゾーンが違えばそちらの時刻も添える（`whenText()`）。
+- 見た目は `css/streaming.css`。
+
+## 運用と設定の画面
+
+- **ダッシュボード**（`views/dashboard.js`）: はじめの手順（`getting-started`。配信がある・配信中か録画がある・録画がある・トークンが 2 つ以上、などから進み具合を決める。
+  「見てみる」は手順のボタンを押したことを localStorage に覚える）→ 様子の帯 → 確認が要ること（それぞれに直接の操作）→ 配信中（今の画は 15 秒ごと。作れなければ 5 分待つ）→
+  録画中・予約 → 最近の出来事（SSE）・このノードでできること。`#/?onboarding=1` で手順を開き直す（コマンドパレット）。
+  入力・出力の失敗は、配信ごとの一覧を読んで探す（`IO_SCAN_MAX` 件まで。配信中のものから）。
+- **名前の解決**（`lib/names.js`）: 監査ログ・グリッドで ID を名前にする。一覧を 30 秒使い回す。`input:`・`output:` は `GET /inputs/{id}` で持ち主の配信を引く。
+- **監査ログの操作**（`lib/audit-actions.js`）: `audit.action.<操作>` の言葉・分類（絞り込みとアイコン）・資源のページ。知らない操作は「分類: 残り」か ID のまま出す（`auth.login` など、後から増えるもの）。
+  ページの項目が `limit` より少なくても `next_cursor` が返るので、`auditFill()` で見える分を埋め、下の端が見えたら続きを読む。条件は URL（`#/audit?action=stream.&range=24h`）。
+- **グリッド**: 状態ごとの数がそのまま絞り込み。ノードの列（予約の量）と「配置できていない」列、一覧。理由は `grid.reason.*`・`grid.reject.*` の文にする。
+- **一覧のキーボード**: 運用の画面も `ui/listnav.js` の `listNav()` を使う（ノードのカード・グリッドのカード・監査ログの行・トークンと秘密値の表）。項目には `data-key` を付ける。
+- 確認のダイアログ: drain・装置の無効化のように戻せる操作は `danger: false`。トークンの失効は、強い権限（tenant:admin・node:admin）のものだけ名前の入力を求める。秘密値の削除は名前の入力を求める。
+- 秘密値の「値を変える」: 使われていなければ消して同じ名前で作り直す。使われていれば新しい名前で作り、入力・出力の `credential_ref` を付け替え（If-Match）、古いものを消す（字幕の参照は手で）。
 
 ## 再生（`js/player/hls.js`）の決まりと限界
 

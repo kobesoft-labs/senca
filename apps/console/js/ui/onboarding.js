@@ -1,5 +1,6 @@
 // はじめの手順（チェックリスト）。進み具合は実際の状態から決める（呼ぶ側が done を計算して渡す）。
-// 全部終わるか「閉じる」を押すと、このブラウザでは出さない（localStorage、id ごと）。
+// 「閉じる」を押すと、このブラウザでは出さない（localStorage、id ごと。resetChecklist で戻す）。全部終わったら出さないのは呼ぶ側が決める。
+// steps[].optional は「任意」の印を付ける。
 //
 //   checklist({ id: 'getting-started', title: t('…'), steps: [
 //     { id: 'stream', title: t('…'), description: t('…'), done: streams.length > 0, action: { label: t('…'), href: '#/streams?new=1' } },
@@ -16,8 +17,13 @@ export function checklistDismissed(id) {
   try { return localStorage.getItem(KEY(id)) === '1'; } catch { return false; }
 }
 
+/** 閉じた案内をもう一度出す（「はじめの手順」を開き直すボタンから）。 */
+export function resetChecklist(id) {
+  try { localStorage.removeItem(KEY(id)); } catch { /* 何もしない */ }
+}
+
 /**
- * @param {{id: string, title: string, description?: string, steps: {id: string, title: string, description?: string, done: boolean, action?: {label: string, href?: string, onClick?: () => any}}[], dismissible?: boolean, onDismiss?: () => void}} o
+ * @param {{id: string, title: string, description?: string, steps: {id: string, title: string, description?: string, done: boolean, optional?: boolean, action?: {label: string, href?: string, onClick?: () => any}}[], dismissible?: boolean, onDismiss?: () => void}} o
  * @returns {HTMLElement|null} 閉じてあれば null
  */
 export function checklist({ id, title, description, steps, dismissible = true, onDismiss }) {
@@ -37,11 +43,11 @@ export function checklist({ id, title, description, steps, dismissible = true, o
     h('ol', null, steps.map((s, i) => h('li', { class: s.done ? 'done' : null, 'data-step': s.id },
       h('span', { class: 'cl-mark', 'aria-hidden': 'true' }, s.done ? icon('check') : String(i + 1)),
       h('div', { class: 'cl-text' },
-        h('strong', null, s.title, h('span', { class: 'visually-hidden' }, ` (${s.done ? t('checklist.done') : t('checklist.todo')})`)),
+        h('strong', null, s.title, s.optional ? h('span', { class: 'tag cl-optional' }, t('form.optional')) : null, h('span', { class: 'visually-hidden' }, ` (${s.done ? t('checklist.done') : t('checklist.todo')})`)),
         s.description ? h('span', null, s.description) : null),
       !s.done && s.action
         ? (s.action.href
-          ? h('a', { class: `btn sm ${i === steps.findIndex((x) => !x.done) ? 'primary' : ''}`, href: s.action.href }, s.action.label)
+          ? h('a', { class: `btn sm ${i === steps.findIndex((x) => !x.done) ? 'primary' : ''}`, href: s.action.href, onClick: s.action.onClick }, s.action.label)
           : h('button', { type: 'button', class: `sm ${i === steps.findIndex((x) => !x.done) ? 'primary' : ''}`, onClick: s.action.onClick }, s.action.label))
         : h('span')))));
   return el;

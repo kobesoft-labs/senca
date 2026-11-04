@@ -29,8 +29,6 @@ ul.plain { list-style: none; margin: 0; padding: 0; display: grid; gap: var(--sp
 .table-toolbar .live-note { margin-left: auto; }
 .toolbar-select { min-width: 180px; max-width: 100%; }
 
-/* 一覧のキーボードの行（J・K） */
-tr.kb-cursor, li.kb-cursor { background: var(--accent-soft); box-shadow: inset 3px 0 0 var(--accent); }
 
 /* ---------------------------------------------------------------- 折りたたみ（<details>） */
 .disclosure { border: 1px solid var(--border); border-radius: var(--r-lg); background: var(--surface); }

@@ -4,7 +4,6 @@ export default {
   'palette.kind.media-pipeline': 'Media pipeline',
   'palette.newRoom': 'Create room',
   'palette.newMediaPipeline': 'Create media pipeline',
-  'shortcuts.listMove': 'Move through list rows (Enter opens)',
 
   'rooms.lead': 'A place where participants exchange video, audio and data over WebRTC. Apps get a join token and connect with the SDK.',
   'rooms.help': 'Create a room, issue join tokens from your app server, and join from browsers or apps with the SDK. The node forwards media to the other participants without transcoding (SFU).',

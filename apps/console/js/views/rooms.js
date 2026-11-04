@@ -10,12 +10,11 @@ import { listAll } from '../api/resources.js';
 import { fmtTime, fmtRelative, fmtNumber, idemKey } from '../lib/format.js';
 import { refreshOn } from '../lib/live.js';
 import { t, tn } from '../i18n/index.js';
-import { button, iconButton, pageHeader, dataTable, emptyState, statusPill, searchBox, helpHint, badge, statTile, alert, attachMenu } from '../ui/index.js';
+import { button, iconButton, pageHeader, dataTable, emptyState, statusPill, searchBox, helpHint, badge, statTile, alert, attachMenu, listNav } from '../ui/index.js';
 import { icon } from '../lib/icons.js';
 import { guideUrl } from '../lib/guide.js';
 import { invalidatePalette } from '../palette.js';
 import { onPageKey } from '../shortcuts.js';
-import { listKeys } from '../lib/listnav.js';
 import { forgetRecent } from '../lib/recent.js';
 import { roomState, roomFeatures } from '../lib/realtime.js';
 import { roomForm } from './room-form.js';
@@ -159,7 +158,7 @@ export async function render(root, _params, { caps, navigate }) {
 
   const columns = [
     { key: 'id', label: t('rooms.col.room'), primary: true, sort: (r) => r.id, render: (r) => h('div', { class: 'cell-stack' },
-      h('a', { href: href(r), 'data-row-link': '', class: 'strong' }, roomTitle(r) || r.id),
+      h('a', { href: href(r), class: 'strong' }, roomTitle(r) || r.id),
       roomTitle(r) ? h('span', { class: 'small muted mono' }, r.id) : null) },
     { key: 'state', label: t('common.state'), sort: (r) => ({ active: 0, empty: 1, pending: 2, unknown: 3, unschedulable: 4 }[roomState(r, count(r))]), render: (r) => roomPill(r, count(r), `room-state-${r.id}`) },
     { key: 'people', label: t('rooms.col.participants'), class: 'num', sort: (r) => count(r), render: (r) => h('span', { 'data-testid': `room-count-${r.id}` },
@@ -292,7 +291,7 @@ export async function render(root, _params, { caps, navigate }) {
   }
   const offs = [
     onPageKey('n', createSafe),
-    listKeys(box),
+    listNav(box, { rows: () => [...box.querySelectorAll('tbody tr')], open: (tr) => navigate(`/rooms/${encodeURIComponent(tr.dataset.key)}`) }),
     refreshOn(['room.updated', 'room.deleted'], () => refresh()),
     refreshOn(['room.connection.', 'room.track.', 'room.started', 'room.stopped', 'media_pipeline.'], refreshLive, { wait: 300 }),
   ];

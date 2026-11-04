@@ -4,7 +4,6 @@ export default {
   'palette.kind.media-pipeline': 'メディアパイプライン',
   'palette.newRoom': 'ルームを作成',
   'palette.newMediaPipeline': 'メディアパイプラインを作成',
-  'shortcuts.listMove': '一覧の行を移る（Enter で開く）',
 
   'rooms.lead': '参加者どうしが WebRTC で映像・音声・データをやり取りする場です。アプリは参加トークンを受け取り、SDK で入ります。',
   'rooms.help': 'ルームを作り、アプリのサーバーで参加トークンを発行して、ブラウザーやアプリから SDK で参加します。ノードは受け取った映像を変換せずに他の参加者へ届けます（SFU）。',

@@ -18,6 +18,8 @@ import secrets from './secrets.js';
 import activity from './activity.js';
 import rooms from './rooms.js';
 import mediaPipelines from './mediaPipelines.js';
+import grid from './grid.js';
+import audit from './audit.js';
 
 export default {
   ...core,
@@ -38,4 +40,6 @@ export default {
   ...activity,
   ...rooms,
   ...mediaPipelines,
+  ...grid,
+  ...audit,
 };

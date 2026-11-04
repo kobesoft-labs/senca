@@ -163,6 +163,30 @@ export function utcToWall(iso, timeZone) {
   return d.toISOString().slice(0, 16);
 }
 
+/** 時と分だけ（指定がなければ利用者のタイムゾーン）。 */
+export function fmtHm(iso, timeZone) {
+  if (!iso && iso !== 0) return '—';
+  const d = new Date(iso);
+  if (Number.isNaN(d.getTime())) return String(iso);
+  try {
+    return dtf({ hour: '2-digit', minute: '2-digit', hourCycle: 'h23', ...(timeZone ? { timeZone } : {}) }).format(d);
+  } catch {
+    return dtf({ hour: '2-digit', minute: '2-digit', hourCycle: 'h23' }).format(d);
+  }
+}
+
+/** 曜日つきの短い日付（「11月4日(水)」「Wed, Nov 4」）。 */
+export function fmtDay(iso, timeZone) {
+  if (!iso && iso !== 0) return '—';
+  const d = new Date(iso);
+  if (Number.isNaN(d.getTime())) return String(iso);
+  try {
+    return dtf({ month: 'short', day: 'numeric', weekday: 'short', ...(timeZone ? { timeZone } : {}) }).format(d);
+  } catch {
+    return dtf({ month: 'short', day: 'numeric', weekday: 'short' }).format(d);
+  }
+}
+
 /** POST の再送で同じ答えを得るための鍵。 */
 export function idemKey() {
   if (crypto.randomUUID) return crypto.randomUUID();
