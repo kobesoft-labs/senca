@@ -22,12 +22,21 @@
 .toolbar.form { display: flex; gap: var(--sp-3); align-items: flex-end; }
 .toolbar.form .field { min-width: 180px; }
 /* パイプライン編集 */
-.pl-layout { display: grid; grid-template-columns: 180px 1fr 280px; gap: 12px; min-height: 560px; }
+.pl-layout { display: grid; grid-template-columns: 190px minmax(0, 1fr) 320px; gap: var(--sp-4); min-height: 560px; }
 @media (max-width: 1100px) { .pl-layout { grid-template-columns: 1fr; } }
 .pl-palette { display: grid; gap: 6px; align-content: start; }
-.pl-palette button { justify-content: flex-start; width: 100%; }
+.pl-palette-title { font-size: var(--fs-xs); font-weight: var(--fw-semibold); color: var(--text-2); text-transform: uppercase; letter-spacing: .05em; }
+.pl-palette button { justify-content: flex-start; width: 100%; white-space: normal; text-align: left; }
+.pl-palette .dot { flex: none; }
+.pl-side { display: grid; gap: var(--sp-3); align-content: start; min-width: 0; }
+.pl-side > .panel { margin-bottom: 0; padding: var(--sp-4); }
+.pl-inspector h2 .dot, .pl-side h2 .icon { flex: none; }
+.pl-inspector h2 .icon, .pl-side h2 .icon { width: 18px; height: 18px; color: var(--text-3); }
+.pl-side h2 .badge { margin-left: auto; }
+.pl-toolbar { padding: var(--sp-2); background: var(--surface); border: 1px solid var(--border); border-radius: var(--r-lg); }
+.pl-layout + .panel { margin-top: var(--sp-5); }
 .pl-canvas { background: var(--surface); border: 1px solid var(--border); border-radius: var(--r-md); position: relative; overflow: auto; max-height: 720px; }
-.pl-canvas svg { width: 1400px; height: 700px; display: block; touch-action: none; user-select: none; }
+.pl-canvas svg { width: 1400px; height: 700px; max-width: none; display: block; touch-action: none; user-select: none; }
 .pl-node rect.body { fill: var(--surface-2); stroke: var(--border); stroke-width: 1.5; }
 .pl-node.selected rect.body { stroke: var(--accent); stroke-width: 3; }
 .pl-node:focus { outline: none; }
@@ -44,9 +53,11 @@
 .pl-edge-hit { fill: none; stroke: transparent; stroke-width: 12; cursor: pointer; }
 .pl-wire { fill: none; stroke: var(--accent); stroke-width: 2; stroke-dasharray: 5 4; pointer-events: none; }
 .pl-grid line { stroke: var(--border); stroke-width: .5; opacity: .6; }
-.pl-issues { margin: 0; padding-left: 18px; font-size: 12.5px; }
-.pl-issues li.error { color: var(--danger); }
-.pl-issues li.warn { color: var(--warn); }
+.pl-issues { margin: 0; padding: 0; list-style: none; font-size: var(--fs-sm); display: grid; gap: var(--sp-1); }
+.pl-issues li { display: flex; gap: var(--sp-1); align-items: baseline; }
+.pl-issues li .icon { flex: none; transform: translateY(2px); }
+.pl-issues li.error { color: var(--danger-text); }
+.pl-issues li.warn { color: var(--warn-text); }
 
 /* スイッチャー */
 .sw-monitors { display: grid; grid-template-columns: 1fr 1fr; gap: 12px; }
@@ -56,6 +67,7 @@
 .monitor.program { border-color: var(--live); }
 .monitor canvas { width: 100%; aspect-ratio: 16 / 9; display: block; }
 .monitor .mlabel { position: absolute; right: 8px; bottom: 6px; font-size: 11px; font-weight: 700; color: #fff; background: rgba(0, 0, 0, .55); padding: 1px 6px; border-radius: 3px; }
+.monitor .mlabel code { background: none; border: 0; padding: 0; color: inherit; }
 .sw-scenes { display: grid; grid-template-columns: repeat(auto-fill, minmax(130px, 1fr)); gap: 8px; }
 .sw-scenes button { flex-direction: column; align-items: stretch; padding: 6px; }
 .sw-scenes button.preview { outline: 3px solid var(--tally-preview); }
