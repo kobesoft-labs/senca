@@ -74,6 +74,185 @@ pub struct Config {
     pub rate_limit_connect: u32,
     /// SSE の再開のために残す直近のイベントの数。
     pub events_retain: usize,
+    /// ログインのセッションの待ち時間（最後に使ってからの秒数）と最長の寿命（秒）。ADR-0017。
+    pub auth_session_idle_secs: u64,
+    pub auth_session_lifetime_secs: u64,
+    /// パスワードでログインする利用者に TOTP を必須にする（未登録なら最初のログインで登録させる）。
+    pub auth_require_mfa: bool,
+    /// パスワードでのログインを受け付ける（false なら OIDC だけ）。
+    pub auth_password_login: bool,
+    /// 認証アプリに表示する発行者の名前（`otpauth://` の issuer）。
+    pub auth_mfa_issuer: String,
+    /// ログインの失敗の上限（送り元の IP ごと、1 分あたり）。
+    pub rate_limit_login: u32,
+    /// OIDC の IdP（`--oidc-*` の 1 つと `--oidc-config` のもの）。
+    pub oidc_providers: Vec<OidcProviderConfig>,
+}
+
+/// OIDC の IdP の設定（ADR-0017）。ノードが relying party になり、認可コードフロー（PKCE S256・state・nonce）で入る。
+#[derive(Debug, Clone, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct OidcProviderConfig {
+    /// URL に入る名前（英小文字・数字・`-`・`_`、1〜32 文字）。
+    pub id: String,
+    /// ログインのボタンに出す名前。
+    #[serde(default)]
+    pub display_name: Option<String>,
+    /// 発行者（`{issuer}/.well-known/openid-configuration` を取りに行く）。
+    pub issuer: String,
+    pub client_id: String,
+    /// クライアントシークレットのファイル（無ければ public client）。
+    #[serde(default)]
+    pub client_secret_file: Option<PathBuf>,
+    #[serde(default = "default_oidc_scopes")]
+    pub scopes: Vec<String>,
+    /// 既定は `{--public-http-url}/api/v1/auth/oidc/{id}/callback`。
+    #[serde(default)]
+    pub redirect_url: Option<String>,
+    /// 許すメールアドレスのドメイン（空なら制限なし）。
+    #[serde(default)]
+    pub allowed_email_domains: Vec<String>,
+    /// メールアドレスを使う（ドメインの制限・既存の利用者との結び付け）とき、`email_verified: true` を求める。
+    #[serde(default = "yes")]
+    pub require_email_verified: bool,
+    /// 利用者を置くテナント（固定）。`tenant_claim` と同時には使えない。どちらも無ければ `default`。
+    #[serde(default)]
+    pub tenant: Option<String>,
+    /// テナントを決めるクレームの名前。
+    #[serde(default)]
+    pub tenant_claim: Option<String>,
+    /// クレーム → 役割・権限の対応。
+    #[serde(default)]
+    pub role_mappings: Vec<senca_control::oidc::RoleMapping>,
+    /// 対応に当たらないときの役割（無ければログインを断る）。
+    #[serde(default)]
+    pub default_role: Option<String>,
+    /// ログインのたびに役割を対応表から決め直す（`role_mappings` があるときだけ）。
+    #[serde(default = "yes")]
+    pub sync_roles: bool,
+    /// 初めてのログインで利用者を作る。false なら、結び付いた利用者か、同じメールアドレスの利用者が要る。
+    #[serde(default)]
+    pub auto_provision: bool,
+    /// 利用者名に使うクレーム（既定は `preferred_username`、無ければ `email`・`sub`）。
+    #[serde(default)]
+    pub username_claim: Option<String>,
+    #[serde(default)]
+    pub prompt: Option<String>,
+    #[serde(default)]
+    pub max_age: Option<u64>,
+}
+
+fn default_oidc_scopes() -> Vec<String> {
+    vec!["openid".into(), "email".into(), "profile".into()]
+}
+
+fn yes() -> bool {
+    true
+}
+
+impl OidcProviderConfig {
+    fn new(issuer: String) -> Self {
+        OidcProviderConfig {
+            id: "oidc".into(),
+            display_name: None,
+            issuer,
+            client_id: String::new(),
+            client_secret_file: None,
+            scopes: default_oidc_scopes(),
+            redirect_url: None,
+            allowed_email_domains: vec![],
+            require_email_verified: true,
+            tenant: None,
+            tenant_claim: None,
+            role_mappings: vec![],
+            default_role: None,
+            sync_roles: true,
+            auto_provision: false,
+            username_claim: None,
+            prompt: None,
+            max_age: None,
+        }
+    }
+
+    /// クライアントシークレット（ファイルの中身、前後の空白を除く）。
+    pub fn client_secret(&self) -> Result<Option<String>, String> {
+        let Some(p) = &self.client_secret_file else { return Ok(None) };
+        let s = std::fs::read_to_string(p).map_err(|e| format!("oidc {}: client_secret_file {}: {e}", self.id, p.display()))?;
+        let s = s.trim().to_string();
+        if s.is_empty() {
+            return Err(format!("oidc {}: client_secret_file が空です", self.id));
+        }
+        Ok(Some(s))
+    }
+
+    /// 戻り先（設定が無ければ `--public-http-url` から）。
+    pub fn redirect(&self, public_http: Option<&str>) -> Option<String> {
+        self.redirect_url
+            .clone()
+            .or_else(|| public_http.map(|b| format!("{}/api/v1/auth/oidc/{}/callback", b.trim_end_matches('/'), self.id)))
+    }
+
+    fn validate(&self, public_http: Option<&str>) -> Result<(), String> {
+        let id = &self.id;
+        if id.is_empty() || id.len() > 32 || !id.bytes().all(|b| b.is_ascii_lowercase() || b.is_ascii_digit() || b == b'-' || b == b'_') {
+            return Err(format!("oidc: id は英小文字・数字・-・_ の 1〜32 文字: {id}"));
+        }
+        let url_ok = |u: &str| (u.starts_with("https://") || u.starts_with("http://")) && !u.contains(['#', ' ']) && crate::httpc::parse_url(u).is_some();
+        if !url_ok(&self.issuer) || self.issuer.contains('?') {
+            return Err(format!("oidc {id}: issuer は http(s):// の URL（クエリ無し）にしてください: {}", self.issuer));
+        }
+        if self.client_id.is_empty() || self.client_id.len() > 512 {
+            return Err(format!("oidc {id}: client_id が要ります"));
+        }
+        match self.redirect(public_http) {
+            Some(r) if url_ok(&r) => {}
+            _ => return Err(format!("oidc {id}: redirect_url（または --public-http-url）が要ります")),
+        }
+        if !self.scopes.iter().any(|s| s == "openid") {
+            return Err(format!("oidc {id}: scopes に openid が要ります"));
+        }
+        if self.scopes.iter().any(|s| s.is_empty() || !s.bytes().all(|b| b.is_ascii_graphic() && b != b'"' && b != b'\\')) {
+            return Err(format!("oidc {id}: scopes の形が違います"));
+        }
+        if self.tenant.is_some() && self.tenant_claim.is_some() {
+            return Err(format!("oidc {id}: tenant と tenant_claim は同時に使えません"));
+        }
+        if let Some(t) = &self.tenant
+            && !senca_control::users::valid_tenant(t)
+        {
+            return Err(format!("oidc {id}: tenant の形が違います: {t}"));
+        }
+        for m in &self.role_mappings {
+            if senca_control::oidc::parse_grant(&m.role).is_none() || m.claim.is_empty() {
+                return Err(format!("oidc {id}: role_mappings の role は admin・operator・viewer か権限の名前: {}", m.role));
+            }
+        }
+        if let Some(r) = &self.default_role
+            && senca_control::oidc::parse_grant(r).is_none()
+        {
+            return Err(format!("oidc {id}: default_role は admin・operator・viewer か権限の名前: {r}"));
+        }
+        if let Some(p) = &self.prompt
+            && !p.split(' ').all(|x| matches!(x, "none" | "login" | "consent" | "select_account"))
+        {
+            return Err(format!("oidc {id}: prompt は none・login・consent・select_account: {p}"));
+        }
+        for d in &self.allowed_email_domains {
+            let d = d.trim_start_matches('@');
+            if d.is_empty() || d.contains(['@', ' ', '/']) {
+                return Err(format!("oidc {id}: allowed_email_domains の形が違います: {d}"));
+            }
+        }
+        self.client_secret()?;
+        Ok(())
+    }
+}
+
+/// `--oidc-config FILE` の形。
+#[derive(Debug, Deserialize)]
+#[serde(deny_unknown_fields)]
+struct OidcFile {
+    providers: Vec<OidcProviderConfig>,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Deserialize, Default)]
@@ -251,6 +430,13 @@ impl Default for Config {
             rate_limit_auth_failures: DEFAULT_RATE_LIMIT_AUTH_FAILURES,
             rate_limit_connect: DEFAULT_RATE_LIMIT_CONNECT,
             events_retain: crate::control::DEFAULT_EVENT_LOG,
+            auth_session_idle_secs: DEFAULT_SESSION_IDLE_SECS,
+            auth_session_lifetime_secs: DEFAULT_SESSION_LIFETIME_SECS,
+            auth_require_mfa: false,
+            auth_password_login: true,
+            auth_mfa_issuer: "SENCA".into(),
+            rate_limit_login: DEFAULT_RATE_LIMIT_LOGIN,
+            oidc_providers: Vec::new(),
         }
     }
 }
@@ -260,6 +446,10 @@ pub const DEFAULT_RATE_LIMIT_IP: u32 = 300;
 pub const DEFAULT_RATE_LIMIT_TOKEN: u32 = 200;
 pub const DEFAULT_RATE_LIMIT_AUTH_FAILURES: u32 = 30;
 pub const DEFAULT_RATE_LIMIT_CONNECT: u32 = 30;
+pub const DEFAULT_RATE_LIMIT_LOGIN: u32 = 10;
+/// セッションの既定: 8 時間使わなければ失効、最長 7 日。
+pub const DEFAULT_SESSION_IDLE_SECS: u64 = 8 * 3600;
+pub const DEFAULT_SESSION_LIFETIME_SECS: u64 = 7 * 86_400;
 
 /// ノードのラベルの数の上限。
 pub const MAX_LABELS: usize = 64;
@@ -290,6 +480,14 @@ pub const USAGE: &str = "senca-node [--config FILE] [--data-dir DIR] [--http ADD
   [--rooms-cascade] [--rooms-auth-webhook URL] [--rooms-auth-mode after_token|only] [--rooms-event-webhook URL]
   [--rooms-webhook-secret-file FILE] [--webrtc-public-ip IP[,IP]...]
   [--rate-limit-ip N] [--rate-limit-token N] [--rate-limit-auth-failures N] [--rate-limit-connect N] [--events-retain N]
+  [--rate-limit-login N] [--auth-session-idle SECS] [--auth-session-lifetime SECS] [--auth-require-mfa]
+  [--auth-password-login on|off] [--auth-mfa-issuer NAME] [--recovery-admin-token]
+  [--oidc-config FILE] [--oidc-issuer URL --oidc-client-id ID [--oidc-client-secret-file FILE] [--oidc-id ID]
+   [--oidc-display-name NAME] [--oidc-scopes 'openid email profile'] [--oidc-redirect-url URL] [--oidc-allowed-domain DOMAIN]...
+   [--oidc-tenant TENANT | --oidc-tenant-claim CLAIM] [--oidc-role-map CLAIM=VALUE:ROLE]... [--oidc-default-role ROLE]
+   [--oidc-no-sync-roles] [--oidc-auto-provision] [--oidc-allow-unverified-email] [--oidc-username-claim CLAIM]
+   [--oidc-prompt PROMPT] [--oidc-max-age SECS]]
+senca-node reset-password --username NAME [--api URL] [--data-dir DIR | --token-file FILE] [--create-admin]
   [--recording-storage local|s3://BUCKET[/PREFIX] [--s3-endpoint URL] [--s3-region REGION] [--s3-addressing path|virtual]
    [--s3-credentials FILE] [--s3-part-size BYTES] [--recording-keep-local SECS]]";
 
@@ -317,6 +515,9 @@ impl Config {
             }
             i += 1;
         }
+        // --oidc-* の 1 つ（--oidc-issuer があるときだけ使う）
+        let mut op = OidcProviderConfig::new(String::new());
+        let mut op_used = false;
         let mut i = 0;
         while i < args.len() {
             let a = args[i].as_str();
@@ -401,6 +602,55 @@ impl Config {
                 _ if flag("--rate-limit-auth-failures") => cfg.rate_limit_auth_failures = small(num(val()?)?)?,
                 _ if flag("--rate-limit-connect") => cfg.rate_limit_connect = small(num(val()?)?)?,
                 _ if flag("--events-retain") => cfg.events_retain = num(val()?)? as usize,
+                _ if flag("--rate-limit-login") => cfg.rate_limit_login = small(num(val()?)?)?,
+                _ if flag("--auth-session-idle") => cfg.auth_session_idle_secs = num(val()?)?,
+                _ if flag("--auth-session-lifetime") => cfg.auth_session_lifetime_secs = num(val()?)?,
+                _ if flag("--auth-require-mfa") => cfg.auth_require_mfa = true,
+                _ if flag("--auth-password-login") => {
+                    cfg.auth_password_login = match val()?.as_str() {
+                        "on" | "true" => true,
+                        "off" | "false" => false,
+                        v => return Err(format!("--auth-password-login は on か off: {v}")),
+                    }
+                }
+                _ if flag("--auth-mfa-issuer") => cfg.auth_mfa_issuer = val()?,
+                // 起動の処理（main.rs）で読む
+                _ if flag("--recovery-admin-token") => {}
+                _ if flag("--oidc-config") => {
+                    let p = val()?;
+                    let b = std::fs::read(&p).map_err(|e| format!("{p}: {e}"))?;
+                    let f: OidcFile = serde_json::from_slice(&b).map_err(|e| format!("{p}: {e}"))?;
+                    cfg.oidc_providers.extend(f.providers);
+                }
+                _ if a.starts_with("--oidc-") => {
+                    op_used = true;
+                    match a {
+                        "--oidc-issuer" => op.issuer = val()?,
+                        "--oidc-client-id" => op.client_id = val()?,
+                        "--oidc-client-secret-file" => op.client_secret_file = Some(PathBuf::from(val()?)),
+                        "--oidc-id" => op.id = val()?,
+                        "--oidc-display-name" => op.display_name = Some(val()?),
+                        "--oidc-scopes" => op.scopes = val()?.split([' ', ',']).filter(|x| !x.is_empty()).map(str::to_string).collect(),
+                        "--oidc-redirect-url" => op.redirect_url = Some(val()?),
+                        "--oidc-allowed-domain" => op.allowed_email_domains.push(val()?),
+                        "--oidc-tenant" => op.tenant = Some(val()?),
+                        "--oidc-tenant-claim" => op.tenant_claim = Some(val()?),
+                        "--oidc-role-map" => {
+                            let v = val()?;
+                            let (cv, role) = v.rsplit_once(':').ok_or_else(|| format!("--oidc-role-map は CLAIM=VALUE:ROLE: {v}"))?;
+                            let (claim, value) = cv.split_once('=').ok_or_else(|| format!("--oidc-role-map は CLAIM=VALUE:ROLE: {v}"))?;
+                            op.role_mappings.push(senca_control::oidc::RoleMapping { claim: claim.into(), value: value.into(), role: role.into() });
+                        }
+                        "--oidc-default-role" => op.default_role = Some(val()?),
+                        "--oidc-no-sync-roles" => op.sync_roles = false,
+                        "--oidc-auto-provision" => op.auto_provision = true,
+                        "--oidc-allow-unverified-email" => op.require_email_verified = false,
+                        "--oidc-username-claim" => op.username_claim = Some(val()?),
+                        "--oidc-prompt" => op.prompt = Some(val()?),
+                        "--oidc-max-age" => op.max_age = Some(num(val()?)?),
+                        _ => return Err(format!("unknown argument: {a}\n{USAGE}")),
+                    }
+                }
                 _ if flag("--label") => {
                     let v = val()?;
                     let (k, x) = v.split_once('=').ok_or_else(|| format!("--label は key=value: {v}"))?;
@@ -415,6 +665,12 @@ impl Config {
                 _ => return Err(format!("unknown argument: {a}\n{USAGE}")),
             }
             i += 1;
+        }
+        if op_used {
+            if op.issuer.is_empty() {
+                return Err("--oidc-* には --oidc-issuer と --oidc-client-id が要ります".into());
+            }
+            cfg.oidc_providers.push(op);
         }
         cfg.validate()?;
         Ok(cfg)
@@ -482,6 +738,25 @@ impl Config {
         if self.events_retain > 1_000_000 {
             return Err("--events-retain は 0〜1000000".into());
         }
+        if !(60..=30 * 86_400).contains(&self.auth_session_idle_secs) {
+            return Err("--auth-session-idle は 60〜2592000 秒".into());
+        }
+        if !(300..=365 * 86_400).contains(&self.auth_session_lifetime_secs) || self.auth_session_lifetime_secs < self.auth_session_idle_secs {
+            return Err("--auth-session-lifetime は 300〜31536000 秒で、--auth-session-idle 以上".into());
+        }
+        if self.auth_mfa_issuer.is_empty() || self.auth_mfa_issuer.len() > 64 || self.auth_mfa_issuer.contains(':') {
+            return Err("--auth-mfa-issuer は 1〜64 文字で : を含まない名前".into());
+        }
+        let mut ids = std::collections::HashSet::new();
+        for p in &self.oidc_providers {
+            p.validate(self.public.http.as_deref())?;
+            if !ids.insert(p.id.clone()) {
+                return Err(format!("oidc: id が重なっています: {}", p.id));
+            }
+        }
+        if self.oidc_providers.len() > 16 {
+            return Err("oidc: IdP は 16 個まで".into());
+        }
         if self.max_playback_ttl_secs == 0 {
             return Err("--max-playback-ttl must be > 0".into());
         }
@@ -516,5 +791,38 @@ mod tests {
         assert!(Config::from_args(&args(&["--label", "senca.io/webrtc=true"])).is_err());
         assert!(Config::from_args(&args(&["--label", "zone=b"])).is_ok());
         std::fs::remove_dir_all(&d).unwrap();
+    }
+
+    #[test]
+    fn auth_and_oidc_flags() {
+        let c = Config::from_args(&args(&[
+            "--oidc-issuer",
+            "https://idp.example.com/realms/x",
+            "--oidc-client-id",
+            "senca",
+            "--oidc-role-map",
+            "realm_access.roles=senca-admin:admin",
+            "--oidc-allowed-domain",
+            "example.com",
+            "--oidc-auto-provision",
+            "--auth-require-mfa",
+        ]))
+        .unwrap();
+        let p = &c.oidc_providers[0];
+        assert_eq!(p.id, "oidc");
+        assert_eq!(p.role_mappings[0].claim, "realm_access.roles");
+        assert_eq!(p.role_mappings[0].role, "admin");
+        assert_eq!(p.redirect(c.public.http.as_deref()).unwrap(), "http://127.0.0.1:8080/api/v1/auth/oidc/oidc/callback");
+        assert!(p.auto_provision && p.require_email_verified && c.auth_require_mfa);
+        assert!(Config::from_args(&args(&["--oidc-client-id", "x"])).is_err(), "issuer が要る");
+        assert!(Config::from_args(&args(&["--oidc-issuer", "ftp://x", "--oidc-client-id", "x"])).is_err());
+        assert!(Config::from_args(&args(&["--oidc-issuer", "https://x", "--oidc-client-id", "x", "--oidc-default-role", "root"])).is_err());
+        assert!(Config::from_args(&args(&["--oidc-issuer", "https://x", "--oidc-client-id", "x", "--oidc-tenant", "a", "--oidc-tenant-claim", "t"])).is_err());
+        assert!(Config::from_args(&args(&["--oidc-issuer", "https://x", "--oidc-client-id", "x", "--oidc-id", "Bad Id"])).is_err());
+        assert!(Config::from_args(&args(&["--auth-session-idle", "10"])).is_err());
+        assert!(Config::from_args(&args(&["--auth-session-idle", "7200", "--auth-session-lifetime", "3600"])).is_err());
+        assert!(Config::from_args(&args(&["--auth-password-login", "maybe"])).is_err());
+        let c = Config::from_args(&args(&[])).unwrap();
+        assert_eq!((c.auth_session_idle_secs, c.auth_session_lifetime_secs, c.auth_password_login), (28_800, 604_800, true));
     }
 }

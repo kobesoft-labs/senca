@@ -74,6 +74,8 @@ pub struct App {
     pub limits: crate::ratelimit::RateLimits,
     /// 視聴者の数（`limits.max_viewers`。ノードごと）。
     pub viewers: Arc<crate::viewers::Viewers>,
+    /// 利用者のログイン（セッション・OIDC。ADR-0017）。
+    pub auth: crate::auth::AuthRuntime,
 }
 
 /// 再生（RTMP・SRT・RTSP の play、WHEP）を始められない理由。
@@ -94,9 +96,11 @@ impl App {
         node_id: String,
         codec: Option<Arc<crate::codec::CodecService>>,
         secret_box: crate::secrets::SecretBox,
+        auth: crate::auth::AuthRuntime,
     ) -> Arc<App> {
         let limits = crate::ratelimit::RateLimits::from_config(&cfg);
         let app = Arc::new(App {
+            auth,
             limits,
             cfg,
             node_id,
@@ -134,7 +138,7 @@ impl App {
         app
     }
 
-    fn arc(&self) -> Arc<App> {
+    pub(crate) fn arc(&self) -> Arc<App> {
         self.me.lock().unwrap().upgrade().expect("app alive")
     }
 
@@ -160,14 +164,30 @@ impl App {
 
     /// 監査ログ（仕様 9.5）。秘密・本文は書かない。
     pub fn audit(&self, ctx: &Ctx, action: &str, resource: &str) {
-        let line = json!({
-            "ts": crate::util::rfc3339(ctx.now_ms),
-            "tenant": ctx.principal.tenant,
-            "subject": ctx.principal.subject,
+        self.audit_entry(ctx.now_ms, &ctx.principal.tenant, &ctx.principal.subject, action, resource, &ctx.req.request_id, Value::Null);
+    }
+
+    /// 監査ログに付け足す項目つき（ログインの結果・方法・送り元など。パスワード・コード・トークンは入れない）。
+    pub fn audit_with(&self, ctx: &Ctx, action: &str, resource: &str, extra: Value) {
+        self.audit_entry(ctx.now_ms, &ctx.principal.tenant, &ctx.principal.subject, action, resource, &ctx.req.request_id, extra);
+    }
+
+    /// 監査ログの 1 行（主体がまだ決まっていない要求・ログインの記録にも使う）。
+    #[allow(clippy::too_many_arguments)]
+    pub fn audit_entry(&self, now_ms: i64, tenant: &str, subject: &str, action: &str, resource: &str, request_id: &str, extra: Value) {
+        let mut line = json!({
+            "ts": crate::util::rfc3339(now_ms),
+            "tenant": tenant,
+            "subject": subject,
             "action": action,
             "resource": resource,
-            "request_id": ctx.req.request_id,
+            "request_id": request_id,
         });
+        if let (Value::Object(m), Value::Object(x)) = (&mut line, extra) {
+            for (k, v) in x {
+                m.entry(k).or_insert(v);
+            }
+        }
         let path = self.cfg.data_dir.join("audit.log");
         let r = std::fs::OpenOptions::new().create(true).append(true).open(&path).and_then(|mut f| {
             use std::io::Write;

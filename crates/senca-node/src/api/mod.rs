@@ -6,7 +6,10 @@
 //! - 更新は `If-Match` 必須（428）、古ければ 412。ETag は `"{generation}"`。
 //! - 一覧は `limit`（既定 100、最大 1000）と `cursor`。
 //! - エラーは problem+json。`X-Request-Id` を返す。
+//! - 認証なしで使えるのはログインの経路だけ（[`public_route`]）。先に済ませることのあるセッション（仮のパスワード・
+//!   MFA の登録）は、[`pending_allowed`] の経路しか使えない（403、`details.pending`）。
 
+pub mod auth;
 pub mod io;
 pub mod media_pipelines;
 pub mod pipelines;
@@ -17,11 +20,12 @@ pub mod schedules;
 pub mod streams;
 pub mod system;
 pub mod tokens;
+pub mod users;
 
 use crate::app::App;
 use crate::control::ControlCore;
 use bytes::Bytes;
-use senca_control::auth::{self, Principal, Scope};
+use senca_control::auth::{self as cauth, Principal, Scope};
 use senca_control::model::IdempotencyRecord;
 use senca_control::state::Command;
 use senca_control::{Problem, ProblemCode};
@@ -257,8 +261,51 @@ pub fn handle(app: &App, req: ApiRequest) -> ApiResponse {
     resp
 }
 
+/// 認証なしで使える経路（ログイン）。
+pub fn public_route(method: &str, path: &str) -> bool {
+    let Some(segs) = segments(path) else { return false };
+    matches!(
+        (method, segs.as_slice()),
+        ("GET", ["auth", "providers"])
+            | ("POST", ["auth", "login"])
+            | ("POST", ["auth", "login", "mfa"])
+            | ("POST", ["auth", "exchange"])
+            | ("GET", ["auth", "oidc", _, "start"])
+            | ("GET", ["auth", "oidc", _, "callback"])
+    )
+}
+
+/// 先に済ませることのあるセッションで使える経路（自分の情報・ログアウト・パスワードの変更・MFA の登録・セッション）。
+fn pending_allowed(method: &str, path: &str) -> bool {
+    let Some(segs) = segments(path) else { return false };
+    matches!(
+        (method, segs.as_slice()),
+        ("GET", ["auth", "me"])
+            | ("POST", ["auth", "logout"])
+            | ("POST", ["auth", "password"])
+            | ("POST", ["auth", "mfa", "totp", "setup"])
+            | ("POST", ["auth", "mfa", "totp", "confirm"])
+            | ("GET", ["auth", "sessions"])
+            | ("DELETE", ["auth", "sessions", _])
+    )
+}
+
 fn handle_inner(app: &App, req: &ApiRequest, now_ms: i64) -> ApiResult {
+    if public_route(&req.method, &req.path) {
+        // 主体は無い（テナントも無い）。Idempotency-Key は使わない（ログインは毎回やり直す）
+        let principal = Principal { tenant: String::new(), subject: "anonymous".into(), scopes: Default::default(), token_id: None, session: None };
+        return route(&Ctx { app, req, principal, now_ms });
+    }
     let principal = authenticate(app, req.header("authorization"), &req.peer_ip, &req.request_id, now_ms)?;
+    if let Some(s) = &principal.session
+        && !s.pending.is_empty()
+        && !pending_allowed(&req.method, &req.path)
+    {
+        let pending: Vec<&str> = s.pending.iter().map(|p| p.as_str()).collect();
+        return Err(Problem::new(ProblemCode::Forbidden, "先にパスワードの変更・MFA の登録を済ませてください")
+            .with_details(json!({ "reason": "pending", "pending": pending })));
+    }
+    crate::auth::touch(app, &principal, now_ms);
     // 主体ごとの量の上限（テナント＋主体。同じトークンを複数の IP から使っても同じバケット）
     if let Err(w) = app.limits.principal.take(&format!("{}\u{0}{}", principal.tenant, principal.subject), std::time::Instant::now()) {
         return Err(Problem::rate_limited("token", crate::ratelimit::retry_after_secs(w)));
@@ -279,10 +326,22 @@ pub fn authenticate(app: &App, header: Option<&str>, peer_ip: &str, request_id: 
     if let Some(w) = app.limits.auth_failures.exhausted(peer_ip, now) {
         return Err(Problem::rate_limited("auth_failures", crate::ratelimit::retry_after_secs(w)));
     }
-    let principal = {
+    let require_mfa = app.cfg.auth_require_mfa;
+    let mut principal = {
         let core = app.control.lock().unwrap_or_else(|e| e.into_inner());
-        auth::authenticate(header, &core.state, core.jwt.as_ref(), now_ms)
+        cauth::authenticate(header, &core.state, core.jwt.as_ref(), now_ms, require_mfa)
     };
+    // 分散: 別のノードで作ったばかりのセッションが、まだこのノードに届いていないことがある（少しだけ待つ）
+    if matches!(principal, Err(cauth::AuthError::Session))
+        && app.cluster.get().is_some()
+        && let Some(v) = header.and_then(|h| h.split_once(' ')).map(|(_, v)| v.trim())
+    {
+        let h = senca_control::secret::hash(v);
+        if crate::auth::wait_state(app, std::time::Duration::from_millis(1500), |st| st.sessions.contains_key(&h)) {
+            let core = app.control.lock().unwrap_or_else(|e| e.into_inner());
+            principal = cauth::authenticate(header, &core.state, core.jwt.as_ref(), now_ms, require_mfa);
+        }
+    }
     principal.map_err(|e| {
         app.log(&format!("auth failed: {e} request_id={request_id}"));
         let _ = app.limits.auth_failures.take(peer_ip, now);
@@ -373,7 +432,7 @@ fn redact_secrets(body: &Bytes) -> Bytes {
     fn walk(v: &mut Value) {
         match v {
             Value::Object(m) => {
-                for k in ["stream_key", "token", "secret"] {
+                for k in ["stream_key", "token", "secret", "temporary_password", "recovery_codes", "otpauth_uri", "enrollment_token", "mfa_token"] {
                     if m.get(k).is_some_and(|x| !x.is_null()) {
                         m.insert(k.into(), Value::Null);
                         m.insert(format!("{k}_redacted"), Value::Bool(true));
@@ -490,6 +549,32 @@ fn route(ctx: &Ctx) -> ApiResult {
         ("GET", ["pipelines", id, "snapshots", sid]) => pipelines::snapshot_get(ctx, id, sid),
         ("DELETE", ["pipelines", id, "snapshots", sid]) => pipelines::snapshot_delete(ctx, id, sid),
 
+        ("GET", ["auth", "providers"]) => auth::providers(ctx),
+        ("POST", ["auth", "login"]) => auth::login(ctx),
+        ("POST", ["auth", "login", "mfa"]) => auth::login_mfa(ctx),
+        ("POST", ["auth", "exchange"]) => auth::exchange(ctx),
+        ("GET", ["auth", "oidc", provider, "start"]) => auth::oidc_start(ctx, provider),
+        ("GET", ["auth", "oidc", provider, "callback"]) => auth::oidc_callback(ctx, provider),
+        ("GET", ["auth", "me"]) => auth::me(ctx),
+        ("POST", ["auth", "logout"]) => auth::logout(ctx),
+        ("POST", ["auth", "password"]) => auth::change_password(ctx),
+        ("POST", ["auth", "mfa", "totp", "setup"]) => auth::mfa_setup(ctx),
+        ("POST", ["auth", "mfa", "totp", "confirm"]) => auth::mfa_confirm(ctx),
+        ("POST", ["auth", "mfa", "disable"]) => auth::mfa_disable(ctx),
+        ("POST", ["auth", "mfa", "recovery-codes"]) => auth::mfa_recovery_codes(ctx),
+        ("GET", ["auth", "sessions"]) => auth::sessions(ctx),
+        ("DELETE", ["auth", "sessions", id]) => auth::revoke_session(ctx, id),
+
+        ("POST", ["users"]) => users::create(ctx),
+        ("GET", ["users"]) => users::list(ctx),
+        ("GET", ["users", id]) => users::get(ctx, id),
+        ("PATCH", ["users", id]) => users::patch(ctx, id),
+        ("DELETE", ["users", id]) => users::delete(ctx, id),
+        ("POST", ["users", id, "password"]) => users::reset_password(ctx, id),
+        ("DELETE", ["users", id, "mfa"]) => users::reset_mfa(ctx, id),
+        ("GET", ["users", id, "sessions"]) => users::sessions(ctx, id),
+        ("DELETE", ["users", id, "sessions"]) => users::revoke_sessions(ctx, id),
+
         ("POST", ["tokens"]) => tokens::create(ctx),
         ("GET", ["tokens"]) => tokens::list(ctx),
         ("GET", ["tokens", id]) => tokens::get(ctx, id),
@@ -499,6 +584,8 @@ fn route(ctx: &Ctx) -> ApiResult {
             _,
             ["capabilities"] | ["nodes", ..] | ["devices"] | ["events"] | ["streams", ..] | ["recordings", ..] | ["schedules", ..]
             | ["tokens", ..]
+            | ["auth", ..]
+            | ["users", ..]
             | ["inputs", ..]
             | ["outputs", ..]
             | ["secrets", ..]
@@ -535,6 +622,19 @@ mod tests {
         let (c, n) = paginate(items, 2, n.as_deref());
         assert_eq!(c, vec![4]);
         assert_eq!(n, None);
+    }
+
+    #[test]
+    fn public_and_pending_routes() {
+        assert!(public_route("POST", "/auth/login"));
+        assert!(public_route("GET", "/auth/oidc/google/callback"));
+        assert!(!public_route("GET", "/auth/me"));
+        assert!(!public_route("POST", "/auth/providers"));
+        assert!(!public_route("GET", "/auth/oidc//start"));
+        assert!(!public_route("GET", "/users"));
+        assert!(pending_allowed("POST", "/auth/password"));
+        assert!(!pending_allowed("GET", "/streams"));
+        assert!(!pending_allowed("POST", "/auth/mfa/disable"));
     }
 
     #[test]

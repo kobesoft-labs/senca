@@ -3,6 +3,7 @@
 mod api;
 mod app;
 mod archive;
+mod auth;
 mod capture;
 mod captions;
 mod cascade;
@@ -22,6 +23,7 @@ mod io;
 mod live;
 mod media;
 mod moq;
+mod oidc;
 mod packager;
 mod paas;
 mod pipelines;
@@ -65,6 +67,10 @@ fn main() {
     // コンテナのヘルスチェック: `senca-node --healthcheck http://127.0.0.1:8080/readyz`
     if args.first().map(String::as_str) == Some("--healthcheck") {
         std::process::exit(healthcheck(args.get(1).map(String::as_str).unwrap_or("http://127.0.0.1:8080/readyz")));
+    }
+    // 管理者のパスワードの回復: `senca-node reset-password --username NAME ...`（動いているノードの API を呼ぶ）
+    if args.first().map(String::as_str) == Some("reset-password") {
+        std::process::exit(reset_password(&args[1..]));
     }
     if args.iter().any(|a| a == "--help" || a == "-h") {
         println!("{}", config::USAGE);
@@ -132,8 +138,12 @@ async fn run(cfg: Config) -> Result<(), String> {
     } else {
         ControlCore::with_event_log(state, Some(store), jwt, retain)
     };
+    let recovery_token = std::env::args().any(|a| a == "--recovery-admin-token");
     if !clustered {
         bootstrap(&cfg, &mut core, &node_id)?;
+        if recovery_token {
+            issue_recovery_token(&cfg, |t| core.propose(Command::CreateToken { token: t }))?;
+        }
     }
     let codec = match codec::CodecService::start(&cfg).await {
         Ok(c) => Some(Arc::new(c)),
@@ -158,7 +168,8 @@ async fn run(cfg: Config) -> Result<(), String> {
         // 分散: 秘密値はクラスタ共通のデータ鍵で封じる（合言葉から導いた鍵で包んで複製する）
         secret_box = secret_box.with_cluster_secret(s);
     }
-    let app = App::new(cfg.clone(), core, node_id, codec, secret_box);
+    let auth = auth::AuthRuntime::new(&cfg)?;
+    let app = App::new(cfg.clone(), core, node_id, codec, secret_box, auth);
     // 録画の保存先（S3 互換）。資格情報が読めなければ起動しない
     if let Some(st) = storage::Storage::from_config(&cfg.recording_storage)? {
         app.log(&format!("recording storage: {} ({}://{})", st.uri(), st.client.endpoint.scheme(), st.client.endpoint.host));
@@ -175,7 +186,14 @@ async fn run(cfg: Config) -> Result<(), String> {
         let a = app.clone();
         let cc = cc.clone();
         let nid = a.node_id.clone();
-        tokio::task::spawn_blocking(move || cluster_bootstrap(&a, &cc, &nid));
+        tokio::task::spawn_blocking(move || {
+            cluster_bootstrap(&a, &cc, &nid);
+            if recovery_token
+                && let Err(e) = issue_recovery_token(&a.cfg, |t| a.propose(Command::CreateToken { token: t }))
+            {
+                a.log(&format!("recovery admin token: {e}"));
+            }
+        });
     }
     grid::start(&app);
     mediapipes::start(&app);
@@ -299,6 +317,15 @@ async fn run(cfg: Config) -> Result<(), String> {
                     let a = app.clone();
                     let _ = tokio::task::spawn_blocking(move || a.propose(Command::ExpireIdempotency { before_ms: now - senca_control::state::IDEMPOTENCY_TTL_MS })).await;
                 }
+                // 期限の切れたログインのセッション・一度きりのコード
+                let expired = {
+                    let st = &app.control.lock().unwrap().state;
+                    st.sessions.values().any(|s| s.expired(now)) || st.login_codes.values().any(|c| c.expires_at_ms <= now)
+                };
+                if expired {
+                    let a = app.clone();
+                    let _ = tokio::task::spawn_blocking(move || a.propose(Command::ExpireSessions { now_ms: now })).await;
+                }
             }
         });
     }
@@ -371,6 +398,104 @@ fn bootstrap(cfg: &Config, core: &mut ControlCore, node_id: &str) -> Result<(), 
         util::log(&format!("created the first admin token in {} (mode 0600)", path.display()));
     }
     Ok(())
+}
+
+/// `--recovery-admin-token`: 管理者のトークン（`tenant:admin`・`node:admin`、テナント `default`）をもう 1 つ作り、
+/// `control/recovery-admin-token`（0600）に書く。ファイルがすでにあれば作らない（起動のたびに増やさない）。
+/// データ置き場を書き換えられる者はもともとすべてを読めるので、この権限は増えない（ADR-0017）。
+fn issue_recovery_token(cfg: &Config, propose: impl FnOnce(ApiToken) -> Result<(), senca_control::Problem>) -> Result<(), String> {
+    let path = cfg.data_dir.join("control").join("recovery-admin-token");
+    if path.exists() {
+        return Err(format!("{} があります（使い終わったら消してください）。新しいトークンは作りません", path.display()));
+    }
+    let value = senca_control::secret::generate(senca_control::auth::TOKEN_PREFIX).map_err(|e| e.to_string())?;
+    let mut scopes = std::collections::BTreeSet::new();
+    scopes.insert(Scope::TenantAdmin);
+    scopes.insert(Scope::NodeAdmin);
+    let t = ApiToken {
+        id: senca_core::Id128::random().map_err(|e| e.to_string())?.to_string(),
+        tenant: "default".into(),
+        name: "recovery-admin".into(),
+        hash: senca_control::secret::hash(value.expose()),
+        scopes,
+        created_at_ms: util::now_ms(),
+        // 回復のためだけ: 1 日で切れる
+        expires_at_ms: Some(util::now_ms() + 86_400_000),
+    };
+    {
+        use std::io::Write;
+        use std::os::unix::fs::OpenOptionsExt;
+        let mut f = std::fs::OpenOptions::new()
+            .write(true)
+            .create_new(true)
+            .mode(0o600)
+            .open(&path)
+            .map_err(|e| format!("{}: {e}", path.display()))?;
+        f.write_all(value.expose().as_bytes()).and_then(|_| f.sync_all()).map_err(|e| e.to_string())?;
+    }
+    if let Err(e) = propose(t) {
+        let _ = std::fs::remove_file(&path);
+        return Err(e.to_string());
+    }
+    util::log(&format!("created a recovery admin token in {} (mode 0600, expires in 24 h)", path.display()));
+    Ok(())
+}
+
+/// `senca-node reset-password`: 動いているノードの管理 API（既定は http://127.0.0.1:8080）を、管理者のトークンの
+/// ファイル（既定は `out/control/bootstrap-admin-token`、無ければ `recovery-admin-token`）で呼び、利用者の
+/// パスワードを仮のものにする（次のログインで変更を求める。MFA も外す）。`--create-admin` なら、いなければ管理者として作る。
+fn reset_password(args: &[String]) -> i32 {
+    let mut api = "http://127.0.0.1:8080".to_string();
+    let mut token_file: Option<String> = None;
+    let mut data_dir = "out".to_string();
+    let mut username = None;
+    let mut create = false;
+    let mut i = 0;
+    while i < args.len() {
+        let v = args.get(i + 1).cloned();
+        match args[i].as_str() {
+            "--api" => api = v.unwrap_or_default(),
+            "--token-file" => token_file = v,
+            "--data-dir" => data_dir = v.unwrap_or_default(),
+            "--username" => username = v,
+            "--create-admin" => {
+                create = true;
+                i += 1;
+                continue;
+            }
+            a => {
+                eprintln!("unknown argument: {a}\n{}", config::USAGE);
+                return 2;
+            }
+        }
+        i += 2;
+    }
+    let Some(username) = username else {
+        eprintln!("--username が要ります");
+        return 2;
+    };
+    let token_file = token_file.unwrap_or_else(|| {
+        let b = format!("{data_dir}/control/bootstrap-admin-token");
+        if std::path::Path::new(&b).exists() { b } else { format!("{data_dir}/control/recovery-admin-token") }
+    });
+    let token = match std::fs::read_to_string(&token_file) {
+        Ok(t) => t.trim().to_string(),
+        Err(e) => {
+            eprintln!("{token_file}: {e}（--token-file で管理者のトークンのファイルを渡すか、ノードを --recovery-admin-token で起動してください）");
+            return 1;
+        }
+    };
+    match util::reset_password_via_api(&api, &token, &username, create) {
+        Ok(pw) => {
+            println!("temporary password for {username}: {pw}");
+            println!("（次のログインで変更を求めます。このパスワードは再表示できません）");
+            0
+        }
+        Err(e) => {
+            eprintln!("reset-password: {e}");
+            1
+        }
+    }
 }
 
 /// ループバックへの平文 HTTP で 200 が返れば 0。
