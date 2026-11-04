@@ -3133,6 +3133,12 @@ impl ForwardingFilterAction {
 pub struct RoomSettings {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub audio_codec: Option<RoomSettingsAudioCodec>,
+    /// この部屋の認証 Webhook の URL（`http://`・`https://`）。ノードの `--rooms-auth-webhook` より優先します。署名のシークレットはノードの設定のものです。無ければ応答から省きます
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub auth_webhook_url: Option<String>,
+    /// カスケード。true なら、部屋を配置したノード（home）以外のノードにつないだ参加者も、そのノード（edge）で受け付けます（ノード間の中継で home とつなぎます）。false なら配置先へ redirect します。false のときは応答から省きます
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub cascade: Option<bool>,
     /// 使用を許可する DataChannel のラベルのパターン（`#` で始まります。末尾の `*` は前方一致）
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub data_labels: Option<Vec<String>>,

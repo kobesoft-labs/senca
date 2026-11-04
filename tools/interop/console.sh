@@ -331,6 +331,72 @@ t('design tokens: text/background pairs meet WCAG AA in light and dark', () => {
   }
   assert.deepEqual(bad, []);
 });
+// ==== リアルタイム（ルーム・メディアパイプライン）: ここから ====
+const rt = await import(D + '/lib/realtime.js');
+t('realtime: room state, feature badges and settings merge patch', () => {
+  const placed = { placement_status: { state: 'running' } };
+  assert.equal(rt.roomState(placed, 3), 'active'); assert.equal(rt.roomState(placed, 0), 'empty'); assert.equal(rt.roomState(placed, null), 'unknown');
+  assert.equal(rt.roomState({ placement_status: { state: 'pending' } }, 0), 'pending');
+  assert.equal(rt.roomState({ placement_status: { state: 'unschedulable', reasons: [] } }, null), 'unschedulable');
+  assert.deepEqual(rt.roomFeatures({ e2ee: true, cascade: true, recording: 'per_participant', spotlight: { number: 2 } }), ['e2ee', 'cascade', 'spotlight', 'recording.per_participant']);
+  assert.deepEqual(rt.roomFeatures({ recording: 'none' }), []);
+  const cur = { max_participants: 50, video_codec: 'vp8', spotlight: { number: 2, unfocused: 'lowest' }, data_labels: ['#*'] };
+  assert.equal(rt.settingsPatch(cur, { ...cur }), null);
+  assert.deepEqual(rt.settingsPatch(cur, { max_participants: 10, video_codec: 'vp8', data_labels: ['#*'] }), { max_participants: 10, spotlight: null });
+  assert.ok(rt.ROOM_ID_RE.test('team:a@b.c-1')); assert.ok(!rt.ROOM_ID_RE.test('bad id'));
+});
+t('realtime: participant tracks (codec, layers in rid order, resolution from client stats), loss, totals', () => {
+  const room = { settings: { video_codec: 'vp9' } };
+  const p = { connection_id: 'c1', client_id: 'alice', metadata: { name: 'Alice' }, tracks: [{ track_id: 'c1.0', kind: 'audio' }, { track_id: 'c1.1', kind: 'video', rids: ['r0', 'r1', 'r2'] }] };
+  const st = { connection_id: 'c1', send_bitrate_bps: 500, published: [{ track_id: 'c1.0', kind: 'audio', layers: [{ rid: null, bitrate_bps: 24000 }] }, { track_id: 'c1.1', kind: 'video', layers: [{ rid: 'r2', bitrate_bps: 700 }, { rid: 'r0', bitrate_bps: 100 }, { rid: 'r1', bitrate_bps: 300 }] }],
+    client: { outbound: [{ kind: 'video', rid: 'r0', width: 320, height: 180, fps: 30 }, { kind: 'video', rid: 'r2', width: 1280, height: 720, fps: 30 }], inbound: [{ kind: 'video', lost: 2 }, { kind: 'audio', lost: 1 }] } };
+  const [a, v] = rt.trackSummary(p, st, room);
+  assert.equal(a.codec, 'opus'); assert.equal(a.bitrate_bps, 24000);
+  assert.equal(v.codec, 'vp9'); assert.deepEqual(v.layers.map((l) => l.rid), ['r0', 'r1', 'r2']); assert.equal(v.bitrate_bps, 1100);
+  assert.equal(v.width, 1280); assert.equal(v.height, 720);
+  assert.equal(rt.trackSummary(p, null, room)[1].bitrate_bps, null);
+  assert.equal(rt.packetsLost(st), 3); assert.equal(rt.packetsLost({}), null);
+  assert.deepEqual(rt.roomTotals({ participants: [st] }), { inBps: 25100, outBps: 500 });
+  assert.equal(rt.participantName(p), 'Alice'); assert.equal(rt.participantName({ connection_id: 'abcdefghijklmn' }), 'abcdefgh…');
+});
+t('realtime: join token body, SDK snippet and curl', () => {
+  assert.deepEqual(rt.tokenBody({ role: 'sendrecv', clientId: ' alice ', name: 'Alice', ttl: 3600 }), { role: 'sendrecv', ttl_secs: 3600, client_id: 'alice', metadata: { name: 'Alice' } });
+  assert.deepEqual(rt.tokenBody({ role: 'recvonly', publish: [], subscribe: true }).permissions, { publish: [], subscribe: true, data: ['#*'] });
+  const js = rt.sdkSnippet({ url: 'ws://h/signaling', room: 'r1', token: 'eyJ.x.y', role: 'recvonly' });
+  assert.match(js, /room: "r1"/); assert.match(js, /token: "eyJ\.x\.y"/); assert.ok(!/getUserMedia/.test(js));
+  assert.match(rt.tokenCurl({ apiBase: 'http://h/api/v1', room: 'a b', body: { role: 'sendrecv' } }), /rooms\/a%20b\/tokens/);
+  assert.equal(rt.signalingUrl(null, { protocol: 'https:', host: 'n:8443' }), 'wss://n:8443/signaling');
+  assert.equal(rt.signalingUrl('ws://x/signaling'), 'ws://x/signaling');
+});
+t('realtime: media pipeline body, checks and products per use case', () => {
+  assert.equal(rt.pipelineName('team room/1', 'record'), 'team-room-1-record');
+  assert.ok(rt.pipelineName('x'.repeat(80), 'broadcast').length <= 40);
+  const rec = rt.pipelineBody({ name: 'r', room: 'm', ...rt.useCaseDefaults('record') });
+  assert.deepEqual(rec, { name: 'r', room: 'm', recording: { participants: true, composite: false } });
+  const bc = rt.pipelineBody({ name: 'b', room: 'm', ...rt.useCaseDefaults('broadcast'), egress: [{ protocol: 'rtmp_push', url: ' rtmp://h/app ', credential_ref: 'secret:k' }] });
+  assert.equal(bc.composite.video_codec, 'av1'); assert.deepEqual(bc.egress, [{ protocol: 'rtmp_push', url: 'rtmp://h/app', credential_ref: 'secret:k' }]);
+  assert.deepEqual(rt.pipelineProblems(bc, { settings: { e2ee: false } }), []);
+  assert.deepEqual(rt.pipelineProblems(bc, { settings: { e2ee: true } }), ['e2ee']);
+  assert.ok(rt.pipelineProblems({ name: '.x', room: 'm', egress: [{ protocol: 'rtmp_push', url: 'rtmp://h' }] }).includes('egressNeedsComposite'));
+  assert.deepEqual(rt.pipelineProducts(bc).map((p) => p.kind), ['participantStreams', 'composite', 'egress']);
+  assert.equal(rt.pipelineUse(bc), 'broadcast'); assert.equal(rt.pipelineUse(rec), 'record');
+  assert.equal(rt.pipelineState({ desired_state: 'running', status: null }), 'waiting');
+  assert.equal(rt.pipelineState({ desired_state: 'running', status: { participants: [{}] } }), 'running');
+  assert.equal(rt.pipelineState({ desired_state: 'stopped', status: null }), 'stopped');
+});
+t('realtime: room events become timeline lines', () => {
+  const names = new Map([['c1', 'Alice']]);
+  const nameOf = (c, cl) => names.get(c) || cl || c;
+  const j = rt.roomEventItem({ type: 'room.connection.created', data: { resource_id: 'r', occurred_at: '2026-11-03T10:00:00Z', data: { participant: { connection_id: 'c2', metadata: { name: 'Bob' } } } } }, nameOf);
+  assert.equal(j.key, 'rooms.ev.joined'); assert.equal(j.params.who, 'Bob'); assert.equal(j.at, '2026-11-03T10:00:00Z');
+  const k = rt.roomEventItem({ type: 'room.connection.destroyed', data: { data: { connection_id: 'c1', reason: 'kicked', duration_ms: 61000 } } }, nameOf);
+  assert.equal(k.params.who, 'Alice'); assert.equal(k.tone, 'warn');
+  assert.equal(rt.roomEventItem({ type: 'room.track.published', data: { data: { track: { connection_id: 'c1', kind: 'video', rids: ['r0', 'r1'] } } } }, nameOf).params.layers, 2);
+  assert.equal(rt.roomEventItem({ type: 'stream.updated', data: {} }), null);
+  const i18n2 = i18n.DICTS.ja;
+  for (const key of ['rooms.ev.joined', 'rooms.ev.left', 'rooms.ev.updated', 'rooms.ev.pubVideo', 'rooms.ev.pubAudio', 'rooms.ev.unpub', 'rooms.ev.spotlight', 'rooms.ev.started', 'rooms.ev.stopped', 'rooms.ev.settings']) assert.ok(key in i18n2, key);
+});
+// ==== リアルタイム: ここまで ====
 console.log(res.join('\n'));
 EOF
 while read -r line; do case "$line" in PASS*) pass "${line#PASS }";; FAIL*) fail "${line#FAIL }";; esac; done < <(node "$W/unit.mjs" 2>&1 || echo "FAIL C unit runner crashed")
@@ -417,6 +483,9 @@ const EXPECTED_FAIL = [
   [/400/, /\/api\/v1\/inputs\/[^/?]+$/], // URL に資格情報を入れた入力の変更
   [/400|503/, /\/api\/v1\/pipelines\/[^/]+\/validate$/], // 方針に反するグラフの検証
   [/422/, /\/whep\/[^/?]+/], // まだ配信していない出力の WHEP（HLS に戻す）
+  // ==== リアルタイム: 作成直後でまだ開いていないルームの参加者・統計、削除した直後のルーム ====
+  [/40[49]|503/, /\/api\/v1\/rooms\/[^/]+\/(participants|stats)(\?|$)/],
+  [/404/, /\/api\/v1\/rooms\/[^/?]+$/],
 ];
 
 (async () => {
@@ -1300,6 +1369,167 @@ const EXPECTED_FAIL = [
     check('style guide renders in English with no missing keys', missingEn.length === 0, missingEn.join(', '));
   });
 
+  // ==== リアルタイム（ルーム・メディアパイプライン）: ここから ====
+  // ルームを作る → 参加トークン → このブラウザと別のタブ（Chrome の偽のカメラ）で参加し、詳細に生で出る・映像が届く
+  // → メッセージ → 退出させる → ルームからメディアパイプライン（録画）を作る → パレット・J/K → 狭い画面 → 削除。
+  const RT_ROOM = 'console-room';
+  await step('rooms: create room', async () => {
+    await page.goto(`${base}/console/#/rooms`);
+    await page.getByRole('heading', { name: 'ルーム', level: 1 }).waitFor();
+    await page.locator('[data-testid="rooms-empty"], [data-testid="rooms-table"]').first().waitFor({ timeout: 10000 });
+    const emptyFirst = await page.getByTestId('rooms-empty').count();
+    await page.getByTestId('rooms-create').click();
+    await page.getByTestId('room-create-dialog').waitFor();
+    await page.getByTestId('room-id').fill('bad id');
+    await page.getByTestId('room-create-submit').click();
+    const inlineErr = await page.getByTestId('room-id').getAttribute('aria-invalid');
+    await page.getByTestId('room-id').fill(RT_ROOM);
+    await page.getByTestId('room-title').fill('試験のルーム');
+    await page.getByTestId('room-max').fill('8');
+    await page.getByTestId('room-create-submit').click();
+    await page.getByTestId('participants-panel').waitFor({ timeout: 10000 });
+    await page.getByRole('heading', { name: '試験のルーム', level: 1 }).waitFor();
+    const r = await waitApi(`/rooms/${RT_ROOM}`, (b) => b && b.settings && b.settings.max_participants === 8, 5000);
+    await page.getByTestId('participants-empty').waitFor({ timeout: 15000 });
+    check('rooms: empty list teaches, create dialog validates inline, room is created with settings and opens its page', emptyFirst === 1 && inlineErr === 'true' && r.metadata.title === '試験のルーム', `${emptyFirst} ${inlineErr}`);
+    await shot('30-room-created');
+  });
+  let rtPeer = null;
+  await step('rooms: issue join token', async () => {
+    await page.getByTestId('room-issue-token').click();
+    await page.getByTestId('token-dialog').waitFor();
+    await page.getByTestId('token-name').fill('Guest');
+    await page.getByTestId('token-client-id').fill('guest-1');
+    await page.getByTestId('token-issue').click();
+    await page.getByTestId('token-result').waitFor();
+    const tok = await page.getByTestId('token-value').inputValue();
+    const sig = await page.getByTestId('token-signaling').inputValue();
+    const sdk = await page.getByTestId('token-sdk').textContent();
+    const claims = JSON.parse(Buffer.from(tok.split('.')[1], 'base64url').toString());
+    await page.keyboard.press('Escape');
+    check('rooms: join token issued (JWT for the room with client_id), signaling URL and SDK snippet with the token', claims.room === RT_ROOM && claims.client_id === 'guest-1' && /^wss?:\/\/.*\/signaling$/.test(sig) && sdk.includes(tok) && sdk.includes(RT_ROOM), `${JSON.stringify(claims).slice(0, 200)} ${sig}`);
+  });
+  await step('rooms: participants join from the browser and appear live', async () => {
+    // 別のタブ: Alice として参加
+    rtPeer = await ctx.newPage();
+    rtPeer.on('pageerror', (e) => errors.push(`peer pageerror: ${e.message}`));
+    await rtPeer.addInitScript((tok) => sessionStorage.setItem('senca.console.token', tok), token); // sessionStorage はタブごと
+    await rtPeer.goto(`${base}/console/#/rooms/${RT_ROOM}`);
+    await rtPeer.getByTestId('join-name').fill('Alice');
+    await rtPeer.getByTestId('join-start').click();
+    await rtPeer.locator('[data-testid="join-status"][data-state="joined"]').waitFor({ timeout: 30000 });
+    // この画面に Alice が出る（3 秒ごとの読み直し・SSE）
+    await page.locator('[data-testid="participants-list"] [data-name="Alice"]').waitFor({ timeout: 15000 });
+    // このブラウザでも参加 → Alice のタブに映像が届く
+    await page.getByTestId('join-start').click();
+    await page.locator('[data-testid="join-status"][data-state="joined"]').waitFor({ timeout: 30000 });
+    await rtPeer.locator('[data-testid="join-remote"].has-video').waitFor({ timeout: 20000 });
+    const playing = await rtPeer.locator('[data-testid="join-remote"] video').first().evaluate((v) => new Promise((res) => { const t0 = v.currentTime; setTimeout(() => res(v.currentTime > t0 && v.videoWidth > 0), 1500); }));
+    await page.locator('[data-testid="participants-list"] li.pcard').nth(1).waitFor({ timeout: 15000 });
+    await page.locator('[data-testid="participants-list"] li.pcard.self').waitFor({ timeout: 10000 });
+    await page.locator('[data-testid="participants-list"] [data-testid="layer-rates"]').first().waitFor({ timeout: 15000 });
+    const tile = await page.getByTestId('room-tile-participants').locator('.stat-value').textContent();
+    const ev = await page.locator('[data-testid="room-events"] .timeline-item').count();
+    check('rooms: two participants live on the detail page (this browser marked, simulcast layers with bitrates), remote video plays, activity timeline fills', playing && tile.trim() === '2' && ev >= 2, `${playing} ${tile} ${ev}`);
+    await shot('31-room-live');
+  });
+  await step('rooms: send app message', async () => {
+    await page.getByTestId('room-message').click();
+    await page.getByTestId('msg-dialog').waitFor();
+    await page.getByTestId('msg-data').fill('{"notice":"hello"}');
+    await page.getByTestId('msg-send').click();
+    await toastText(/2 人に届けました/);
+    check('rooms: app message delivered to both participants (POST /rooms/{id}/messages)', true);
+    await clearToasts();
+  });
+  await step('rooms: kick participant', async () => {
+    const card = page.locator('[data-testid="participants-list"] [data-name="Alice"]');
+    await card.locator('[data-testid^="p-kick-"]').click();
+    await page.getByTestId('kick-dialog').waitFor();
+    await page.getByTestId('confirm-ok').click();
+    await card.waitFor({ state: 'detached', timeout: 15000 });
+    await rtPeer.locator('[data-testid="join-status"][data-state="error"]').waitFor({ timeout: 15000 });
+    const why = await rtPeer.getByTestId('join-status').textContent();
+    await page.locator('[data-testid="room-events"] .timeline-item.warn').first().waitFor({ timeout: 10000 });
+    check('rooms: kick (confirm) disconnects the participant, their tab shows the reason, the timeline records it', /kicked/.test(why), why);
+    await rtPeer.close();
+    rtPeer = null;
+  });
+  await step('rooms: media pipeline from the room', async () => {
+    await page.locator('[data-testid="room-mps"] [data-testid="use-record"]').click();
+    await page.getByTestId('mp-new-summary').waitFor();
+    const room = await page.getByTestId('mp-new-room').inputValue();
+    const selected = await page.getByTestId('use-record').getAttribute('aria-checked');
+    const name = await page.getByTestId('mp-new-name').inputValue();
+    await page.getByTestId('mp-new-create').click();
+    await page.getByTestId('mp-created').waitFor({ timeout: 10000 });
+    const list = await waitApi(`/media-pipelines?room=${RT_ROOM}`, (b) => b && b.items && b.items.length === 1, 5000);
+    const mp = list.items[0];
+    await page.getByTestId('mp-state').waitFor();
+    await page.goto(`${base}/console/#/media-pipelines`);
+    await page.getByTestId('mp-table').waitFor();
+    const row = await page.locator(`[data-testid="mp-table"] tr[data-key="${mp.id}"]`).count();
+    check('media pipelines: "record this room" opens the guided form prefilled, creates the pipeline and lists it', room === RT_ROOM && selected === 'true' && name === `${RT_ROOM}-record` && mp.recording && mp.recording.participants === true && row === 1, `${room} ${selected} ${name}`);
+    await shot('32-media-pipelines');
+    // 用途を切り替えると、作られるものと直すところが変わる（配信先の URL・鍵が無いので作成できない）
+    await page.goto(`${base}/console/#/media-pipelines/new?room=${RT_ROOM}&use=broadcast`);
+    await page.getByTestId('mp-new-problems').waitFor();
+    const disabled = await page.getByTestId('mp-new-create').isDisabled();
+    check('media pipelines: broadcast form explains what is missing and blocks creation', disabled);
+  });
+  await step('rooms: palette and list keys', async () => {
+    await page.goto(`${base}/console/#/rooms`);
+    await page.getByTestId('rooms-table').waitFor();
+    await page.keyboard.press('j');
+    const focused = await page.evaluate(() => document.activeElement && document.activeElement.matches('tr[data-active]'));
+    await page.keyboard.press('Enter');
+    await page.getByTestId('participants-panel').waitFor();
+    await page.keyboard.press('Control+k');
+    await page.getByTestId('palette-input').fill('試験のルーム');
+    await page.locator('[data-testid="palette"] [role="option"]', { hasText: '試験のルーム' }).first().waitFor({ timeout: 8000 });
+    await page.keyboard.press('Escape');
+    await page.keyboard.press('Control+k');
+    await page.getByTestId('palette-input').fill('ルームを作成');
+    await page.keyboard.press('Enter');
+    await page.getByTestId('room-create-dialog').waitFor();
+    await page.keyboard.press('Escape');
+    check('rooms: J moves to a row and Enter opens it; palette finds the room by name and "ルームを作成" opens the dialog', focused, String(focused));
+  });
+  await step('rooms: mobile', async () => {
+    const m = await browser.newContext({ viewport: { width: 390, height: 844 }, deviceScaleFactor: 2, isMobile: true, hasTouch: true, locale: 'ja-JP', timezoneId: 'Asia/Tokyo' });
+    await m.addInitScript((tok) => sessionStorage.setItem('senca.console.token', tok), token);
+    const mp = await m.newPage();
+    mp.on('pageerror', (e) => errors.push(`mobile pageerror: ${e.message}`));
+    const over = {};
+    for (const r of ['/rooms', `/rooms/${RT_ROOM}`, '/media-pipelines', `/media-pipelines/new?room=${RT_ROOM}&use=broadcast`]) {
+      await mp.goto(`${base}/console/#${r}`);
+      await mp.locator('main h1').first().waitFor({ timeout: 10000 });
+      await sleep(800);
+      const w = await mp.evaluate(() => document.documentElement.scrollWidth - window.innerWidth);
+      if (w > 1) over[r] = w;
+    }
+    await mp.goto(`${base}/console/#/rooms/${RT_ROOM}`);
+    await mp.getByTestId('room-issue-token').waitFor();
+    // 「?」は見た目が小さく、押せる範囲を ::after で 44px に広げている
+    const hint = await mp.locator('main .help-hint').first().evaluate((el) => { const a = getComputedStyle(el, '::after'); return el.getBoundingClientRect().height + 2 * -parseFloat(a.top); });
+    const small = await mp.evaluate(() => [...document.querySelectorAll('main button:not(.help-hint), main a.btn, main select, main summary')].filter((el) => el.offsetParent !== null).map((el) => [el.textContent.trim().slice(0, 20) || el.getAttribute('aria-label'), Math.round(el.getBoundingClientRect().height)]).filter(([, hgt]) => hgt < 44));
+    await mp.screenshot({ path: path.join(work, '33-mobile-room.png'), fullPage: true });
+    await m.close();
+    check('rooms: mobile (390px) has no horizontal scrolling and 44px touch targets on rooms and media pipelines', !Object.keys(over).length && !small.length && hint >= 44, JSON.stringify([over, small, hint]));
+  });
+  await step('rooms: delete room', async () => {
+    await page.goto(`${base}/console/#/rooms/${RT_ROOM}`);
+    await page.getByTestId('room-more').click();
+    await page.getByTestId('room-delete').click();
+    await page.getByTestId('room-delete-dialog').waitFor();
+    const before = await page.getByTestId('confirm-ok').isDisabled();
+    await page.getByRole('dialog').getByRole('textbox').fill(RT_ROOM);
+    await page.getByTestId('confirm-ok').click();
+    await page.waitForFunction(() => location.hash === '#/rooms');
+    const gone = await waitApi(`/media-pipelines?room=${RT_ROOM}`, (b) => b && b.items && b.items.length === 0, 5000).then(() => true).catch(() => false);
+    check('rooms: delete needs the room ID typed, removes the room and its media pipelines', before && gone, `${before} ${gone}`);
+  });
+  // ==== リアルタイム: ここまで ====
   // ================================================================ 運用と設定（ダッシュボード・グリッド・監査ログ）ここから
   await step('ops: onboarding progress', async () => {
     await page.goto(`${base}/console/#/?onboarding=1`);

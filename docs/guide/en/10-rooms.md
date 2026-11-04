@@ -408,7 +408,6 @@ With `--rooms-event-webhook URL` and `--rooms-webhook-secret-file FILE`, each no
 Some features are described in the [Signaling v1](../../realtime/signaling.en.md) specification but are not yet available in `senca-node`:
 
 - **Node `overflow_redirect`**: cannot be configured (a full node answers `room_full`).
-- **`settings.recording`**: a policy value only; it does not start recording (use media pipelines, [11](11-media-pipelines.md)).
 - **A message for participants to change their own metadata**: Signaling v1 has none; change it from your application server with `PATCH /rooms/{id}/participants/{connection_id}`.
 - **Resume**: after a disconnect, the client rejoins as a new connection.
 
@@ -479,3 +478,18 @@ await session.close();
 
 The SDK hides SDP, receive slots, renegotiation, ping, redirects (up to 3) and reconnection (0.5 s doubling up to 10 s, up to 10 attempts).
 Options and events are listed in `apps/sdk-js/README.md` and [15. API and SDKs](15-api-and-sdks.md).
+
+## 10.16 In the console
+
+The console (`/console/`) has a **Rooms** page for everyday work without calling the API directly.
+
+- **List**: each room shows its current participant count, published tracks, settings (E2EE, cascade, spotlight, recording and so on) and how many media pipelines it has. Counts update automatically.
+- **Create**: only the common settings (ID, display name, participant limit, codec, recording, E2EE) are shown first; everything else is under "Advanced settings". The display name is stored in `metadata.title`.
+- **Detail**: for each participant you see the role, connection, published tracks (codec, size, per-layer simulcast bitrates), the layers they receive, round-trip time and packet loss, refreshed every 3 seconds.
+  Size and loss appear only when the app sends stats with the SDK's `reportStats`. You can also remove participants, send messages and change settings.
+- **Join tokens**: choose the role, display name, client_id, expiry and permissions, then issue. Besides the token and signaling URL, you get ready-to-run SDK code and the curl your app server would use. Tokens are not stored.
+- **Join from this browser**: check your camera and microphone, then join the room with the browser SDK. You see the other participants and can pick a simulcast layer. The console issues the token for you (valid for 1 hour). Not available in E2EE rooms.
+- **Activity**: joins, leaves, published tracks and more since you opened the page, with timestamps (the 10.12 events that reach the node the console is connected to).
+- **Recording & streaming**: choosing "Record the room", "Stream it out" and so on opens the media pipeline form for that room ([11. Media pipelines](11-media-pipelines.md)).
+
+In the command palette (Ctrl/⌘+K), type "Create room" or a room's name to jump straight there. In the list, J and K move between rows and Enter opens one.
