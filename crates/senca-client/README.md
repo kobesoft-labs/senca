@@ -60,6 +60,8 @@ client.streams().delete(&s.id, s.if_match()).await?;
 | クライアント | `capabilities`・`grid`・`devices`・`events`・`healthz`・`readyz`・`fetch_signed`（署名付きの再生パスを取得。307 のリダイレクトをたどる）・`request_json`（型のないリクエスト） |
 | `rooms()` | `create`・`list`・`list_with`・`list_page`・`get`・`update`・`delete`・`issue_token`・`send_message`・`stats`・`participants`・`participants_with`・`participant`・`update_participant`・`disconnect` |
 | `media_pipelines()` | `create`・`list`・`list_with`（`ListOptions::room` で絞り込み）・`list_page`・`get`・`update`・`set_state`・`delete` |
+| `auth()` | `providers`・`login`（`LoginOutcome::Ok` か `MfaRequired`）・`login_mfa`・`exchange`・`oidc_start_url`・`oidc_callback_url`・`me`・`logout`・`change_password`・`setup_totp`・`confirm_totp`・`disable_mfa`・`regenerate_recovery_codes`・`sessions`・`revoke_session`。ログインの操作はトークンなしのクライアント（`SencaClient::builder(url).build()`）で呼べます。得たセッションの値は `with_token` で使います |
+| `users()` | `create`・`list`・`list_with`・`list_page`・`get`・`update`・`delete`・`reset_password`・`reset_mfa`・`sessions`・`revoke_sessions` |
 
 ## 規約
 

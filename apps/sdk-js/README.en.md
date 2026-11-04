@@ -160,9 +160,13 @@ await senca.rooms.participants('daily').updateMetadata(connectionId, { name: 'Al
 Resources: `streams` (`rotateKey`, `playbackUrl`, `startRecording`, `plan`, `snapshot`, `snapshots`), `recordings` (`stop`, `playbackUrl`, `thumbnail`,
 `exportMp4`), `schedules` (`check`, `runs`), `tokens`, `inputs`, `outputs` (created per stream), `secrets`, `pipelines` (`validate`, `control`),
 `nodes` (`drain`, `undrain`, `devices.disable/enable`), `rooms` (`participants(id)`, `sendMessage`, `stats`, `createToken`),
-`mediaPipelines` (exporting, recording, compositing, pushing out and transcribing a room; `list({room})`, `start`, `stop`), plus
+`mediaPipelines` (exporting, recording, compositing, pushing out and transcribing a room; `list({room})`, `start`, `stop`),
+`auth` (login and self-service: `providers`, `login`, `loginMfa`, `exchange`, `oidcStartUrl`, `me`, `logout`, `changePassword`, `setupTotp`,
+`confirmTotp`, `disableMfa`, `regenerateRecoveryCodes`, `sessions`, `revokeSession`), `users` (user management: `resetPassword`, `resetMfa`,
+`sessions`, `revokeSessions`), plus
 `capabilities()`, `devices()`, `grid()` and `events()`. Every operation in the specification has an SDK method (`test/rest.test.mjs` checks
 this against `operations.gen.js`). Operations not yet in the SDK can be called with `senca.request(method, path, opts)`.
+The login operations work on a client without a token; use `senca.setToken(token)` to switch to the session value (`sencas_...`) a login returns.
 
 - **Retries**: network failures, 408, 429, 502, 503, 504 and problems with `retryable: true` are sent again, honouring `Retry-After`, with
   exponential backoff (3 attempts by default, including the first). Failures that may have created something are retried only for GET,

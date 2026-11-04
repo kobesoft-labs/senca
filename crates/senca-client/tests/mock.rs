@@ -203,3 +203,26 @@ async fn media_pipelines_list_by_room_and_set_state() {
     assert_eq!(s[1].header("if-match").as_deref(), Some("\"3\""));
     assert!(s[2].line().starts_with("DELETE /api/v1/media-pipelines/m1 "), "{}", s[2].line());
 }
+
+#[tokio::test]
+async fn login_without_a_token_and_exchange_with_the_flow_cookie() {
+    let (url, seen) = serve(vec![
+        resp("200 OK", "", "application/json", r#"{"status":"mfa_required","mfa_token":"m1","expires_at":"2026-01-01T00:05:00Z","methods":["totp","recovery_code"]}"#),
+        resp("401 Unauthorized", "WWW-Authenticate: Bearer\r\n", "application/problem+json", &problem(401, "AUTH_FAILED", false)),
+    ])
+    .await;
+    let c = SencaClient::builder(&url).retry(fast()).build().unwrap();
+    let body = senca_client::models::LoginRequest { username: "alice".into(), password: "pw".into(), ..Default::default() };
+    match c.auth().login(&body).await.unwrap() {
+        senca_client::LoginOutcome::MfaRequired(m) => assert_eq!(m.mfa_token, "m1"),
+        other => panic!("{other:?}"),
+    }
+    let e = c.auth().exchange("code1", Some("senca_oidc=abc")).await.unwrap_err();
+    assert_eq!(e.api().map(|a| a.status), Some(401));
+    let s = seen.lock().unwrap();
+    assert!(s[0].line().starts_with("POST /api/v1/auth/login "));
+    assert_eq!(s[0].header("authorization"), None, "トークンなしのクライアントは Authorization を送らない");
+    assert!(s[1].line().starts_with("POST /api/v1/auth/exchange "));
+    assert_eq!(s[1].header("cookie").as_deref(), Some("senca_oidc=abc"));
+    assert_eq!(c.auth().oidc_start_url("kc", Some("/console/#/x")), format!("{url}/api/v1/auth/oidc/kc/start?return_to=%2Fconsole%2F%23%2Fx"));
+}

@@ -97,6 +97,29 @@ REST（problem+json、RFC 9457）の誤り。`code` は problem の `code`（`NO
 | `stack?: string` |  |
 | `cause?: unknown` |  |
 
+### `Auth`
+
+ログインと本人の操作（`/auth/...`）。`providers`・`login`・`loginMfa`・`exchange` は認証なしで使えます（token を省いた client でよい）。
+ログインで得た `token`（`sencas_...`）は `client.setToken(token)` で以後の要求に使います。
+
+| メンバー | 説明 |
+|---|---|
+| `providers(o?: CallOptions): Promise<import("./openapi.gen.js").AuthProviders>` | ログインの方法（パスワード・IdP の一覧・最初の管理者が要るか）。 |
+| `login(body: import("./openapi.gen.js").LoginRequest, o?: CallOptions): Promise<LoginSuccess \| LoginMfaRequired>` | パスワードでログインします。`status: 'mfa_required'` なら `loginMfa()` に `mfa_token` を渡します。 |
+| `loginMfa(body: import("./openapi.gen.js").LoginMfaRequest, o?: CallOptions): Promise<LoginSuccess>` | 2 つ目の要素（TOTP のコードか回復コード）でログインします。 |
+| `exchange(code: string, o?: CallOptions & { cookie?: string; }): Promise<LoginSuccess>` | OIDC の一度きりのコード（`/console/#/auth/complete?code=...`）をセッションに替えます。ログインを始めたブラウザーのクッキー（`senca_oidc`）を送るため、 |
+| `oidcStartUrl(provider: string, returnTo?: string): string` | OIDC のログインを始める URL（ブラウザーで開くと IdP へリダイレクトします）。`returnTo` は管理画面のパス（`/console/...`）。 |
+| `oidcCallbackUrl(provider: string): string` | OIDC のコールバックの URL（IdP に登録する redirect URI の既定値。ブラウザーが IdP から戻る先です）。 |
+| `me(o?: CallOptions): Promise<import("./openapi.gen.js").Me>` | 自分の情報（主体・テナント・権限・セッション・先に済ませること）。 |
+| `logout(o?: CallOptions): Promise<void>` | ログアウト（今のセッションを失効させます）。 |
+| `changePassword(body: import("./openapi.gen.js").PasswordChange, o?: CallOptions): Promise<void>` | 自分のパスワードを変えます（ほかのセッションは失効します）。 |
+| `setupTotp(body: import("./openapi.gen.js").MfaSetupRequest, o?: CallOptions): Promise<import("./openapi.gen.js").MfaSetup>` | TOTP の登録を始めます（`secret`・`otpauth_uri` はこの応答でだけ返ります）。 |
+| `confirmTotp(body: import("./openapi.gen.js").MfaConfirmRequest, o?: CallOptions): Promise<import("./openapi.gen.js").MfaConfirmResult>` | 確認コードで TOTP を有効にします（回復コードはこの応答でだけ返ります）。 |
+| `disableMfa(body: import("./openapi.gen.js").MfaReauth, o?: CallOptions): Promise<void>` | 自分の MFA を解除します（`password` か `code`）。 |
+| `regenerateRecoveryCodes(body: import("./openapi.gen.js").MfaReauth, o?: CallOptions): Promise<import("./openapi.gen.js").RecoveryCodes>` | 回復コードを作り直します。 |
+| `sessions(o?: ListOptions): Paginator<Session>` | 自分のセッションの一覧。 |
+| `revokeSession(id: string, o?: CallOptions): Promise<void>` | 自分のセッションを失効させます。 |
+
 ### `Collection`
 
 create・list・get・update・delete を持つ資源。
@@ -352,6 +375,9 @@ text/event-stream の解析器（行を足すと、まとまったイベント�
 | `nodes: Nodes` |  |
 | `rooms: Rooms` | リアルタイムの部屋。 |
 | `mediaPipelines: MediaPipelines` | 部屋のメディアパイプライン（書き出し・録画・合成・送り出し・文字起こし）。 |
+| `auth: Auth` | ログインと本人の操作。 |
+| `users: Users` | 利用者の管理。 |
+| `setToken(token: string \| (() => string \| Promise<string>) \| undefined): void` | 以後の要求の認証の値を替えます（ログインで得たセッションの値 `sencas_...` など）。 |
 | `baseUrl: string` | API の base（`.../api/v1`）。 |
 | `capabilities(o?: CallOptions): Promise<import("./openapi.gen.js").Capabilities>` | 対応版・コーデック・機能。 |
 | `devices(o?: CallOptions): Promise<import("./openapi.gen.js").Devices>` | 全ノードのハードウェア。 |
@@ -447,6 +473,24 @@ API トークン（更新は無い）。
 | `get(id: string, o?: CallOptions): Promise<import("./openapi.gen.js").Token>` |  |
 | `delete(id: string, o?: CallOptions): Promise<void>` | 失効させる。 |
 
+### `Users`
+
+利用者の管理（`/users`、`tenant:admin`）。
+
+| メンバー | 説明 |
+|---|---|
+| `resetPassword(id: string, body?: import("./openapi.gen.js").UserPasswordReset, o?: CreateOptions): Promise<import("./openapi.gen.js").UserPasswordResetResult>` | パスワードを再設定します（`password` を省くと仮のパスワードが `temporary_password` で返ります）。 |
+| `resetMfa(id: string, o?: CallOptions): Promise<void>` | MFA を外します。 |
+| `sessions(id: string, o?: ListOptions): Paginator<Session>` | 利用者のセッションの一覧。 |
+| `revokeSessions(id: string, o?: CallOptions): Promise<void>` | 利用者のセッションをすべて失効させます。 |
+| `create(body: C, o?: CreateOptions): Promise<T>` | 作る（POST、Idempotency-Key を自動で付ける）。 |
+| `list(o?: ListOptions): Paginator<T>` | 一覧（cursor を自動でたどる）。`for await (const x of client.streams.list())`。 |
+| `listPage(o?: ListOptions & { query?: Record<string, string \| undefined>; }): Promise<{ items: T[]; next_cursor: string \| null; }>` | 一覧の 1 頁。 |
+| `get(id: string, o?: CallOptions): Promise<T>` | 取得（ETag は `SencaClient.etagOf(x)` で読める）。 |
+| `update(id: string, patch: P, o: CallOptions & { ifMatch: IfMatch; }): Promise<T>` | 更新（PATCH、If-Match 必須）。`ifMatch` は ETag・generation・資源のどれか。古ければ ApiError（`PRECONDITION_FAILED`、412）。 |
+| `modify(id: string, change: (current: T) => P \| Promise<P>, o?: CallOptions & { attempts?: number; }): Promise<T>` | 読んで、変えて、書く。412（他の人が先に書いた）なら読み直してやり直す（既定 3 回）。 |
+| `delete(id: string, o?: CallOptions & { ifMatch?: IfMatch; }): Promise<void>` | 消す。`ifMatch` を付ければ版を確かめる（資源によっては見ない）。 |
+
 ## 型
 
 管理 API の資源の型（`Stream` など）は docs/api/openapi.yaml から生成した `types/rest/openapi.gen.d.ts`。
@@ -462,7 +506,7 @@ API トークン（更新は無い）。
 | 項目 | 型 | 説明 |
 |---|---|---|
 | `baseUrl` | `string` | `https://node.example`（`/api/v1` は足す）か `https://node.example/api/v1` |
-| `token?` | `string \| (() => string \| Promise<string>) \| undefined` | API トークン（`senca_...`）か JWT。関数なら要求のたびに呼ぶ |
+| `token?` | `string \| (() => string \| Promise<string>) \| undefined` | API トークン（`senca_...`）・ログインのセッション（`sencas_...`）・JWT。関数なら要求のたびに呼ぶ。 ログインだけをするなら省いてよい（ログインの操作は認証なしで使えます） |
 | `fetch?` | `((input: RequestInfo \| URL, init?: RequestInit \| undefined) => Promise<Response>) \| undefined` | 既定は globalThis.fetch |
 | `retry?` | `boolean \| RetryOptions \| undefined` | 既定 true（3 回まで） |
 | `timeoutMs?` | `number \| undefined` | 1 回の要求の時間切れ（既定 30000、SSE には使わない） |
@@ -665,6 +709,7 @@ type RemoteTrackEvent =
 | `as?` | `"blob" \| "json" \| "response" \| undefined` | 応答の読み方（既定 json） |
 | `retry?` | `boolean \| RetryOptions \| undefined` |  |
 | `timeoutMs?` | `number \| undefined` |  |
+| `credentials?` | `RequestCredentials \| undefined` | fetch の credentials（既定 `omit`。クッキーを送る `POST /auth/exchange` だけ `same-origin`） |
 
 ### `RetryOptions`
 
@@ -703,7 +748,7 @@ type SencaErrorCode = string
 ### `ServerEvent`
 
 ```ts
-type ServerEvent = { id: string | null; type: "stream.created" | "stream.updated" | "stream.deleted" | "stream.owner" | "recording.updated" | "recording.deleted" | "schedule.created" | "schedule.updated" | "schedule.deleted" | "schedule.run" | "node.updated" | "input.updated" | "input.deleted" | "output.updated" | "output.deleted" | "secret.created" | "secret.deleted" | "pipeline.updated" | "pipeline.deleted" | "room.updated" | "room.deleted" | "media_pipeline.updated" | "media_pipeline.deleted" | "node.down" | "node.up" | "device.down" | "device.up" | "device.disabled" | "device.enabled" | "grid.decisions" | "room.started" | "room.stopped" | "room.connection.created" | "room.connection.updated" | "room.connection.destroyed" | "room.track.published" | "room.track.unpublished" | "room.spotlight.changed" | (string & {}); data: SseEventData; } | { id: string | null; type: "resync"; data: Record<string, never>; }
+type ServerEvent = { id: string | null; type: "stream.created" | "stream.updated" | "stream.deleted" | "stream.owner" | "recording.updated" | "recording.deleted" | "schedule.created" | "schedule.updated" | "schedule.deleted" | "schedule.run" | "node.updated" | "input.updated" | "input.deleted" | "output.updated" | "output.deleted" | "secret.created" | "secret.deleted" | "pipeline.updated" | "pipeline.deleted" | "room.updated" | "room.deleted" | "media_pipeline.updated" | "media_pipeline.deleted" | "user.created" | "user.updated" | "user.deleted" | "node.down" | "node.up" | "device.down" | "device.up" | "device.disabled" | "device.enabled" | "grid.decisions" | "room.started" | "room.stopped" | "room.connection.created" | "room.connection.updated" | "room.connection.destroyed" | "room.track.published" | "room.track.unpublished" | "room.spotlight.changed" | (string & {}); data: SseEventData; } | { id: string | null; type: "resync"; data: Record<string, never>; }
 ```
 
 ### `SessionEvent`

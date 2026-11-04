@@ -64,5 +64,5 @@ export { connect, Session, SDK_NAME, SDK_VERSION };
 export { Participant, RemoteTrack, Publication, LocalTrack, InboundMessage } from "./realtime/objects.js";
 export { SUBPROTOCOL, PROTOCOL_VERSION } from "./realtime/protocol.js";
 export { SencaError, ApiError } from "./errors.js";
-export { SencaClient, Collection, Streams, Recordings, Schedules, Tokens, StreamIo, Secrets, Pipelines, Nodes, Rooms, MediaPipelines } from "./rest/client.js";
+export { SencaClient, Collection, Streams, Recordings, Schedules, Tokens, StreamIo, Secrets, Pipelines, Nodes, Rooms, MediaPipelines, Auth, Users } from "./rest/client.js";
 export { Paginator, etagOf } from "./rest/http.js";
