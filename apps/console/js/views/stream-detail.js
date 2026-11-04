@@ -61,7 +61,7 @@ export async function render(root, [id], { caps, navigate }) {
         button(t('streams.detail.startRecording'), { icon: 'record', attrs: { disabled: stream.observed_state !== 'live' && stream.desired_state === 'stopped' }, onClick: () => startRecording() }),
         toggle,
         button(t('common.edit'), { icon: 'edit', onClick: () => edit() }),
-        button(t('common.delete'), { variant: 'danger', icon: 'trash', onClick: () => remove() }),
+        button(t('common.delete'), { variant: 'danger', icon: 'trash', testid: 'stream-delete', onClick: () => remove() }),
       ],
     }));
   };
@@ -131,9 +131,12 @@ export async function render(root, [id], { caps, navigate }) {
     try {
       const before = stream ? JSON.stringify(stream) : '';
       const ingestBefore = stream ? JSON.stringify(stream.ingest) : '';
+      const headKey = (x) => (x ? JSON.stringify([x.name, x.desired_state, x.observed_state]) : '');
+      const headBefore = headKey(stream);
       await fetchStream();
       if (JSON.stringify(stream) === before) return;
-      renderHead();
+      // 見出しのボタンは状態が変わったときだけ作り直す（押そうとしているボタンとフォーカスを奪わない）
+      if (headKey(stream) !== headBefore) renderHead();
       renderOverview();
       if (captions) captions.render();
       // 取り込み先は変わったときだけ描き直す（写している途中のフォーカスを奪わない）

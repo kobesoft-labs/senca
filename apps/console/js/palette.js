@@ -12,6 +12,7 @@ import { setThemePref } from './lib/theme.js';
 import { streams, recordings, schedules, listAll } from './api/resources.js';
 import { pipelines } from './api/pipelines.js';
 import { MOD, showShortcutHelp } from './shortcuts.js';
+import { trapFocus } from './ui/overlay.js';
 import { fmtTime } from './lib/format.js';
 
 const KIND_ICON = { stream: 'streams', recording: 'recordings', schedule: 'schedules', pipeline: 'pipelines', page: 'arrow-right' };
@@ -181,6 +182,7 @@ export function openPalette({ navigate, logout }) {
   });
   document.body.appendChild(dlg);
   dlg.showModal();
+  trapFocus(dlg);
   openDlg = { close };
   draw();
   input.focus();

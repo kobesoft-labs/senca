@@ -18,12 +18,14 @@ export function formField({ label, input, hint, required, optional, error, help,
   const errId = `${input.id}-err`;
   const msg = h('div', { class: 'field-msg', id: errId, role: 'alert', hidden: true });
   if (required) input.setAttribute('aria-required', 'true');
-  const lab = h('label', { for: input.id }, label,
-    // 「必須」「任意」は見た目だけ（読み上げは aria-required。ラベルの名前を変えないため）
+  // 「必須」「任意」はラベルの外に置く（見た目だけ。読み上げは aria-required。ラベルの名前を変えないため）
+  const lab = h('label', { for: input.id }, label);
+  const marks = [
     required ? h('span', { class: 'req', 'aria-hidden': 'true' }, t('form.required')) : null,
-    optional ? h('span', { class: 'opt', 'aria-hidden': 'true' }, t('form.optional')) : null);
+    optional ? h('span', { class: 'opt', 'aria-hidden': 'true' }, t('form.optional')) : null,
+  ].filter(Boolean);
   const el = h('div', { class: 'field', 'data-testid': testid },
-    help ? h('div', { class: 'field-label-row' }, lab, help) : lab,
+    help || marks.length ? h('div', { class: 'field-label-row' }, lab, marks, help || null) : lab,
     input,
     hint ? h('div', { class: 'hint', id: hintId }, hint) : null,
     msg);

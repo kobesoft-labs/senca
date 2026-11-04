@@ -86,10 +86,13 @@ c=$(curl -s -o /dev/null -w '%{http_code}' "$BASE/console/.hidden"); [ "$c" = 40
 ok=1; for f in $(find "$CONSOLE_DIR" -name '*.js'); do node --check "$f" 2>"$W/check.err" || { ok=0; echo "  ${f#"$ROOT"/}: $(head -3 "$W/check.err")"; }; done
 [ $ok = 1 ] && pass "B every JS module parses (node --check, $(find "$CONSOLE_DIR" -name '*.js' | wc -l) files)" || fail "B JS syntax"
 grep -Eq '<script(\s[^>]*)?>[^<]' "$CONSOLE_DIR/index.html" && fail "B inline script in index.html" || pass "B no inline scripts (CSP)"
-grep -rEn 'https?://' "$CONSOLE_DIR" --include='*.js' --include='*.css' --include='*.html' | grep -v 'www.w3.org/2000/svg' > "$W/ext.txt" || true
+# 手引きへのリンク（新しいタブで開くだけ。読み込みはしない）は js/lib/guide.js の 1 か所だけ許す
+grep -rEn 'https?://' "$CONSOLE_DIR" --include='*.js' --include='*.css' --include='*.html' | grep -v 'www.w3.org/2000/svg' | grep -v '^[^:]*/js/lib/guide.js:[0-9]*:export const GUIDE_BASE' > "$W/ext.txt" || true
 [ ! -s "$W/ext.txt" ] && pass "B no external URLs (no CDN)" || { fail "B external URLs"; cat "$W/ext.txt"; }
 grep -rEn '\binnerHTML\b|\beval\(|new Function\(' "$CONSOLE_DIR/js" > "$W/unsafe.txt" || true
 [ ! -s "$W/unsafe.txt" ] && pass "B no innerHTML/eval" || { fail "B unsafe DOM APIs"; cat "$W/unsafe.txt"; }
+grep -rEn "setAttribute\('style'|style=\"" "$CONSOLE_DIR/js" "$CONSOLE_DIR/index.html" > "$W/style.txt" || true
+[ ! -s "$W/style.txt" ] && pass "B no inline style attributes (styles set through el.style only)" || { fail "B inline style attributes"; cat "$W/style.txt"; }
 grep -rEn 'console\.(log|debug|info)\(' "$CONSOLE_DIR/js" > "$W/log.txt" || true
 [ ! -s "$W/log.txt" ] && pass "B no console logging (token never logged)" || { fail "B console logging"; cat "$W/log.txt"; }
 grep -rn 'localStorage' "$CONSOLE_DIR/js" | grep -i token > "$W/ls.txt" || true
@@ -179,6 +182,97 @@ t('SSE parser (CRLF split across chunks, comments, resync)', () => {
   ps.feed(': keepalive\r\nevent: stream.created\r\nid: 42\r\ndata: {"type":"stream.created","resource_id":"x"}\r\n\r');
   ps.feed('\nevent: resync\nid: 43\ndata: {}\n\n');
   assert.equal(evs.length, 2); assert.equal(evs[0].id, '42'); assert.equal(evs[0].data.resource_id, 'x'); assert.equal(evs[1].type, 'resync');
+});
+// ---- 管理画面の土台: 言葉（ja・en）・あいまい検索・書式・色のコントラスト
+const i18n = await import(D + '/i18n/index.js');
+const { fuzzyMatch, fuzzyFilter, norm } = await import(D + '/lib/fuzzy.js');
+const fmt = await import(D + '/lib/format.js');
+const path = await import('node:path');
+t('i18n: ja and en have the same keys and the same {params}', () => {
+  const { ja, en } = i18n.DICTS;
+  const onlyJa = Object.keys(ja).filter((k) => !(k in en));
+  const onlyEn = Object.keys(en).filter((k) => !(k in ja));
+  assert.deepEqual([onlyJa, onlyEn], [[], []]);
+  const params = (s) => [...String(s).matchAll(/\{(\w+)\}/g)].map((m) => m[1]).sort().join(',');
+  const diff = Object.keys(ja).filter((k) => params(ja[k]) !== params(en[k]));
+  assert.deepEqual(diff, []);
+  assert.ok(Object.keys(ja).length > 500, \`only \${Object.keys(ja).length} keys\`);
+  for (const [k, v] of Object.entries(ja)) assert.ok(typeof v === 'string' && v.length, \`empty ja \${k}\`);
+  for (const [k, v] of Object.entries(en)) assert.ok(typeof v === 'string' && v.length, \`empty en \${k}\`);
+});
+t('i18n: every t()/tn() key used in the sources exists', () => {
+  const walk = (d) => fs.readdirSync(d, { withFileTypes: true }).flatMap((e) => (e.isDirectory() ? walk(path.join(d, e.name)) : e.name.endsWith('.js') ? [path.join(d, e.name)] : []));
+  const bad = [];
+  let n = 0;
+  for (const f of walk(D)) {
+    if (f.includes('/i18n/')) continue;
+    const src = fs.readFileSync(f, 'utf8').split('\n').filter((l) => !/^\s*(\/\/|\*|\/\*)/.test(l)).join('\n');
+    for (const m of src.matchAll(/\bt\(\s*'([a-zA-Z0-9_.-]+)'/g)) { n++; if (!(m[1] in i18n.DICTS.ja)) bad.push(\`\${m[1]} (\${path.basename(f)})\`); }
+    for (const m of src.matchAll(/\btn\(\s*'([a-zA-Z0-9_.-]+)'/g)) { n++; if (!(\`\${m[1]}.other\` in i18n.DICTS.ja)) bad.push(\`\${m[1]}.other (\${path.basename(f)})\`); }
+  }
+  assert.deepEqual(bad, []);
+  assert.ok(n > 300, \`only \${n} uses\`);
+});
+t('i18n: language detection, interpolation, fallback and missing-key report', () => {
+  assert.equal(i18n.detectLang('ja-JP'), 'ja'); assert.equal(i18n.detectLang('ja'), 'ja');
+  assert.equal(i18n.detectLang('en-US'), 'en'); assert.equal(i18n.detectLang('fr'), 'en'); assert.equal(i18n.detectLang(''), 'en');
+  i18n.setLang('ja', { persist: false });
+  assert.equal(i18n.t('copy.done', { label: 'URL' }), 'URLをコピーしました');
+  assert.equal(i18n.locale(), 'ja-JP');
+  i18n.setLang('en', { persist: false });
+  assert.equal(i18n.t('pager.page', { n: 3 }), 'Page 3');
+  assert.equal(i18n.t('no.such.key'), 'no.such.key');
+  assert.ok(i18n.missingKeys().includes('en:no.such.key'));
+});
+t('fuzzy search for the command palette', () => {
+  assert.equal(norm('ＡＢＣ　カタカナ'), 'abc　かたかな'.normalize('NFKC'));
+  assert.ok(fuzzyMatch('stm', 'streams'));
+  assert.equal(fuzzyMatch('xyz', 'streams'), null);
+  assert.ok(fuzzyMatch('はいしん', 'ハイシン'));
+  const items = [{ label: 'Recordings' }, { label: 'Streams' }, { label: 'studio-a' }, { label: 'Schedules', keywords: ['calendar'] }, { label: 'Nodes & devices', keywords: ['gpu'] }];
+  assert.deepEqual(fuzzyFilter('st', items).map((x) => x.label).slice(0, 2), ['Streams', 'studio-a']);
+  assert.equal(fuzzyFilter('cal', items)[0].label, 'Schedules');
+  assert.equal(fuzzyFilter('gpu', items)[0].label, 'Nodes & devices');
+  assert.equal(fuzzyFilter('', items).length, items.length);
+  assert.equal(fuzzyFilter('zzzz', items).length, 0);
+  assert.deepEqual(fuzzyFilter('rec', items)[0].positions, [0, 1, 2]);
+});
+t('format helpers follow the language (Intl)', () => {
+  i18n.setLang('en', { persist: false });
+  assert.equal(fmt.fmtBytes(1536), '1.5 KiB'); assert.equal(fmt.fmtBytes(0), '0 B'); assert.equal(fmt.fmtBytes(null), '—');
+  assert.equal(fmt.fmtNumber(1234567), '1,234,567');
+  assert.equal(fmt.fmtBps(6_200_000), '6.20 Mbps'); assert.equal(fmt.fmtBps(96_000), '96 kbps');
+  assert.equal(fmt.fmtDuration(3723000), '1:02:03'); assert.equal(fmt.fmtDuration(65000), '1:05');
+  assert.equal(fmt.fmtDurationText(3723000), '1h 2m'); assert.equal(fmt.fmtDurationText(0), '0s');
+  assert.equal(fmt.fmtPercent(0.734, 1), '73.4%');
+  assert.equal(fmt.weekdayNames()[0], 'Sun');
+  assert.match(fmt.fmtTimeIn('2026-11-02T00:00:00Z', 'Asia/Tokyo'), /11\/02\/2026, 09:00:00/);
+  assert.match(fmt.fmtRelative(new Date(Date.now() - 120000).toISOString()), /2 minutes ago/);
+  i18n.setLang('ja', { persist: false });
+  assert.equal(fmt.fmtDurationText(90061000), '1 日 1 時間');
+  assert.equal(fmt.weekdayNames()[0], '日');
+  assert.equal(fmt.fmtTimeIn('2026-11-02T00:00:00Z', 'Asia/Tokyo'), '2026/11/02 09:00:00');
+  assert.match(fmt.fmtRelative(new Date(Date.now() - 120000).toISOString()), /2 分前/);
+  assert.equal(fmt.fmtBytes(1536), '1.5 KiB');
+});
+t('design tokens: text/background pairs meet WCAG AA in light and dark', () => {
+  const css = fs.readFileSync('$CONSOLE_DIR/css/tokens.css', 'utf8');
+  const block = (sel) => { const i = css.indexOf(sel + ' {') >= 0 ? css.indexOf(sel + ' {') : css.indexOf(sel); const b = css.slice(css.indexOf('{', i) + 1, css.indexOf('}', i)); return Object.fromEntries([...b.matchAll(/--([\w-]+):\s*(#[0-9a-fA-F]{6})/g)].map((m) => [m[1], m[2]])); };
+  const lum = (x) => { const c = [1, 3, 5].map((i) => parseInt(x.slice(i, i + 2), 16) / 255).map((v) => (v <= 0.03928 ? v / 12.92 : ((v + 0.055) / 1.055) ** 2.4)); return 0.2126 * c[0] + 0.7152 * c[1] + 0.0722 * c[2]; };
+  const ratio = (a, b) => { const [x, y] = [lum(a), lum(b)].sort((p, q) => q - p); return (x + 0.05) / (y + 0.05); };
+  const pairs = [['text', 'bg'], ['text', 'surface'], ['text', 'surface-2'], ['text', 'surface-3'], ['text-2', 'bg'], ['text-2', 'surface'], ['text-2', 'surface-2'], ['text-2', 'surface-3'],
+    ['text-3', 'surface'], ['text-3', 'bg'], ['text-3', 'surface-2'], ['accent-text', 'surface'], ['accent-text', 'bg'], ['accent-fg', 'accent'], ['accent-fg', 'accent-hover'], ['accent-soft-text', 'accent-soft'],
+    ['ok-text', 'ok-soft'], ['ok-text', 'surface'], ['warn-text', 'warn-soft'], ['warn-text', 'surface'], ['danger-text', 'danger-soft'], ['danger-text', 'surface'], ['info-text', 'info-soft'], ['info-text', 'surface'],
+    ['neutral-text', 'neutral-soft'], ['live-fg', 'live'], ['live-fg', 'danger-solid'], ['live-fg', 'danger-hover'], ['text-inverse', 'surface-inverse']];
+  const nonText = [['ok', 'surface'], ['warn', 'surface'], ['danger', 'surface'], ['info', 'surface'], ['accent', 'surface'], ['focus', 'surface'], ['focus', 'bg'], ['live', 'surface'], ['tally-preview', 'surface']];
+  const light = block('[data-theme="light"]');
+  const dark = { ...light, ...block('[data-theme="dark"]') };
+  const bad = [];
+  for (const [name, th] of [['light', light], ['dark', dark]]) {
+    for (const [f, b] of pairs) { const r = ratio(th[f], th[b]); if (!(r >= 4.5)) bad.push(\`\${name} \${f}/\${b} \${r.toFixed(2)}\`); }
+    for (const [f, b] of nonText) { const r = ratio(th[f], th[b]); if (!(r >= 3)) bad.push(\`\${name} \${f}/\${b} \${r.toFixed(2)}\`); }
+  }
+  assert.deepEqual(bad, []);
 });
 console.log(res.join('\n'));
 EOF
@@ -306,16 +400,16 @@ const EXPECTED_FAIL = [
 
   await step('login', async () => {
     await page.goto(`${base}/console/`);
-    await page.getByLabel('API トークン').fill('senca_wrong');
-    await page.getByRole('button', { name: 'ログイン' }).click();
+    await page.getByTestId('login-token').fill('senca_wrong');
+    await page.getByTestId('login-submit').click();
     await page.getByText('トークンが正しくないか').waitFor({ timeout: 5000 });
     check('login rejects bad token', true);
-    await page.getByLabel('API トークン').fill(token);
-    await page.getByRole('button', { name: 'ログイン' }).click();
+    await page.getByTestId('login-token').fill(token);
+    await page.getByTestId('login-submit').click();
     await page.getByRole('heading', { name: 'ダッシュボード' }).waitFor({ timeout: 10000 });
     const stored = await page.evaluate(() => Object.keys(sessionStorage).length === 1 && Object.keys(localStorage).every((k) => !localStorage.getItem(k).includes('senca_')));
     check('login with bootstrap token → dashboard (token only in sessionStorage)', stored);
-    await page.getByText('イベント受信中').waitFor({ timeout: 10000 });
+    await page.locator('[data-testid="sse-status"][data-state="open"]').waitFor({ timeout: 10000 });
     check('SSE over fetch connected', true);
     await page.getByText('dav1d').first().waitFor({ timeout: 5000 }).then(() => check('dashboard shows devices', true)).catch(() => check('dashboard shows devices (no codec worker)', true, 'no providers'));
     await shot('01-dashboard');
@@ -324,12 +418,12 @@ const EXPECTED_FAIL = [
   let key = null;
   await step('create stream', async () => {
     await page.goto(`${base}/console/#/streams`);
-    await page.getByRole('button', { name: '＋ 配信を作成' }).click();
+    await page.getByTestId('streams-create').click();
     const dlg = page.getByRole('dialog');
     await dlg.getByLabel('名前', { exact: true }).fill('browser-av1');
-    await dlg.getByLabel('コーデックの方針').selectOption('royalty_free');
+    await dlg.getByRole('combobox', { name: 'コーデックの方針' }).selectOption('royalty_free');
     await dlg.getByLabel('publish が始まったら自動で録画する').check();
-    await dlg.getByRole('button', { name: '作成' }).click();
+    await dlg.getByTestId('stream-create-submit').click();
     await page.getByRole('heading', { name: 'browser-av1' }).waitFor({ timeout: 10000 });
     key = await page.getByLabel('ストリームキー', { exact: true }).inputValue();
     check('create stream via form → detail with one-time stream key', /^sk_/.test(key), key ? 'sk_…' : 'none');
@@ -342,7 +436,7 @@ const EXPECTED_FAIL = [
     await page.locator('.badge.live').first().waitFor({ timeout: 20000 });
     check('observed state becomes live without reload', true);
     await page.getByLabel('再生の方式').selectOption('hls');
-    await page.getByRole('button', { name: '▶ 再生' }).click();
+    await page.getByRole('button', { name: '再生', exact: true }).click();
     const video = page.locator('video[aria-label="ライブのプレビュー"]');
     await page.waitForFunction(() => { const v = document.querySelector('video[aria-label="ライブのプレビュー"]'); return v && v.currentTime > 1.5; }, null, { timeout: 30000 });
     const t1 = await video.evaluate((v) => v.currentTime);
@@ -352,7 +446,7 @@ const EXPECTED_FAIL = [
     const info = await video.evaluate((v) => ({ w: v.videoWidth, h: v.videoHeight, src: v.src.slice(0, 5), paused: v.paused }));
     check('MSE live HLS plays (currentTime advances)', t2 > t1 + 1.5 && info.src === 'blob:' && info.w === 640, `t1=${t1.toFixed(2)} t2=${t2.toFixed(2)} ${JSON.stringify(info)} status=${status}`);
     check('player status shows MSE + codec', /MSE/.test(status) && /av01/.test(status), status);
-    await page.getByRole('button', { name: '■ 停止' }).first().click();
+    await page.getByRole('button', { name: '停止', exact: true }).first().click();
     await shot('02-stream-live');
   });
 
@@ -375,7 +469,7 @@ const EXPECTED_FAIL = [
     await page.getByRole('heading', { name: '再生（VOD）' }).waitFor();
     await page.locator('.badge.ok', { hasText: '確定' }).first().waitFor({ timeout: 30000 });
     check('recording finalized (SSE refresh)', true);
-    await page.getByRole('button', { name: '▶ 再生' }).click();
+    await page.getByRole('button', { name: '再生', exact: true }).click();
     await page.waitForFunction(() => { const v = document.querySelector('video[aria-label="録画の再生"]'); return v && v.currentTime > 2; }, null, { timeout: 20000 });
     const d = await page.locator('video[aria-label="録画の再生"]').evaluate((v) => ({ t: v.currentTime, d: v.duration }));
     check('MSE VOD plays with duration', d.d > 4 && isFinite(d.d), JSON.stringify(d));
@@ -408,7 +502,7 @@ const EXPECTED_FAIL = [
 
   await step('schedules', async () => {
     await page.goto(`${base}/console/#/schedules`);
-    await page.getByRole('button', { name: '＋ 予約を作成' }).click();
+    await page.getByTestId('schedules-create').click();
     const dlg = page.getByRole('dialog');
     await dlg.getByLabel('タイムゾーン').selectOption('Asia/Tokyo');
     await dlg.getByLabel('名前（任意）').fill('browser-sched');
@@ -426,7 +520,7 @@ const EXPECTED_FAIL = [
 
   await step('tokens', async () => {
     await page.goto(`${base}/console/#/tokens`);
-    await page.getByRole('button', { name: '＋ トークンを発行' }).click();
+    await page.getByTestId('tokens-create').click();
     const dlg = page.getByRole('dialog');
     await dlg.getByLabel('名前').fill('browser-ro');
     await dlg.getByRole('button', { name: '発行' }).click();
@@ -466,7 +560,7 @@ const EXPECTED_FAIL = [
     await page.goto(`${base}/console/#/streams/${env.whep264}`);
     await page.getByRole('heading', { name: 'whep264' }).waitFor();
     const outSec = page.locator('section', { has: page.getByRole('heading', { name: '出力（push・PaaS）' }) });
-    await outSec.getByRole('button', { name: '＋ 出力を追加' }).click();
+    await outSec.getByRole('button', { name: '出力を追加' }).first().click();
     let dlg = page.getByRole('dialog');
     await dlg.getByLabel('方式').selectOption('rtmp_push');
     await dlg.getByLabel('URL').fill('rtmp://127.0.0.1:9/app');
@@ -498,7 +592,7 @@ const EXPECTED_FAIL = [
     await outSec.getByText('出力はありません').waitFor({ timeout: 8000 });
     check('output delete', true);
     const inSec = page.locator('section', { has: page.getByRole('heading', { name: '入力（pull）' }) });
-    await inSec.getByRole('button', { name: '＋ 入力を追加' }).click();
+    await inSec.getByRole('button', { name: '入力を追加' }).first().click();
     dlg = page.getByRole('dialog');
     await dlg.getByLabel('方式').selectOption('hls_pull');
     await dlg.getByLabel('URL').fill('http://127.0.0.1:9/live/index.m3u8');
@@ -564,7 +658,7 @@ const EXPECTED_FAIL = [
     await page.goto(`${base}/console/#/streams/${env.whep264}`);
     await page.locator('.badge.live').first().waitFor({ timeout: 20000 });
     await page.getByLabel('再生の方式').selectOption('webrtc');
-    await page.getByRole('button', { name: '▶ 再生' }).click();
+    await page.getByRole('button', { name: '再生', exact: true }).click();
     const v = await videoAdvances('video[aria-label="ライブのプレビュー"]', 20000);
     await sleep(1500);
     const status = await page.locator('.player-status').first().textContent();
@@ -573,7 +667,7 @@ const EXPECTED_FAIL = [
     const srcObj = await page.locator('video[aria-label="ライブのプレビュー"]').evaluate((x) => !!x.srcObject);
     check('WHEP preview plays H.264 RTMP stream (currentTime advances, getStats framesDecoded>0)', v.ok && decoded > 0 && srcObj && /WebRTC/.test(status), `t1=${v.t1.toFixed(2)} t2=${v.t2.toFixed(2)} ${status}`);
     await shot('09-whep');
-    await page.getByRole('button', { name: '■ 停止' }).first().click();
+    await page.getByRole('button', { name: '停止', exact: true }).first().click();
   });
 
   // ---------------------------------------------------------------- パイプライン（VP9 → AV1）
@@ -619,24 +713,24 @@ const EXPECTED_FAIL = [
     check('VP9/AV1 graph validates on node → plan shown', /av1/.test(planText) && /vp9/.test(planText), planText.slice(0, 200));
     // 方針に反する変更（royalty_free の stream で H.264）→ 問題の一覧
     await page.locator('[data-node="venc"]').click();
-    await page.getByLabel('コーデック（必須）').selectOption('h264');
+    await page.getByLabel('コーデック', { exact: true }).selectOption('h264');
     await clearToasts();
     await page.getByRole('button', { name: '検証', exact: true }).click();
     await page.locator('ul[data-remote] li').first().waitFor({ timeout: 8000 });
     const issues = await page.locator('ul[data-remote]').textContent();
     check('policy violation → node issue list from problem details', /venc/.test(issues) || /h264|H\.264|POLICY|CAPACITY/i.test(issues), issues.slice(0, 200));
-    await page.getByLabel('コーデック（必須）').selectOption('av1');
-    await page.getByLabel('ビットレート（kbps）（必須）').fill('700');
-    await page.getByLabel('ビットレート（kbps）（必須）').press('Tab');
+    await page.getByLabel('コーデック', { exact: true }).selectOption('av1');
+    await page.getByLabel('ビットレート（kbps）', { exact: true }).fill('700');
+    await page.getByLabel('ビットレート（kbps）', { exact: true }).press('Tab');
     await clearToasts();
     await page.getByRole('button', { name: '保存', exact: true }).click();
     await toastText(/ノードに保存しました/);
     const after = (await apiGet(`/pipelines/${pipelineId}`)).body;
     check('pipeline edit saved (PATCH graph with If-Match → new generation)', after.generation === 2 && after.graph.nodes.find((n) => n.id === 'venc').bitrate_kbps === 700, `gen=${after.generation}`);
     await clearToasts();
-    await page.getByRole('button', { name: '▶ 開始' }).click();
+    await page.getByTestId('pipeline-start').click();
     await toastText(/開始しました/);
-    await page.locator('.toolbar .badge', { hasText: 'running' }).waitFor({ timeout: 30000 });
+    await page.locator('.toolbar .badge[data-state="running"]').waitFor({ timeout: 30000 });
     check('pipeline start (PATCH desired_state) → observed running', true);
     await waitApi(`/streams/${env.pout}`, (b) => b && b.observed_state === 'live', 60000);
     check('pipeline output stream turns live', true);
@@ -691,7 +785,7 @@ const EXPECTED_FAIL = [
     const pv = 'video[aria-label="プログラムのモニター"]';
     const playing = await page.waitForFunction((s) => { const v = document.querySelector(s); return v && v.currentTime > 1; }, pv, { timeout: 8000 }).then(() => true).catch(() => false);
     if (!playing) {
-      await page.locator('.monitor.program').getByRole('button', { name: '▶ 再生' }).click();
+      await page.locator('.monitor.program').getByRole('button', { name: '再生', exact: true }).click();
     }
     const v = await videoAdvances(pv, 20000);
     const mstatus = await page.locator('.monitor.program .player-status').textContent();
@@ -699,8 +793,8 @@ const EXPECTED_FAIL = [
     await shot('11-switcher');
     // 止める
     await page.goto(`${base}/console/#/pipelines?id=${pipelineId}`);
-    await page.getByRole('button', { name: '■ 停止' }).click();
-    await page.locator('.toolbar .badge', { hasText: 'stopped' }).waitFor({ timeout: 20000 });
+    await page.getByTestId('pipeline-stop').click();
+    await page.locator('.toolbar .badge[data-state="stopped"]').waitFor({ timeout: 20000 });
     check('pipeline stop (PATCH desired_state)', true);
   });
 
@@ -710,7 +804,7 @@ const EXPECTED_FAIL = [
     await page.getByRole('heading', { name: 'このブラウザから送る' }).waitFor();
     await page.getByLabel('ストリームキー（保存しません）').fill(env.whipkey);
     await page.getByLabel('大きさ').selectOption('640x360');
-    await page.getByRole('button', { name: '● 送信を開始' }).click();
+    await page.getByTestId('send-start').click();
     await page.locator('.player-status[data-state="live"]').waitFor({ timeout: 20000 });
     await page.waitForFunction(() => Number((document.querySelector('[data-stats]') || {}).dataset?.frames || 0) > 30, null, { timeout: 15000 });
     const frames = await page.locator('[data-stats]').getAttribute('data-frames');
@@ -719,17 +813,154 @@ const EXPECTED_FAIL = [
     const stored = await page.evaluate((k) => [...Object.values(localStorage), ...Object.values(sessionStorage), location.href].some((x) => x.includes(k)), env.whipkey);
     check('WHIP send from fake camera → stream live (key not stored)', s.live && s.live.transport === 'webrtc' && keyGone && !stored, `frames=${frames} transport=${s.live && s.live.transport} tracks=${JSON.stringify(s.live && s.live.tracks).slice(0, 120)}`);
     await shot('12-whip');
-    await page.getByRole('button', { name: '■ 止める' }).click();
+    await page.getByTestId('send-stop').click();
     await page.locator('.player-status[data-state="idle"]').waitFor({ timeout: 5000 });
     check('WHIP stop (DELETE session)', true);
   });
 
+  // ---------------------------------------------------------------- 外枠: キーボードだけで動かす（スキップリンク・メニュー・パレット・ショートカット・ダイアログ・言語・明暗）
+  await step('shell keyboard', async () => {
+    await page.goto(`${base}/console/#/`);
+    await page.getByRole('heading', { name: 'ダッシュボード', level: 1 }).waitFor();
+    await page.reload();
+    await page.getByRole('heading', { name: 'ダッシュボード', level: 1 }).waitFor();
+    await page.keyboard.press('Tab');
+    await sleep(400);
+    const skip = await page.evaluate(() => ({ id: document.activeElement.id, visible: document.activeElement.getBoundingClientRect().top >= 0 }));
+    await page.keyboard.press('Enter');
+    const afterSkip = await page.evaluate(() => ({ id: document.activeElement.id, hash: location.hash }));
+    check('skip link is the first Tab stop, is shown, and moves focus to main without changing the route', skip.id === 'skip-link' && skip.visible && afterSkip.id === 'main' && afterSkip.hash === '#/', JSON.stringify([skip, afterSkip]));
+    const landmarks = await page.evaluate(() => ({ nav: !!document.querySelector('nav#nav[aria-label]'), main: !!document.querySelector('main#main'), banner: !!document.querySelector('header.topbar'), aside: !!document.querySelector('aside[aria-label]') }));
+    check('landmarks: banner, navigation, main, complementary', Object.values(landmarks).every(Boolean), JSON.stringify(landmarks));
+    // g → s で配信へ、aria-current が付く
+    await page.keyboard.press('g');
+    await page.keyboard.press('s');
+    await page.waitForFunction(() => location.hash === '#/streams');
+    await page.getByTestId('streams-table').waitFor();
+    check('go-to shortcut (g s) and aria-current on the nav item', await page.getByTestId('nav-streams').getAttribute('aria-current') === 'page');
+    // 入力中はショートカットが効かない
+    await page.getByTestId('streams-filter').focus();
+    await page.keyboard.type('gr');
+    await sleep(300);
+    check('shortcuts do not fire while typing', await page.evaluate(() => location.hash) === '#/streams' && (await page.getByTestId('streams-filter').inputValue()) === 'gr');
+    await page.getByTestId('streams-filter').fill('');
+    await page.getByTestId('streams-filter').press('Escape');
+    await page.evaluate(() => document.activeElement.blur());
+    // / はページの検索へ
+    await page.keyboard.press('/');
+    check('/ focuses the page search', await page.evaluate(() => document.activeElement.dataset.testid) === 'streams-filter');
+    await page.evaluate(() => document.activeElement.blur());
+    // ? でショートカットの一覧、Escape で閉じる
+    await page.keyboard.press('?');
+    await page.getByTestId('shortcuts').waitFor();
+    await page.keyboard.press('Escape');
+    await page.getByTestId('shortcuts').waitFor({ state: 'detached' });
+    check('? opens the shortcut help, Escape closes it', true);
+    // コマンドパレット: 資源（配信の名前）へ飛ぶ
+    await page.keyboard.press('Control+k');
+    await page.getByTestId('palette-input').waitFor();
+    const comboOk = await page.getByTestId('palette-input').evaluate((el) => el.getAttribute('role') === 'combobox' && document.activeElement === el);
+    await page.getByTestId('palette-input').fill('browser-av');
+    await page.locator('[data-testid="palette"] [role="option"]', { hasText: 'browser-av1' }).first().waitFor({ timeout: 8000 });
+    await page.keyboard.press('ArrowDown');
+    await page.keyboard.press('ArrowUp');
+    const active = await page.getByTestId('palette-input').getAttribute('aria-activedescendant');
+    const firstText = await page.locator(`#${active}`).textContent();
+    await page.keyboard.press('Enter');
+    await page.getByRole('heading', { name: 'browser-av1', level: 1 }).waitFor({ timeout: 8000 });
+    check('command palette (Ctrl+K): combobox, fuzzy match on a stream name, Enter opens it', comboOk && /browser-av1/.test(firstText), firstText);
+    await page.keyboard.press('Control+k');
+    await page.getByTestId('palette-input').fill('新しい配信');
+    await page.keyboard.press('Enter');
+    await page.getByTestId('stream-create-dialog').waitFor();
+    check('command palette action "新しい配信を作成" opens the create dialog', true);
+    // ダイアログの中でフォーカスが回る（外へ出ない）、Escape で閉じて元へ戻る
+    let inside = true;
+    for (let i = 0; i < 40; i++) {
+      await page.keyboard.press('Tab');
+      inside = inside && await page.evaluate(() => !!document.activeElement.closest('dialog[open]'));
+    }
+    await page.keyboard.press('Escape');
+    await page.getByTestId('stream-create-dialog').waitFor({ state: 'detached' });
+    check('dialog keeps focus inside (40 Tabs) and closes with Escape', inside);
+    // 確認のダイアログ: 削除は名前を入れるまで押せない
+    await page.goto(`${base}/console/#/streams/${env.whipcam}`);
+    await page.getByRole('heading', { name: 'whipcam', level: 1 }).waitFor();
+    const del = page.locator('.page-header').getByRole('button', { name: '削除' });
+    await del.focus();
+    await page.keyboard.press('Enter');
+    const okDisabled = await page.getByTestId('confirm-ok').isDisabled();
+    await page.getByRole('dialog').getByRole('textbox').fill('whipcam');
+    const okEnabled = await page.getByTestId('confirm-ok').isEnabled();
+    await page.keyboard.press('Escape');
+    await page.getByRole('dialog').waitFor({ state: 'detached' });
+    const back = await page.evaluate(() => document.activeElement.textContent.trim());
+    check('type-to-confirm delete: disabled until the name is typed, Escape returns focus to the trigger', okDisabled && okEnabled && back === '削除', `${okDisabled} ${okEnabled} ${back}`);
+    // 言語と明暗
+    await page.getByTestId('lang-button').click();
+    await page.getByTestId('lang-en').click();
+    await page.getByTestId('nav-streams').filter({ hasText: 'Streams' }).waitFor();
+    const lang = await page.evaluate(() => document.documentElement.lang);
+    await page.getByTestId('theme-button').click();
+    await page.getByTestId('theme-dark').click();
+    const theme = await page.evaluate(() => document.documentElement.dataset.theme);
+    await shot('04-shell-en-dark');
+    await page.goto(`${base}/console/#/_styleguide`);
+    await page.getByRole('heading', { name: 'Style guide', level: 1 }).waitFor();
+    const missingEn = await page.evaluate(() => window.__sencaI18nMissing());
+    await page.getByTestId('theme-button').click();
+    await page.getByTestId('theme-system').click();
+    await page.getByTestId('lang-button').click();
+    await page.getByTestId('lang-ja').click();
+    await page.getByTestId('nav-streams').filter({ hasText: '配信' }).waitFor();
+    check('language switch (ja ⇄ en, <html lang>) and theme switch (dark ⇄ system), persisted', lang === 'en' && theme === 'dark' && await page.evaluate(() => localStorage.getItem('senca.console.lang')) === 'ja', `${lang} ${theme}`);
+    check('style guide renders in English with no missing keys', missingEn.length === 0, missingEn.join(', '));
+  });
+
+  // ---------------------------------------------------------------- 狭い画面（390×844）: 引き出しのメニュー・横にはみ出さない・表はカード
+  await step('mobile', async () => {
+    const m = await browser.newContext({ viewport: { width: 390, height: 844 }, deviceScaleFactor: 2, isMobile: true, hasTouch: true, locale: 'ja-JP', timezoneId: 'Asia/Tokyo' });
+    await m.addInitScript((tok) => sessionStorage.setItem('senca.console.token', tok), token);
+    const mp = await m.newPage();
+    mp.on('pageerror', (e) => errors.push(`mobile pageerror: ${e.message}`));
+    const widths = {};
+    for (const r of ['/', '/streams', '/recordings', '/schedules', '/tokens', '/secrets', '/nodes', '/send', `/streams/${env.whep264}`, '/_styleguide']) {
+      await mp.goto(`${base}/console/#${r}`);
+      await mp.locator('main h1').first().waitFor({ timeout: 10000 });
+      await sleep(600);
+      widths[r] = await mp.evaluate(() => document.documentElement.scrollWidth - window.innerWidth);
+    }
+    const over = Object.entries(widths).filter(([, w]) => w > 1);
+    check('mobile: no horizontal page scrolling on any page', over.length === 0, JSON.stringify(over));
+    await mp.goto(`${base}/console/#/streams`);
+    await mp.getByTestId('streams-table').waitFor();
+    const card = await mp.locator('[data-testid="streams-table"] tbody tr').first().evaluate((tr) => getComputedStyle(tr).display);
+    check('mobile: tables become cards', card === 'block', card);
+    const menu = mp.getByTestId('menu-button');
+    const box = await menu.boundingBox();
+    await menu.click();
+    await mp.waitForFunction(() => document.querySelector('.shell').dataset.drawer === 'open');
+    const focused = await mp.evaluate(() => !!document.activeElement.closest('#nav'));
+    const inert = await mp.evaluate(() => document.querySelector('.workspace').inert);
+    await mp.keyboard.press('Escape');
+    await mp.waitForFunction(() => document.querySelector('.shell').dataset.drawer === 'closed');
+    const back = await mp.evaluate(() => document.activeElement.dataset.testid);
+    check('mobile: off-canvas drawer (focus moves in, page inert, Escape closes and returns focus), 44px touch target', focused && inert && back === 'menu-button' && box.height >= 44 && box.width >= 44, `${focused} ${inert} ${back} ${box.width}x${box.height}`);
+    await mp.screenshot({ path: path.join(work, '13-mobile-streams.png'), fullPage: true });
+    await m.close();
+  });
+
   await step('logout', async () => {
-    await page.getByRole('button', { name: 'ログアウト' }).click();
+    await page.getByTestId('user-menu').click();
+    await page.getByTestId('identity').waitFor();
+    check('user menu shows identity, node and scopes', /tenant:admin/.test(await page.getByTestId('identity').textContent()));
+    await page.getByTestId('logout').click();
     await page.getByRole('heading', { name: 'ログイン' }).waitFor();
     check('logout clears token', await page.evaluate(() => sessionStorage.length === 0));
   });
 
+  const missing = await page.evaluate(() => (window.__sencaI18nMissing ? window.__sencaI18nMissing() : ['no i18n'])).catch((e) => [e.message]);
+  check('no missing translation keys at runtime', missing.length === 0, missing.join(', '));
   check('no unexpected console errors', errors.length === 0, errors.join(' | '));
   check('token never written to console', !tokenLeak);
   fs.writeFileSync(path.join(work, 'result.json'), JSON.stringify({ checks, failedReqs }, null, 1));

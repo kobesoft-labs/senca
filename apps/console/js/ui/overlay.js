@@ -74,6 +74,32 @@ export function tooltip(el, text, { kbd } = {}) {
 
 // ---------------------------------------------------------------- ダイアログ
 
+/** ダイアログの中で Tab・Shift+Tab を回す（外へ出さない）。 */
+export function trapFocus(dlg) {
+  dlg.addEventListener('keydown', (e) => {
+    if (e.key !== 'Tab') return;
+    const items = [...dlg.querySelectorAll('button, [href], input, select, textarea, [tabindex]:not([tabindex="-1"])')]
+      .filter((el) => !el.disabled && el.offsetParent !== null && !el.closest('[popover]'));
+    if (!items.length) return;
+    const first = items[0];
+    const last = items[items.length - 1];
+    if (e.shiftKey && (document.activeElement === first || !dlg.contains(document.activeElement))) { e.preventDefault(); last.focus(); }
+    else if (!e.shiftKey && (document.activeElement === last || !dlg.contains(document.activeElement))) { e.preventDefault(); first.focus(); }
+  });
+}
+
+/** 開いた要素がもう無ければ（描き直された）、同じ testid か同じ名前のボタンを探す。 */
+function restoreFocus(opener) {
+  if (!opener) return;
+  let el = opener.isConnected ? opener : null;
+  if (!el && opener.dataset && opener.dataset.testid) el = document.querySelector(`[data-testid="${CSS.escape(opener.dataset.testid)}"]`);
+  if (!el && opener.tagName === 'BUTTON') {
+    const name = opener.getAttribute('aria-label') || opener.textContent;
+    el = [...document.querySelectorAll('main button')].find((b) => (b.getAttribute('aria-label') || b.textContent) === name) || null;
+  }
+  if (el && typeof el.focus === 'function') el.focus();
+}
+
 /**
  * モーダルのダイアログ。戻り値の Promise は閉じたときの値で解決する（Escape・×は undefined）。
  * build(close) は本文の要素を返す。actions(close) は下のボタンを返す。
@@ -92,7 +118,7 @@ export function modal(title, build, { actions, wide, icon: iconName, kind, testi
       done = true;
       dlg.close();
       dlg.remove();
-      if (opener && opener.isConnected && typeof opener.focus === 'function') opener.focus();
+      restoreFocus(opener);
       resolve(v);
     };
     dlg.addEventListener('cancel', (e) => { e.preventDefault(); close(undefined); });
@@ -113,6 +139,7 @@ export function modal(title, build, { actions, wide, icon: iconName, kind, testi
     );
     document.body.appendChild(dlg);
     dlg.showModal();
+    trapFocus(dlg);
     const first = (initialFocus && dlg.querySelector(initialFocus))
       || dlg.querySelector('.dlg-body [autofocus], .dlg-body input:not([type=hidden]):not([readonly]), .dlg-body select, .dlg-body textarea')
       || dlg.querySelector('.dlg-foot button.primary, .dlg-foot button:not(.danger)')

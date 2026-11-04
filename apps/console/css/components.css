@@ -224,7 +224,7 @@ a.card:hover { border-color: var(--accent-border); box-shadow: var(--shadow-2); 
 .card .sub { color: var(--text-2); font-size: var(--fs-xs); }
 
 /* 項目と値 */
-dl.kv { display: grid; grid-template-columns: minmax(96px, max-content) 1fr; gap: var(--sp-2) var(--sp-5); margin: 0; font-size: var(--fs-sm); }
+dl.kv { display: grid; grid-template-columns: minmax(7em, 10em) minmax(0, 1fr); gap: var(--sp-2) var(--sp-5); margin: 0; font-size: var(--fs-sm); }
 dl.kv dt { color: var(--text-2); }
 dl.kv dd { margin: 0; min-width: 0; overflow-wrap: anywhere; }
 @media (max-width: 480px) {

@@ -39,7 +39,8 @@ export function button(label, o = {}) {
   if (o.onClick) {
     el.addEventListener('click', async (e) => {
       const r = o.onClick(e);
-      if (r && typeof r.then === 'function') {
+      // ダイアログを開いた操作（確認など）は読み込み中にしない（閉じたときにこのボタンへフォーカスを戻すため）
+      if (r && typeof r.then === 'function' && !document.querySelector('dialog[open]')) {
         setLoading(el, true);
         try { await r; } finally { setLoading(el, false); }
       }

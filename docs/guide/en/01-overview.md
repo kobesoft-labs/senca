@@ -136,6 +136,9 @@ SENCA handles media data according to these principles:
 
 The web console (`apps/console`) is served at `/console/` when `--console-dir` is set, and the browser publishing
 page (`apps/sender-web`, WHIP) at `/sender/` when `--sender-dir` is set.
+The console is available in Japanese and English (it follows the browser language at first; switch it with the language button at the top).
+The theme follows the system setting, or you can pick light or dark. Press `Ctrl`+`K` (`⌘`+`K` on macOS) to search pages, streams and actions by
+name, and `?` to list the keyboard shortcuts.
 
 ## 1.5 Verification status
 
