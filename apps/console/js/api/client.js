@@ -1,7 +1,9 @@
 // 管理 API（/api/v1）の呼び出し。認証は Bearer トークン（sessionStorage に置く。ログには出さない）。
 //
 // 失敗は ApiError にする（problem+json の title・code・request_id・retryable・Retry-After を持つ）。
-// 401 は bus に `unauthorized` を流し、画面はログインへ戻る。
+// 401: 入り直しの処理（setReauthHandler、main.js がダイアログを出す）があれば、入り直すまで待ってから 1 回だけ送り直す
+//      （画面の状態を残すため）。無ければ bus に `unauthorized` を流し、画面はログインへ戻る。
+// 403 の details.reason が "pending"（パスワードの変更・MFA の登録が先）なら bus に `pending` を流す。
 
 import { emit } from '../lib/bus.js';
 import { t } from '../i18n/index.js';
@@ -17,6 +19,16 @@ export function setToken(t) {
 }
 export function clearToken() {
   try { sessionStorage.removeItem(TOKEN_KEY); } catch { /* 何もしない */ }
+}
+/** ログインのセッション（`sencas_`）か（API トークン・JWT ではない）。 */
+export function isSessionToken(tok = getToken()) {
+  return !!tok && tok.startsWith('sencas_');
+}
+
+let reauthHandler = null;
+/** 401 のときに呼ぶ関数（入り直せたら true で解決する Promise を返す）。null で外す。 */
+export function setReauthHandler(fn) {
+  reauthHandler = fn;
 }
 
 export class ApiError extends Error {
@@ -87,7 +99,8 @@ async function toError(res, method, path) {
  * @param {'json'|'blob'|'response'} [opt.as]
  * @param {AbortSignal} [opt.signal]
  * @param {string} [opt.token] 使うトークン（ログインの確認用）
- * @param {boolean} [opt.quiet401] 401 で画面を戻さない
+ * @param {boolean} [opt.quiet401] 401 で画面を戻さない（入り直しもしない）
+ * @param {'omit'|'same-origin'} [opt.credentials] クッキーを送るか（OIDC のコードの交換だけ same-origin）
  * @returns {Promise<{status:number, data:any, etag:string|null, headers:Headers}>}
  */
 export async function request(method, path, opt = {}) {
@@ -104,14 +117,21 @@ export async function request(method, path, opt = {}) {
   const url = buildUrl(path, opt.query);
   let res;
   try {
-    res = await fetch(url, { method, headers, body, signal: opt.signal, cache: 'no-store', credentials: 'omit' });
+    res = await fetch(url, { method, headers, body, signal: opt.signal, cache: 'no-store', credentials: opt.credentials || 'omit' });
   } catch (e) {
     if (e.name === 'AbortError') throw e;
     throw new ApiError({ status: 0, title: statusText(0), method, path });
   }
   if (!res.ok) {
     const err = await toError(res, method, path);
-    if (res.status === 401 && !opt.quiet401) emit('unauthorized', err);
+    if (res.status === 401 && !opt.quiet401 && opt.token === undefined && token) {
+      // 期限切れ・失効。入り直せたら同じ要求を 1 回だけ送り直す（401 の要求は処理されていないので、POST でも重ならない）
+      // 送った後で別の要求が入り直していた（値が変わった）なら、待たずに送り直す
+      if (!opt.retried && getToken() && getToken() !== token) return request(method, path, { ...opt, retried: true });
+      if (reauthHandler && !opt.retried && await reauthHandler(err)) return request(method, path, { ...opt, retried: true });
+      if (!reauthHandler) emit('unauthorized', err);
+    }
+    if (res.status === 403 && err.details && err.details.reason === 'pending') emit('pending', err.details.pending || []);
     throw err;
   }
   const etag = res.headers.get('etag');
