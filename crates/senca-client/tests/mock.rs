@@ -150,6 +150,24 @@ async fn paginates_with_cursor() {
 }
 
 #[tokio::test]
+async fn audit_pages_continue_past_an_empty_page() {
+    // GET /audit は、ノードが読む量の上限に達すると空の頁と続きの cursor を返すことがある
+    let e = |id: &str| format!(r#"{{"action":"stream.create","node":"n1","node_name":"n","request_id":"{id}","resource":"r","subject":"token:a","tenant":"default","ts":"2026-01-01T00:00:00.000Z"}}"#);
+    let (url, seen) = serve(vec![
+        resp("200 OK", "", "application/json", &format!(r#"{{"items":[{}],"next_cursor":"c1","unavailable_nodes":[]}}"#, e("a"))),
+        resp("200 OK", "", "application/json", r#"{"items":[],"next_cursor":"c2","unavailable_nodes":[]}"#),
+        resp("200 OK", "", "application/json", &format!(r#"{{"items":[{}],"next_cursor":null,"unavailable_nodes":[]}}"#, e("b"))),
+    ])
+    .await;
+    let q = senca_client::AuditQuery { action: Some("stream.".into()), ..Default::default() };
+    let all = client(&url).audit().list(&q).collect_all().await.unwrap();
+    assert_eq!(all.iter().map(|x| x.request_id.as_str()).collect::<Vec<_>>(), ["a", "b"]);
+    let s = seen.lock().unwrap();
+    assert!(s[0].line().starts_with("GET /api/v1/audit?action=stream. "), "{}", s[0].line());
+    assert!(s[2].line().starts_with("GET /api/v1/audit?cursor=c2&action=stream. "), "{}", s[2].line());
+}
+
+#[tokio::test]
 async fn sse_reconnects_with_last_event_id() {
     let ev = r#"{"type":"stream.created","resource_id":"s1","occurred_at":"2026-01-01T00:00:00Z","data":{}}"#;
     let first = format!(

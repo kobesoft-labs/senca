@@ -60,6 +60,7 @@ client.streams().delete(&s.id, s.if_match()).await?;
 | クライアント | `capabilities`・`grid`・`devices`・`events`・`healthz`・`readyz`・`fetch_signed`（署名付きの再生パスを取得。307 のリダイレクトをたどる）・`request_json`（型のないリクエスト） |
 | `rooms()` | `create`・`list`・`list_with`・`list_page`・`get`・`update`・`delete`・`issue_token`・`send_message`・`stats`・`participants`・`participants_with`・`participant`・`update_participant`・`disconnect` |
 | `media_pipelines()` | `create`・`list`・`list_with`（`ListOptions::room` で絞り込み）・`list_page`・`get`・`update`・`set_state`・`delete` |
+| `audit()` | `list(&AuditQuery)`・`list_with`・`list_page`（監査ログ。新しい順、`AuditQuery` で時刻・操作・主体・資源・ノードを絞り込み） |
 
 ## 規約
 

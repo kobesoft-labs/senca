@@ -60,6 +60,7 @@ Each resource is reached through `client.<resource>()` (the mapping between meth
 | Client | `capabilities`, `grid`, `devices`, `events`, `healthz`, `readyz`, `fetch_signed` (signed playback paths, follows 307), `request_json` (untyped requests) |
 | `rooms()` | `create`, `list`, `list_with`, `list_page`, `get`, `update`, `delete`, `issue_token`, `send_message`, `stats`, `participants`, `participants_with`, `participant`, `update_participant`, `disconnect` |
 | `media_pipelines()` | `create`, `list`, `list_with` (filter with `ListOptions::room`), `list_page`, `get`, `update`, `set_state`, `delete` |
+| `audit()` | `list(&AuditQuery)`, `list_with`, `list_page` (the audit log, newest first; `AuditQuery` filters by time, action, subject, resource and node) |
 
 ## Conventions
 

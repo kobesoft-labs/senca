@@ -14,9 +14,9 @@ info:
     - **本文**: `Content-Type: application/json` 以外は 415 です。未知のフィールドは 400 です（スキーマでは `additionalProperties: false`）。HTTP 層の本文の上限は 1 MiB で、超えると text/plain の 413 を返して接続を閉じます。
     - **Idempotency-Key**: POST に付けると、24 時間は同じ応答（状態コード・本文・Location）を返します。再送に対する応答には `Idempotency-Replayed: true` が付きます。同じキーで別の要求（メソッド・パス・クエリ・本文の SHA-256 のいずれかが違う）を送ると 409（`IDEMPOTENCY_CONFLICT`）です。キーは 1〜255 文字の表示可能な ASCII で、違反すると 400 です。保存する応答からは秘密（`stream_key`・`token`・`secret`）を取り除き、代わりに `stream_key_redacted: true`・`token_redacted: true`（`secret_redacted: true`）を入れます。5xx の応答は保存しません。
     - **楽観的排他制御**: 応答の `ETag` は `"{generation}"` です。PATCH には `If-Match` が必須で、無ければ 428、形式が違うか古ければ 412 です。DELETE の `If-Match` は任意です（付けた場合は検査します）。
-    - **一覧**: `limit`（1〜1000、既定 100）と `cursor`（前の応答の `next_cursor`）でページングします。並び順は ID の昇順です。知らないクエリパラメーターは 400 です。
+    - **一覧**: `limit`（1〜1000、既定 100）と `cursor`（前の応答の `next_cursor`）でページングします。並び順は ID の昇順です（`GET /audit` だけは時刻の新しい順）。知らないクエリパラメーターは 400 です。
     - **エラー**: エラーは `application/problem+json`（`Problem`）で返します。すべての応答に `X-Request-Id` と `Cache-Control: no-store` が付きます。`X-Request-Id` は、要求の `X-Request-Id` が 64 文字以内の英数字と `-_.` であればその値、そうでなければ生成した `req_...` です。
-    - **405**: 定義済みの資源（`/capabilities`・`/nodes/...`・`/devices`・`/grid`・`/events`・`/streams/...`・`/recordings/...`・`/schedules/...`・`/tokens/...`・`/inputs/...`・`/outputs/...`・`/secrets/...`・`/pipelines/...`・`/rooms/...`・`/media-pipelines/...`）に、この文書に無いメソッド（HEAD を含む）を送ると 405（`METHOD_NOT_ALLOWED`）です。それ以外の未知のパスは 404 です。`x-senca-undefined-method-status` を参照してください。
+    - **405**: 定義済みの資源（`/capabilities`・`/nodes/...`・`/devices`・`/grid`・`/events`・`/streams/...`・`/recordings/...`・`/schedules/...`・`/tokens/...`・`/audit`・`/inputs/...`・`/outputs/...`・`/secrets/...`・`/pipelines/...`・`/rooms/...`・`/media-pipelines/...`）に、この文書に無いメソッド（HEAD を含む）を送ると 405（`METHOD_NOT_ALLOWED`）です。それ以外の未知のパスは 404 です。`x-senca-undefined-method-status` を参照してください。
     - **429**: 要求の量の上限を超えると、どの `/api/v1` の操作（`GET /events` を含む）も 429（`RATE_LIMITED`、`retryable: true`）を返します。
       `Retry-After` は次に通るまでの秒数で、`details` は `{limit, retry_after_secs}` です。`limit` は `ip`（送信元の IP アドレスごと。認証の前に数えます）・
       `token`（主体ごと: API トークン・JWT の subject）・`auth_failures`（認証に失敗した IP アドレス。使い切ると正しい資格情報でも 429）・
@@ -55,6 +55,8 @@ tags:
     description: 配信や録画の予約です。
   - name: tokens
     description: API トークンです（ADR-0005）。
+  - name: audit
+    description: 監査ログです（状態を変更する管理 API の操作の記録）。
   - name: io
     description: |
       入力（pull）と出力（push・PaaS 連携）です。定義は制御状態に保存され、ノードが非同期に実行します。
@@ -1088,6 +1090,90 @@ paths:
         '404': { $ref: '#/components/responses/NotFound' }
         '409': { $ref: '#/components/responses/Conflict' }
         '500': { $ref: '#/components/responses/InternalError' }
+
+  # ------------------------------------------------------------------ audit
+  /audit:
+    get:
+      tags: [audit]
+      operationId: listAudit
+      summary: 監査ログの一覧（新しい順）
+      description: |
+        状態を変更する管理 API の操作の記録（各ノードの `data_dir/audit.log`）を、時刻の新しい順に返します。
+        見えるのは自分のテナントの記録だけです。`node:admin` も持つ主体は、`tenant` で別のテナント（`*` ならすべて）を指定できます。
+
+        **クラスター**: 記録は要求を受けたノードにあります。このノードは各ノードにノード間の接続（クラスターの共有シークレットによる相互認証、
+        設定していれば mTLS）で問い合わせ、時刻の新しい順に合わせて返します。呼び出し元の認証情報はほかのノードへ送りません
+        （テナントの絞り込みは、このノードが呼び出し元の権限から決めて問い合わせに含めます）。5 秒以内に答えなかったノードは
+        `unavailable_nodes` に入り、そのノードの記録は含まれません（`node` でそのノードを指定した場合は 503）。各項目の `node` は記録したノードです。
+
+        **ページング**: `limit` と `cursor` は他の一覧と同じです。`next_cursor` はノードごとの読み出しの位置をまとめた値で、そのまま次の要求の
+        `cursor` に渡します（中身の形は決まっていません。絞り込みの条件は次の要求でも同じものを付けてください）。1 回の要求で各ノードが読む量には上限
+        （16 MiB）があり、上限に達したノードがあると、項目が `limit` より少なくても `next_cursor` を返します。`next_cursor` が null になるまでたどってください。
+        ファイルは後ろから少しずつ読むので、記録が大きくてもファイル全体をメモリに読み込みません。
+
+        **回転**: `audit.log` が `--audit-log-max-bytes`（既定 64 MiB）に達すると `audit.log.{N}` に名前を変え、新しいものから
+        `--audit-log-keep`（既定 8）個を残します。一覧は回転したファイルもまたいで読みます。消したファイルの記録は返しません。
+
+        記録の中身は操作によって増えることがあります（未知のフィールドは読み飛ばしてください）。JSON として読めない行は飛ばします。
+      x-senca-scope: tenant:admin
+      parameters:
+        - $ref: '#/components/parameters/Limit'
+        - name: cursor
+          in: query
+          required: false
+          description: 前の応答の `next_cursor`
+          schema: { type: string }
+        - name: since
+          in: query
+          required: false
+          description: この時刻以降の記録（含む、RFC 3339）
+          schema: { type: string, format: date-time }
+        - name: until
+          in: query
+          required: false
+          description: この時刻より前の記録（含まない、RFC 3339）
+          schema: { type: string, format: date-time }
+        - name: action
+          in: query
+          required: false
+          description: '操作の種類。完全に一致するもの（`stream.create`）。`.` か `*` で終われば前方一致（`stream.`・`room.participant.*`）'
+          schema: { type: string, minLength: 1 }
+        - name: subject
+          in: query
+          required: false
+          description: '操作した主体（`token:{ID}`・JWT の `sub` など）に完全に一致するもの'
+          schema: { type: string, minLength: 1 }
+        - name: resource
+          in: query
+          required: false
+          description: 対象の資源（`resource`）に完全に一致するもの
+          schema: { type: string, minLength: 1 }
+        - name: q
+          in: query
+          required: false
+          description: '`action`・`subject`・`resource`・`request_id` のいずれかに含まれる文字列（大文字・小文字を区別しません）'
+          schema: { type: string, minLength: 1 }
+        - name: node
+          in: query
+          required: false
+          description: 'このノード（ID または名前）の記録だけを読みます。知らないノードは 400 です'
+          schema: { type: string, minLength: 1 }
+        - name: tenant
+          in: query
+          required: false
+          description: '読むテナント（既定は自分のテナント）。別のテナントと `*`（すべて）は `node:admin` が必要です（無ければ 403）'
+          schema: { type: string, minLength: 1 }
+      responses:
+        '200':
+          description: 監査ログの一覧
+          headers: { X-Request-Id: { $ref: '#/components/headers/X-Request-Id' } }
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/AuditList' }
+        '400': { $ref: '#/components/responses/BadRequest' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '403': { $ref: '#/components/responses/Forbidden' }
+        '503': { $ref: '#/components/responses/ServiceUnavailable' }
 
   # ------------------------------------------------------------------ inputs / outputs
   /streams/{id}/inputs:
@@ -3039,6 +3125,33 @@ components:
       properties:
         items: { type: array, items: { $ref: '#/components/schemas/Token' } }
         next_cursor: { type: [string, 'null'] }
+    AuditEntry:
+      type: object
+      additionalProperties: true
+      description: |
+        監査ログの 1 件（`audit.log` の 1 行に `node`・`node_name` を足したもの）。秘密情報やリクエストの本文は含みません。
+        操作によってフィールドが増えることがあります。
+      required: [ts, tenant, subject, action, resource, request_id, node, node_name]
+      properties:
+        ts: { $ref: '#/components/schemas/Timestamp' }
+        tenant: { type: string }
+        subject: { type: string, description: '操作した主体。API トークンなら `token:{ID}`、JWT なら `sub` の値' }
+        action: { type: string, description: '操作の種類（`stream.create`・`token.delete`・`node.drain` など。`{資源}.{操作}` の形）' }
+        resource: { type: string, description: '対象の資源の ID（装置・参加者などは `{ノード}/{装置}`・`{部屋}/{接続}` の形）' }
+        request_id: { type: string, description: '要求 ID（応答の `X-Request-Id`）' }
+        node: { type: string, description: 記録したノード（要求を受けたノード）の ID }
+        node_name: { type: string, description: 記録したノードの名前 }
+    AuditList:
+      type: object
+      additionalProperties: false
+      required: [items, next_cursor, unavailable_nodes]
+      properties:
+        items: { type: array, items: { $ref: '#/components/schemas/AuditEntry' } }
+        next_cursor: { type: [string, 'null'] }
+        unavailable_nodes:
+          type: array
+          items: { type: string }
+          description: 時間内に答えなかったノードの ID（その記録は含まれません。単一ノードでは常に空）
     Capabilities:
       type: object
       additionalProperties: false

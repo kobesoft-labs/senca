@@ -74,6 +74,10 @@ pub struct Config {
     pub rate_limit_connect: u32,
     /// SSE の再開のために残す直近のイベントの数。
     pub events_retain: usize,
+    /// 監査ログ（`audit.log`）を回転する大きさ（バイト）。0 なら回転しない。
+    pub audit_log_max_bytes: u64,
+    /// 回転した監査ログを残す数（1〜1000）。
+    pub audit_log_keep: usize,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Deserialize, Default)]
@@ -251,6 +255,8 @@ impl Default for Config {
             rate_limit_auth_failures: DEFAULT_RATE_LIMIT_AUTH_FAILURES,
             rate_limit_connect: DEFAULT_RATE_LIMIT_CONNECT,
             events_retain: crate::control::DEFAULT_EVENT_LOG,
+            audit_log_max_bytes: crate::audit::DEFAULT_MAX_BYTES,
+            audit_log_keep: crate::audit::DEFAULT_KEEP,
         }
     }
 }
@@ -290,6 +296,7 @@ pub const USAGE: &str = "senca-node [--config FILE] [--data-dir DIR] [--http ADD
   [--rooms-cascade] [--rooms-auth-webhook URL] [--rooms-auth-mode after_token|only] [--rooms-event-webhook URL]
   [--rooms-webhook-secret-file FILE] [--webrtc-public-ip IP[,IP]...]
   [--rate-limit-ip N] [--rate-limit-token N] [--rate-limit-auth-failures N] [--rate-limit-connect N] [--events-retain N]
+  [--audit-log-max-bytes BYTES] [--audit-log-keep N]
   [--recording-storage local|s3://BUCKET[/PREFIX] [--s3-endpoint URL] [--s3-region REGION] [--s3-addressing path|virtual]
    [--s3-credentials FILE] [--s3-part-size BYTES] [--recording-keep-local SECS]]";
 
@@ -401,6 +408,8 @@ impl Config {
                 _ if flag("--rate-limit-auth-failures") => cfg.rate_limit_auth_failures = small(num(val()?)?)?,
                 _ if flag("--rate-limit-connect") => cfg.rate_limit_connect = small(num(val()?)?)?,
                 _ if flag("--events-retain") => cfg.events_retain = num(val()?)? as usize,
+                _ if flag("--audit-log-max-bytes") => cfg.audit_log_max_bytes = num(val()?)?,
+                _ if flag("--audit-log-keep") => cfg.audit_log_keep = num(val()?)? as usize,
                 _ if flag("--label") => {
                     let v = val()?;
                     let (k, x) = v.split_once('=').ok_or_else(|| format!("--label は key=value: {v}"))?;
@@ -482,6 +491,12 @@ impl Config {
         if self.events_retain > 1_000_000 {
             return Err("--events-retain は 0〜1000000".into());
         }
+        if self.audit_log_max_bytes != 0 && self.audit_log_max_bytes < 4096 {
+            return Err("--audit-log-max-bytes は 0（回転しない）か 4096 以上".into());
+        }
+        if !(1..=1000).contains(&self.audit_log_keep) {
+            return Err("--audit-log-keep は 1〜1000".into());
+        }
         if self.max_playback_ttl_secs == 0 {
             return Err("--max-playback-ttl must be > 0".into());
         }
@@ -516,5 +531,16 @@ mod tests {
         assert!(Config::from_args(&args(&["--label", "senca.io/webrtc=true"])).is_err());
         assert!(Config::from_args(&args(&["--label", "zone=b"])).is_ok());
         std::fs::remove_dir_all(&d).unwrap();
+    }
+
+    #[test]
+    fn audit_log_rotation_flags() {
+        let c = Config::from_args(&[]).unwrap();
+        assert_eq!((c.audit_log_max_bytes, c.audit_log_keep), (64 << 20, 8));
+        let c = Config::from_args(&args(&["--audit-log-max-bytes", "0", "--audit-log-keep", "3"])).unwrap();
+        assert_eq!((c.audit_log_max_bytes, c.audit_log_keep), (0, 3));
+        assert!(Config::from_args(&args(&["--audit-log-max-bytes", "100"])).is_err());
+        assert!(Config::from_args(&args(&["--audit-log-keep", "0"])).is_err());
+        assert!(Config::from_args(&args(&["--audit-log-keep", "1001"])).is_err());
     }
 }

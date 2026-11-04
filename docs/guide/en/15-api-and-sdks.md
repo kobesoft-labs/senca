@@ -364,7 +364,7 @@ try {
   `recordings` (`stop`, `playbackUrl`, `thumbnail`, `exportMp4`; recordings are started with `streams.startRecording`), `schedules`
   (`check`, `runs`), `tokens`, `inputs` and `outputs` (`create(streamId, body)`, `list(streamId)`), `secrets`, `pipelines` (`validate`,
   `control`), `nodes` (`drain`, `undrain`, `devices.disable/enable`), `rooms` (`createToken`,
-  `participants(id).list/get/updateMetadata/disconnect`, `sendMessage`, `stats`), `mediaPipelines` (`list({room})`, `start`, `stop`). On the
+  `participants(id).list/get/updateMetadata/disconnect`, `sendMessage`, `stats`), `mediaPipelines` (`list({room})`, `start`, `stop`), `audit` (`list({since, action, ...})`, `listPage`; the audit log). On the
   client itself: `capabilities()`, `devices()`, `grid()`, `events()`. Untyped calls: `senca.request(method, path, opts)`.
 - Common methods: `create`, `list` (a `Paginator`; `for await` walks every page), `listPage` (one page), `get`, `update` (`ifMatch` is
   required; omitting it throws `TypeError`), `modify`, `delete` (`ifMatch` optional).
@@ -467,6 +467,7 @@ client.streams().delete(&s.id, s.if_match()).await?;
 | `nodes()` | `list`, `get`, `drain`, `undrain`, `disable_device`, `enable_device` |
 | `rooms()` | `create`, `create_with`, `list`, `list_with`, `list_page`, `get`, `update`, `delete`, `issue_token`, `send_message`, `stats`, `participants`, `participants_with`, `participant`, `update_participant`, `disconnect` |
 | `media_pipelines()` | `create`, `create_with`, `list`, `list_with` (`ListOptions::room`), `list_page`, `get`, `update`, `set_state`, `delete` |
+| `audit()` | `list(&AuditQuery)`, `list_with`, `list_page` (the audit log, [12.12](12-security.md#1212-audit-log)) |
 | Client | `capabilities`, `grid`, `devices`, `events`, `healthz`, `readyz`, `fetch_signed` (signed playback paths; follows 307), `request_json` (untyped) |
 
 - **Versions**: `get`, `create` and `update` return `Versioned<T>` (`value`, `etag`, `replayed`, `request_id`; derefs to the value). The
