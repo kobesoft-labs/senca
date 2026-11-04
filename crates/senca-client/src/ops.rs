@@ -46,6 +46,30 @@ pub const OPERATIONS: &[(&str, &str)] = &[
     ("listTokens", "Tokens::list"),
     ("getToken", "Tokens::get"),
     ("deleteToken", "Tokens::delete"),
+    ("getAuthProviders", "Auth::providers"),
+    ("login", "Auth::login"),
+    ("loginMfa", "Auth::login_mfa"),
+    ("exchangeLoginCode", "Auth::exchange"),
+    ("startOidcLogin", "Auth::oidc_start_url"),
+    ("oidcCallback", "Auth::oidc_callback_url"),
+    ("getMe", "Auth::me"),
+    ("logout", "Auth::logout"),
+    ("changePassword", "Auth::change_password"),
+    ("setupTotp", "Auth::setup_totp"),
+    ("confirmTotp", "Auth::confirm_totp"),
+    ("disableMfa", "Auth::disable_mfa"),
+    ("regenerateRecoveryCodes", "Auth::regenerate_recovery_codes"),
+    ("listMySessions", "Auth::sessions"),
+    ("revokeMySession", "Auth::revoke_session"),
+    ("createUser", "Users::create"),
+    ("listUsers", "Users::list"),
+    ("getUser", "Users::get"),
+    ("updateUser", "Users::update"),
+    ("deleteUser", "Users::delete"),
+    ("resetUserPassword", "Users::reset_password"),
+    ("resetUserMfa", "Users::reset_mfa"),
+    ("listUserSessions", "Users::sessions"),
+    ("revokeUserSessions", "Users::revoke_sessions"),
     ("createInput", "Inputs::create"),
     ("listInputs", "Inputs::list"),
     ("getInput", "Inputs::get"),
@@ -130,6 +154,12 @@ mod tests {
         let _ = crate::SencaClient::fetch_signed;
         let _ = crate::SencaClient::healthz;
         let _ = crate::SencaClient::readyz;
+        let _ = (c.auth(), c.users(), c.with_token("sencas_x"));
+        let _ = (crate::Auth::providers, crate::Auth::login, crate::Auth::login_mfa, crate::Auth::exchange, crate::Auth::oidc_start_url);
+        let _ = (crate::Auth::oidc_callback_url, crate::Auth::me, crate::Auth::logout, crate::Auth::change_password, crate::Auth::setup_totp);
+        let _ = (crate::Auth::confirm_totp, crate::Auth::disable_mfa, crate::Auth::regenerate_recovery_codes, crate::Auth::sessions);
+        let _ = (crate::Auth::revoke_session, crate::Users::create, crate::Users::list, crate::Users::get);
+        let _ = (crate::Users::delete, crate::Users::reset_password, crate::Users::reset_mfa, crate::Users::sessions, crate::Users::revoke_sessions);
         let _ = (c.streams(), c.recordings(), c.schedules(), c.tokens(), c.inputs(), c.outputs(), c.secrets(), c.pipelines(), c.nodes());
         let _ = (crate::Nodes::list, crate::Nodes::get, crate::Nodes::drain, crate::Nodes::undrain, crate::Nodes::disable_device, crate::Nodes::enable_device);
         let _ = (crate::Streams::create, crate::Streams::list, crate::Streams::get, crate::Streams::delete);

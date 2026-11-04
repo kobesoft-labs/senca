@@ -33,6 +33,61 @@
   ／ 監査ログの回転: `--audit-log-max-bytes`（既定 64 MiB、`0` で回転しない）に達すると `audit.log` を `audit.log.{N}` に名前を変え、
   回転したファイルを `--audit-log-keep`（既定 8）個残します。1 行の形式は変わりません
 
+- User accounts in the replicated control state, per tenant: username, optional email and display name, an optional password
+  (Argon2id via the `argon2` crate, PHC string, rehashed on login when parameters rise), roles `admin`/`operator`/`viewer` plus
+  extra scopes, disable, `must_change_password`, TOTP (RFC 6238 via `totp-rs`, secret sealed like `/secrets`) and ten single-use
+  recovery codes. `/api/v1/users` (create, list, get, `PATCH` with `If-Match`, delete, reset password with a generated temporary
+  password, reset MFA, list/revoke sessions). Grants are capped by the caller's own scopes; users holding scopes the caller lacks
+  cannot be managed; the last admin of a tenant cannot be deleted, disabled or demoted (409). SSE `user.created`/`user.updated`/
+  `user.deleted` for `tenant:admin`
+  ／ 制御状態にテナントごとの利用者を持たせます: 利用者名、任意のメールアドレス・表示名、任意のパスワード（`argon2` crate の Argon2id、PHC 文字列。
+  パラメーターを上げたときはログインのときに作り直します）、役割 `admin`・`operator`・`viewer` と個別の権限、無効化、`must_change_password`、
+  TOTP（`totp-rs` による RFC 6238。秘密は `/secrets` と同じく暗号化）と 1 回ずつ使える回復コード 10 個。`/api/v1/users`（作成・一覧・取得・
+  `If-Match` 付きの `PATCH`・削除・仮のパスワードによる再設定・MFA の解除・セッションの一覧と失効）を追加しました。渡せる権限は自分の権限まで、
+  自分の持たない権限を持つ利用者は扱えません。テナントの最後の管理者は削除・無効化・降格できません（409）。`tenant:admin` には SSE の
+  `user.created`・`user.updated`・`user.deleted` が流れます
+- Login sessions: opaque `sencas_` bearer values (SHA-256 stored), accepted wherever API tokens are; idle timeout 8 h
+  (`--auth-session-idle`) and lifetime 7 d (`--auth-session-lifetime`), last use recorded coarsely (at most every 5 min by default);
+  revoked on logout, password change/reset, disable/delete and role change. `POST /api/v1/auth/login` (→ `mfa_required` +
+  `mfa_token` for TOTP users) and `POST /api/v1/auth/login/mfa`; `GET /api/v1/auth/me`, `POST /api/v1/auth/logout`,
+  `POST /api/v1/auth/password`, TOTP enrolment (`/auth/mfa/totp/setup`, `/confirm`), `/auth/mfa/disable`,
+  `/auth/mfa/recovery-codes`, `GET`/`DELETE /api/v1/auth/sessions`. Generic 401 for every failure with equal hashing work for
+  unknown users; per-IP (`--rate-limit-login`, 429 `login`) and per-account (exponential up to 15 min, 429 `login_account`)
+  throttling. `--auth-require-mfa` forces TOTP enrolment at the next password login; `--auth-password-login off` leaves OIDC only.
+  Audit subject `user:{id}`, new `auth.*`/`user.*` audit actions
+  ／ ログインのセッション: 不透明な `sencas_` の値（SHA-256 だけを保存）で、API トークンと同じ所で使えます。待ち時間 8 時間（`--auth-session-idle`）・
+  寿命 7 日（`--auth-session-lifetime`）、最後に使った時刻は粗い間隔（既定では最長 5 分おき）で記録します。ログアウト・パスワードの変更と再設定・
+  無効化と削除・役割の変更で失効します。`POST /api/v1/auth/login`（TOTP の利用者には `mfa_required` と `mfa_token`）と `POST /api/v1/auth/login/mfa`、
+  `GET /api/v1/auth/me`・`POST /api/v1/auth/logout`・`POST /api/v1/auth/password`・TOTP の登録（`/auth/mfa/totp/setup`・`/confirm`）・
+  `/auth/mfa/disable`・`/auth/mfa/recovery-codes`・`GET`/`DELETE /api/v1/auth/sessions` を追加しました。失敗はどれも同じ 401 で、知らない利用者でも
+  同じだけ計算します。送信元の IP アドレスごと（`--rate-limit-login`、429 `login`）とアカウントごと（倍々に最長 15 分、429 `login_account`）に
+  失敗を数えます。`--auth-require-mfa` で次のパスワードのログインのときに TOTP の登録を求め、`--auth-password-login off` で OIDC だけにします。
+  監査ログの主体は `user:{id}` で、`auth.*`・`user.*` の項目を記録します
+- OIDC single sign-on as a relying party (authorization code + PKCE S256, `state`, `nonce`; confidential or public clients) for
+  Google, Microsoft Entra ID, Keycloak, Auth0 and others: `--oidc-*` for one provider, `--oidc-config` for several;
+  `GET /api/v1/auth/providers` (public; also reports `setup_required` when no user exists), `GET /api/v1/auth/oidc/{id}/start`,
+  `GET /api/v1/auth/oidc/{id}/callback` (redirects to `/console/#/auth/complete?code=` or `?error=`) and
+  `POST /api/v1/auth/exchange` (60 s single-use code bound to the browser's flow cookie). The flow state lives in a sealed
+  cookie, so the callback may land on any cluster node. Discovery and JWKS come only from the configured issuer (cached, refreshed
+  on unknown `kid`); ID tokens are checked with the existing JWT verifier plus `nonce`, `azp`, `iat` and `auth_time`. Users are
+  matched by linked subject, then verified email, then optionally auto-provisioned; tenant from a fixed value or a claim; roles
+  from claim mappings
+  ／ OIDC のシングルサインオン（ノードが relying party。認可コードフローと PKCE S256・`state`・`nonce`、confidential・public のクライアント）で、
+  Google・Microsoft Entra ID・Keycloak・Auth0 などに対応します。IdP が 1 つなら `--oidc-*`、複数なら `--oidc-config` で設定します。
+  `GET /api/v1/auth/providers`（認証なし。利用者がいなければ `setup_required` も返します）、`GET /api/v1/auth/oidc/{id}/start`、
+  `GET /api/v1/auth/oidc/{id}/callback`（`/console/#/auth/complete?code=` か `?error=` へリダイレクト）、`POST /api/v1/auth/exchange`
+  （60 秒・1 回だけのコードで、ログインを始めたブラウザーのクッキーと組）を追加しました。途中の値は暗号化したクッキーに入れるので、
+  コールバックはクラスターのどのノードに届いてもかまいません。discovery と JWKS は設定した発行者からだけ取得します（キャッシュし、知らない `kid` で
+  取り直します）。ID トークンは既存の JWT の検証に `nonce`・`azp`・`iat`・`auth_time` の検査を足して確かめます。利用者は、結び付いた `sub`、
+  確認済みのメールアドレスの順に探し、設定によっては自動で作ります。テナントは固定かクレーム、役割はクレームの対応で決めます
+- Recovery: `senca-node reset-password --username NAME [--create-admin]` (calls the local node's API with the bootstrap or recovery
+  admin token; re-enables the user, removes MFA, prints a temporary password) and `--recovery-admin-token` (writes a 24 h admin token
+  to `control/recovery-admin-token`)
+  ／ 回復の手順: `senca-node reset-password --username NAME [--create-admin]`（最初の管理者トークンか回復用のトークンで手元のノードの API を呼び、
+  利用者を有効に戻し、MFA を外し、仮のパスワードを表示します）と `--recovery-admin-token`（24 時間有効の管理者トークンを `control/recovery-admin-token` に書き出します）
+- `tools/interop/auth.sh` with a mock OIDC provider (`tools/interop/oidc_mock.py`), ADR-0017, and guide sections 12.13–12.16
+  ／ `tools/interop/auth.sh` と試験用の OIDC の IdP（`tools/interop/oidc_mock.py`）、ADR-0017、ガイドの 12.13〜12.16 を追加しました
+
 ### Changed / 変更
 
 - The image no longer passes `--codec-lib-dir /usr/lib/x86_64-linux-gnu` (it broke on arm64); libraries are found in

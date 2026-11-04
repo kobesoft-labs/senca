@@ -28,9 +28,10 @@ SENCA のノードは、HTTP の管理 API（`/api/v1`）で操作します。�
 ### 1.2 認証
 
 すべての `/api/v1`（`/capabilities` を含む）に `Authorization: Bearer <値>` ヘッダーが必要です。`/healthz`・`/readyz`・署名付きの再生パス
-（`/s/...`）には不要です。
+（`/s/...`）と、ログインの操作（`/api/v1/auth/providers`・`/auth/login`・`/auth/login/mfa`・`/auth/exchange`・`/auth/oidc/...`）には不要です。
 
-- 値が **`senca_` で始まれば API トークン**、それ以外は **JWT** として扱います。値は 8192 バイトまでです。
+- 値が **`senca_` で始まれば API トークン**、**`sencas_` で始まれば利用者のログインのセッション**、それ以外は **JWT** として扱います。値は 8192 バイトまでです。
+  利用者・パスワード・MFA・OIDC のログインは [12. セキュリティ](12-security.md#1213-利用者のアカウントとログイン) を見てください。
 - 認証に失敗すると 401（`AUTH_FAILED`、`WWW-Authenticate: Bearer`）を返します。失敗の理由（期限切れ・未知のトークンなど）は応答に含めず、ノードのログに記録します。
 
 **API トークン**
@@ -338,7 +339,9 @@ try {
 
 - リソース: `streams`（`rotateKey`・`playbackUrl`・`startRecording`・`plan`・`snapshot`・`snapshots.list/get/delete`）・
   `recordings`（`stop`・`playbackUrl`・`thumbnail`・`exportMp4`。作成は `streams.startRecording`）・`schedules`（`check`・`runs`）・
-  `tokens`・`inputs`・`outputs`（`create(streamId, body)`・`list(streamId)`）・`secrets`・`pipelines`（`validate`・`control`）・
+  `tokens`・`auth`（`providers`・`login`・`loginMfa`・`exchange`・`oidcStartUrl`・`me`・`logout`・`changePassword`・`setupTotp`・`confirmTotp`・
+  `disableMfa`・`regenerateRecoveryCodes`・`sessions`・`revokeSession`）・`users`（`resetPassword`・`resetMfa`・`sessions(id)`・`revokeSessions`）・
+  `inputs`・`outputs`（`create(streamId, body)`・`list(streamId)`）・`secrets`・`pipelines`（`validate`・`control`）・
   `nodes`（`drain`・`undrain`・`devices.disable/enable`）・`rooms`（`createToken`・`participants(id).list/get/updateMetadata/disconnect`・
   `sendMessage`・`stats`）・`mediaPipelines`（`list({room})`・`start`・`stop`）・`audit`（`list({since, action, ...})`・`listPage`。監査ログ）。クライアント自体のメソッドとして `capabilities()`・`devices()`・
   `grid()`・`events()` があります。型の無いリクエストは `senca.request(method, path, opts)` で送れます。
@@ -435,6 +438,8 @@ client.streams().delete(&s.id, s.if_match()).await?;
 | `recordings()` | `list`・`list_with`（`ListOptions::stream`）・`list_page`・`get`・`update`・`delete`・`stop`・`playback_url`・`thumbnail`・`export_mp4` |
 | `schedules()` | `create`・`create_with`・`list`・`list_with`・`list_page`・`check`・`get`・`update`・`delete`・`runs` |
 | `tokens()` | `create`・`create_with`・`list`・`list_with`・`list_page`・`get`・`delete` |
+| `auth()` | `providers`・`login`（`LoginOutcome`: 成功か `mfa_required`）・`login_mfa`・`exchange`・`oidc_start_url`・`oidc_callback_url`・`me`・`logout`・`change_password`・`setup_totp`・`confirm_totp`・`disable_mfa`・`regenerate_recovery_codes`・`sessions`・`sessions_with`・`sessions_page`・`revoke_session` |
+| `users()` | `create`・`create_with`・`list`・`list_with`・`list_page`・`get`・`update`・`delete`・`reset_password`・`reset_mfa`・`sessions`・`sessions_with`・`revoke_sessions` |
 | `inputs()`・`outputs()` | `create(stream_id, ..)`・`create_with`・`list(stream_id)`・`list_with`・`get`・`update`・`delete` |
 | `secrets()` | `create`・`create_with`・`list`・`delete` |
 | `pipelines()` | `create`・`create_with`・`list`・`list_with`・`list_page`・`get`・`update`・`delete`・`validate`・`control` |

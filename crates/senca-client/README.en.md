@@ -60,6 +60,8 @@ Each resource is reached through `client.<resource>()` (the mapping between meth
 | Client | `capabilities`, `grid`, `devices`, `events`, `healthz`, `readyz`, `fetch_signed` (signed playback paths, follows 307), `request_json` (untyped requests) |
 | `rooms()` | `create`, `list`, `list_with`, `list_page`, `get`, `update`, `delete`, `issue_token`, `send_message`, `stats`, `participants`, `participants_with`, `participant`, `update_participant`, `disconnect` |
 | `media_pipelines()` | `create`, `list`, `list_with` (filter with `ListOptions::room`), `list_page`, `get`, `update`, `set_state`, `delete` |
+| `auth()` | `providers`, `login` (`LoginOutcome::Ok` or `MfaRequired`), `login_mfa`, `exchange`, `oidc_start_url`, `oidc_callback_url`, `me`, `logout`, `change_password`, `setup_totp`, `confirm_totp`, `disable_mfa`, `regenerate_recovery_codes`, `sessions`, `revoke_session`. The login operations work on a client without a token (`SencaClient::builder(url).build()`); use `with_token` with the session value a login returns |
+| `users()` | `create`, `list`, `list_with`, `list_page`, `get`, `update`, `delete`, `reset_password`, `reset_mfa`, `sessions`, `revoke_sessions` |
 | `audit()` | `list(&AuditQuery)`, `list_with`, `list_page` (the audit log, newest first; `AuditQuery` filters by time, action, subject, resource and node) |
 
 ## Conventions

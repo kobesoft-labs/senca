@@ -544,3 +544,177 @@ impl Nodes {
             .map(|v| v.value)
     }
 }
+
+// ------------------------------------------------------------------ ログインと利用者（ADR-0017）
+
+impl SencaClient {
+    /// ログインと本人の操作（`/auth/...`）。
+    pub fn auth(&self) -> Auth {
+        Auth(self.clone())
+    }
+    /// 利用者の管理（`/users`、`tenant:admin`）。
+    pub fn users(&self) -> Users {
+        Users(self.clone())
+    }
+}
+
+/// `POST /auth/login` の結果。
+#[derive(Debug, Clone, PartialEq)]
+pub enum LoginOutcome {
+    /// ログインした（`token` はセッションの値。[`SencaClient::with_token`] で使う）。
+    Ok(Box<LoginSuccess>),
+    /// 2 つ目の要素が要る（[`Auth::login_mfa`] に `mfa_token` を渡す）。
+    MfaRequired(LoginMfaRequired),
+}
+
+impl LoginOutcome {
+    fn from_value(v: Value) -> Result<LoginOutcome> {
+        let bad = |e: serde_json::Error| Error::Decode(e.to_string());
+        match v.get("status").and_then(Value::as_str) {
+            Some("mfa_required") => serde_json::from_value(v).map(LoginOutcome::MfaRequired).map_err(bad),
+            _ => serde_json::from_value(v).map(|s| LoginOutcome::Ok(Box::new(s))).map_err(bad),
+        }
+    }
+}
+
+/// ログインと本人の操作（`/auth/...`）。ログインの操作（`providers`・`login`・`login_mfa`・`exchange`）は認証なしで使える
+/// （トークンなしのクライアント `SencaClient::builder(url).build()` でよい）。
+#[derive(Debug, Clone)]
+pub struct Auth(SencaClient);
+
+impl Auth {
+    /// ログインの方法（`getAuthProviders`、認証なし）。
+    pub async fn providers(&self) -> Result<AuthProviders> {
+        self.0.op_get("/auth/providers".into()).await.map(|v| v.value)
+    }
+    /// パスワードでログイン（`login`、認証なし）。
+    pub async fn login(&self, body: &LoginRequest) -> Result<LoginOutcome> {
+        let v: Versioned<Value> = self.0.op_post("/auth/login".into(), Some(body), RequestOptions::default()).await?;
+        LoginOutcome::from_value(v.value)
+    }
+    /// 2 つ目の要素（TOTP・回復コード）でログイン（`loginMfa`、認証なし）。
+    pub async fn login_mfa(&self, body: &LoginMfaRequest) -> Result<LoginSuccess> {
+        self.0.op_post("/auth/login/mfa".into(), Some(body), RequestOptions::default()).await.map(|v| v.value)
+    }
+    /// OIDC の一度きりのコードをセッションに替える（`exchangeLoginCode`、認証なし）。ブラウザーの外から使うときは、
+    /// `start`・`callback` で受けたクッキー（`senca_oidc=...`）を `cookie` に渡す（無ければ 401）。
+    pub async fn exchange(&self, code: &str, cookie: Option<&str>) -> Result<LoginSuccess> {
+        let mut c = Call::new(Method::Post, "/auth/exchange").json(&ExchangeRequest { code: code.to_string() })?;
+        if let Some(k) = cookie {
+            c.headers.push(("Cookie".into(), k.to_string()));
+        }
+        self.0.json(c).await.map(|v| v.value)
+    }
+    /// OIDC のログインを始める URL（`startOidcLogin`）。ブラウザーで開く（IdP へリダイレクトされる）。
+    /// `return_to` は管理画面のパス（`/console/...`）。
+    pub fn oidc_start_url(&self, provider: &str, return_to: Option<&str>) -> String {
+        let mut u = format!("{}/auth/oidc/{}/start", self.0.base_url(), seg(provider));
+        if let Some(r) = return_to {
+            u.push_str("?return_to=");
+            u.push_str(&seg(r));
+        }
+        u
+    }
+    /// OIDC のコールバックの URL（`oidcCallback`）。IdP に登録する redirect URI の既定値（ブラウザーが IdP から戻ってくる先で、
+    /// SDK から呼ぶ操作ではない）。
+    pub fn oidc_callback_url(&self, provider: &str) -> String {
+        format!("{}/auth/oidc/{}/callback", self.0.base_url(), seg(provider))
+    }
+    /// 自分の情報（`getMe`）。
+    pub async fn me(&self) -> Result<Me> {
+        self.0.op_get("/auth/me".into()).await.map(|v| v.value)
+    }
+    /// ログアウト（`logout`。セッションでだけ）。
+    pub async fn logout(&self) -> Result<()> {
+        self.0.empty(Call::new(Method::Post, "/auth/logout")).await
+    }
+    /// 自分のパスワードを変える（`changePassword`）。ほかのセッションは失効する。
+    pub async fn change_password(&self, body: &PasswordChange) -> Result<()> {
+        self.0.empty(Call::new(Method::Post, "/auth/password").json(body)?).await
+    }
+    /// TOTP の登録を始める（`setupTotp`）。`secret`・`otpauth_uri` はこの応答でだけ渡る。
+    pub async fn setup_totp(&self, body: &MfaSetupRequest) -> Result<MfaSetup> {
+        self.0.op_post("/auth/mfa/totp/setup".into(), Some(body), RequestOptions::default()).await.map(|v| v.value)
+    }
+    /// 確認コードで TOTP を有効にする（`confirmTotp`）。回復コードはこの応答でだけ渡る。
+    pub async fn confirm_totp(&self, body: &MfaConfirmRequest) -> Result<MfaConfirmResult> {
+        self.0.op_post("/auth/mfa/totp/confirm".into(), Some(body), RequestOptions::default()).await.map(|v| v.value)
+    }
+    /// 自分の MFA を解除する（`disableMfa`）。
+    pub async fn disable_mfa(&self, body: &MfaReauth) -> Result<()> {
+        self.0.empty(Call::new(Method::Post, "/auth/mfa/disable").json(body)?).await
+    }
+    /// 回復コードを作り直す（`regenerateRecoveryCodes`）。
+    pub async fn regenerate_recovery_codes(&self, body: &MfaReauth) -> Result<RecoveryCodes> {
+        self.0.op_post("/auth/mfa/recovery-codes".into(), Some(body), RequestOptions::default()).await.map(|v| v.value)
+    }
+    /// 自分のセッション（`listMySessions`）。
+    pub fn sessions(&self) -> Paginator<Session> {
+        self.sessions_with(ListOptions::default())
+    }
+    pub fn sessions_with(&self, opts: ListOptions) -> Paginator<Session> {
+        self.0.op_list("/auth/sessions".into(), opts)
+    }
+    pub async fn sessions_page(&self, opts: &ListOptions) -> Result<Page<Session>> {
+        self.0.op_page("/auth/sessions".into(), opts).await
+    }
+    /// 自分のセッションを失効させる（`revokeMySession`）。
+    pub async fn revoke_session(&self, id: &str) -> Result<()> {
+        self.0.op_delete(format!("/auth/sessions/{}", seg(id)), None).await
+    }
+}
+
+/// 利用者の管理（`/users`）。
+#[derive(Debug, Clone)]
+pub struct Users(SencaClient);
+
+impl Users {
+    /// 作る（`createUser`）。
+    pub async fn create(&self, body: &UserCreate) -> Result<Versioned<User>> {
+        self.create_with(body, RequestOptions::default()).await
+    }
+    pub async fn create_with(&self, body: &UserCreate, opts: RequestOptions) -> Result<Versioned<User>> {
+        self.0.op_post("/users".into(), Some(body), opts).await
+    }
+    /// 一覧（`listUsers`）。
+    pub fn list(&self) -> Paginator<User> {
+        self.list_with(ListOptions::default())
+    }
+    pub fn list_with(&self, opts: ListOptions) -> Paginator<User> {
+        self.0.op_list("/users".into(), opts)
+    }
+    pub async fn list_page(&self, opts: &ListOptions) -> Result<Page<User>> {
+        self.0.op_page("/users".into(), opts).await
+    }
+    /// 取得（`getUser`）。
+    pub async fn get(&self, id: &str) -> Result<Versioned<User>> {
+        self.0.op_get(format!("/users/{}", seg(id))).await
+    }
+    /// 変更（`updateUser`、If-Match が要る）。
+    pub async fn update(&self, id: &str, patch: &UserPatch, if_match: impl Into<IfMatch>) -> Result<Versioned<User>> {
+        self.0.op_patch(format!("/users/{}", seg(id)), patch, if_match.into()).await
+    }
+    /// 削除（`deleteUser`）。
+    pub async fn delete(&self, id: &str, if_match: Option<IfMatch>) -> Result<()> {
+        self.0.op_delete(format!("/users/{}", seg(id)), if_match).await
+    }
+    /// パスワードの再設定（`resetUserPassword`）。`password` を省くと仮のパスワードが `temporary_password` で返る。
+    pub async fn reset_password(&self, id: &str, body: &UserPasswordReset) -> Result<Versioned<UserPasswordResetResult>> {
+        self.0.op_post(format!("/users/{}/password", seg(id)), Some(body), RequestOptions::default()).await
+    }
+    /// MFA を外す（`resetUserMfa`）。
+    pub async fn reset_mfa(&self, id: &str) -> Result<()> {
+        self.0.op_delete(format!("/users/{}/mfa", seg(id)), None).await
+    }
+    /// 利用者のセッション（`listUserSessions`）。
+    pub fn sessions(&self, id: &str) -> Paginator<Session> {
+        self.sessions_with(id, ListOptions::default())
+    }
+    pub fn sessions_with(&self, id: &str, opts: ListOptions) -> Paginator<Session> {
+        self.0.op_list(format!("/users/{}/sessions", seg(id)), opts)
+    }
+    /// 利用者のセッションをすべて失効させる（`revokeUserSessions`）。
+    pub async fn revoke_sessions(&self, id: &str) -> Result<()> {
+        self.0.op_delete(format!("/users/{}/sessions", seg(id)), None).await
+    }
+}

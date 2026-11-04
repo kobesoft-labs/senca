@@ -4,6 +4,8 @@
 //! - 主体ごと（API トークンの ID・JWT の subject。認証の後に数える）
 //! - 認証の失敗（IP ごと、1 分あたり）。使い切った IP は、正しい資格情報でも 429（総当たりを止める）
 //! - 接続の開始（IP ごと: `GET /signaling`・`POST /whip`・`POST /whep`・`GET /api/v1/events`）
+//! - ログインの失敗（IP ごと、1 分あたり）と、アカウントごとの待ち（[`Backoff`]: 5 回までは待たせず、その後は
+//!   1 秒から倍々に最長 15 分。アカウントの有無にかかわらず同じに数える）
 //!
 //! どれも 0 で無効。表は上限（`MAX_KEYS`）を超えたら、満タンに戻ったものから捨てる（無制限に増やさない）。
 
@@ -106,12 +108,65 @@ impl Limiter {
     }
 }
 
+/// 失敗が続く鍵（ログインのアカウント）を遅らせる。`free` 回までは待たせず、その後は 1 秒から倍々に、最長 `max`。
+/// 最後の失敗から `forget` たてば数え直す。成功したら消す。
+pub struct Backoff {
+    free: u32,
+    max: Duration,
+    forget: Duration,
+    map: Mutex<HashMap<String, (u32, Instant, Instant)>>,
+}
+
+impl Backoff {
+    pub fn new(free: u32, max: Duration, forget: Duration) -> Backoff {
+        Backoff { free, max, forget, map: Mutex::new(HashMap::new()) }
+    }
+
+    /// 待たせている間なら、残りの時間。
+    pub fn check(&self, key: &str, now: Instant) -> Option<Duration> {
+        let m = self.map.lock().unwrap_or_else(|e| e.into_inner());
+        let (_, _, until) = m.get(key)?;
+        (*until > now).then(|| until.saturating_duration_since(now))
+    }
+
+    /// 失敗を数える。
+    pub fn fail(&self, key: &str, now: Instant) {
+        let mut m = self.map.lock().unwrap_or_else(|e| e.into_inner());
+        if m.len() >= MAX_KEYS && !m.contains_key(key) {
+            let forget = self.forget;
+            m.retain(|_, (_, last, until)| now.saturating_duration_since(*last) < forget || *until > now);
+            if m.len() >= MAX_KEYS {
+                return;
+            }
+        }
+        let e = m.entry(key.to_string()).or_insert((0, now, now));
+        if now.saturating_duration_since(e.1) >= self.forget {
+            e.0 = 0;
+        }
+        e.0 = e.0.saturating_add(1);
+        e.1 = now;
+        if e.0 > self.free {
+            let n = (e.0 - self.free - 1).min(30);
+            let wait = Duration::from_secs(1u64 << n).min(self.max);
+            e.2 = now + wait;
+        }
+    }
+
+    pub fn reset(&self, key: &str) {
+        self.map.lock().unwrap_or_else(|e| e.into_inner()).remove(key);
+    }
+}
+
 /// ノードの上限の全体。
 pub struct RateLimits {
     pub ip: Limiter,
     pub principal: Limiter,
     pub auth_failures: Limiter,
     pub connects: Limiter,
+    /// ログインの失敗（IP ごと、1 分あたり）。
+    pub login: Limiter,
+    /// ログインの失敗（アカウントごと）。
+    pub login_accounts: Backoff,
 }
 
 impl RateLimits {
@@ -121,6 +176,8 @@ impl RateLimits {
             principal: Limiter::new(Rate::per_second(c.rate_limit_token)),
             auth_failures: Limiter::new(Rate::per_minute(c.rate_limit_auth_failures)),
             connects: Limiter::new(Rate::per_second(c.rate_limit_connect)),
+            login: Limiter::new(Rate::per_minute(c.rate_limit_login)),
+            login_accounts: Backoff::new(5, Duration::from_secs(900), Duration::from_secs(3600)),
         }
     }
 }
@@ -181,6 +238,30 @@ mod tests {
         assert_eq!(peer_ip("127.0.0.1:5000"), "127.0.0.1");
         assert_eq!(peer_ip("[::1]:5000"), "::1");
         assert_eq!(peer_ip("10.0.0.1"), "10.0.0.1");
+    }
+
+    #[test]
+    fn backoff_doubles_after_free_failures() {
+        let b = Backoff::new(2, Duration::from_secs(10), Duration::from_secs(60));
+        let t = Instant::now();
+        b.fail("a", t);
+        b.fail("a", t);
+        assert!(b.check("a", t).is_none(), "2 回までは待たせない");
+        b.fail("a", t);
+        assert_eq!(b.check("a", t), Some(Duration::from_secs(1)));
+        b.fail("a", t);
+        assert_eq!(b.check("a", t), Some(Duration::from_secs(2)));
+        for _ in 0..10 {
+            b.fail("a", t);
+        }
+        assert_eq!(b.check("a", t), Some(Duration::from_secs(10)), "最長で止める");
+        assert!(b.check("a", t + Duration::from_secs(11)).is_none());
+        assert!(b.check("b", t).is_none(), "鍵ごと");
+        // 長く失敗が無ければ数え直す
+        b.fail("a", t + Duration::from_secs(120));
+        assert!(b.check("a", t + Duration::from_secs(120)).is_none());
+        b.reset("a");
+        assert!(b.check("a", t).is_none());
     }
 
     #[test]

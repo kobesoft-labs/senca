@@ -29,10 +29,12 @@ client (`senca-client`).
 
 ### 1.2 Authentication
 
-Every `/api/v1` request, including `/capabilities`, needs `Authorization: Bearer <value>`. `/healthz`, `/readyz` and the signed playback
-paths (`/s/...`) do not.
+Every `/api/v1` request, including `/capabilities`, needs `Authorization: Bearer <value>`. `/healthz`, `/readyz`, the signed playback
+paths (`/s/...`) and the login operations (`/api/v1/auth/providers`, `/auth/login`, `/auth/login/mfa`, `/auth/exchange`, `/auth/oidc/...`) do not.
 
-- A value **starting with `senca_` is an API token**; anything else is treated as a **JWT**. Values are limited to 8192 bytes.
+- A value **starting with `senca_` is an API token**, one **starting with `sencas_` is a user's login session**; anything else is treated as
+  a **JWT**. Values are limited to 8192 bytes. For users, passwords, MFA and OIDC login see
+  [12. Security](12-security.md#1213-user-accounts-and-login).
 - Failures return 401 (`AUTH_FAILED`, `WWW-Authenticate: Bearer`). The reason (expired, unknown token, ...) is never put in the response;
   it goes to the node log.
 
@@ -362,7 +364,9 @@ try {
 
 - Resources: `streams` (`rotateKey`, `playbackUrl`, `startRecording`, `plan`, `snapshot`, `snapshots.list/get/delete`),
   `recordings` (`stop`, `playbackUrl`, `thumbnail`, `exportMp4`; recordings are started with `streams.startRecording`), `schedules`
-  (`check`, `runs`), `tokens`, `inputs` and `outputs` (`create(streamId, body)`, `list(streamId)`), `secrets`, `pipelines` (`validate`,
+  (`check`, `runs`), `tokens`, `auth` (`providers`, `login`, `loginMfa`, `exchange`, `oidcStartUrl`, `me`, `logout`, `changePassword`,
+  `setupTotp`, `confirmTotp`, `disableMfa`, `regenerateRecoveryCodes`, `sessions`, `revokeSession`), `users` (`resetPassword`, `resetMfa`,
+  `sessions(id)`, `revokeSessions`), `inputs` and `outputs` (`create(streamId, body)`, `list(streamId)`), `secrets`, `pipelines` (`validate`,
   `control`), `nodes` (`drain`, `undrain`, `devices.disable/enable`), `rooms` (`createToken`,
   `participants(id).list/get/updateMetadata/disconnect`, `sendMessage`, `stats`), `mediaPipelines` (`list({room})`, `start`, `stop`), `audit` (`list({since, action, ...})`, `listPage`; the audit log). On the
   client itself: `capabilities()`, `devices()`, `grid()`, `events()`. Untyped calls: `senca.request(method, path, opts)`.
@@ -461,6 +465,8 @@ client.streams().delete(&s.id, s.if_match()).await?;
 | `recordings()` | `list`, `list_with` (`ListOptions::stream`), `list_page`, `get`, `update`, `delete`, `stop`, `playback_url`, `thumbnail`, `export_mp4` |
 | `schedules()` | `create`, `create_with`, `list`, `list_with`, `list_page`, `check`, `get`, `update`, `delete`, `runs` |
 | `tokens()` | `create`, `create_with`, `list`, `list_with`, `list_page`, `get`, `delete` |
+| `auth()` | `providers`, `login` (`LoginOutcome`: success or `mfa_required`), `login_mfa`, `exchange`, `oidc_start_url`, `oidc_callback_url`, `me`, `logout`, `change_password`, `setup_totp`, `confirm_totp`, `disable_mfa`, `regenerate_recovery_codes`, `sessions`, `sessions_with`, `sessions_page`, `revoke_session` |
+| `users()` | `create`, `create_with`, `list`, `list_with`, `list_page`, `get`, `update`, `delete`, `reset_password`, `reset_mfa`, `sessions`, `sessions_with`, `revoke_sessions` |
 | `inputs()`, `outputs()` | `create(stream_id, ..)`, `create_with`, `list(stream_id)`, `list_with`, `get`, `update`, `delete` |
 | `secrets()` | `create`, `create_with`, `list`, `delete` |
 | `pipelines()` | `create`, `create_with`, `list`, `list_with`, `list_page`, `get`, `update`, `delete`, `validate`, `control` |

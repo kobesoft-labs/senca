@@ -50,6 +50,10 @@ pub async fn serve_sse<S: AsyncWrite + Unpin>(app: &Arc<App>, sock: &mut S, h: &
         let _ = sock.write_all(&deny_p(Problem::new(ProblemCode::Forbidden, "権限 stream:read が必要です"))).await;
         return;
     }
+    if p.session.as_ref().is_some_and(|s| !s.pending.is_empty()) {
+        let _ = sock.write_all(&deny_p(Problem::new(ProblemCode::Forbidden, "先にパスワードの変更・MFA の登録を済ませてください"))).await;
+        return;
+    }
     let last: u64 = h.headers.get_str("last-event-id").and_then(|v| v.trim().parse().ok()).unwrap_or(0);
     // クラスタ: 先に進んだノードで受けた位置なら、このノードの適用が追いつくまで少し待つ
     let deadline = tokio::time::Instant::now() + Duration::from_secs(3);
@@ -162,6 +166,10 @@ async fn write_applied<S: AsyncWrite + Unpin>(sock: &mut S, p: &auth::Principal,
     if tenant.as_deref().is_some_and(|t| t != p.tenant) || (tenant.is_none() && !p.has(Scope::NodeAdmin)) {
         return Ok(());
     }
+    // 利用者の出来事は管理者だけに見せる
+    if ty.starts_with("user.") && !p.has(Scope::TenantAdmin) {
+        return Ok(());
+    }
     let data = json!({ "type": ty, "resource_id": id, "occurred_at": crate::util::rfc3339(a.at_ms), "data": data }).to_string();
     let idx = a.index.to_string();
     let ev = SseEvent { event: Some(ty), id: Some(&idx), retry: None, data: &data };
@@ -237,6 +245,19 @@ fn describe(c: &Command) -> Option<(&'static str, Option<String>, String, serde_
             ("media_pipeline.updated", Some(m.tenant.clone()), m.id.clone(), json!({ "room": m.room, "desired_state": m.desired_state }))
         }
         Command::DeleteMediaPipeline { tenant, id } => ("media_pipeline.deleted", Some(tenant.clone()), id.clone(), json!({})),
+        // 利用者（ADR-0017）。セッションの出来事（ログイン・最後に使った時刻）は流さない
+        Command::CreateUser { user } => ("user.created", Some(user.tenant.clone()), user.id.clone(), json!({ "username": user.username })),
+        Command::UpdateUser { tenant, id, profile, .. } => {
+            ("user.updated", Some(tenant.clone()), id.clone(), json!({ "change": "profile", "disabled": profile.disabled }))
+        }
+        Command::SetUserPassword { tenant, id, .. } => ("user.updated", Some(tenant.clone()), id.clone(), json!({ "change": "password" })),
+        Command::SetUserMfa { tenant, id, mfa, .. } => {
+            ("user.updated", Some(tenant.clone()), id.clone(), json!({ "change": "mfa", "mfa_enabled": mfa.is_some() }))
+        }
+        Command::LinkUserOidc { tenant, id, link, .. } => {
+            ("user.updated", Some(tenant.clone()), id.clone(), json!({ "change": "oidc_link", "provider": link.provider }))
+        }
+        Command::DeleteUser { tenant, id } => ("user.deleted", Some(tenant.clone()), id.clone(), json!({})),
         // グリッド: 運用の権限だけに見せる（テナントの外）
         Command::Grid { cmd } => match cmd {
             senca_grid::GridCommand::NodeDown { node, .. } => ("node.down", None, node.clone(), json!({})),
