@@ -234,7 +234,7 @@ mod tests {
     #[test]
     fn touch_interval_is_coarse() {
         assert_eq!(touch_interval_ms(8 * 3600 * 1000), 300_000);
-        assert_eq!(touch_interval_ms(60_000), 30_000);
+        assert_eq!(touch_interval_ms(60_000), 15_000, "待ち時間の 1/4 まで");
         assert_eq!(touch_interval_ms(16 * 60_000), 60_000);
         assert_eq!(touch_interval_ms(10_000), 2_500);
     }
