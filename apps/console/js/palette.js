@@ -11,22 +11,25 @@ import { recentItems } from './lib/recent.js';
 import { setThemePref } from './lib/theme.js';
 import { streams, recordings, schedules, listAll } from './api/resources.js';
 import { pipelines } from './api/pipelines.js';
+import { rooms as roomsApi, mediaPipelines as mediaPipelinesApi } from './api/realtime.js';
 import { MOD, showShortcutHelp } from './shortcuts.js';
 import { trapFocus } from './ui/overlay.js';
 import { fmtTime } from './lib/format.js';
 
-const KIND_ICON = { stream: 'streams', recording: 'recordings', schedule: 'schedules', pipeline: 'pipelines', page: 'arrow-right' };
+const KIND_ICON = { stream: 'streams', recording: 'recordings', schedule: 'schedules', pipeline: 'pipelines', page: 'arrow-right', room: 'rooms', 'media-pipeline': 'media-pipelines' };
 let cache = { at: 0, items: [] };
 let openDlg = null;
 
 async function loadResources() {
   if (Date.now() - cache.at < 60000) return cache.items;
   const settle = async (p) => { try { return await p; } catch { return null; } };
-  const [st, rec, sch, pl] = await Promise.all([
+  const [st, rec, sch, pl, rm, mp] = await Promise.all([
     settle(listAll(streams.list)),
     settle(recordings.list({ limit: 50 })),
     settle(listAll(schedules.list)),
     settle(pipelines.list().then((r) => r.data)),
+    settle(listAll(roomsApi.list)),
+    settle(listAll(mediaPipelinesApi.list)),
   ]);
   const items = [];
   for (const s of st || []) {
@@ -40,6 +43,14 @@ async function loadResources() {
   }
   for (const p of (pl && pl.items) || []) {
     items.push({ id: `pipeline:${p.id}`, kind: 'pipeline', label: p.name, hint: t('palette.kind.pipeline'), href: `#/pipelines?id=${encodeURIComponent(p.id)}`, keywords: [p.id] });
+  }
+  // リアルタイム: 部屋（「部屋を開く …」）とメディアパイプライン
+  for (const r of rm || []) {
+    const title = r.metadata && typeof r.metadata.title === 'string' ? r.metadata.title : null;
+    items.push({ id: `room:${r.id}`, kind: 'room', label: title || r.id, hint: t('palette.kind.room'), href: `#/rooms/${encodeURIComponent(r.id)}`, keywords: [r.id, 'room'] });
+  }
+  for (const m of mp || []) {
+    items.push({ id: `media-pipeline:${m.id}`, kind: 'media-pipeline', label: m.name, hint: t('palette.kind.media-pipeline'), href: `#/media-pipelines/${encodeURIComponent(m.id)}`, keywords: [m.id, m.room] });
   }
   cache = { at: Date.now(), items };
   return items;
@@ -63,6 +74,8 @@ function staticItems({ navigate, logout }) {
     { id: 'act:new-token', icon: 'key', label: t('palette.newToken'), keywords: ['new token'], run: go('#/tokens?new=1') },
     { id: 'act:new-secret', icon: 'secrets', label: t('palette.newSecret'), keywords: ['secret'], run: go('#/secrets') },
     { id: 'act:new-pipeline', icon: 'pipelines', label: t('palette.newPipeline'), keywords: ['pipeline'], run: go('#/pipelines') },
+    { id: 'act:new-room', icon: 'rooms', label: t('palette.newRoom'), keywords: ['new room', 'create room', 'webrtc'], run: go('#/rooms?new=1') },
+    { id: 'act:new-media-pipeline', icon: 'media-pipelines', label: t('palette.newMediaPipeline'), keywords: ['record room', 'composite', 'rtmp', 'youtube'], run: go('#/media-pipelines/new') },
     { id: 'act:send', icon: 'camera', label: t('palette.sendFromBrowser'), keywords: ['whip', 'camera'], run: go('#/send') },
     { id: 'act:theme-light', icon: 'sun', label: t('palette.themeLight'), keywords: ['theme', 'light'], run: () => setThemePref('light') },
     { id: 'act:theme-dark', icon: 'moon', label: t('palette.themeDark'), keywords: ['theme', 'dark'], run: () => setThemePref('dark') },

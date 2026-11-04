@@ -36,6 +36,8 @@ RUN apt-get update \
  && mkdir -p /var/lib/senca /opt/senca/console /opt/senca/lib && chown senca /var/lib/senca
 COPY --from=build /out/senca-node /out/senca-codec-worker /out/senca-capture-worker /opt/senca/bin/
 COPY apps/console /opt/senca/console
+# 管理画面の js/vendor/senca-sdk は ../../../sdk-js/src へのリンク（部屋の試しの参加でブラウザー SDK をそのまま使う）
+COPY apps/sdk-js/src /opt/senca/sdk-js/src
 COPY apps/sender-web /opt/senca/sender
 COPY docs/licenses /opt/senca/licenses
 # /opt/senca/lib: 利用者が足すライブラリ（マウント）。コーデック・キャプチャのライブラリはここを先に探し、無ければシステムの既定で探す。
