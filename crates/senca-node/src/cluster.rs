@@ -7,6 +7,7 @@
 //! - スナップショット: 1000 件ごとに制御状態を写して古いログを捨てる。
 //! - ノード間の通信は TCP（`tls_*` があれば mTLS）の上の枠（種類 1 バイト＋長さ 4 バイト）。枠の前に、クラスタの
 //!   合言葉による相互の挑戦応答（`cluster_auth`）で互いの番号を確かめる（合言葉も固定のハッシュも送らない）。
+//!   同じ接続で、合意ログに載せないもの（グリッドの心拍、監査ログの問い合わせと答え）も送る。知らない種類の枠は読み飛ばす。
 //! - 過半数との連絡: リーダーは過半数の投票者から最後に返事を受けた時刻、フォロワーはリーダーから最後に受けた時刻を
 //!   「確かめた時刻」として持つ。これが古くなったノードは `/readyz` を 503 にし、グリッドの仕事を止める（ADR-0013 fencing）。
 
@@ -268,10 +269,22 @@ async fn dial(app: Arc<App>, me: u64, peer: u64, addr: SocketAddr, key: crate::c
             continue;
         }
         last_auth_error.clear();
+        // 相手はこの接続に何も送ってこない。読めた（閉じた・切れた）らすぐつなぎ直す（相手が再起動した後、最初の枠を
+        // 死んだ接続へ書いて失わないように。Raft は送り直すが、監査ログの問い合わせ・答えは 1 回きり）
+        let (mut rd, mut wr) = tokio::io::split(s);
+        let mut probe = [0u8; 64];
         loop {
-            let Some(f) = rx.recv().await else { return };
-            if s.write_all(&f).await.is_err() {
-                break;
+            tokio::select! {
+                f = rx.recv() => {
+                    let Some(f) = f else { return };
+                    if wr.write_all(&f).await.is_err() {
+                        break;
+                    }
+                }
+                r = rd.read(&mut probe) => match r {
+                    Ok(n) if n > 0 => {}
+                    _ => break,
+                },
             }
         }
         app.log(&format!("cluster: connection to node {peer} lost"));
