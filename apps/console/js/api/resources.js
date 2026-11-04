@@ -94,6 +94,7 @@ export async function listAll(fn, opts = {}, max = 5000) {
   return items;
 }
 
+// 2 つ目は日本語の既定の説明。画面では t(`tokens.scope.${値}`) を使う。
 export const SCOPES = [
   ['stream:read', '配信の参照'],
   ['stream:write', '配信の作成・変更'],

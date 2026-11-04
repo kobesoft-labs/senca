@@ -1,66 +1,69 @@
 // ダッシュボード: 配信・録画・予約の件数、ノード、デバイス、最近の出来事。SSE で自動更新。
 
-import { h, replace, table, badge } from '../lib/dom.js';
+import { h, replace } from '../lib/dom.js';
 import { errorBox } from '../lib/ui.js';
 import { streams, recordings, schedules, system, listAll } from '../api/resources.js';
-import { fmtTime, fmtRelative, fmtBps } from '../lib/format.js';
+import { fmtTime, fmtRelative, fmtBps, fmtClock } from '../lib/format.js';
 import { refreshOn } from '../lib/live.js';
 import { on } from '../lib/bus.js';
 import { recent, label } from '../lib/activity.js';
-
-function card(labelText, value, sub, href) {
-  const inner = [h('div', { class: 'label' }, labelText), h('div', { class: 'value' }, value), sub ? h('div', { class: 'sub' }, sub) : null];
-  return href ? h('a', { class: 'card', href, style: { color: 'inherit', textDecoration: 'none' } }, inner) : h('div', { class: 'card' }, inner);
-}
+import { t } from '../i18n/index.js';
+import { iconButton, pageHeader, panel, statTile, dataTable, statusPill, badge, alert, skeleton } from '../ui/index.js';
 
 async function settle(p) {
   try { return { ok: true, value: await p }; } catch (e) { return { ok: false, error: e }; }
 }
 
 export async function render(root, _params, { caps }) {
-  const cards = h('div', { class: 'grid cards' });
-  const liveBox = h('div');
-  const schedBox = h('div');
-  const nodeBox = h('div');
-  const devBox = h('div');
+  const cards = h('div', { class: 'grid stat-grid' }, skeleton({ kind: 'cards', rows: 5 }));
+  const liveBox = h('div', null, skeleton({ kind: 'table', rows: 2 }));
+  const schedBox = h('div', null, skeleton({ kind: 'table', rows: 2 }));
+  const nodeBox = h('div', null, skeleton({ kind: 'table', rows: 1 }));
+  const devBox = h('div', null, skeleton({ kind: 'table', rows: 3 }));
   const actBox = h('ul', { class: 'events', 'aria-live': 'polite' });
   const capBox = h('div');
 
   root.append(
-    h('div', { class: 'page-head' }, h('h1', null, 'ダッシュボード'), h('span', { class: 'spacer' }),
-      h('button', { onClick: () => refresh() }, '再読み込み')),
+    pageHeader({
+      title: t('nav.dashboard'),
+      description: t('dashboard.lead'),
+      actions: [iconButton('refresh', t('common.refresh'), { variant: 'secondary', onClick: () => refresh() })],
+    }),
     cards,
-    h('div', { class: 'grid cols-2', style: { marginTop: '16px' } },
-      h('section', { class: 'panel', 'aria-labelledby': 'd-live' }, h('h2', { id: 'd-live' }, '配信中'), liveBox),
-      h('section', { class: 'panel', 'aria-labelledby': 'd-sched' }, h('h2', { id: 'd-sched' }, 'これからの予約'), schedBox),
-      h('section', { class: 'panel', 'aria-labelledby': 'd-node' }, h('h2', { id: 'd-node' }, 'ノード'), nodeBox),
-      h('section', { class: 'panel', 'aria-labelledby': 'd-act' }, h('h2', { id: 'd-act' }, '最近の出来事'), actBox)),
-    h('section', { class: 'panel', 'aria-labelledby': 'd-dev' }, h('h2', { id: 'd-dev' }, 'デバイス（コーデックのプロバイダー）'), devBox),
-    h('section', { class: 'panel', 'aria-labelledby': 'd-cap' }, h('h2', { id: 'd-cap' }, 'このノードの能力'), capBox));
+    h('div', { class: 'grid cols-2 section-gap' },
+      panel({ title: t('dashboard.live'), icon: 'live' }, liveBox),
+      panel({ title: t('dashboard.upcoming'), icon: 'schedules' }, schedBox),
+      panel({ title: t('dashboard.nodes'), icon: 'nodes' }, nodeBox),
+      panel({ title: t('dashboard.activity'), icon: 'activity', description: t('dashboard.activityDesc') }, actBox)),
+    h('div', { class: 'section-gap' }),
+    panel({ title: t('dashboard.devices'), icon: 'gpu' }, devBox),
+    panel({ title: t('dashboard.caps'), icon: 'zap' }, capBox));
 
   const renderActivity = () => {
     const items = recent();
     replace(actBox, items.length
       ? items.slice(0, 20).map((a) => h('li', null,
-        h('time', { datetime: a.at.toISOString() }, a.at.toLocaleTimeString('ja-JP')),
+        h('time', { datetime: a.at.toISOString() }, fmtClock(a.at)),
         h('span', null, label(a.type)),
         a.data && a.data.resource_id ? h('code', { class: 'muted' }, String(a.data.resource_id).slice(0, 10)) : null))
-      : h('li', { class: 'muted' }, 'まだありません（SSE で届いた出来事を表示します）'));
+      : h('li', { class: 'muted' }, t('dashboard.activityEmpty')));
   };
 
   const renderCaps = () => {
     if (!caps) return;
-    const yes = (b) => (b ? badge('あり', 'ok') : badge('なし'));
+    const yes = (b) => (b ? badge(t('common.yes'), 'ok') : badge(t('common.no')));
+    const item = (k, v) => h('span', { class: 'row' }, k, yes(v));
     replace(capBox, h('div', { class: 'grid cols-2' },
-      h('div', null, h('h3', null, '取り込み'), h('div', { class: 'row' },
-        ...Object.entries(caps.ingest).map(([k, v]) => h('span', null, k, ' ', yes(v))))),
-      h('div', null, h('h3', null, '出力'), h('div', { class: 'row' },
-        h('span', null, 'HLS ', caps.output.hls.containers.join(' / ')), h('span', null, 'LL-HLS ', yes(caps.output.hls.ll_hls)),
-        h('span', null, 'RTMP play ', yes(caps.output.rtmp_play)), h('span', null, 'WHEP ', yes(caps.output.whep)))),
-      h('div', null, h('h3', null, 'そのまま通せるコーデック'), h('div', null, caps.codecs.passthrough.join(', '))),
-      h('div', null, h('h3', null, '変換'), caps.codecs.transcode.length
-        ? h('div', null, caps.codecs.transcode.map((t) => `${t.codec} ${t.direction === 'encode' ? '符号化' : '復号'}（${t.provider}${t.hardware ? '・HW' : ''}）`).join('、'))
-        : h('div', { class: 'muted' }, 'コーデック worker が未接続'))));
+      h('div', null, h('h3', null, t('dashboard.capIngest')), h('div', { class: 'row' },
+        ...Object.entries(caps.ingest).map(([k, v]) => item(k, v)))),
+      h('div', null, h('h3', null, t('dashboard.capOutput')), h('div', { class: 'row' },
+        h('span', null, 'HLS ', caps.output.hls.containers.join(' / ')), item('LL-HLS', caps.output.hls.ll_hls),
+        item('RTMP play', caps.output.rtmp_play), item('WHEP', caps.output.whep))),
+      h('div', null, h('h3', null, t('dashboard.capPassthrough')), h('div', null, caps.codecs.passthrough.join(', '))),
+      h('div', null, h('h3', null, t('dashboard.capTranscode')), caps.codecs.transcode.length
+        ? h('div', { class: 'row' }, caps.codecs.transcode.map((x) => h('span', { class: 'tag' },
+          t(x.direction === 'encode' ? 'dashboard.encode' : 'dashboard.decode', { codec: x.codec, provider: `${x.provider}${x.hardware ? '・HW' : ''}` }))))
+        : h('div', { class: 'muted' }, t('dashboard.noWorker')))));
   };
 
   const refresh = async () => {
@@ -74,67 +77,82 @@ export async function render(root, _params, { caps }) {
     const cardList = [];
     if (st.ok) {
       const live = st.value.filter((s) => s.observed_state === 'live');
-      cardList.push(card('配信', st.value.length, `配信中 ${live.length}`, '#/streams'));
-      cardList.push(card('配信中', live.length, live.length ? live.map((s) => s.name).slice(0, 3).join(', ') : '—', '#/streams'));
-      replace(liveBox, table([
-        { label: '名前', render: (s) => h('a', { href: `#/streams/${encodeURIComponent(s.id)}` }, s.name) },
-        { label: '経路', render: (s) => s.live.transport },
-        { label: 'ビットレート', class: 'num', render: (s) => fmtBps(s.live.bitrate_bps) },
-        { label: '開始', render: (s) => fmtRelative(s.live.started_at) },
-      ], live.filter((s) => s.live), { empty: '配信中の stream はありません' }));
+      cardList.push(statTile({ label: t('dashboard.card.streams'), value: st.value.length, sub: t('dashboard.card.liveCount', { n: live.length }), icon: 'streams', href: '#/streams' }));
+      cardList.push(statTile({ label: t('dashboard.card.live'), value: live.length, sub: live.length ? live.map((s) => s.name).slice(0, 3).join(', ') : '—', icon: 'live', href: '#/streams', kind: live.length ? 'live' : undefined }));
+      replace(liveBox, dataTable({
+        columns: [
+          { key: 'name', label: t('common.name'), primary: true, sort: (s) => s.name, render: (s) => h('a', { href: `#/streams/${encodeURIComponent(s.id)}` }, s.name) },
+          { label: t('dashboard.col.transport'), render: (s) => s.live.transport },
+          { key: 'br', label: t('dashboard.col.bitrate'), class: 'num', sort: (s) => s.live.bitrate_bps, render: (s) => fmtBps(s.live.bitrate_bps) },
+          { label: t('dashboard.col.started'), render: (s) => fmtRelative(s.live.started_at) },
+        ],
+        rows: live.filter((s) => s.live),
+        empty: { icon: 'live', title: t('dashboard.liveEmpty'), body: t('dashboard.liveEmptyBody'), actions: [h('a', { class: 'btn sm', href: '#/streams' }, t('dashboard.toStreams'))] },
+      }));
     } else {
-      cardList.push(card('配信', '—', st.error.title));
+      cardList.push(statTile({ label: t('dashboard.card.streams'), value: '—', sub: st.error.title, icon: 'streams' }));
       replace(liveBox, errorBox(st.error));
     }
     if (rec.ok) {
       const items = rec.value.data.items;
       const more = rec.value.data.next_cursor ? '+' : '';
-      cardList.push(card('録画', `${items.length}${more}`, `録画中 ${items.filter((r) => r.state === 'recording').length}`, '#/recordings'));
+      cardList.push(statTile({ label: t('dashboard.card.recordings'), value: `${items.length}${more}`, sub: t('dashboard.card.recordingCount', { n: items.filter((r) => r.state === 'recording').length }), icon: 'recordings', href: '#/recordings' }));
     } else {
-      cardList.push(card('録画', '—', rec.error.title));
+      cardList.push(statTile({ label: t('dashboard.card.recordings'), value: '—', sub: rec.error.title, icon: 'recordings' }));
     }
     if (sch.ok) {
       const now = Date.now();
       const upcoming = sch.value
         .filter((s) => (s.state === 'pending' || s.state === 'running') && new Date(s.end_at).getTime() > now)
         .sort((a, b) => a.start_at.localeCompare(b.start_at));
-      cardList.push(card('予約', upcoming.length, `実行中 ${upcoming.filter((s) => s.state === 'running').length}`, '#/schedules'));
-      replace(schedBox, table([
-        { label: '名前', render: (s) => h('a', { href: `#/schedules/${encodeURIComponent(s.id)}` }, s.name || s.id.slice(0, 8)) },
-        { label: '操作', render: (s) => s.action },
-        { label: '開始', render: (s) => h('span', { title: s.start_at }, fmtTime(s.start_at), ' ', h('span', { class: 'muted small' }, fmtRelative(s.start_at))) },
-        { label: '状態', render: (s) => badge(s.state, s.state === 'running' ? 'ok' : '') },
-      ], upcoming.slice(0, 8), { empty: 'これからの予約はありません' }));
+      cardList.push(statTile({ label: t('dashboard.card.schedules'), value: upcoming.length, sub: t('dashboard.card.runningCount', { n: upcoming.filter((s) => s.state === 'running').length }), icon: 'schedules', href: '#/schedules' }));
+      replace(schedBox, dataTable({
+        columns: [
+          { label: t('common.name'), primary: true, render: (s) => h('a', { href: `#/schedules/${encodeURIComponent(s.id)}` }, s.name || s.id.slice(0, 8)) },
+          { label: t('dashboard.col.action'), render: (s) => s.action },
+          { label: t('dashboard.col.start'), render: (s) => h('span', { title: s.start_at }, fmtTime(s.start_at), ' ', h('span', { class: 'muted small' }, fmtRelative(s.start_at))) },
+          { label: t('common.state'), render: (s) => statusPill(s.state) },
+        ],
+        rows: upcoming.slice(0, 8),
+        empty: { icon: 'calendar', title: t('dashboard.upcomingEmpty'), actions: [h('a', { class: 'btn sm', href: '#/schedules?new=1' }, t('palette.newSchedule'))] },
+      }));
     } else {
-      cardList.push(card('予約', '—', sch.error.title));
+      cardList.push(statTile({ label: t('dashboard.card.schedules'), value: '—', sub: sch.error.title, icon: 'schedules' }));
       replace(schedBox, errorBox(sch.error));
     }
     if (nodes.ok) {
       const items = nodes.value.data.items;
-      cardList.push(card('ノード', items.length, `drain 中 ${items.filter((n) => n.draining).length}`, '#/nodes'));
-      replace(nodeBox, table([
-        { label: '名前', render: (n) => [n.name, n.self ? h('span', { class: 'muted small' }, '（このノード）') : null] },
-        { label: '状態', render: (n) => (n.draining ? badge('drain 中', 'warn') : badge('受付中', 'ok')) },
-        { label: '配信中', class: 'num', render: (n) => n.live_streams },
-        { label: '登録', render: (n) => fmtTime(n.registered_at) },
-      ], items));
+      cardList.push(statTile({ label: t('dashboard.card.nodes'), value: items.length, sub: t('dashboard.card.drainingCount', { n: items.filter((n) => n.draining).length }), icon: 'nodes', href: '#/nodes' }));
+      replace(nodeBox, dataTable({
+        columns: [
+          { label: t('common.name'), primary: true, render: (n) => [n.name, n.self ? h('span', { class: 'muted small' }, t('common.thisNode')) : null] },
+          { label: t('common.state'), render: (n) => statusPill(n.draining ? 'draining' : 'accepting') },
+          { label: t('dashboard.col.liveStreams'), class: 'num', render: (n) => n.live_streams },
+          { label: t('dashboard.col.registered'), render: (n) => fmtTime(n.registered_at) },
+        ],
+        rows: items,
+      }));
     } else {
       replace(nodeBox, nodes.error.status === 403
-        ? h('p', { class: 'muted' }, 'ノードの情報には node:admin の権限が要ります。')
+        ? alert('info', t('dashboard.nodesForbidden'))
         : errorBox(nodes.error));
     }
     if (dev.ok) {
       replace(devBox, dev.value.data.nodes.map((n) => h('div', null,
-        h('h3', null, 'ノード ', h('code', null, n.node.slice(0, 12))),
-        n.devices.sandbox ? h('p', { class: 'small muted' }, 'サンドボックス: ', n.devices.sandbox) : null,
-        table([
-          { label: 'プロバイダー', render: (p) => h('code', null, p.provider) },
-          { label: '状態', render: (p) => (p.available ? badge('使える', 'ok') : badge('使えない', 'danger')) },
-          { label: '詳細・理由', render: (p) => h('span', { class: 'small break' }, p.detail) },
-        ], n.devices.providers, { empty: 'コーデック worker が動いていません' }))));
+        h('h3', null, t('dashboard.nodeHeading'), ' ', h('code', null, n.node.slice(0, 12))),
+        n.devices.sandbox ? h('p', { class: 'small muted' }, t('dashboard.sandbox'), ': ', n.devices.sandbox) : null,
+        dataTable({
+          columns: [
+            { label: t('dashboard.col.provider'), primary: true, render: (p) => h('code', null, p.provider) },
+            { label: t('common.state'), render: (p) => statusPill(p.available ? 'available' : 'unavailable') },
+            { label: t('dashboard.col.detail'), wrap: true, render: (p) => h('span', { class: 'small break' }, p.detail) },
+          ],
+          rows: n.devices.providers,
+          empty: { icon: 'gpu', title: t('dashboard.noWorker'), body: t('dashboard.noWorkerBody') },
+        }))));
     } else {
       replace(devBox, dev.error.status === 403
-        ? h('p', { class: 'muted' }, 'デバイスの情報には node:admin の権限が要ります。')
+        ? alert('info', t('dashboard.devicesForbidden'))
         : errorBox(dev.error));
     }
     replace(cards, cardList);
