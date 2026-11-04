@@ -50,4 +50,6 @@ export default {
   'player.autoplayBlocked': '再生ボタンを押してください（自動再生が止められました）',
   'player.ended': '最後まで読み込みました',
   'player.segmentRetry': 'セグメントを読めません（{reason}）。再試行します',
+
+  'player.playOverlay': 'プレビューを再生',
 };

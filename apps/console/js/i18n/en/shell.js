@@ -152,4 +152,10 @@ export default {
   'soon.api': 'API reference',
   'soon.guide': 'Read the guide',
   'soon.back': 'Back to the dashboard',
+  'shortcuts.listMove': 'Next / previous row in a list',
+  'shortcuts.listOpen': 'Open the selected row',
+  'shortcuts.create': 'Create new (on a list)',
+  'palette.liveStreams': 'Show live streams',
+  'palette.upcoming': 'Show upcoming schedules',
+  'palette.legalHold': 'Show recordings on legal hold',
 };

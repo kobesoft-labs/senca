@@ -4,6 +4,8 @@
 //! - 対応: EdDSA（Ed25519）、ES256、RS256。鍵が算法を決め、ヘッダーの alg が鍵と違えば拒否。
 //! - `alg=none`・HS 系・`crit`・期限切れ・nbf 前・iss/aud 不一致・テナント欠落を拒否。
 //! - 時計のずれは `leeway_secs`（既定 60 秒）まで許す。
+//! - OIDC の ID トークン（[`JwtVerifier::verify_id_token`]）も同じ署名の検証を通す。IdP の JWKS には暗号化用の鍵や
+//!   対応しない種類の鍵が混ざるので、[`JwtVerifier::from_jwks_lenient`] はそれらを飛ばす（署名用で対応する鍵だけを使う）。
 
 use crate::auth::Scope;
 use base64::Engine;
@@ -23,6 +25,16 @@ pub enum JwtError {
     Audience,
     MissingTenant,
     Critical,
+    /// OIDC: `nonce` が違う・無い。
+    Nonce,
+    /// OIDC: `azp` が client_id と違う（`aud` が複数で `azp` が無いときも）。
+    AuthorizedParty,
+    /// OIDC: `iat` が無い・未来・古すぎる。
+    IssuedAt,
+    /// OIDC: `sub` が無い。
+    MissingSubject,
+    /// OIDC: `max_age` を求めたのに `auth_time` が無い・古い。
+    AuthTime,
     Jwks(String),
 }
 
@@ -39,6 +51,11 @@ impl std::fmt::Display for JwtError {
             JwtError::Audience => "audience mismatch",
             JwtError::MissingTenant => "tenant claim missing",
             JwtError::Critical => "crit header not supported",
+            JwtError::Nonce => "nonce mismatch",
+            JwtError::AuthorizedParty => "azp mismatch",
+            JwtError::IssuedAt => "iat missing or out of range",
+            JwtError::MissingSubject => "sub missing",
+            JwtError::AuthTime => "auth_time missing or too old",
             JwtError::Jwks(e) => return write!(f, "jwks: {e}"),
         };
         f.write_str(s)
@@ -85,50 +102,32 @@ fn b64(s: &str) -> Result<Vec<u8>, JwtError> {
 impl JwtVerifier {
     /// JWKS（JSON）から作る。`kid` の無い鍵・未対応の鍵は拒否する（黙って飛ばさない）。
     pub fn from_jwks(jwks: &[u8], issuer: &str, audience: &str, tenant_claim: &str) -> Result<Self, JwtError> {
+        Self::parse(jwks, issuer, audience, tenant_claim, false)
+    }
+
+    /// IdP（OIDC）の JWKS から作る。署名用でない鍵（`use: enc`）・対応しない種類や算法の鍵は飛ばす。
+    /// 使える鍵が 1 つも無ければ `Err`。`audience` は client_id。
+    pub fn from_jwks_lenient(jwks: &[u8], issuer: &str, audience: &str) -> Result<Self, JwtError> {
+        Self::parse(jwks, issuer, audience, "", true)
+    }
+
+    /// 持っている鍵の ID。
+    pub fn has_kid(&self, kid: &str) -> bool {
+        self.keys.contains_key(kid)
+    }
+
+    fn parse(jwks: &[u8], issuer: &str, audience: &str, tenant_claim: &str, lenient: bool) -> Result<Self, JwtError> {
         let v: Value = serde_json::from_slice(jwks).map_err(|e| JwtError::Jwks(e.to_string()))?;
         let arr = v.get("keys").and_then(Value::as_array).ok_or_else(|| JwtError::Jwks("no keys".into()))?;
         let mut keys = BTreeMap::new();
         for k in arr {
-            let s = |n: &str| k.get(n).and_then(Value::as_str);
-            let kid = s("kid").ok_or_else(|| JwtError::Jwks("key without kid".into()))?.to_string();
-            if let Some(u) = s("use")
-                && u != "sig"
-            {
-                return Err(JwtError::Jwks(format!("key {kid}: use={u}")));
+            match Self::parse_key(k) {
+                Ok((kid, key)) => {
+                    keys.insert(kid, key);
+                }
+                Err(_) if lenient => continue,
+                Err(e) => return Err(e),
             }
-            let key = match (s("kty"), s("crv")) {
-                (Some("OKP"), Some("Ed25519")) => {
-                    let x: [u8; 32] = b64(s("x").unwrap_or(""))?.try_into().map_err(|_| JwtError::Jwks("bad x".into()))?;
-                    Key::Ed25519(ed25519_dalek::VerifyingKey::from_bytes(&x).map_err(|e| JwtError::Jwks(e.to_string()))?)
-                }
-                (Some("EC"), Some("P-256")) => {
-                    let x = b64(s("x").unwrap_or(""))?;
-                    let y = b64(s("y").unwrap_or(""))?;
-                    if x.len() != 32 || y.len() != 32 {
-                        return Err(JwtError::Jwks("bad ec point".into()));
-                    }
-                    let mut sec1 = vec![4u8];
-                    sec1.extend_from_slice(&x);
-                    sec1.extend_from_slice(&y);
-                    Key::Es256(p256::ecdsa::VerifyingKey::from_sec1_bytes(&sec1).map_err(|e| JwtError::Jwks(e.to_string()))?)
-                }
-                (Some("RSA"), _) => {
-                    let n = rsa::BigUint::from_bytes_be(&b64(s("n").unwrap_or(""))?);
-                    let e = rsa::BigUint::from_bytes_be(&b64(s("e").unwrap_or(""))?);
-                    let pk = rsa::RsaPublicKey::new(n, e).map_err(|e| JwtError::Jwks(e.to_string()))?;
-                    if rsa::traits::PublicKeyParts::size(&pk) < 256 {
-                        return Err(JwtError::Jwks(format!("key {kid}: RSA key shorter than 2048 bits")));
-                    }
-                    Key::Rs256(rsa::pkcs1v15::VerifyingKey::new(pk))
-                }
-                _ => return Err(JwtError::Jwks(format!("key {kid}: unsupported kty/crv"))),
-            };
-            if let Some(a) = s("alg")
-                && a != key.alg()
-            {
-                return Err(JwtError::Jwks(format!("key {kid}: alg {a} does not match key type")));
-            }
-            keys.insert(kid, key);
         }
         if keys.is_empty() {
             return Err(JwtError::Jwks("no keys".into()));
@@ -142,7 +141,51 @@ impl JwtVerifier {
         })
     }
 
-    pub fn verify(&self, token: &str, now_secs: i64) -> Result<Claims, JwtError> {
+    fn parse_key(k: &Value) -> Result<(String, Key), JwtError> {
+        let s = |n: &str| k.get(n).and_then(Value::as_str);
+        let kid = s("kid").ok_or_else(|| JwtError::Jwks("key without kid".into()))?.to_string();
+        if let Some(u) = s("use")
+            && u != "sig"
+        {
+            return Err(JwtError::Jwks(format!("key {kid}: use={u}")));
+        }
+        let key = match (s("kty"), s("crv")) {
+            (Some("OKP"), Some("Ed25519")) => {
+                let x: [u8; 32] = b64(s("x").unwrap_or(""))?.try_into().map_err(|_| JwtError::Jwks("bad x".into()))?;
+                Key::Ed25519(ed25519_dalek::VerifyingKey::from_bytes(&x).map_err(|e| JwtError::Jwks(e.to_string()))?)
+            }
+            (Some("EC"), Some("P-256")) => {
+                let x = b64(s("x").unwrap_or(""))?;
+                let y = b64(s("y").unwrap_or(""))?;
+                if x.len() != 32 || y.len() != 32 {
+                    return Err(JwtError::Jwks("bad ec point".into()));
+                }
+                let mut sec1 = vec![4u8];
+                sec1.extend_from_slice(&x);
+                sec1.extend_from_slice(&y);
+                Key::Es256(p256::ecdsa::VerifyingKey::from_sec1_bytes(&sec1).map_err(|e| JwtError::Jwks(e.to_string()))?)
+            }
+            (Some("RSA"), _) => {
+                let n = rsa::BigUint::from_bytes_be(&b64(s("n").unwrap_or(""))?);
+                let e = rsa::BigUint::from_bytes_be(&b64(s("e").unwrap_or(""))?);
+                let pk = rsa::RsaPublicKey::new(n, e).map_err(|e| JwtError::Jwks(e.to_string()))?;
+                if rsa::traits::PublicKeyParts::size(&pk) < 256 {
+                    return Err(JwtError::Jwks(format!("key {kid}: RSA key shorter than 2048 bits")));
+                }
+                Key::Rs256(rsa::pkcs1v15::VerifyingKey::new(pk))
+            }
+            _ => return Err(JwtError::Jwks(format!("key {kid}: unsupported kty/crv"))),
+        };
+        if let Some(a) = s("alg")
+            && a != key.alg()
+        {
+            return Err(JwtError::Jwks(format!("key {kid}: alg {a} does not match key type")));
+        }
+        Ok((kid, key))
+    }
+
+    /// 署名・`exp`・`nbf`・`iss`・`aud` を確かめて、クレームの全体を返す（テナントは見ない）。
+    fn verify_common(&self, token: &str, now_secs: i64) -> Result<Value, JwtError> {
         let mut parts = token.split('.');
         let (h, p, sig) = match (parts.next(), parts.next(), parts.next(), parts.next()) {
             (Some(h), Some(p), Some(s), None) => (h, p, s),
@@ -201,6 +244,18 @@ impl JwtVerifier {
         if !aud_ok {
             return Err(JwtError::Audience);
         }
+        Ok(c)
+    }
+
+    /// トークンの `kid`（署名を確かめる前。鍵を取り直すかを決めるためだけに使う）。
+    pub fn peek_kid(token: &str) -> Option<String> {
+        let h = token.split('.').next()?;
+        let header: Value = serde_json::from_slice(&b64(h).ok()?).ok()?;
+        header.get("kid").and_then(Value::as_str).map(str::to_string)
+    }
+
+    pub fn verify(&self, token: &str, now_secs: i64) -> Result<Claims, JwtError> {
+        let c = self.verify_common(token, now_secs)?;
         let tenant = c
             .get(&self.tenant_claim)
             .and_then(Value::as_str)
@@ -215,6 +270,40 @@ impl JwtVerifier {
             _ => BTreeSet::new(),
         };
         Ok(Claims { subject, tenant, scopes })
+    }
+
+    /// OIDC の ID トークンを確かめる（OpenID Connect Core 1.0 の 3.1.3.7）。`audience` は client_id。
+    /// 署名（鍵が算法を決める。`none`・HS 系は拒否）・`iss`・`aud`・`exp`・`nbf`・`iat`・`nonce`・`azp`
+    /// （`aud` が複数なら必須）・`sub`、`max_age` を求めたなら `auth_time`。クレームの全体を返す。
+    pub fn verify_id_token(&self, token: &str, now_secs: i64, nonce: &str, max_age: Option<u64>) -> Result<Value, JwtError> {
+        let c = self.verify_common(token, now_secs)?;
+        // azp: aud が複数なら必須、あれば client_id と同じ
+        let multi_aud = matches!(c.get("aud"), Some(Value::Array(a)) if a.len() > 1);
+        match c.get("azp").and_then(Value::as_str) {
+            Some(azp) if azp != self.audience => return Err(JwtError::AuthorizedParty),
+            None if multi_aud || c.get("azp").is_some() => return Err(JwtError::AuthorizedParty),
+            _ => {}
+        }
+        // iat: 必須。未来（ずれを超える）・10 分より古いものは拒否
+        let iat = c.get("iat").and_then(Value::as_i64).ok_or(JwtError::IssuedAt)?;
+        if iat > now_secs + self.leeway_secs || now_secs - iat > 600 + self.leeway_secs {
+            return Err(JwtError::IssuedAt);
+        }
+        // nonce: 定数時間で比べる
+        let got = c.get("nonce").and_then(Value::as_str).ok_or(JwtError::Nonce)?;
+        if nonce.is_empty() || !bool::from(subtle::ConstantTimeEq::ct_eq(got.as_bytes(), nonce.as_bytes())) {
+            return Err(JwtError::Nonce);
+        }
+        if c.get("sub").and_then(Value::as_str).is_none_or(str::is_empty) {
+            return Err(JwtError::MissingSubject);
+        }
+        if let Some(max) = max_age {
+            let at = c.get("auth_time").and_then(Value::as_i64).ok_or(JwtError::AuthTime)?;
+            if now_secs - at > max as i64 + self.leeway_secs {
+                return Err(JwtError::AuthTime);
+            }
+        }
+        Ok(c)
     }
 }
 
