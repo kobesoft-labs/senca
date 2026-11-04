@@ -322,3 +322,36 @@ curl -s -X PATCH "$API/pipelines/$PID" "${H[@]}" -H "If-Match: $ETAG" -d '{
 - Resource requirements per level (CPU, memory, GPU sessions) are estimated from the pruned graph.
 
 For how levels are chosen, priorities, and disabling devices, see [9. Cluster and grid](09-cluster-grid.md).
+
+## 7.8 Building and operating in the console
+
+The console (`/console/`) offers the same operations on its Pipelines and Switcher pages.
+
+**Create**: “New pipeline” lets you pick a template (picture-in-picture, two-camera switcher, lecture: camera + whiteboard correction,
+audio mix, transcode ladder, convert to AV1, blank graph) and choose the input and output streams to get a draft. For a live stream, the codecs and size
+are matched automatically. You can create a new output stream (fMP4) on the spot. Drafts stay in that browser; “Save to node” sends `POST /pipelines`.
+
+**Edit**: connect nodes by dragging from a right dot (output) to a left dot (input). While dragging, only compatible dots light up,
+and hovering an incompatible one tells you why (for example “put a Decode in between”).
+
+- Port shapes and colours: diamonds are encoded, circles are decoded; blue is video, green is audio.
+- Undo and redo (Ctrl/⌘+Z, Ctrl/⌘+Shift+Z), copy, paste and duplicate (Ctrl/⌘+C, V, D), delete (Delete), auto-arrange (L), fit to view (0).
+- Everything works from the keyboard: Tab moves through the nodes in flow order, the arrow keys move them and Enter opens their settings, where
+  “Input from” and “Connect to” make connections. The “Parts list” tab is a text version of the graph.
+- A saved pipeline is validated on the node after each change (`POST /pipelines/{id}/validate`), refreshing the Problems and Plan tabs.
+  Clicking a problem takes you to the node. Codes such as `CAPACITY_UNAVAILABLE` come with a plain explanation and what to do.
+- Node positions on screen and unsaved changes stay in that browser (they are not part of the graph).
+
+**Switcher**: the preview monitor (green) is on the left and the program monitor (red) on the right. Monitors play the output streams over WebRTC
+(without a preview output, the preview shows the scene layout). Click a scene to put it on preview; CUT switches to program at once and AUTO uses the
+chosen transition (`take`). Moving the T-bar all the way switches with a transition as long as the move took.
+
+| Key | Action |
+|---|---|
+| 1–9 | Put that scene on preview |
+| Shift + 1–9, double-click a scene | Send that scene straight to program (`switch_program`) |
+| C | CUT |
+| A, T | AUTO |
+
+With “Safety” on, CUT and AUTO need a second press and direct cuts are off. The setting stays in that browser.
+Double-click an audio fader or press 0 to reset it to 0 dB.

@@ -39,7 +39,10 @@ async function loadResources() {
     items.push({ id: `schedule:${s.id}`, kind: 'schedule', label: s.name || s.id.slice(0, 8), hint: t('palette.kind.schedule'), href: `#/schedules/${encodeURIComponent(s.id)}`, keywords: [s.id] });
   }
   for (const p of (pl && pl.items) || []) {
-    items.push({ id: `pipeline:${p.id}`, kind: 'pipeline', label: p.name, hint: t('palette.kind.pipeline'), href: `#/pipelines?id=${encodeURIComponent(p.id)}`, keywords: [p.id] });
+    items.push({ id: `pipeline:${p.id}`, kind: 'pipeline', label: p.name, hint: t('palette.kind.pipeline'), href: `#/pipelines/${encodeURIComponent(p.id)}`, keywords: [p.id] });
+    if ((p.graph.nodes || []).some((n) => n.type === 'compose')) {
+      items.push({ id: `switcher:${p.id}`, kind: 'pipeline', icon: 'switcher', label: t('production.paletteOpen', { name: p.name }), hint: t('nav.production'), href: `#/production?pipeline=${encodeURIComponent(p.id)}`, keywords: [p.id, 'switcher'], boost: p.observed_state === 'running' ? 20 : 0 });
+    }
   }
   cache = { at: Date.now(), items };
   return items;
@@ -66,7 +69,7 @@ function staticItems({ navigate, logout }) {
     { id: 'act:grid-unplaced', icon: 'ban', label: t('palette.gridUnplaced'), keywords: ['grid', 'unschedulable', 'pending'], run: go('#/grid?state=unschedulable') },
     { id: 'act:audit-24h', icon: 'audit', label: t('palette.audit24h'), keywords: ['audit', 'log', 'today'], run: go('#/audit?range=24h') },
     { id: 'act:tokens-expiring', icon: 'clock', label: t('palette.tokensExpiring'), keywords: ['token', 'expire'], run: go('#/tokens?filter=expiring') },
-    { id: 'act:new-pipeline', icon: 'pipelines', label: t('palette.newPipeline'), keywords: ['pipeline'], run: go('#/pipelines') },
+    { id: 'act:new-pipeline', icon: 'sparkles', label: t('palette.newPipeline'), keywords: ['pipeline', 'template', 'ひな形'], run: go('#/pipelines?new=1') },
     { id: 'act:send', icon: 'camera', label: t('palette.sendFromBrowser'), keywords: ['whip', 'camera'], run: go('#/send') },
     { id: 'act:live-streams', icon: 'live', label: t('palette.liveStreams'), keywords: ['live', 'on air', 'streams'], run: go('#/streams?state=live') },
     { id: 'act:upcoming', icon: 'calendar', label: t('palette.upcoming'), keywords: ['schedule', 'calendar', 'upcoming'], run: go('#/schedules') },
