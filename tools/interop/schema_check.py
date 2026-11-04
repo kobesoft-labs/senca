@@ -255,10 +255,11 @@ def cmd_routes(spec_path, api_dir):
             bad(f"scope: {label} に x-senca-scope が無い")
         elif op["x-senca-scope"] != sc:
             bad(f"scope: {label} の x-senca-scope={op['x-senca-scope']!r}、実装は {sc!r}")
-        # 共通: 401、POST は Idempotency-Key
-        if "401" not in op.get("responses", {}):
+        # 共通: 401、POST は Idempotency-Key（認証なしの操作（security: []、ログイン）は除く）
+        public = op.get("security") == []
+        if "401" not in op.get("responses", {}) and not public:
             bad(f"doc: {label} に 401 が無い")
-        if m == "POST" and not any(x.get("name") == "Idempotency-Key" for x in params):
+        if m == "POST" and not public and not any(x.get("name") == "Idempotency-Key" for x in params):
             bad(f"doc: {label} に Idempotency-Key が無い")
         if not op.get("operationId"):
             bad(f"doc: {label} に operationId が無い")
@@ -452,6 +453,7 @@ class Live:
         self.auth()
         self.system()
         ro, sub_tok, sw = self.tokens()
+        self.users_auth(ro)
         sid, other = self.streams(ro)
         rec_ids = self.publish_and_record(sid)
         self.recordings(sid, rec_ids, sw)
@@ -1695,6 +1697,173 @@ class Live:
         for x in json.loads(sl).get("items", []) if s == 200 else []:
             if (x.get("metadata") or {}).get("media_pipeline") in (mid, mid2):
                 self.raw("DELETE", f"/api/v1/streams/{x['id']}")
+
+    @staticmethod
+    def totp(secret_b32, offset=0):
+        import hashlib
+        import hmac
+        import struct
+        k = base64.b32decode(secret_b32 + "=" * (-len(secret_b32) % 8))
+        c = int(time.time()) // 30 + offset
+        h = hmac.new(k, struct.pack(">Q", c), hashlib.sha1).digest()
+        o = h[-1] & 15
+        return "%06d" % ((struct.unpack(">I", h[o:o + 4])[0] & 0x7FFFFFFF) % 1000000)
+
+    def users_auth(self, ro):
+        """利用者とログイン（ADR-0017）。OIDC の IdP は設定しない（IdP との往復は tools/interop/auth.sh）。"""
+        txt = {"Content-Type": "text/plain"}
+        s, _, p = self.call("GET", "/auth/providers", "auth providers（認証なし）", 200, auth=False)
+        check(isinstance(p, dict) and p.get("setup_required") is True and p.get("oidc") == [], "利用者がいなければ setup_required", f"{p}")
+        apw, vpw = "openapi admin pw", "openapi viewer pw"
+        s, h, u = self.call("POST", "/users", "user 作成（admin）", 201,
+                            body={"username": "oa-admin", "password": apw, "roles": ["admin"], "email": "oa@example.com"})
+        uid = u["id"] if s == 201 else "x"
+        check(h.get("location") == f"/api/v1/users/{uid}" and h.get("etag") == '"1"', "user の Location と ETag", f"{h}")
+        self.call("POST", "/users", "user 作成 重なる名前（大文字・小文字）", 409, body={"username": "OA-ADMIN", "roles": ["viewer"]})
+        self.call("POST", "/users", "user 作成 重なるメールアドレス", 409, body={"username": "oa-x", "roles": ["viewer"], "email": "OA@example.com"})
+        self.call("POST", "/users", "user 作成 役割も権限も無い", 400, body={"username": "x1"})
+        self.call("POST", "/users", "user 作成 知らない役割", 400, body={"username": "x1", "roles": ["root"]})
+        self.call("POST", "/users", "user 作成 短いパスワード", 400, body={"username": "x1", "roles": ["viewer"], "password": "short"})
+        self.call("POST", "/users", "user 作成 利用者名の形", 400, body={"username": "bad name", "roles": ["viewer"]})
+        self.call("POST", "/users", "user 作成 知らないフィールド", 400, body={"username": "x1", "roles": ["viewer"], "x": 1})
+        self.call("POST", "/users", "user 作成 stream:read", 403, token=ro, body={"username": "x1", "roles": ["viewer"]})
+        self.call("POST", "/users", "user 作成 Content-Type", 415, body="x", headers=txt)
+        s, _, v = self.call("POST", "/users", "user 作成（viewer、仮のパスワード）", 201,
+                            body={"username": "oa-viewer", "password": vpw, "roles": ["viewer"], "must_change_password": True})
+        vid = v["id"] if s == 201 else "x"
+        s, _, ps = self.call("GET", "/auth/providers", "auth providers（利用者がいる）", 200, auth=False)
+        check(isinstance(ps, dict) and ps.get("setup_required") is False, "利用者がいれば setup_required=false")
+        s, _, lst = self.call("GET", "/users?limit=1", "users 一覧", 200)
+        if isinstance(lst, dict) and lst.get("next_cursor"):
+            self.call("GET", f"/users?limit=1&cursor={lst['next_cursor']}", "users 次のページ", 200)
+        self.call("GET", "/users?x=1", "users 知らないクエリ", 400)
+        self.call("GET", "/users", "users stream:read", 403, token=ro)
+        s, h, g = self.call("GET", f"/users/{uid}", "user 取得", 200)
+        self.call("GET", f"/users/{uid}", "user 取得 stream:read", 403, token=ro)
+        self.call("GET", "/users/nosuch", "user 無い", 404)
+        gen = g.get("generation", 1) if isinstance(g, dict) else 1
+        self.call("PATCH", f"/users/{uid}", "user 変更 If-Match 無し", 428, body={"display_name": "A"})
+        self.call("PATCH", f"/users/{uid}", "user 変更 古い If-Match", 412, body={"display_name": "A"}, headers={"If-Match": '"99"'})
+        self.call("PATCH", f"/users/{uid}", "user 変更 知らないフィールド", 400, body={"bogus": 1}, headers={"If-Match": f'"{gen}"'})
+        self.call("PATCH", f"/users/{uid}", "user 変更 stream:read", 403, token=ro, body={}, headers={"If-Match": f'"{gen}"'})
+        self.call("PATCH", f"/users/{uid}", "user 変更 Content-Type", 415, body="x", headers={"If-Match": f'"{gen}"', **txt})
+        self.call("PATCH", "/users/nosuch", "user 変更 無い", 404, body={}, headers={"If-Match": '"1"'})
+        s, h, g = self.call("PATCH", f"/users/{uid}", "user 変更（表示名）", 200, body={"display_name": "OpenAPI"}, headers={"If-Match": f'"{gen}"'})
+        gen = g.get("generation", gen) if isinstance(g, dict) else gen
+        self.call("PATCH", f"/users/{uid}", "最後の管理者は無効にできない", 409, body={"disabled": True}, headers={"If-Match": f'"{gen}"'})
+        # パスワードでのログイン
+        self.call("POST", "/auth/login", "login 違うパスワード", 401, auth=False, body={"username": "oa-admin", "password": "wrong password!!"})
+        self.call("POST", "/auth/login", "login 必須が無い", 400, auth=False, body={"username": "oa-admin"})
+        self.call("POST", "/auth/login", "login Content-Type", 415, auth=False, body="x", headers=txt)
+        s, _, li = self.call("POST", "/auth/login", "login", 200, auth=False, body={"username": "oa-admin", "password": apw})
+        tok = li.get("token", "") if isinstance(li, dict) else ""
+        check(tok.startswith("sencas_") and li.get("status") == "ok", "login で sencas_ のセッション")
+        s, _, me = self.call("GET", "/auth/me", "me（セッション）", 200, token=tok)
+        check(isinstance(me, dict) and me.get("auth_method") == "session" and me.get("subject") == f"user:{uid}", "me の subject と auth_method", f"{me}")
+        s, _, me2 = self.call("GET", "/auth/me", "me（API トークン）", 200)
+        check(isinstance(me2, dict) and me2.get("auth_method") == "api_token" and me2.get("user") is None, "API トークンの me", f"{me2}")
+        self.call("GET", "/auth/me", "me 認証なし", 401, auth=False)
+        self.call("GET", "/auth/sessions", "自分のセッション", 200, token=tok)
+        self.call("GET", "/auth/sessions", "自分のセッション（API トークンは 403）", 403)
+        self.call("GET", "/auth/sessions?x=1", "自分のセッション 知らないクエリ", 400, token=tok)
+        # MFA
+        self.call("POST", "/auth/mfa/totp/setup", "MFA 登録 パスワード無し", 400, token=tok, body={})
+        self.call("POST", "/auth/mfa/totp/setup", "MFA 登録 パスワード違い", 403, token=tok, body={"password": "wrong password!!"})
+        self.call("POST", "/auth/mfa/totp/setup", "MFA 登録 Content-Type", 415, token=tok, body="x", headers=txt)
+        self.call("POST", "/auth/mfa/totp/setup", "MFA 登録 API トークン", 403, body={"password": apw})
+        s, _, m = self.call("POST", "/auth/mfa/totp/setup", "MFA 登録", 200, token=tok, body={"password": apw})
+        secret, enroll = (m.get("secret", "A" * 32), m.get("enrollment_token", "")) if isinstance(m, dict) else ("A" * 32, "")
+        good = self.totp(secret)
+        wrong = "%06d" % ((int(good) + 500000) % 1000000)
+        self.call("POST", "/auth/mfa/totp/confirm", "MFA 確認 違うコード", 400, token=tok, body={"enrollment_token": enroll, "code": wrong})
+        self.call("POST", "/auth/mfa/totp/confirm", "MFA 確認 Content-Type", 415, token=tok, body="x", headers=txt)
+        self.call("POST", "/auth/mfa/totp/confirm", "MFA 確認 API トークン", 403, body={"enrollment_token": enroll, "code": good})
+        s, _, c = self.call("POST", "/auth/mfa/totp/confirm", "MFA 確認", 200, token=tok, body={"enrollment_token": enroll, "code": good})
+        check(isinstance(c, dict) and len(c.get("recovery_codes") or []) == 10, "回復コード 10 個")
+        self.call("POST", "/auth/mfa/totp/confirm", "MFA 確認 有効なら 409", 409, token=tok, body={"enrollment_token": enroll, "code": good})
+        self.call("POST", "/auth/mfa/totp/setup", "MFA 登録 有効なら 409", 409, token=tok, body={"password": apw})
+        self.call("POST", "/auth/mfa/recovery-codes", "回復コード 両方", 400, token=tok, body={"password": apw, "code": "123456"})
+        self.call("POST", "/auth/mfa/recovery-codes", "回復コード Content-Type", 415, token=tok, body="x", headers=txt)
+        self.call("POST", "/auth/mfa/recovery-codes", "回復コード API トークン", 403, body={"password": apw})
+        s, _, r = self.call("POST", "/auth/mfa/recovery-codes", "回復コードを作り直す", 200, token=tok, body={"password": apw},
+                            headers={"Idempotency-Key": "oa-rc-1"})
+        s, h, r2 = self.call("POST", "/auth/mfa/recovery-codes", "回復コード Idempotency 再送", 200, token=tok, body={"password": apw},
+                             headers={"Idempotency-Key": "oa-rc-1"})
+        check(h.get("idempotency-replayed") == "true" and isinstance(r2, dict) and r2.get("recovery_codes") is None and r2.get("recovery_codes_redacted") is True,
+              "再送の応答では回復コードを伏せる", f"{r2}")
+        rc = (r.get("recovery_codes") or ["x"])[0] if isinstance(r, dict) else "x"
+        s, _, l2 = self.call("POST", "/auth/login", "login（MFA の利用者）", 200, auth=False, body={"username": "oa-admin", "password": apw})
+        check(isinstance(l2, dict) and l2.get("status") == "mfa_required", "MFA の利用者は mfa_required", f"{l2}")
+        mt = l2.get("mfa_token", "") if isinstance(l2, dict) else ""
+        self.call("POST", "/auth/login/mfa", "login/mfa 違うコード", 401, auth=False, body={"mfa_token": mt, "code": wrong})
+        self.call("POST", "/auth/login/mfa", "login/mfa 両方", 400, auth=False, body={"mfa_token": mt, "code": good, "recovery_code": rc})
+        self.call("POST", "/auth/login/mfa", "login/mfa Content-Type", 415, auth=False, body="x", headers=txt)
+        s, _, l3 = self.call("POST", "/auth/login/mfa", "login/mfa 回復コード", 200, auth=False, body={"mfa_token": mt, "recovery_code": rc})
+        tok2 = l3.get("token", "") if isinstance(l3, dict) else ""
+        self.call("POST", "/auth/mfa/disable", "MFA 解除 違うパスワード", 403, token=tok2, body={"password": "wrong password!!"})
+        self.call("POST", "/auth/mfa/disable", "MFA 解除 Content-Type", 415, token=tok2, body="x", headers=txt)
+        self.call("POST", "/auth/mfa/disable", "MFA 解除 どちらも無い", 400, token=tok2, body={})
+        self.call("POST", "/auth/mfa/disable", "MFA 解除 API トークン", 403, body={"password": apw})
+        self.call("POST", "/auth/mfa/disable", "MFA 解除", 204, token=tok2, body={"password": apw})
+        self.call("POST", "/auth/mfa/disable", "MFA 解除 有効でなければ 409", 409, token=tok2, body={"password": apw})
+        self.call("POST", "/auth/mfa/recovery-codes", "回復コード MFA が無ければ 409", 409, token=tok2, body={"password": apw})
+        # パスワードの変更
+        self.call("POST", "/auth/password", "パスワード変更 違うパスワード", 403, token=tok2, body={"current_password": "wrong password!!", "new_password": "openapi admin pw 2"})
+        self.call("POST", "/auth/password", "パスワード変更 弱い", 400, token=tok2, body={"current_password": apw, "new_password": "short"})
+        self.call("POST", "/auth/password", "パスワード変更 Content-Type", 415, token=tok2, body="x", headers=txt)
+        self.call("POST", "/auth/password", "パスワード変更 API トークン", 403, body={"current_password": apw, "new_password": "openapi admin pw 2"})
+        self.call("POST", "/auth/password", "パスワード変更", 204, token=tok2, body={"current_password": apw, "new_password": "openapi admin pw 2"})
+        self.call("GET", "/auth/me", "パスワードを変えると、ほかのセッションは失効", 401, token=tok)
+        # 仮のパスワードのセッション
+        s, _, lv = self.call("POST", "/auth/login", "login（仮のパスワード）", 200, auth=False, body={"username": "oa-viewer", "password": vpw})
+        vt = lv.get("token", "") if isinstance(lv, dict) else ""
+        check(isinstance(lv, dict) and lv.get("pending") == ["password_change"], "仮のパスワードは pending=[password_change]", f"{lv}")
+        s, _, b = self.call("GET", "/streams", "仮のパスワードの間はほかの API は 403", 403, token=vt)
+        check(isinstance(b, dict) and (b.get("details") or {}).get("pending") == ["password_change"], "403 の details.pending", f"{b}")
+        # セッションの失効
+        s, _, l4 = self.call("POST", "/auth/login", "login（もう 1 つのセッション）", 200, auth=False, body={"username": "oa-admin", "password": "openapi admin pw 2"})
+        sid4 = (l4.get("session") or {}).get("id", "x") if isinstance(l4, dict) else "x"
+        self.call("DELETE", "/auth/sessions/nosuch", "自分のセッションの失効 無い", 404, token=tok2)
+        self.call("DELETE", f"/auth/sessions/{sid4}", "自分のセッションの失効 API トークン", 403)
+        self.call("DELETE", f"/auth/sessions/{sid4}", "自分のセッションの失効", 204, token=tok2)
+        # 管理者の操作
+        self.call("POST", f"/users/{vid}/password", "パスワードの再設定 弱い", 400, body={"password": "short"})
+        self.call("POST", f"/users/{vid}/password", "パスワードの再設定 Content-Type", 415, body="x", headers=txt)
+        self.call("POST", f"/users/{vid}/password", "パスワードの再設定 stream:read", 403, token=ro, body={})
+        self.call("POST", "/users/nosuch/password", "パスワードの再設定 無い", 404, body={})
+        s, h, rp = self.call("POST", f"/users/{vid}/password", "パスワードの再設定（仮のパスワード）", 200, body={}, headers={"Idempotency-Key": "oa-rp-1"})
+        check(isinstance(rp, dict) and len(rp.get("temporary_password") or "") == 20, "仮のパスワード 20 文字")
+        s, h, rp2 = self.call("POST", f"/users/{vid}/password", "パスワードの再設定 Idempotency 再送", 200, body={}, headers={"Idempotency-Key": "oa-rp-1"})
+        check(isinstance(rp2, dict) and rp2.get("temporary_password") is None and rp2.get("temporary_password_redacted") is True, "再送の応答では仮のパスワードを伏せる", f"{rp2}")
+        self.call("GET", "/auth/me", "パスワードの再設定でセッションは失効", 401, token=vt)
+        self.call("DELETE", f"/users/{vid}/mfa", "MFA を外す stream:read", 403, token=ro)
+        self.call("DELETE", "/users/nosuch/mfa", "MFA を外す 無い", 404)
+        self.call("DELETE", f"/users/{vid}/mfa", "MFA を外す", 204)
+        self.call("GET", f"/users/{uid}/sessions", "利用者のセッション", 200)
+        self.call("GET", f"/users/{uid}/sessions?x=1", "利用者のセッション 知らないクエリ", 400)
+        self.call("GET", f"/users/{uid}/sessions", "利用者のセッション stream:read", 403, token=ro)
+        self.call("GET", "/users/nosuch/sessions", "利用者のセッション 無い", 404)
+        self.call("DELETE", f"/users/{vid}/sessions", "利用者のセッションの失効 stream:read", 403, token=ro)
+        self.call("DELETE", "/users/nosuch/sessions", "利用者のセッションの失効 無い", 404)
+        self.call("DELETE", f"/users/{vid}/sessions", "利用者のセッションの失効", 204)
+        self.call("DELETE", f"/users/{uid}", "最後の管理者は消せない", 409)
+        self.call("DELETE", f"/users/{vid}", "user 削除 古い If-Match", 412, headers={"If-Match": '"99"'})
+        self.call("DELETE", f"/users/{vid}", "user 削除 stream:read", 403, token=ro)
+        self.call("DELETE", f"/users/{vid}", "user 削除", 204)
+        self.call("DELETE", f"/users/{vid}", "user 削除 2 回目", 404)
+        # ログアウト
+        self.call("POST", "/auth/logout", "ログアウト API トークン", 403)
+        self.call("POST", "/auth/logout", "ログアウト", 204, token=tok2)
+        self.call("POST", "/auth/logout", "ログアウトの後", 401, token=tok2)
+        # OIDC（IdP を設定していない）
+        self.call("GET", "/auth/oidc/nosuch/start", "OIDC start 知らない IdP", 404, auth=False)
+        self.call("GET", "/auth/oidc/nosuch/callback?code=x&state=y", "OIDC callback 知らない IdP", 404, auth=False)
+        self.call("POST", "/auth/exchange", "exchange クッキー無し", 401, auth=False, body={"code": "x"})
+        self.call("POST", "/auth/exchange", "exchange 必須が無い", 400, auth=False, body={})
+        self.call("POST", "/auth/exchange", "exchange Content-Type", 415, auth=False, body="x", headers=txt)
+        self.call("PUT", "/users", "PUT /users は 405", 405, body={})
+        self.call("GET", "/auth/login", "GET /auth/login は 405", 405)
+
 
     def events(self, sub_tok):
         # 認証なし・権限なし
