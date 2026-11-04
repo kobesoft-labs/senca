@@ -141,12 +141,10 @@ export function openPalette({ navigate, logout }) {
   const draw = () => {
     const q = input.value;
     const recent = q.trim() ? [] : recentItems().map((r) => ({ id: `recent:${r.href}`, kind: r.kind, label: r.label, hint: t(`palette.kind.${r.kind}`), href: r.href, group: 'recent' }));
-    const groups = [
-      ['recent', recent],
-      ['actions', fuzzyFilter(q, actions, q.trim() ? 6 : 4)],
-      ['pages', fuzzyFilter(q, pages, q.trim() ? 8 : 20)],
-      ['resources', q.trim() ? fuzzyFilter(q, resources, 12) : []],
-    ];
+    // 打ち込んだら、画面と資源（行き先）を先に、操作を後に
+    const groups = q.trim()
+      ? [['pages', fuzzyFilter(q, pages, 8)], ['resources', fuzzyFilter(q, resources, 12)], ['actions', fuzzyFilter(q, actions, 6)]]
+      : [['recent', recent], ['actions', fuzzyFilter(q, actions, 4)], ['pages', fuzzyFilter(q, pages, 20)]];
     flat = [];
     const nodes = [];
     for (const [g, items] of groups) {
