@@ -1,0 +1,181 @@
+/*
+ * デザイントークン。色・文字・間隔・角丸・影・動き・フォーカスの値はここだけに置く。
+ * 明暗は <html data-theme="light|dark">（部分に data-theme を付けるとその中だけ切り替わる: スタイルガイド）（js/boot.js と js/lib/theme.js が「システム」も解決して入れる）。
+ * 文字と背景の組はすべて WCAG AA（本文 4.5:1、大きな文字・アイコン・枠 3:1）を満たす（tools/interop/console.sh の C で計算して確かめる）。
+ * 赤（--live・--danger）は ON AIR・録画中と、削除などの取り消せない操作にだけ使う。
+ */
+:root,
+[data-theme="light"] {
+  color-scheme: light;
+  /* 面 */
+  --bg: #f4f5f7;
+  --surface: #ffffff;
+  --surface-raised: #ffffff;
+  --surface-2: #f0f2f5;
+  --surface-3: #e5e8ed;
+  --surface-inverse: #1b2130;
+  --border: #e0e3e9;
+  --border-strong: #c6ccd6;
+  --overlay: rgba(14, 18, 27, .48);
+  /* 文字 */
+  --text: #161b24;
+  --text-2: #4b5463;
+  --text-3: #636c7b;
+  --text-inverse: #f3f5f9;
+  /* アクセント（1 色だけ） */
+  --accent: #3a55d4;
+  --accent-hover: #2f47b8;
+  --accent-text: #3149c4;
+  --accent-fg: #ffffff;
+  --accent-soft: #edf0fc;
+  --accent-soft-text: #2a3fa8;
+  --accent-border: #b8c4f3;
+  /* 意味の色: 文字（-text）・淡い背景（-soft）・塗り（-solid、白い文字を載せる） */
+  --ok: #1d8a56;
+  --ok-text: #136140;
+  --ok-soft: #e5f4ec;
+  --warn: #c77a00;
+  --warn-text: #8a4b00;
+  --warn-soft: #fcf1de;
+  --danger: #c9252c;
+  --danger-text: #b01f26;
+  --danger-soft: #fdeceb;
+  --danger-solid: #c9252c;
+  --danger-hover: #ad1d23;
+  --info: #1a6fae;
+  --info-text: #0d5a91;
+  --info-soft: #e5f1fa;
+  --neutral-soft: #eef0f3;
+  --neutral-text: #4b5463;
+  /* 放送の色（ON AIR・タリー） */
+  --live: #d4232b;
+  --live-fg: #ffffff;
+  --live-soft: #fdeaea;
+  --tally-preview: #11934a;
+  /* 影 */
+  --shadow-1: 0 1px 2px rgba(16, 24, 40, .06), 0 1px 1px rgba(16, 24, 40, .04);
+  --shadow-2: 0 4px 12px rgba(16, 24, 40, .08), 0 1px 3px rgba(16, 24, 40, .06);
+  --shadow-3: 0 16px 40px rgba(16, 24, 40, .16), 0 4px 12px rgba(16, 24, 40, .08);
+  /* フォーカス */
+  --focus: #3a55d4;
+  --focus-halo: rgba(58, 85, 212, .28);
+  /* スケルトン */
+  --skeleton-a: #eceef2;
+  --skeleton-b: #f6f7f9;
+}
+
+[data-theme="dark"] {
+  color-scheme: dark;
+  --bg: #0c0f14;
+  --surface: #13171e;
+  --surface-raised: #191e27;
+  --surface-2: #1a1f28;
+  --surface-3: #242a35;
+  --surface-inverse: #e7eaf0;
+  --border: #262c37;
+  --border-strong: #3a4250;
+  --overlay: rgba(0, 0, 0, .62);
+  --text: #e8ebf1;
+  --text-2: #adb5c3;
+  --text-3: #8d96a6;
+  --text-inverse: #12161d;
+  --accent: #4a63e6;
+  --accent-hover: #3f58d8;
+  --accent-text: #95a7ff;
+  --accent-fg: #ffffff;
+  --accent-soft: #1d2442;
+  --accent-soft-text: #b4c1ff;
+  --accent-border: #3a4890;
+  --ok: #3cbf7f;
+  --ok-text: #63d39b;
+  --ok-soft: #122a1f;
+  --warn: #e9a23b;
+  --warn-text: #f0b862;
+  --warn-soft: #2e2312;
+  --danger: #f06065;
+  --danger-text: #ff8a8e;
+  --danger-soft: #331618;
+  --danger-solid: #c62f35;
+  --danger-hover: #d63a40;
+  --info: #4aa3e0;
+  --info-text: #7cc0ef;
+  --info-soft: #11263a;
+  --neutral-soft: #20262f;
+  --neutral-text: #b6bdca;
+  --live: #d42a31;
+  --live-fg: #ffffff;
+  --live-soft: #3a1416;
+  --tally-preview: #2fbf6c;
+  --shadow-1: 0 1px 2px rgba(0, 0, 0, .4);
+  --shadow-2: 0 4px 14px rgba(0, 0, 0, .45), 0 1px 3px rgba(0, 0, 0, .3);
+  --shadow-3: 0 18px 48px rgba(0, 0, 0, .6), 0 4px 12px rgba(0, 0, 0, .35);
+  --focus: #8ea0ff;
+  --focus-halo: rgba(142, 160, 255, .3);
+  --skeleton-a: #1c212a;
+  --skeleton-b: #252b36;
+}
+
+:root {
+  /* 文字 */
+  --font: system-ui, -apple-system, "Segoe UI", "Hiragino Sans", "Hiragino Kaku Gothic ProN", "Noto Sans JP", "Noto Sans CJK JP", "Yu Gothic UI", Meiryo, sans-serif;
+  --mono: ui-monospace, SFMono-Regular, Menlo, Consolas, "Liberation Mono", "Noto Sans Mono CJK JP", monospace;
+  --fs-2xs: 11px;
+  --fs-xs: 12px;
+  --fs-sm: 13px;
+  --fs-md: 14px;
+  --fs-lg: 16px;
+  --fs-xl: 18px;
+  --fs-2xl: 22px;
+  --fs-3xl: 28px;
+  --lh-tight: 1.3;
+  --lh: 1.6;
+  --fw-regular: 400;
+  --fw-medium: 500;
+  --fw-semibold: 600;
+  --fw-bold: 700;
+  /* 間隔（4 の倍数） */
+  --sp-0: 2px;
+  --sp-1: 4px;
+  --sp-2: 8px;
+  --sp-3: 12px;
+  --sp-4: 16px;
+  --sp-5: 20px;
+  --sp-6: 24px;
+  --sp-8: 32px;
+  --sp-10: 40px;
+  --sp-12: 48px;
+  /* 角丸 */
+  --r-xs: 4px;
+  --r-sm: 6px;
+  --r-md: 8px;
+  --r-lg: 12px;
+  --r-xl: 16px;
+  --r-full: 999px;
+  /* 大きさ */
+  --control-h: 36px;
+  --control-h-sm: 30px;
+  --control-h-lg: 44px;
+  --sidebar-w: 256px;
+  --sidebar-w-collapsed: 64px;
+  --topbar-h: 56px;
+  --content-max: 1360px;
+  /* 動き */
+  --dur-fast: 120ms;
+  --dur: 180ms;
+  --dur-slow: 260ms;
+  --ease: cubic-bezier(.2, .7, .3, 1);
+  --ease-in-out: cubic-bezier(.65, 0, .35, 1);
+  /* 重なり */
+  --z-sticky: 20;
+  --z-sidebar: 40;
+  --z-popover: 60;
+  --z-toast: 1000;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  :root {
+    --dur-fast: 0ms;
+    --dur: 0ms;
+    --dur-slow: 0ms;
+  }
+}

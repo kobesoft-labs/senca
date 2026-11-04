@@ -8,6 +8,12 @@ ADR-0004・REQ-007・仕様 9.5 の台帳。**法務確認の対象**であり�
 - SENCA: Apache-2.0。
 - Rust の依存: ADR-0002 の一覧（MIT / Apache-2.0 / BSD / ISC）。配布物の SBOM と依存のライセンスの照合は M14 のリリース手順で行う。
 
+## 管理画面に同梱するもの（apps/console）
+
+| もの | 用途 | ライセンス | 入手 | 備考 |
+|---|---|---|---|---|
+| Lucide のアイコンの形（lucide-static 1.67.0 の一部、97 個） | 管理画面のアイコン（`apps/console/js/lib/icons.js` に SVG の形を写して同梱） | ISC（Feather 由来のものは MIT も） | npm の `lucide-static`（取得日 2026-11-03） | 全文は [lucide-LICENSE.txt](lucide-LICENSE.txt)。ほかに外部のフォント・CDN は使わない |
+
 ## 実行時に読み込む外部コーデック（製品に同梱しない・codec worker が dlopen）
 
 | ライブラリ | 用途 | ライセンス | 入手 | 備考 |

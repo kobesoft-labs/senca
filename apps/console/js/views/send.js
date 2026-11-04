@@ -5,10 +5,12 @@
 // - 統計は getStats の outbound-rtp（送信のビットレート・fps・大きさ・符号化したフレーム）と、往復時間。
 // - 止めるときは Location のセッションを DELETE して、トラックを止める。
 
-import { h, replace, select, field, kv } from '../lib/dom.js';
+import { h, replace, select } from '../lib/dom.js';
 import { toast, reportError } from '../lib/ui.js';
 import { streams, listAll } from '../api/resources.js';
 import { fmtBps } from '../lib/format.js';
+import { t } from '../i18n/index.js';
+import { button, pageHeader, panel, kvList, formField, alert, helpHint } from '../ui/index.js';
 
 const CODECS = [['video/H264', 'H.264'], ['video/VP8', 'VP8'], ['video/VP9', 'VP9'], ['video/AV1', 'AV1']];
 const SIZES = [['1280x720', '1280×720'], ['1920x1080', '1920×1080'], ['640x360', '640×360']];
@@ -22,7 +24,7 @@ function preferCodec(transceiver, mime) {
     const pm1 = want.filter((c) => /packetization-mode=1/.test(c.sdpFmtpLine || ''));
     if (pm1.length) want = pm1;
   }
-  if (!want.length) throw new Error(`このブラウザは ${mime.slice(6)} で送れません`);
+  if (!want.length) throw new Error(t('send.codecUnsupported', { codec: mime.slice(6) }));
   const rest = caps.codecs.filter((c) => /rtx|red|ulpfec/i.test(c.mimeType));
   transceiver.setCodecPreferences([...want, ...rest]);
 }
@@ -35,19 +37,19 @@ export async function render(root) {
   let timer = null;
   let prev = null;
 
-  const streamSel = h('select');
+  const streamSel = h('select', { 'data-testid': 'send-stream' });
   const key = h('input', { type: 'password', autocomplete: 'off', spellcheck: 'false', placeholder: 'sk_…' });
-  const source = select([['camera', 'カメラとマイク'], ['screen', '画面（＋マイク）']], 'camera', { 'aria-label': '送るもの' });
-  const size = select(SIZES, '1280x720', { 'aria-label': '大きさ' });
-  const codec = select(CODECS, 'video/H264', { 'aria-label': '映像のコーデック' });
-  const bitrate = h('input', { type: 'number', min: 100, max: 20000, step: 100, value: 2500, 'aria-label': '映像のビットレート（kbps）', style: { width: '100px' } });
+  const source = select([['camera', t('send.camera')], ['screen', t('send.screen')]], 'camera');
+  const size = select(SIZES, '1280x720');
+  const codec = select(CODECS, 'video/H264');
+  const bitrate = h('input', { type: 'number', min: 100, max: 20000, step: 100, value: 2500 });
   const audioOn = h('input', { type: 'checkbox', checked: true });
-  const preview = h('video', { muted: true, playsinline: true, autoplay: true, 'aria-label': '送っている映像' });
-  const statusEl = h('div', { role: 'status', 'aria-live': 'polite', class: 'player-status', 'data-state': 'idle' }, '止まっています');
+  const preview = h('video', { muted: true, playsinline: true, autoplay: true, 'aria-label': t('send.previewLabel') });
+  const statusEl = h('div', { role: 'status', 'aria-live': 'polite', class: 'player-status', 'data-state': 'idle' }, t('send.idle'));
   const statsBox = h('div', { 'data-stats': '' });
   const whipInfo = h('div', { class: 'small muted' });
-  const startBtn = h('button', { class: 'primary' }, '● 送信を開始');
-  const stopBtn = h('button', { disabled: true }, '■ 止める');
+  const startBtn = button(t('send.start'), { variant: 'primary', icon: 'record', testid: 'send-start' });
+  const stopBtn = button(t('send.stop'), { icon: 'stop', testid: 'send-stop', attrs: { disabled: true } });
 
   const setStatus = (state, text) => {
     statusEl.dataset.state = state;
@@ -56,7 +58,7 @@ export async function render(root) {
   const current = () => streamList.find((x) => x.id === streamSel.value);
   const renderInfo = () => {
     const s = current();
-    replace(whipInfo, s ? (s.ingest.whip_url ? ['WHIP: ', h('code', { class: 'break' }, s.ingest.whip_url), `（${s.codec_profile}）`] : 'このノードは WHIP の URL を出していません（公開の HTTP の URL が無い）') : '');
+    replace(whipInfo, s ? (s.ingest.whip_url ? ['WHIP: ', h('code', { class: 'break' }, s.ingest.whip_url), ` (${s.codec_profile})`] : t('send.noWhipUrlLong')) : '');
     if (s && s.codec_profile === 'royalty_free' && (codec.value === 'video/H264')) codec.value = 'video/VP8';
   };
   streamSel.addEventListener('change', renderInfo);
@@ -77,7 +79,7 @@ export async function render(root) {
     preview.srcObject = null;
     startBtn.disabled = false;
     stopBtn.disabled = true;
-    setStatus('idle', why || '止まっています');
+    setStatus('idle', why || t('send.idle'));
   };
 
   const poll = async () => {
@@ -97,26 +99,26 @@ export async function render(root) {
     const bytes = out ? out.bytesSent : 0;
     const bps = prev ? ((bytes - prev.bytes) * 8 * 1000) / (now - prev.t) : null;
     prev = { bytes, t: now };
-    replace(statsBox, kv([
-      ['接続', pc.connectionState],
-      ['映像', out ? `${out.frameWidth || '?'}×${out.frameHeight || '?'}・${Math.round(out.framesPerSecond || 0)} fps・${bps !== null ? fmtBps(Math.round(bps)) : '—'}` : '—'],
-      ['符号化したフレーム', out ? String(out.framesEncoded || 0) : '0'],
-      ['コーデック', out && out.encoderImplementation ? `${codec.selectedOptions[0].textContent}（${out.encoderImplementation}）` : codec.selectedOptions[0].textContent],
-      ['音声', audio ? `${audio.packetsSent || 0} パケット` : 'なし'],
-      ['往復時間', rtt !== null ? `${Math.round(rtt * 1000)} ms` : '—'],
+    replace(statsBox, kvList([
+      [t('send.stats.connection'), pc.connectionState],
+      [t('send.stats.video'), out ? `${out.frameWidth || '?'}×${out.frameHeight || '?'} · ${Math.round(out.framesPerSecond || 0)} fps · ${bps !== null ? fmtBps(Math.round(bps)) : '—'}` : '—'],
+      [t('send.stats.frames'), out ? String(out.framesEncoded || 0) : '0'],
+      [t('send.codec'), out && out.encoderImplementation ? `${codec.selectedOptions[0].textContent} (${out.encoderImplementation})` : codec.selectedOptions[0].textContent],
+      [t('send.stats.audio'), audio ? t('send.stats.packets', { n: audio.packetsSent || 0 }) : t('common.no')],
+      [t('send.stats.rtt'), rtt !== null ? `${Math.round(rtt * 1000)} ms` : '—'],
     ]));
     statsBox.dataset.frames = String(out ? out.framesEncoded || 0 : 0);
   };
 
   const start = async () => {
     const s = current();
-    if (!s) { toast('送り先の配信を選んでください', 'warn'); return; }
-    if (!s.ingest.whip_url) { toast('このノードは WHIP の URL を出していません', 'warn'); return; }
+    if (!s) { toast(t('send.chooseStream'), 'warn'); return; }
+    if (!s.ingest.whip_url) { toast(t('send.noWhipUrl'), 'warn'); return; }
     const k = key.value.trim();
-    if (!k) { toast('ストリームキーを貼り付けてください（鍵は保存しません）', 'warn'); key.focus(); return; }
+    if (!k) { toast(t('send.needKey'), 'warn'); key.focus(); return; }
     startBtn.disabled = true;
     stopBtn.disabled = false;
-    setStatus('loading', 'カメラ・画面を開いています');
+    setStatus('loading', t('send.opening'));
     const [w, hh] = size.value.split('x').map(Number);
     try {
       if (source.value === 'screen') {
@@ -133,15 +135,15 @@ export async function render(root) {
       pc.onconnectionstatechange = () => {
         if (!pc) return;
         const st = pc.connectionState;
-        if (st === 'connected') setStatus('live', '送信中');
-        else if (st === 'failed') stop('接続に失敗しました');
-        else if (st === 'disconnected') setStatus('loading', '接続が途切れています');
+        if (st === 'connected') setStatus('live', t('send.live'));
+        else if (st === 'failed') stop(t('send.failed'));
+        else if (st === 'disconnected') setStatus('loading', t('send.disconnected'));
       };
       for (const t of media.getTracks()) {
         const tr = pc.addTransceiver(t, { direction: 'sendonly', ...(t.kind === 'video' ? { sendEncodings: [{ maxBitrate: Math.max(100, Number(bitrate.value) || 2500) * 1000 }] } : {}) });
         if (t.kind === 'video') preferCodec(tr, codec.value);
       }
-      setStatus('loading', 'WHIP で接続中');
+      setStatus('loading', t('send.connecting'));
       await pc.setLocalDescription(await pc.createOffer());
       if (pc.iceGatheringState !== 'complete') {
         await Promise.race([
@@ -156,7 +158,7 @@ export async function render(root) {
       });
       const body = await r.text();
       if (r.status !== 201) {
-        const why = { 401: 'ストリームキーが違います', 409: 'この配信には別の送り手がいます', 415: '本文の形式が違います', 503: 'このノードでは WebRTC が動いていません' }[r.status];
+        const why = [401, 409, 415, 503].includes(r.status) ? t(`send.whip${r.status}`) : null;
         throw new Error(`WHIP ${r.status}: ${why || body}`);
       }
       const loc = r.headers.get('Location');
@@ -164,33 +166,43 @@ export async function render(root) {
       await pc.setRemoteDescription({ type: 'answer', sdp: body });
       key.value = ''; // 鍵は持ち続けない
       timer = setInterval(poll, 1000);
-      toast('送信を始めました。配信の状態が live になるまで数秒かかります', 'ok');
+      toast(t('send.started'), 'ok');
     } catch (e) {
-      await stop(`送れません: ${e.message}`);
-      reportError(e, '送信');
+      await stop(t('send.cannotSend', { reason: e.message }));
+      reportError(e, t('send.what'));
     }
   };
   startBtn.addEventListener('click', start);
-  stopBtn.addEventListener('click', () => stop('止めました'));
+  stopBtn.addEventListener('click', () => stop(t('send.stoppedByUser')));
 
   root.append(
-    h('div', { class: 'page-head' }, h('h1', null, 'このブラウザから送る')),
-    h('div', { class: 'alert info small' }, 'カメラ・マイク、または画面を WebRTC（WHIP）で配信へ送ります。ストリームキーは貼り付けてください。この画面は鍵を保存しません（送り始めると欄を空にします）。'),
+    pageHeader({
+      title: t('send.title'),
+      description: t('send.lead'),
+      help: helpHint({ title: t('send.title'), body: t('send.help'), guide: '04-ingest-playback.md' }),
+    }),
     h('div', { class: 'grid cols-2' },
-      h('section', { class: 'panel', 'aria-labelledby': 'snd-set' }, h('h2', { id: 'snd-set' }, '設定'),
+      panel({ title: t('send.settings'), icon: 'settings' },
         h('div', { class: 'form' },
-          field('送り先の配信', streamSel), whipInfo,
-          field('ストリームキー（保存しません）', key),
-          field('送るもの', source), field('大きさ', size), field('映像のコーデック', codec, 'royalty_free の配信には VP8・VP9・AV1 を選びます'),
-          field('映像のビットレート（kbps）', bitrate),
-          h('label', { class: 'check' }, audioOn, 'マイクの音声も送る'),
-          h('div', { class: 'actions' }, startBtn, stopBtn))),
-      h('section', { class: 'panel', 'aria-labelledby': 'snd-pv' }, h('h2', { id: 'snd-pv' }, '送っている映像'),
-        h('div', { class: 'player' }, preview), statusEl, statsBox)));
+          formField({ label: t('send.target'), input: streamSel, required: true }), whipInfo,
+          formField({ label: t('send.key'), input: key, required: true, hint: t('send.keyHint') }),
+          h('div', { class: 'cols' },
+            formField({ label: t('send.source'), input: source }),
+            formField({ label: t('send.size'), input: size })),
+          h('div', { class: 'cols' },
+            formField({ label: t('send.codec'), input: codec, hint: t('send.codecHint') }),
+            formField({ label: t('send.bitrate'), input: bitrate })),
+          h('label', { class: 'check' }, audioOn, t('send.withMic')),
+          h('div', { class: 'actions' }, stopBtn, startBtn))),
+      panel({ title: t('send.previewTitle'), icon: 'camera' },
+        h('div', { class: 'player' }, preview), h('div', { class: 'player-controls' }, statusEl), statsBox)));
 
-  try { streamList = await listAll(streams.list); } catch (e) { reportError(e, '配信の一覧'); }
+  try { streamList = await listAll(streams.list); } catch (e) { reportError(e, t('schedules.streamList')); }
   const want = new URLSearchParams(location.hash.split('?')[1] || '').get('stream');
-  replace(streamSel, streamList.length ? streamList.map((x) => h('option', { value: x.id, selected: x.id === want }, `${x.name}（${x.observed_state}）`)) : h('option', { value: '' }, '配信がありません'));
+  replace(streamSel, streamList.length ? streamList.map((x) => h('option', { value: x.id, selected: x.id === want }, `${x.name} (${x.observed_state})`)) : h('option', { value: '' }, t('send.noStreams')));
+  if (!streamList.length) {
+    root.querySelector('.grid').before(alert('info', t('send.needStreamBody'), { title: t('send.needStream'), actions: [h('a', { class: 'btn primary sm', href: '#/streams?new=1' }, t('streams.create'))] }));
+  }
   renderInfo();
 
   return () => { stop(); key.value = ''; };

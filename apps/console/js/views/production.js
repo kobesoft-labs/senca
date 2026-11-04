@@ -11,9 +11,12 @@
 
 import { h, replace, select, badge } from '../lib/dom.js';
 import { toast, reportError } from '../lib/ui.js';
+import { t } from '../i18n/index.js';
+import { icon } from '../lib/icons.js';
+import { button, pageHeader, panel, alert, emptyState, helpHint } from '../ui/index.js';
 import { pipelines as api, ops, runtimeOf, NotAvailableError } from '../api/pipelines.js';
 import { streams } from '../api/resources.js';
-import { composeNodes, sinkOrigins, TRANSITIONS } from '../pipeline/model.js';
+import { composeNodes, sinkOrigins, transitions } from '../pipeline/model.js';
 import { playerWidget } from '../player/widget.js';
 import { observedBadge } from './pipelines.js';
 
@@ -50,7 +53,7 @@ function drawScene(ctx, scene, compose, tally) {
       ctx.fillStyle = '#fff';
       ctx.font = `${Math.max(10, Math.round(Math.min(w, hh) * 0.12))}px system-ui, sans-serif`;
       ctx.textBaseline = 'bottom';
-      ctx.fillText(`${l.source ? `● ${l.source}` : `▣ ${l.image}`}${missing ? '（信号なし）' : ''}`, x + 6, y + hh - 4, w - 12);
+      ctx.fillText(`${l.source ? `● ${l.source}` : `▣ ${l.image}`}${missing ? t('production.noSignalSuffix') : ''}`, x + 6, y + hh - 4, w - 12);
     }
     ctx.globalAlpha = 1;
   }
@@ -72,12 +75,12 @@ export async function render(root) {
   let players = [];
   let tbarStart = 0;
 
-  const head = h('div', { class: 'page-head' });
+  const head = h('div');
   const banner = h('div');
   const monitors = h('div', { class: 'sw-monitors' });
-  const scenesBox = h('div', { class: 'sw-scenes', role: 'group', 'aria-label': 'シーン' });
+  const scenesBox = h('div', { class: 'sw-scenes', role: 'group', 'aria-label': t('production.scenes') });
   const sourcesBox = h('div', { class: 'sw-sources' });
-  const mixer = h('div', { class: 'mixer', role: 'group', 'aria-label': '音声ミキサー' });
+  const mixer = h('div', { class: 'mixer', role: 'group', 'aria-label': t('production.mixer') });
   const liveRegion = h('div', { class: 'visually-hidden', 'aria-live': 'polite' });
   const tallyText = h('div', { class: 'row small', 'data-tally': '' });
 
@@ -117,9 +120,9 @@ export async function render(root) {
     const pg = program();
     pending = { preview: scene, program: pg, until: performance.now() + 1500 };
     renderScenes();
-    if (await control(ops.setPreview(composeId, scene), 'プレビュー')) {
+    if (await control(ops.setPreview(composeId, scene), t('production.preview'))) {
       known = { program: pg, preview: scene };
-      liveRegion.textContent = `プレビュー: ${scene}`;
+      liveRegion.textContent = t('production.previewIs', { scene });
     } else pending = null;
     renderScenes();
   };
@@ -129,12 +132,12 @@ export async function render(root) {
   const take = async (tr, what = 'TAKE') => {
     const pv = preview();
     const pg = program();
-    if (!pv) { toast('プレビューのシーンがありません', 'warn'); return; }
+    if (!pv) { toast(t('production.noPreview'), 'warn'); return; }
     pending = { program: pv, preview: pg, until: performance.now() + (tr ? tr.duration_ms : 0) + 1500 };
     renderScenes();
     if (await control(ops.take(composeId, tr), what)) {
       known = { program: pv, preview: pg };
-      liveRegion.textContent = `${what}: ${pv} → プログラム`;
+      liveRegion.textContent = t('production.tookAnnounce', { what, scene: pv });
     } else pending = null;
     renderScenes();
   };
@@ -143,33 +146,33 @@ export async function render(root) {
   const fade = () => take({ kind: 'fade', duration_ms: Math.max(50, Number(durInput.value) || 500) }, 'FADE');
   const takeSel = () => take(transition(), 'TAKE');
 
-  const kindSel = select(TRANSITIONS, 'fade', { 'aria-label': 'TAKE のトランジション' });
-  const durInput = h('input', { type: 'number', min: 0, max: 10000, step: 50, value: 500, style: { width: '90px' }, 'aria-label': 'トランジションの時間（ミリ秒）' });
-  const tbar = h('input', { type: 'range', min: 0, max: 100, value: 0, 'aria-label': 'T バー', style: { width: '220px' } });
+  const kindSel = select(transitions(), 'fade', { 'aria-label': t('production.takeTransition') });
+  const durInput = h('input', { type: 'number', min: 0, max: 10000, step: 50, value: 500, style: { width: '90px' }, 'aria-label': t('production.durationAria') });
+  const tbar = h('input', { type: 'range', min: 0, max: 100, value: 0, 'aria-label': t('production.tbar'), style: { width: '220px' } });
   tbar.addEventListener('pointerdown', () => { tbarStart = performance.now(); });
   tbar.addEventListener('input', () => { if (!tbarStart) tbarStart = performance.now(); });
   tbar.addEventListener('change', () => {
     const v = Number(tbar.value);
     if (v >= 95) {
       const dur = Math.max(100, Math.min(5000, Math.round(performance.now() - (tbarStart || performance.now()))));
-      take({ kind: kindSel.value === 'cut' ? 'fade' : kindSel.value, duration_ms: dur }, 'T バー');
+      take({ kind: kindSel.value === 'cut' ? 'fade' : kindSel.value, duration_ms: dur }, t('production.tbar'));
     }
     tbar.value = '0';
     tbarStart = 0;
   });
   const trans = h('div', { class: 'sw-trans' },
-    h('button', { class: 'big danger solid', onClick: cut, title: 'キー C' }, 'CUT'),
-    h('button', { class: 'big primary', onClick: takeSel, title: 'キー T / Enter' }, 'TAKE'),
-    h('button', { class: 'big', onClick: fade, title: 'キー F' }, 'FADE'),
-    h('label', { class: 'row small' }, '種類', kindSel),
-    h('label', { class: 'row small' }, '時間', durInput, 'ms'),
-    h('label', { class: 'row small' }, 'T バー', tbar),
+    h('button', { class: 'big danger solid', onClick: cut, title: t('production.keyHint', { key: 'C' }) }, 'CUT'),
+    h('button', { class: 'big primary', onClick: takeSel, title: t('production.keyHint', { key: 'T / Enter' }) }, 'TAKE'),
+    h('button', { class: 'big', onClick: fade, title: t('production.keyHint', { key: 'F' }) }, 'FADE'),
+    h('label', { class: 'row small' }, t('production.kind'), kindSel),
+    h('label', { class: 'row small' }, t('production.duration'), durInput, 'ms'),
+    h('label', { class: 'row small' }, t('production.tbar'), tbar),
     liveRegion);
 
   // ---------------------------------------------------------------- 描画
   const renderScenes = () => {
     const c = compose();
-    if (!c) { replace(scenesBox, h('div', { class: 'empty' }, '合成の部品がありません')); return; }
+    if (!c) { replace(scenesBox, h('div', { class: 'empty' }, t('production.noCompose'))); return; }
     const pg = program();
     const pv = preview();
     const cs = composeStatus();
@@ -178,24 +181,24 @@ export async function render(root) {
         class: [name === pv && 'preview', name === pg && 'program'],
         'aria-pressed': String(name === pv),
         'data-scene': name,
-        'aria-label': `${name}${name === pg ? '（プログラム）' : ''}${name === pv ? '（プレビュー）' : ''}`,
-        title: 'クリックでプレビュー、ダブルクリックでプログラムへカット',
+        'aria-label': `${name}${name === pg ? t('production.onProgram') : ''}${name === pv ? t('production.onPreview') : ''}`,
+        title: t('production.sceneTitle'),
         onClick: () => setPreview(name),
-      }, h('strong', null, name), h('span', { class: 'key' }, i < 9 ? `キー ${i + 1}` : ''),
+      }, h('strong', null, name), h('span', { class: 'key' }, i < 9 ? t('production.key', { n: i + 1 }) : ''),
       h('span', { class: 'key' }, name === pg ? '● PGM' : name === pv ? '○ PVW' : ''));
       b.addEventListener('dblclick', async () => {
         const pv2 = preview();
-        if (await control(ops.switchProgram(composeId, name), 'プログラムへ')) { known = { program: name, preview: pv2 }; pending = null; renderScenes(); }
+        if (await control(ops.switchProgram(composeId, name), t('production.toProgram'))) { known = { program: name, preview: pv2 }; pending = null; renderScenes(); }
       });
       return b;
     }));
     replace(tallyText,
       h('span', null, 'PGM: ', h('strong', { 'data-program': pg || '' }, pg || '—')),
       h('span', null, ' / PVW: ', h('strong', { 'data-preview': pv || '' }, pv || '—')),
-      fresh() && cs ? badge('ノードの状態', 'ok') : badge('操作の返事から（状態は未着）', 'warn'),
-      cs && cs.in_transition ? badge('トランジション中', 'warn') : null,
-      cs && cs.missing && cs.missing.length ? badge(`信号なし: ${cs.missing.join('・')}`, 'danger') : null,
-      cs ? h('span', { class: 'muted' }, ` 出力 ${cs.frames} フレーム`) : h('span', { class: 'muted' }, ' 状態はまだ届いていません'));
+      fresh() && cs ? badge(t('production.nodeState'), 'ok') : badge(t('production.fromReply'), 'warn'),
+      cs && cs.in_transition ? badge(t('production.inTransition'), 'warn') : null,
+      cs && cs.missing && cs.missing.length ? badge(t('production.noSignal', { list: cs.missing.join(', ') }), 'danger') : null,
+      cs ? h('span', { class: 'muted' }, t('production.frames', { n: cs.frames })) : h('span', { class: 'muted' }, t('production.noStatus')));
   };
 
   const renderSources = () => {
@@ -203,9 +206,9 @@ export async function render(root) {
     replace(sourcesBox, srcs.length ? srcs.map((x) => h('div', { class: ['sw-source', x.on_program && 'program', x.on_preview && 'preview'], 'data-source': x.id },
       h('strong', null, x.id), ' ',
       badge(x.state, x.state === 'live' ? 'ok' : x.state === 'stalled' ? 'warn' : ''),
-      h('div', { class: 'small muted' }, `${(x.fps || 0).toFixed(1)} fps・復号 ${x.decoded_frames}・捨て ${x.dropped_aus}`),
+      h('div', { class: 'small muted' }, t('production.sourceStats', { fps: (x.fps || 0).toFixed(1), dec: x.decoded_frames, drop: x.dropped_aus })),
       x.on_program ? badge('PGM', 'live') : null, x.on_preview ? badge('PVW', 'ok') : null))
-      : h('div', { class: 'muted small' }, '入力の状態はまだありません'));
+      : h('div', { class: 'muted small' }, t('pipelines.noSourceState')));
   };
 
   // 音声
@@ -214,31 +217,31 @@ export async function render(root) {
     const key = `${mixNode}/${isMaster ? '@master' : inp.name}`;
     const lvl = h('div', { class: 'lvl' });
     const peak = h('div', { class: 'peak' });
-    const title = isMaster ? `${mixNode} マスター` : inp.name;
-    const meter = h('div', { class: 'meter', role: 'meter', 'aria-label': `${title} のレベル`, 'aria-valuemin': '-60', 'aria-valuemax': '0', 'aria-valuenow': '-60' }, lvl, peak);
+    const title = isMaster ? t('production.masterOf', { node: mixNode }) : inp.name;
+    const meter = h('div', { class: 'meter', role: 'meter', 'aria-label': t('production.levelOf', { name: title }), 'aria-valuemin': '-60', 'aria-valuemax': '0', 'aria-valuenow': '-60' }, lvl, peak);
     const gain = isMaster ? (inp.master_gain_db || 0) : (inp.gain_db || 0);
     const db = h('div', { class: 'db' }, `${gain > 0 ? '+' : ''}${gain} dB`);
-    const server = h('div', { class: 'small muted', 'data-server-gain': '' }, 'サーバー —');
-    const fader = h('input', { type: 'range', class: 'fader', min: -60, max: 10, step: 0.5, value: gain, 'aria-label': `${title} の音量（dB）`, 'aria-valuetext': `${gain} dB` });
-    let t = null;
+    const server = h('div', { class: 'small muted', 'data-server-gain': '' }, t('production.serverNone'));
+    const fader = h('input', { type: 'range', class: 'fader', min: -60, max: 10, step: 0.5, value: gain, 'aria-label': t('production.volumeOf', { name: title }), 'aria-valuetext': `${gain} dB` });
+    let faderTimer = null;
     fader.addEventListener('input', () => {
       const v = Number(fader.value);
       db.textContent = `${v > 0 ? '+' : ''}${v} dB`;
       fader.setAttribute('aria-valuetext', `${v} dB`);
-      clearTimeout(t);
-      t = setTimeout(() => control(isMaster ? ops.setMaster(mixNode, v) : ops.setAudio(mixNode, inp.name, { gain_db: v }), '音量'), 80);
+      clearTimeout(faderTimer);
+      faderTimer = setTimeout(() => control(isMaster ? ops.setMaster(mixNode, v) : ops.setAudio(mixNode, inp.name, { gain_db: v }), t('production.volume')), 80);
     });
     fader.addEventListener('dblclick', () => { fader.value = '0'; fader.dispatchEvent(new Event('input')); });
     let muted = !!inp.mute;
     let solo = !!inp.solo;
-    const muteBtn = isMaster ? null : h('button', { class: ['small', muted && 'muted-on'], 'aria-pressed': String(muted) }, 'ミュート');
-    const soloBtn = isMaster ? null : h('button', { class: ['small', solo && 'muted-on'], 'aria-pressed': String(solo) }, 'ソロ');
+    const muteBtn = isMaster ? null : h('button', { class: ['small', muted && 'muted-on'], 'aria-pressed': String(muted) }, t('production.mute'));
+    const soloBtn = isMaster ? null : h('button', { class: ['small', solo && 'muted-on'], 'aria-pressed': String(solo) }, t('production.solo'));
     const paint = () => {
       if (muteBtn) { muteBtn.classList.toggle('muted-on', muted); muteBtn.setAttribute('aria-pressed', String(muted)); }
       if (soloBtn) { soloBtn.classList.toggle('muted-on', solo); soloBtn.setAttribute('aria-pressed', String(solo)); }
     };
-    if (muteBtn) muteBtn.addEventListener('click', async () => { muted = !muted; paint(); if (!(await control(ops.setAudio(mixNode, inp.name, { mute: muted }), 'ミュート'))) { muted = !muted; paint(); } });
-    if (soloBtn) soloBtn.addEventListener('click', async () => { solo = !solo; paint(); if (!(await control(ops.setAudio(mixNode, inp.name, { solo }), 'ソロ'))) { solo = !solo; paint(); } });
+    if (muteBtn) muteBtn.addEventListener('click', async () => { muted = !muted; paint(); if (!(await control(ops.setAudio(mixNode, inp.name, { mute: muted }), t('production.mute')))) { muted = !muted; paint(); } });
+    if (soloBtn) soloBtn.addEventListener('click', async () => { solo = !solo; paint(); if (!(await control(ops.setAudio(mixNode, inp.name, { solo }), t('production.solo')))) { solo = !solo; paint(); } });
     let peakV = 0;
     let peakT = 0;
     strips.set(key, {
@@ -251,7 +254,7 @@ export async function render(root) {
         peak.style.bottom = `${peakV}%`;
         meter.setAttribute('aria-valuenow', String(Math.round(Math.max(-60, pk))));
         if (typeof reading.gain_db === 'number') {
-          server.textContent = `サーバー ${reading.gain_db > 0 ? '+' : ''}${reading.gain_db.toFixed(1)} dB${reading.mute ? '・ミュート' : ''}${reading.solo ? '・ソロ' : ''}`;
+          server.textContent = t('production.server', { db: `${reading.gain_db > 0 ? '+' : ''}${reading.gain_db.toFixed(1)}`, flags: `${reading.mute ? ` · ${t('production.mute')}` : ''}${reading.solo ? ` · ${t('production.solo')}` : ''}` });
           server.dataset.serverGain = String(reading.gain_db);
         }
       },
@@ -259,13 +262,13 @@ export async function render(root) {
     return h('div', { class: ['strip', isMaster && 'master'], 'data-strip': key },
       h('div', { class: 'name', title }, title),
       h('div', { class: 'fader-row' }, meter, fader),
-      db, server, muteBtn, soloBtn, isMaster ? h('div', { class: 'small muted' }, 'マスター') : null);
+      db, server, muteBtn, soloBtn, isMaster ? h('div', { class: 'small muted' }, t('production.master')) : null);
   };
 
   const renderMixer = () => {
     strips.clear();
     const mixes = graph().nodes.filter((n) => n.type === 'audio_mix');
-    if (!mixes.length) { replace(mixer, h('div', { class: 'empty' }, '音声ミキサー（audio_mix）がありません')); return; }
+    if (!mixes.length) { replace(mixer, h('div', { class: 'empty' }, t('production.noMixer'))); return; }
     replace(mixer, ...mixes.flatMap((m) => [
       ...Object.entries(m.inputs || {}).map(([name, v]) => strip(m.id, { name, ...v }, false)),
       strip(m.id, m, true)]));
@@ -280,7 +283,7 @@ export async function render(root) {
   };
 
   // モニター
-  const pvCanvas = h('canvas', { width: 640, height: 360, role: 'img', 'aria-label': 'プレビューのシーンの配置' });
+  const pvCanvas = h('canvas', { width: 640, height: 360, role: 'img', 'aria-label': t('production.previewLayout') });
   const stopPlayers = () => { players.forEach((p) => p.stop()); players = []; };
   const renderMonitors = () => {
     const key = `${pid}/${composeId}`;
@@ -291,13 +294,13 @@ export async function render(root) {
     const pgm = origins.find((o) => o.compose === composeId && o.from === 'program') || origins[0];
     const pvw = origins.find((o) => o.compose === composeId && o.from === 'preview');
     const mon = (o, kind) => {
-      const w = playerWidget({ getPlayback: async () => (await streams.playbackUrl(o.stream)).data.playback, live: true, label: `${kind === 'program' ? 'プログラム' : 'プレビュー'}のモニター`, mode: 'auto' });
+      const w = playerWidget({ getPlayback: async () => (await streams.playbackUrl(o.stream)).data.playback, live: true, label: kind === 'program' ? t('production.programMonitor') : t('production.previewMonitor'), mode: 'auto' });
       players.push(w);
       return h('div', { class: ['monitor', kind] }, w.el, h('span', { class: 'mlabel' }, kind === 'program' ? 'PROGRAM' : 'PREVIEW', ` · ${o.sink} → `, h('code', null, o.stream.slice(0, 8))));
     };
     replace(monitors,
-      pvw ? mon(pvw, 'preview') : h('div', { class: 'monitor preview' }, pvCanvas, h('span', { class: 'mlabel' }, 'PREVIEW（配置）')),
-      pgm ? mon(pgm, 'program') : h('div', { class: 'monitor program' }, h('div', { class: 'empty' }, '出力（sink）がありません')));
+      pvw ? mon(pvw, 'preview') : h('div', { class: 'monitor preview' }, pvCanvas, h('span', { class: 'mlabel' }, t('production.previewLayoutLabel'))),
+      pgm ? mon(pgm, 'program') : h('div', { class: 'monitor program' }, h('div', { class: 'empty' }, t('production.noSink'))));
     autoStarted = false;
   };
   let autoStarted = false;
@@ -310,30 +313,43 @@ export async function render(root) {
   };
 
   const renderHead = () => {
-    const pickSel = select(list.length ? list.map((p) => [p.id, `${p.name}（${p.observed_state}）`]) : [['', 'パイプラインがありません']], pid || '', { 'aria-label': 'パイプライン', id: 'sw-pick' });
+    const pickSel = select(list.length ? list.map((p) => [p.id, `${p.name} (${p.observed_state})`]) : [['', t('production.noPipelines')]], pid || '', { 'aria-label': t('production.pickPipeline'), id: 'sw-pick' });
     pickSel.addEventListener('change', () => choose(pickSel.value));
     const comps = composeNodes(graph());
-    const compSel = comps.length > 1 ? select(comps.map((c) => [c.id, c.id]), composeId, { 'aria-label': '合成の部品' }) : null;
+    const compSel = comps.length > 1 ? select(comps.map((c) => [c.id, c.id]), composeId, { 'aria-label': t('production.composeNode') }) : null;
     if (compSel) compSel.addEventListener('change', () => { composeId = compSel.value; monitorsFor = null; renderAll(); });
     const running = data && data.desired_state === 'running';
-    replace(head, h('h1', null, 'スイッチャー'), h('span', { class: 'spacer' }), pickSel, compSel,
-      data ? observedBadge(data.observed_state) : null,
-      data && !running ? h('button', { class: 'primary', onClick: async () => {
-        try {
-          const r = await api.setDesired(pid, 'running', etag);
-          data = r.data; etag = r.etag;
-          renderAll();
-          toast('開始しました', 'ok');
-        } catch (e) { reportError(e, '開始'); }
-      } }, '▶ パイプラインを開始') : null,
-      pid ? h('a', { class: 'btn', href: `#/pipelines?id=${encodeURIComponent(pid)}` }, 'グラフを編集') : null);
+    replace(head, pageHeader({
+      title: t('nav.production'),
+      description: t('production.lead'),
+      help: helpHint({ title: t('nav.production'), body: t('production.help'), guide: '07-pipelines.md' }),
+      badges: data ? [observedBadge(data.observed_state)] : null,
+      actions: [
+        pickSel, compSel,
+        data && !running ? button(t('production.startPipeline'), { variant: 'primary', icon: 'play', onClick: async () => {
+          try {
+            const r = await api.setDesired(pid, 'running', etag);
+            data = r.data; etag = r.etag;
+            renderAll();
+            toast(t('pipelines.started'), 'ok');
+          } catch (e) { reportError(e, t('pipelines.start')); }
+        } }) : null,
+        pid ? h('a', { class: 'btn', href: `#/pipelines?id=${encodeURIComponent(pid)}` }, icon('pipelines'), t('production.editGraph')) : null,
+      ].filter(Boolean),
+    }));
   };
 
   const renderBanner = () => {
-    if (!data) { replace(banner, list.length ? null : h('div', { class: 'alert info' }, '合成（compose）を含むパイプラインがありません。', h('a', { href: '#/pipelines' }, 'パイプライン'), ' で作ってください。')); return; }
+    if (!data) {
+      replace(banner, list.length ? null : h('section', { class: 'panel flush' }, emptyState({
+        icon: 'switcher', title: t('production.emptyTitle'), body: t('production.emptyBody'),
+        actions: [h('a', { class: 'btn primary', href: '#/pipelines' }, icon('pipelines'), t('production.goPipelines'))],
+      })));
+      return;
+    }
     replace(banner,
-      data.desired_state !== 'running' ? h('div', { class: 'alert warn' }, 'このパイプラインは止まっています。操作するには開始してください。') : null,
-      data.last_error ? h('div', { class: 'alert error' }, '最後の誤り: ', data.last_error) : null);
+      data.desired_state !== 'running' ? alert('warn', t('production.stoppedBody'), { title: t('production.stoppedTitle') }) : null,
+      data.last_error ? alert('error', data.last_error, { title: t('pipelines.lastError') }) : null);
   };
 
   const renderAll = () => {
@@ -380,7 +396,7 @@ export async function render(root) {
         players.forEach((p) => p.start());
       }
     } catch (e) {
-      if (e.status === 404) { toast('このパイプラインは削除されました', 'warn'); pid = null; data = null; renderAll(); }
+      if (e.status === 404) { toast(t('pipelines.gone'), 'warn'); pid = null; data = null; renderAll(); }
     } finally {
       polling = false;
     }
@@ -405,7 +421,7 @@ export async function render(root) {
         const rt = runtimeOf(data);
         status = rt.status;
         meters = rt.meters;
-      } catch (e) { reportError(e, '読み込み'); }
+      } catch (e) { reportError(e, t('common.refresh')); }
     }
     const comps = composeNodes(graph());
     composeId = comps[0] ? comps[0].id : null;
@@ -427,20 +443,18 @@ export async function render(root) {
   root.append(
     head,
     banner,
-    h('section', { class: 'panel' }, monitors, tallyText),
-    h('section', { class: 'panel', 'aria-labelledby': 'p-tr' }, h('h2', { id: 'p-tr' }, 'トランジション'), trans,
-      h('p', { class: 'small muted' }, 'キー: 1〜9 = プレビューへ、C = CUT、T / Enter = TAKE、F = FADE。シーンのダブルクリックでプログラムへカット。T バーは端まで動かすと、その時間のトランジションで TAKE します。')),
-    h('section', { class: 'panel', 'aria-labelledby': 'p-sc' }, h('h2', { id: 'p-sc' }, 'シーン'), scenesBox),
-    h('section', { class: 'panel', 'aria-labelledby': 'p-so' }, h('h2', { id: 'p-so' }, '入力（タリー）'), sourcesBox),
-    h('section', { class: 'panel', 'aria-labelledby': 'p-mx' }, h('h2', { id: 'p-mx' }, '音声ミキサー'), mixer,
-      h('p', { class: 'small muted' }, 'フェーダーはダブルクリックで 0 dB。メーターはノードの実測（ピーク、dBFS）。「サーバー」はノードが返した今の値です。')));
+    h('section', { class: 'panel', 'aria-label': t('production.monitors') }, monitors, tallyText),
+    panel({ title: t('production.transition'), icon: 'cut', description: t('production.keysHelp') }, trans),
+    panel({ title: t('production.scenes'), icon: 'layout-grid' }, scenesBox),
+    panel({ title: t('production.sources'), icon: 'camera' }, sourcesBox),
+    panel({ title: t('production.mixer'), icon: 'volume', description: t('production.mixerHelp') }, mixer));
 
   try {
     const { data: d } = await api.list();
     list = d.items.filter((p) => composeNodes(p.graph).length);
   } catch (e) {
-    if (e instanceof NotAvailableError) replace(banner, h('div', { class: 'alert warn offline-banner' }, h('strong', null, 'このノードでは使えません'), ' パイプラインの API がありません。'));
-    else reportError(e, 'パイプラインの一覧');
+    if (e instanceof NotAvailableError) replace(banner, alert('warn', t('production.offlineBody'), { title: t('pipelines.offlineTitle') }));
+    else reportError(e, t('pipelines.list'));
   }
   const want = new URLSearchParams(location.hash.split('?')[1] || '').get('pipeline') || localStorage.getItem(LAST);
   const first = list.find((p) => p.id === want) || list.find((p) => p.observed_state === 'running') || list[0];

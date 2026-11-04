@@ -1,0 +1,131 @@
+// アイコン（インラインの SVG）。24px の格子・線の太さ 1.85・色は currentColor。
+// 形は Lucide（ISC、docs/licenses/README.md）から写した。足すときは同じ形式で 1 行足す。
+//
+//   icon('streams')                         飾り（aria-hidden）
+//   icon('trash', { label: t('common.delete') })  意味を持つ（role="img" と aria-label）
+//   icon('spinner', { spin: true })
+
+import { s } from './dom.js';
+
+const PATHS = {
+  'dashboard': [['rect', { width: "7", height: "9", x: "3", y: "3", rx: "1" }], ['rect', { width: "7", height: "5", x: "14", y: "3", rx: "1" }], ['rect', { width: "7", height: "9", x: "14", y: "12", rx: "1" }], ['rect', { width: "7", height: "5", x: "3", y: "16", rx: "1" }]], // layout-dashboard
+  'streams': [['path', { d: "M4.9 16.1C1 12.2 1 5.8 4.9 1.9" }], ['path', { d: "M7.8 4.7a6.14 6.14 0 0 0-.8 7.5" }], ['circle', { cx: "12", cy: "9", r: "2" }], ['path', { d: "M16.2 4.8c2 2 2.26 5.11.8 7.47" }], ['path', { d: "M19.1 1.9a9.96 9.96 0 0 1 0 14.1" }], ['path', { d: "M9.5 18h5" }], ['path', { d: "m8 22 4-11 4 11" }]], // radio-tower
+  'live': [['path', { d: "M16.247 7.761a6 6 0 0 1 0 8.478" }], ['path', { d: "M19.075 4.933a10 10 0 0 1 0 14.134" }], ['path', { d: "M4.925 19.067a10 10 0 0 1 0-14.134" }], ['path', { d: "M7.753 16.239a6 6 0 0 1 0-8.478" }], ['circle', { cx: "12", cy: "12", r: "2" }]], // radio
+  'record': [['circle', { cx: "12", cy: "12", r: "1" }], ['circle', { cx: "12", cy: "12", r: "10" }]], // circle-dot
+  'recordings': [['rect', { width: "18", height: "18", x: "3", y: "3", rx: "2" }], ['path', { d: "M7 3v18" }], ['path', { d: "M3 7.5h4" }], ['path', { d: "M3 12h18" }], ['path', { d: "M3 16.5h4" }], ['path', { d: "M17 3v18" }], ['path', { d: "M17 7.5h4" }], ['path', { d: "M17 16.5h4" }]], // film
+  'schedules': [['path', { d: "M16 14v2.2l1.6 1" }], ['path', { d: "M16 2v3" }], ['path', { d: "M21 7.338V5a2 2 0 00-2-2H5a2 2 0 00-2 2v14a2 2 0 002 2h2.338" }], ['path', { d: "M3 9h5.859" }], ['path', { d: "M8 2v3" }], ['circle', { cx: "16", cy: "16", r: "6" }]], // calendar-clock
+  'calendar': [['path', { d: "M8 2v3" }], ['path', { d: "M16 2v3" }], ['rect', { x: "3", y: "3", width: "18", height: "18", rx: "2" }], ['path', { d: "M3 9h18" }]], // calendar
+  'clock': [['circle', { cx: "12", cy: "12", r: "10" }], ['path', { d: "M12 6v6l4 2" }]], // clock
+  'history': [['path', { d: "M3 12a9 9 0 1 0 9-9 9.75 9.75 0 0 0-6.74 2.74L3 8" }], ['path', { d: "M3 3v5h5" }], ['path', { d: "M12 7v5l4 2" }]], // history
+  'send': [['path', { d: "m16 13 5.223 3.482a.5.5 0 0 0 .777-.416V7.87a.5.5 0 0 0-.752-.432L16 10.5" }], ['rect', { x: "2", y: "6", width: "14", height: "12", rx: "2" }]], // video
+  'camera': [['path', { d: "M13.997 4a2 2 0 0 1 1.76 1.05l.486.9A2 2 0 0 0 18.003 7H20a2 2 0 0 1 2 2v9a2 2 0 0 1-2 2H4a2 2 0 0 1-2-2V9a2 2 0 0 1 2-2h1.997a2 2 0 0 0 1.759-1.048l.489-.904A2 2 0 0 1 10.004 4z" }], ['circle', { cx: "12", cy: "13", r: "3" }]], // camera
+  'mic': [['path', { d: "M12 19v3" }], ['path', { d: "M19 10v2a7 7 0 0 1-14 0v-2" }], ['rect', { x: "9", y: "2", width: "6", height: "13", rx: "3" }]], // mic
+  'volume': [['path', { d: "M11 4.702a.705.705 0 0 0-1.203-.498L6.413 7.587A1.4 1.4 0 0 1 5.416 8H3a1 1 0 0 0-1 1v6a1 1 0 0 0 1 1h2.416a1.4 1.4 0 0 1 .997.413l3.383 3.384A.705.705 0 0 0 11 19.298z" }], ['path', { d: "M16 9a5 5 0 0 1 0 6" }], ['path', { d: "M19.364 18.364a9 9 0 0 0 0-12.728" }]], // volume-2
+  'captions': [['rect', { width: "18", height: "14", x: "3", y: "5", rx: "2", ry: "2" }], ['path', { d: "M7 15h4M15 15h2M7 11h2M13 11h4" }]], // captions
+  'image': [['rect', { width: "18", height: "18", x: "3", y: "3", rx: "2", ry: "2" }], ['circle', { cx: "9", cy: "9", r: "2" }], ['path', { d: "m21 15-3.086-3.086a2 2 0 0 0-2.828 0L6 21" }]], // image
+  'pipelines': [['rect', { width: "8", height: "8", x: "3", y: "3", rx: "2" }], ['path', { d: "M7 11v4a2 2 0 0 0 2 2h4" }], ['rect', { width: "8", height: "8", x: "13", y: "13", rx: "2" }]], // workflow
+  'switcher': [['path', { d: "M15.033 9.44a.647.647 0 0 1 0 1.12l-4.065 2.352a.645.645 0 0 1-.968-.56V7.648a.645.645 0 0 1 .967-.56z" }], ['path', { d: "M12 17v4" }], ['path', { d: "M8 21h8" }], ['rect', { x: "2", y: "3", width: "20", height: "14", rx: "2" }]], // monitor-play
+  'production': [['path', { d: "m12.296 3.464 3.02 3.956" }], ['path', { d: "M20.2 6 3 11l-.9-2.4c-.3-1.1.3-2.2 1.3-2.5l13.5-4c1.1-.3 2.2.3 2.5 1.3z" }], ['path', { d: "M3 11h18v8a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2z" }], ['path', { d: "m6.18 5.276 3.1 3.899" }]], // clapperboard
+  'cut': [['circle', { cx: "6", cy: "6", r: "3" }], ['path', { d: "M8.12 8.12 12 12" }], ['path', { d: "M20 4 8.12 15.88" }], ['circle', { cx: "6", cy: "18", r: "3" }], ['path', { d: "M14.8 14.8 20 20" }]], // scissors
+  'media-pipelines': [['path', { d: "m10.586 5.414-5.172 5.172" }], ['path', { d: "m18.586 13.414-5.172 5.172" }], ['path', { d: "M6 12h12" }], ['circle', { cx: "12", cy: "20", r: "2" }], ['circle', { cx: "12", cy: "4", r: "2" }], ['circle', { cx: "20", cy: "12", r: "2" }], ['circle', { cx: "4", cy: "12", r: "2" }]], // waypoints
+  'rooms': [['path', { d: "M16 21v-2a4 4 0 0 0-4-4H6a4 4 0 0 0-4 4v2" }], ['path', { d: "M16 3.128a4 4 0 0 1 0 7.744" }], ['path', { d: "M22 21v-2a4 4 0 0 0-3-3.87" }], ['circle', { cx: "9", cy: "7", r: "4" }]], // users
+  'users': [['path', { d: "m14.305 19.53.923-.382" }], ['path', { d: "m15.228 16.852-.923-.383" }], ['path', { d: "m16.852 15.228-.383-.923" }], ['path', { d: "m16.852 20.772-.383.924" }], ['path', { d: "m19.148 15.228.383-.923" }], ['path', { d: "m19.53 21.696-.382-.924" }], ['path', { d: "M2 21a8 8 0 0 1 10.434-7.62" }], ['path', { d: "m20.772 16.852.924-.383" }], ['path', { d: "m20.772 19.148.924.383" }], ['circle', { cx: "10", cy: "8", r: "5" }], ['circle', { cx: "18", cy: "18", r: "3" }]], // user-round-cog
+  'user': [['path', { d: "M19 21v-2a4 4 0 0 0-4-4H9a4 4 0 0 0-4 4v2" }], ['circle', { cx: "12", cy: "7", r: "4" }]], // user
+  'grid': [['rect', { x: "16", y: "16", width: "6", height: "6", rx: "1" }], ['rect', { x: "2", y: "16", width: "6", height: "6", rx: "1" }], ['rect', { x: "9", y: "2", width: "6", height: "6", rx: "1" }], ['path', { d: "M5 16v-3a1 1 0 0 1 1-1h12a1 1 0 0 1 1 1v3" }], ['path', { d: "M12 12V8" }]], // network
+  'layout-grid': [['rect', { width: "7", height: "7", x: "3", y: "3", rx: "1" }], ['rect', { width: "7", height: "7", x: "14", y: "3", rx: "1" }], ['rect', { width: "7", height: "7", x: "14", y: "14", rx: "1" }], ['rect', { width: "7", height: "7", x: "3", y: "14", rx: "1" }]], // layout-grid
+  'nodes': [['rect', { width: "20", height: "8", x: "2", y: "2", rx: "2", ry: "2" }], ['rect', { width: "20", height: "8", x: "2", y: "14", rx: "2", ry: "2" }], ['line', { x1: "6", x2: "6.01", y1: "6", y2: "6" }], ['line', { x1: "6", x2: "6.01", y1: "18", y2: "18" }]], // server
+  'cpu': [['path', { d: "M12 20v2" }], ['path', { d: "M12 2v2" }], ['path', { d: "M17 20v2" }], ['path', { d: "M17 2v2" }], ['path', { d: "M2 12h2" }], ['path', { d: "M2 17h2" }], ['path', { d: "M2 7h2" }], ['path', { d: "M20 12h2" }], ['path', { d: "M20 17h2" }], ['path', { d: "M20 7h2" }], ['path', { d: "M7 20v2" }], ['path', { d: "M7 2v2" }], ['rect', { x: "4", y: "4", width: "16", height: "16", rx: "2" }], ['rect', { x: "8", y: "8", width: "8", height: "8", rx: "1" }]], // cpu
+  'gpu': [['path', { d: "M10 12h4" }], ['path', { d: "M10 17h4" }], ['path', { d: "M10 7h4" }], ['path', { d: "M18 12h2" }], ['path', { d: "M18 18h2" }], ['path', { d: "M18 6h2" }], ['path', { d: "M4 12h2" }], ['path', { d: "M4 18h2" }], ['path', { d: "M4 6h2" }], ['rect', { x: "6", y: "2", width: "12", height: "20", rx: "2" }]], // microchip
+  'storage': [['path', { d: "M10 16h.01" }], ['path', { d: "M2.212 11.577a2 2 0 0 0-.212.896V18a2 2 0 0 0 2 2h16a2 2 0 0 0 2-2v-5.527a2 2 0 0 0-.212-.896L18.55 5.11A2 2 0 0 0 16.76 4H7.24a2 2 0 0 0-1.79 1.11z" }], ['path', { d: "M21.946 12.013H2.054" }], ['path', { d: "M6 16h.01" }]], // hard-drive
+  'secrets': [['circle', { cx: "12", cy: "16", r: "1" }], ['rect', { x: "3", y: "10", width: "18", height: "12", rx: "2" }], ['path', { d: "M7 10V7a5 5 0 0 1 10 0v3" }]], // lock-keyhole
+  'key': [['path', { d: "M2.586 17.414A2 2 0 0 0 2 18.828V21a1 1 0 0 0 1 1h3a1 1 0 0 0 1-1v-1a1 1 0 0 1 1-1h1a1 1 0 0 0 1-1v-1a1 1 0 0 1 1-1h.172a2 2 0 0 0 1.414-.586l.814-.814a6.5 6.5 0 1 0-4-4z" }], ['circle', { cx: "16.5", cy: "7.5", r: ".5", fill: "currentColor" }]], // key-round
+  'shield': [['path', { d: "M20 13c0 5-3.5 7.5-7.66 8.95a1 1 0 0 1-.67-.01C7.5 20.5 4 18 4 13V6a1 1 0 0 1 1-1c2 0 4.5-1.2 6.24-2.72a1.17 1.17 0 0 1 1.52 0C14.51 3.81 17 5 19 5a1 1 0 0 1 1 1z" }]], // shield
+  'audit': [['path', { d: "M20 13c0 5-3.5 7.5-7.66 8.95a1 1 0 0 1-.67-.01C7.5 20.5 4 18 4 13V6a1 1 0 0 1 1-1c2 0 4.5-1.2 6.24-2.72a1.17 1.17 0 0 1 1.52 0C14.51 3.81 17 5 19 5a1 1 0 0 1 1 1z" }], ['path', { d: "m9 12 2 2 4-4" }]], // shield-check
+  'play': [['path', { d: "M5 5a2 2 0 0 1 3.008-1.728l11.997 6.998a2 2 0 0 1 .003 3.458l-12 7A2 2 0 0 1 5 19z" }]], // play
+  'stop': [['rect', { width: "18", height: "18", x: "3", y: "3", rx: "2" }]], // square
+  'pause': [['circle', { cx: "12", cy: "12", r: "10" }], ['line', { x1: "10", x2: "10", y1: "15", y2: "9" }], ['line', { x1: "14", x2: "14", y1: "15", y2: "9" }]], // circle-pause
+  'copy': [['rect', { width: "14", height: "14", x: "8", y: "8", rx: "2", ry: "2" }], ['path', { d: "M4 16c-1.1 0-2-.9-2-2V4c0-1.1.9-2 2-2h10c1.1 0 2 .9 2 2" }]], // copy
+  'eye': [['path', { d: "M2.062 12.348a1 1 0 0 1 0-.696 10.75 10.75 0 0 1 19.876 0 1 1 0 0 1 0 .696 10.75 10.75 0 0 1-19.876 0" }], ['circle', { cx: "12", cy: "12", r: "3" }]], // eye
+  'eye-off': [['path', { d: "M10.733 5.076a10.744 10.744 0 0 1 11.205 6.575 1 1 0 0 1 0 .696 10.747 10.747 0 0 1-1.444 2.49" }], ['path', { d: "M14.084 14.158a3 3 0 0 1-4.242-4.242" }], ['path', { d: "M17.479 17.499a10.75 10.75 0 0 1-15.417-5.151 1 1 0 0 1 0-.696 10.75 10.75 0 0 1 4.446-5.143" }], ['path', { d: "m2 2 20 20" }]], // eye-off
+  'upload': [['path', { d: "M12 3v12" }], ['path', { d: "m17 8-5-5-5 5" }], ['path', { d: "M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4" }]], // upload
+  'download': [['path', { d: "M12 15V3" }], ['path', { d: "M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4" }], ['path', { d: "m7 10 5 5 5-5" }]], // download
+  'save': [['path', { d: "M15.2 3a2 2 0 0 1 1.4.6l3.8 3.8a2 2 0 0 1 .6 1.4V19a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2z" }], ['path', { d: "M17 21v-7a1 1 0 0 0-1-1H8a1 1 0 0 0-1 1v7" }], ['path', { d: "M7 3v4a1 1 0 0 0 1 1h7" }]], // save
+  'settings': [['path', { d: "M9.671 4.136a2.34 2.34 0 0 1 4.659 0 2.34 2.34 0 0 0 3.319 1.915 2.34 2.34 0 0 1 2.33 4.033 2.34 2.34 0 0 0 0 3.831 2.34 2.34 0 0 1-2.33 4.033 2.34 2.34 0 0 0-3.319 1.915 2.34 2.34 0 0 1-4.659 0 2.34 2.34 0 0 0-3.32-1.915 2.34 2.34 0 0 1-2.33-4.033 2.34 2.34 0 0 0 0-3.831A2.34 2.34 0 0 1 6.35 6.051a2.34 2.34 0 0 0 3.319-1.915" }], ['circle', { cx: "12", cy: "12", r: "3" }]], // settings
+  'logout': [['path', { d: "m16 17 5-5-5-5" }], ['path', { d: "M21 12H9" }], ['path', { d: "M9 21H5a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h4" }]], // log-out
+  'login': [['path', { d: "m10 17 5-5-5-5" }], ['path', { d: "M15 12H3" }], ['path', { d: "M15 3h4a2 2 0 0 1 2 2v14a2 2 0 0 1-2 2h-4" }]], // log-in
+  'search': [['path', { d: "m21 21-4.34-4.34" }], ['circle', { cx: "11", cy: "11", r: "8" }]], // search
+  'command': [['path', { d: "M15 6v12a3 3 0 1 0 3-3H6a3 3 0 1 0 3 3V6a3 3 0 1 0-3 3h12a3 3 0 1 0-3-3" }]], // command
+  'keyboard': [['path', { d: "M10 8h.01" }], ['path', { d: "M12 12h.01" }], ['path', { d: "M14 8h.01" }], ['path', { d: "M16 12h.01" }], ['path', { d: "M18 8h.01" }], ['path', { d: "M6 8h.01" }], ['path', { d: "M7 16h10" }], ['path', { d: "M8 12h.01" }], ['rect', { width: "20", height: "16", x: "2", y: "4", rx: "2" }]], // keyboard
+  'bell': [['path', { d: "M10.268 21a2 2 0 0 0 3.464 0" }], ['path', { d: "M3.262 15.326A1 1 0 0 0 4 17h16a1 1 0 0 0 .74-1.673C19.41 13.956 18 12.499 18 8A6 6 0 0 0 6 8c0 4.499-1.411 5.956-2.738 7.326" }]], // bell
+  'check': [['path', { d: "M20 6 9 17l-5-5" }]], // check
+  'success': [['circle', { cx: "12", cy: "12", r: "10" }], ['path', { d: "m16 9-5.5 5.5L8 12" }]], // circle-check
+  'warning': [['path', { d: "m21.73 18-8-14a2 2 0 0 0-3.48 0l-8 14A2 2 0 0 0 4 21h16a2 2 0 0 0 1.73-3" }], ['path', { d: "M12 9v4" }], ['path', { d: "M12 17h.01" }]], // triangle-alert
+  'error': [['circle', { cx: "12", cy: "12", r: "10" }], ['path', { d: "m15 9-6 6" }], ['path', { d: "m9 9 6 6" }]], // circle-x
+  'info': [['circle', { cx: "12", cy: "12", r: "10" }], ['path', { d: "M12 16v-4" }], ['path', { d: "M12 8h.01" }]], // info
+  'help': [['circle', { cx: "12", cy: "12", r: "10" }], ['path', { d: "M9.09 9a3 3 0 0 1 5.83 1c0 2-3 3-3 3" }], ['path', { d: "M12 17h.01" }]], // circle-help
+  'chevron-down': [['path', { d: "m6 9 6 6 6-6" }]], // chevron-down
+  'chevron-up': [['path', { d: "m18 15-6-6-6 6" }]], // chevron-up
+  'chevron-left': [['path', { d: "m15 18-6-6 6-6" }]], // chevron-left
+  'chevron-right': [['path', { d: "m9 18 6-6-6-6" }]], // chevron-right
+  'arrow-left': [['path', { d: "m12 19-7-7 7-7" }], ['path', { d: "M19 12H5" }]], // arrow-left
+  'arrow-right': [['path', { d: "M5 12h14" }], ['path', { d: "m12 5 7 7-7 7" }]], // arrow-right
+  'arrow-up': [['path', { d: "m5 12 7-7 7 7" }], ['path', { d: "M12 19V5" }]], // arrow-up
+  'arrow-down': [['path', { d: "M12 5v14" }], ['path', { d: "m19 12-7 7-7-7" }]], // arrow-down
+  'sort': [['path', { d: "m21 16-4 4-4-4" }], ['path', { d: "M17 20V4" }], ['path', { d: "m3 8 4-4 4 4" }], ['path', { d: "M7 4v16" }]], // arrow-up-down
+  'menu': [['path', { d: "M4 5h16" }], ['path', { d: "M4 12h16" }], ['path', { d: "M4 19h16" }]], // menu
+  'close': [['path', { d: "M18 6 6 18" }], ['path', { d: "m6 6 12 12" }]], // x
+  'plus': [['path', { d: "M5 12h14" }], ['path', { d: "M12 5v14" }]], // plus
+  'trash': [['path', { d: "M10 11v6" }], ['path', { d: "M14 11v6" }], ['path', { d: "M19 6v14a2 2 0 0 1-2 2H7a2 2 0 0 1-2-2V6" }], ['path', { d: "M3 6h18" }], ['path', { d: "M8 6V4a2 2 0 0 1 2-2h4a2 2 0 0 1 2 2v2" }]], // trash-2
+  'edit': [['path', { d: "M21.174 6.812a1 1 0 0 0-3.986-3.987L3.842 16.174a2 2 0 0 0-.5.83l-1.321 4.352a.5.5 0 0 0 .623.622l4.353-1.32a2 2 0 0 0 .83-.497z" }], ['path', { d: "m15 5 4 4" }]], // pencil
+  'refresh': [['path', { d: "M3 12a9 9 0 0 1 9-9 9.75 9.75 0 0 1 6.74 2.74L21 8" }], ['path', { d: "M21 3v5h-5" }], ['path', { d: "M21 12a9 9 0 0 1-9 9 9.75 9.75 0 0 1-6.74-2.74L3 16" }], ['path', { d: "M8 16H3v5" }]], // refresh-cw
+  'undo': [['path', { d: "M3 12a9 9 0 1 0 9-9 9.75 9.75 0 0 0-6.74 2.74L3 8" }], ['path', { d: "M3 3v5h5" }]], // rotate-ccw
+  'external': [['path', { d: "M15 3h6v6" }], ['path', { d: "M10 14 21 3" }], ['path', { d: "M18 13v6a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2V8a2 2 0 0 1 2-2h6" }]], // external-link
+  'link': [['path', { d: "M10 13a5 5 0 0 0 7.54.54l3-3a5 5 0 0 0-7.07-7.07l-1.72 1.71" }], ['path', { d: "M14 11a5 5 0 0 0-7.54-.54l-3 3a5 5 0 0 0 7.07 7.07l1.71-1.71" }]], // link
+  'list': [['path', { d: "M3 5h.01" }], ['path', { d: "M3 12h.01" }], ['path', { d: "M3 19h.01" }], ['path', { d: "M8 5h13" }], ['path', { d: "M8 12h13" }], ['path', { d: "M8 19h13" }]], // list
+  'filter': [['path', { d: "M10 20a1 1 0 0 0 .553.895l2 1A1 1 0 0 0 14 21v-7a2 2 0 0 1 .517-1.341L21.74 4.67A1 1 0 0 0 21 3H3a1 1 0 0 0-.742 1.67l7.225 7.989A2 2 0 0 1 10 14z" }]], // filter
+  'more': [['circle', { cx: "12", cy: "12", r: "1" }], ['circle', { cx: "19", cy: "12", r: "1" }], ['circle', { cx: "5", cy: "12", r: "1" }]], // ellipsis
+  'sidebar-close': [['rect', { width: "18", height: "18", x: "3", y: "3", rx: "2" }], ['path', { d: "M9 3v18" }], ['path', { d: "m16 15-3-3 3-3" }]], // panel-left-close
+  'sidebar-open': [['rect', { width: "18", height: "18", x: "3", y: "3", rx: "2" }], ['path', { d: "M9 3v18" }], ['path', { d: "m14 9 3 3-3 3" }]], // panel-left-open
+  'globe': [['circle', { cx: "12", cy: "12", r: "10" }], ['path', { d: "M12 2a14.5 14.5 0 0 0 0 20 14.5 14.5 0 0 0 0-20" }], ['path', { d: "M2 12h20" }]], // globe
+  'language': [['path', { d: "m5 8 6 6" }], ['path', { d: "m4 14 6-6 2-3" }], ['path', { d: "M2 5h12" }], ['path', { d: "M7 2h1" }], ['path', { d: "m22 22-5-10-5 10" }], ['path', { d: "M14 18h6" }]], // languages
+  'sun': [['circle', { cx: "12", cy: "12", r: "4" }], ['path', { d: "M12 2v2" }], ['path', { d: "M12 20v2" }], ['path', { d: "m4.93 4.93 1.41 1.41" }], ['path', { d: "m17.66 17.66 1.41 1.41" }], ['path', { d: "M2 12h2" }], ['path', { d: "M20 12h2" }], ['path', { d: "m6.34 17.66-1.41 1.41" }], ['path', { d: "m19.07 4.93-1.41 1.41" }]], // sun
+  'moon': [['path', { d: "M20.985 12.486a9 9 0 1 1-9.473-9.472c.405-.022.617.46.402.803a6 6 0 0 0 8.268 8.268c.344-.215.825-.004.803.401" }]], // moon
+  'monitor': [['rect', { width: "20", height: "14", x: "2", y: "3", rx: "2" }], ['line', { x1: "8", x2: "16", y1: "21", y2: "21" }], ['line', { x1: "12", x2: "12", y1: "17", y2: "21" }]], // monitor
+  'activity': [['path', { d: "M22 12h-2.48a2 2 0 0 0-1.93 1.46l-2.35 8.36a.25.25 0 0 1-.48 0L9.24 2.18a.25.25 0 0 0-.48 0l-2.35 8.36A2 2 0 0 1 4.49 12H2" }]], // activity
+  'gauge': [['path', { d: "m12 14 4-4" }], ['path', { d: "M3.34 19a10 10 0 1 1 17.32 0" }]], // gauge
+  'wifi': [['path', { d: "M12 20h.01" }], ['path', { d: "M2 8.82a15 15 0 0 1 20 0" }], ['path', { d: "M5 12.859a10 10 0 0 1 14 0" }], ['path', { d: "M8.5 16.429a5 5 0 0 1 7 0" }]], // wifi
+  'wifi-off': [['path', { d: "M12 20h.01" }], ['path', { d: "M8.5 16.429a5 5 0 0 1 7 0" }], ['path', { d: "M5 12.859a10 10 0 0 1 5.17-2.69" }], ['path', { d: "M19 12.859a10 10 0 0 0-2.007-1.523" }], ['path', { d: "M2 8.82a15 15 0 0 1 4.177-2.643" }], ['path', { d: "M22 8.82a15 15 0 0 0-11.288-3.764" }], ['path', { d: "m2 2 20 20" }]], // wifi-off
+  'zap': [['path', { d: "M15.914 4a1.5 1.5 0 00-2.474-1.561l-9 9A1.5 1.5 0 005.5 14h4.002a.5.5 0 01.471.666L8.086 20a1.5 1.5 0 002.475 1.56l9-9A1.5 1.5 0 0018.5 10h-3.997a.5.5 0 01-.472-.667z" }]], // zap
+  'spinner': [['path', { d: "M21 12a9 9 0 1 1-6.219-8.56" }]], // loader-circle
+  'rocket': [['path', { d: "M12 15v5s3.03-.55 4-2c1.08-1.62 0-5 0-5" }], ['path', { d: "M4.5 16.5c-1.5 1.26-2 5-2 5s3.74-.5 5-2c.71-.84.7-2.13-.09-2.91a2.18 2.18 0 0 0-2.91-.09" }], ['path', { d: "M9 12a22 22 0 0 1 2-3.95A12.88 12.88 0 0 1 22 2c0 2.72-.78 7.5-6 11a22.4 22.4 0 0 1-4 2z" }], ['path', { d: "M9 12H4s.55-3.03 2-4c1.62-1.08 5 .05 5 .05" }]], // rocket
+  'book': [['path', { d: "M12 5v16" }], ['path', { d: "M20.001 19A2 2 0 0022 17V5a2 2 0 00-1.999-2L16 3.002A5 5 0 0012 5a5 5 0 00-4-2H4a2 2 0 00-2 2v12a2 2 0 001.999 2H8a5 5 0 014 2 5 5 0 014-2z" }]], // book-open
+  'lightbulb': [['path', { d: "M15 14c.2-1 .7-1.7 1.5-2.5 1-.9 1.5-2.2 1.5-3.5A6 6 0 0 0 6 8c0 1 .2 2.2 1.5 3.5.7.7 1.3 1.5 1.5 2.5" }], ['path', { d: "M9 18h6" }], ['path', { d: "M10 22h4" }]], // lightbulb
+  'inbox': [['polyline', { points: "22 12 16 12 14 15 10 15 8 12 2 12" }], ['path', { d: "M5.45 5.11 2 12v6a2 2 0 0 0 2 2h16a2 2 0 0 0 2-2v-6l-3.45-6.89A2 2 0 0 0 16.76 4H7.24a2 2 0 0 0-1.79 1.11z" }]], // inbox
+  'circle': [['circle', { cx: "12", cy: "12", r: "10" }]], // circle
+  'send-arrow': [['path', { d: "M14.536 21.686a.5.5 0 0 0 .937-.024l6.5-19a.496.496 0 0 0-.635-.635l-19 6.5a.5.5 0 0 0-.024.937l7.93 3.18a2 2 0 0 1 1.112 1.11z" }], ['path', { d: "m21.854 2.147-10.94 10.939" }]], // send
+  'json': [['path', { d: "M6 22a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h8a2.4 2.4 0 0 1 1.704.706l3.588 3.588A2.4 2.4 0 0 1 20 8v12a2 2 0 0 1-2 2z" }], ['path', { d: "M14 2v5a1 1 0 0 0 1 1h5" }], ['path', { d: "M10 12a1 1 0 0 0-1 1v1a1 1 0 0 1-1 1 1 1 0 0 1 1 1v1a1 1 0 0 0 1 1" }], ['path', { d: "M14 18a1 1 0 0 0 1-1v-1a1 1 0 0 1 1-1 1 1 0 0 1-1-1v-1a1 1 0 0 0-1-1" }]], // file-json
+  'pause-bars': [['rect', { x: "14", y: "3", width: "5", height: "18", rx: "1" }], ['rect', { x: "5", y: "3", width: "5", height: "18", rx: "1" }]], // pause
+};
+
+/** 使えるアイコンの名前（スタイルガイド・試験で使う）。 */
+export const ICON_NAMES = Object.keys(PATHS);
+
+/**
+ * @param {string} name
+ * @param {{label?: string, size?: 'sm'|'md'|'lg'|'xl', spin?: boolean, class?: string}} [opt]
+ * @returns {SVGSVGElement}
+ */
+export function icon(name, { label, size, spin, class: cls } = {}) {
+  const nodes = PATHS[name] || PATHS.circle;
+  const el = s('svg', {
+    viewBox: '0 0 24 24', fill: 'none', stroke: 'currentColor', 'stroke-linecap': 'round', 'stroke-linejoin': 'round',
+    class: ['icon', size, spin && 'spin', cls].filter(Boolean).join(' '), 'data-icon': name, focusable: 'false',
+  }, nodes.map(([tag, attrs]) => s(tag, attrs)));
+  if (label) {
+    el.setAttribute('role', 'img');
+    el.setAttribute('aria-label', label);
+  } else {
+    el.setAttribute('aria-hidden', 'true');
+  }
+  return el;
+}

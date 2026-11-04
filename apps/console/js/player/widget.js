@@ -8,6 +8,8 @@ import { copyField, describeError } from '../lib/ui.js';
 import { HlsPlayer, UnsupportedError } from './hls.js';
 import { WhepPlayer, whepSupported } from './whep.js';
 import { fmtBps } from '../lib/format.js';
+import { t } from '../i18n/index.js';
+import { button, alert } from '../ui/index.js';
 
 /**
  * @param {object} opt
@@ -19,11 +21,12 @@ import { fmtBps } from '../lib/format.js';
  * @param {boolean} [opt.autostart]
  * @returns {{el: HTMLElement, stop: () => void, start: () => Promise<void>, video: HTMLVideoElement}}
  */
-export function playerWidget({ getUrl, getPlayback, live = true, label = 'プレビュー', mode = 'auto', autostart = false }) {
+export function playerWidget({ getUrl, getPlayback, live = true, label = t('player.preview'), mode = 'auto', autostart = false }) {
   const video = h('video', { controls: true, playsinline: true, muted: true, autoplay: true, 'aria-label': label });
-  const statusEl = h('div', { class: 'player-status', role: 'status', 'aria-live': 'polite' }, '停止中');
+  const statusEl = h('div', { class: 'player-status', role: 'status', 'aria-live': 'polite' }, t('player.stopped'));
   const note = h('div');
-  const modeSel = getPlayback ? select([['auto', '自動（WebRTC → HLS）'], ['webrtc', 'WebRTC（WHEP、低遅延）'], ['hls', 'HLS（MSE）']], mode, { 'aria-label': '再生の方式', class: 'small' }) : null;
+  const modeSel = getPlayback ? select([['auto', t('player.modeAuto')], ['webrtc', t('player.modeWebrtc')], ['hls', t('player.modeHls')]], mode, { 'aria-label': t('player.mode'), class: 'small' }) : null;
+  if (modeSel) modeSel.style.width = 'auto';
   let player = null;
   let lastUrl = null;
   let statsTimer = null;
@@ -36,14 +39,14 @@ export function playerWidget({ getUrl, getPlayback, live = true, label = 'プレ
       if (st) {
         if (st.width) parts.push(`${st.width}×${st.height}`);
         if (st.fps) parts.push(`${Math.round(st.fps)} fps`);
-        parts.push(`復号 ${st.framesDecoded}`);
+        parts.push(t('player.decoded', { n: st.framesDecoded }));
         if (st.bitrate) parts.push(fmtBps(Math.round(st.bitrate)));
-        if (!st.audio) parts.push('音声なし');
+        if (!st.audio) parts.push(t('player.noAudio'));
       }
     } else {
       if (s.mode) parts.push(s.mode === 'mse' ? 'MSE' : 'native');
       if (s.mime) parts.push(s.mime);
-      if (s.stats && s.stats.latency !== null && s.stats.latency !== undefined) parts.push(`遅れ ${s.stats.latency.toFixed(1)} 秒`);
+      if (s.stats && s.stats.latency !== null && s.stats.latency !== undefined) parts.push(t('player.latency', { s: s.stats.latency.toFixed(1) }));
     }
     statusEl.textContent = parts.join(' · ');
     statusEl.dataset.state = s.state;
@@ -56,14 +59,15 @@ export function playerWidget({ getUrl, getPlayback, live = true, label = 'プレ
     player = null;
     startBtn.disabled = false;
     stopBtn.disabled = true;
-    statusEl.textContent = '停止中';
+    statusEl.textContent = t('player.stopped');
     statusEl.dataset.state = 'stopped';
   };
 
-  const showUrl = (msg, url, kind) => replace(note, h('div', { class: 'alert warn' },
+  const showUrl = (msg, url, kind) => replace(note, alert('warn', [
     h('div', null, msg),
-    kind === 'ts' ? h('div', { class: 'small' }, 'HLS の URL（期限付き）を VLC・ffplay などで開けます。Chrome・Firefox で見るには、配信の設定で HLS のコンテナを fMP4 にしてください。') : null,
-    url ? h('div', { style: { marginTop: '6px' } }, copyField(url, 'HLS の URL')) : null));
+    kind === 'ts' ? h('div', { class: 'small' }, t('player.tsHint')) : null,
+    url ? h('div', { class: 'mt-2' }, copyField(url, t('io.pb.hlsUrl'))) : null,
+  ]));
 
   const startHls = async (url) => {
     lastUrl = url;
@@ -75,13 +79,13 @@ export function playerWidget({ getUrl, getPlayback, live = true, label = 'プレ
     });
     const p = player;
     statsTimer = setInterval(() => {
-      if (p.mode === 'mse' && p.stats && statusEl.dataset.state === 'playing') setStatus({ state: 'playing', message: live ? 'ライブ再生中' : '再生中', mode: p.mode, mime: p.mime, stats: p.stats });
+      if (p.mode === 'mse' && p.stats && statusEl.dataset.state === 'playing') setStatus({ state: 'playing', message: live ? t('player.livePlaying') : t('player.playing'), mode: p.mode, mime: p.mime, stats: p.stats });
     }, 1000);
     try {
       await p.start();
     } catch (e) {
       if (p !== player) return;
-      const msg = e instanceof UnsupportedError ? e.message : `再生できません: ${e.message}`;
+      const msg = e instanceof UnsupportedError ? e.message : t('player.cannotPlay', { reason: e.message });
       statusEl.textContent = msg;
       statusEl.dataset.state = 'error';
       showUrl(msg, lastUrl, e instanceof UnsupportedError ? e.kind : null);
@@ -91,7 +95,7 @@ export function playerWidget({ getUrl, getPlayback, live = true, label = 'プレ
   const startWhep = async (url) => {
     const p = new WhepPlayer(video, { url, onStatus: setStatus });
     player = p;
-    statsTimer = setInterval(() => { if (p === player && p.stats) setStatus({ state: statusEl.dataset.state || 'playing', message: 'WebRTC で再生中', mode: 'webrtc', stats: p.stats }); }, 1000);
+    statsTimer = setInterval(() => { if (p === player && p.stats) setStatus({ state: statusEl.dataset.state || 'playing', message: t('player.webrtcPlaying'), mode: 'webrtc', stats: p.stats }); }, 1000);
     await p.start();
   };
 
@@ -100,7 +104,7 @@ export function playerWidget({ getUrl, getPlayback, live = true, label = 'プレ
     replace(note);
     startBtn.disabled = true;
     stopBtn.disabled = false;
-    statusEl.textContent = '再生 URL を取得中';
+    statusEl.textContent = t('player.gettingUrl');
     let pb;
     try {
       pb = getPlayback ? await getPlayback() : { hls: await getUrl() };
@@ -125,22 +129,22 @@ export function playerWidget({ getUrl, getPlayback, live = true, label = 'プレ
           statusEl.dataset.state = 'error';
           return;
         }
-        replace(note, h('div', { class: 'alert info small' }, `WebRTC で再生できないので HLS にしました（${e.message}）`));
+        replace(note, alert('info', t('player.fellBack', { reason: e.message }), { small: true }));
       }
     }
     if (m === 'webrtc') {
-      statusEl.textContent = pb.whep ? 'このブラウザは WebRTC を使えません' : 'WHEP の URL がありません';
+      statusEl.textContent = pb.whep ? t('player.noWebrtc') : t('player.noWhepUrl');
       statusEl.dataset.state = 'error';
       return;
     }
     await startHls(pb.hls);
   };
 
-  const startBtn = h('button', { class: 'primary', onClick: start }, '▶ 再生');
-  const stopBtn = h('button', { onClick: stop, disabled: true }, '■ 停止');
+  const startBtn = button(t('player.play'), { variant: 'primary', icon: 'play', onClick: () => { start(); } });
+  const stopBtn = button(t('player.stop'), { icon: 'stop', onClick: stop, attrs: { disabled: true } });
   const el = h('div', { class: 'player-widget' },
     h('div', { class: 'player' }, video),
-    h('div', { class: 'row', style: { marginTop: '8px' } }, startBtn, stopBtn, modeSel, statusEl),
+    h('div', { class: 'player-controls' }, startBtn, stopBtn, modeSel, statusEl),
     note);
   el.video = video;
   if (autostart) setTimeout(start, 0);
