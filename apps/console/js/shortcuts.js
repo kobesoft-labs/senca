@@ -86,6 +86,8 @@ export function showShortcutHelp() {
     [t('shortcuts.help'), keys('?')],
     [t('shortcuts.search'), keys('/')],
     [t('shortcuts.sidebar'), keys('[')],
+    [t('shortcuts.listMove'), [h('kbd', null, 'J'), h('kbd', null, 'K')]],
+    [t('shortcuts.listOpen'), [h('kbd', null, 'Enter')]],
     [t('shortcuts.close'), keys('Esc')],
   ];
   const go = NAV_GROUPS.flatMap((g) => g.items).filter((x) => x.key && !x.soon).map((x) => [t(`nav.${x.id}`), keys('G', x.key.toUpperCase())]);

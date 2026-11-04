@@ -9,5 +9,5 @@ export { tooltip, modal, confirmDialog, attachMenu, attachPopover, helpHint, clo
 export { formField, toggle, segmented, searchBox, copyText, copyField } from './form.js';
 export { tabs } from './tabs.js';
 export { toast } from './toast.js';
-export { checklist, checklistDismissed } from './onboarding.js';
+export { checklist, checklistDismissed, resetChecklist } from './onboarding.js';
 export { icon, ICON_NAMES } from '../lib/icons.js';
