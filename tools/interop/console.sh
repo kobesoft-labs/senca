@@ -153,7 +153,7 @@ t('pipeline graph round-trips (senca-pipeline JSON) and port types', () => {
   assert.equal(canon(toGraph(pl)), canon(g));
   assert.deepEqual(validate(pl, { royaltyFree: true }).filter((i) => i.level === 'error'), []);
   pl.nodes.find((n) => n.name === 'venc').p.codec = 'h264';
-  assert.ok(validate(pl, { royaltyFree: true }).some((i) => i.level === 'error' && /royalty_free/.test(i.text)));
+  assert.ok(validate(pl, { royaltyFree: true }).some((i) => i.level === 'error' && i.code === 'POLICY_REJECTED'));
   const p = emptyPipeline('y'); const s = addNode(p, 'source', 0, 0); s.p.stream = 'A';
   const d = addNode(p, 'decode', 0, 0); const e = addNode(p, 'encode', 0, 0); const o = addNode(p, 'sink', 0, 0); o.p.stream = 'O';
   assert.equal(connect(p, { node: s.id, port: 0 }, { node: e.id, port: 0 }).ok, false); // 符号化済み → encode は不可
@@ -177,6 +177,63 @@ t('pipeline API helpers: issues from problem details, status/meters split', () =
   const subs = parseSubtitleMedia('#EXTM3U\n#EXT-X-MEDIA:TYPE=SUBTITLES,GROUP-ID="subs",NAME="English",LANGUAGE="en",DEFAULT=NO,AUTOSELECT=YES,URI="sub_en.m3u8"\n', 'http://h/s/1/x/live/id/master.m3u8');
   assert.deepEqual(subs, [{ language: 'en', name: 'English', uri: 'http://h/s/1/x/live/id/sub_en.m3u8', default: false }]);
 });
+// ---- パイプラインの編集とスイッチャーの道具（ここから）
+const PM = await import(D + '/pipeline/model.js');
+const { TEMPLATES, fillTemplate } = await import(D + '/pipeline/templates.js');
+t('pipeline templates: every template validates once streams are filled, and round-trips', () => {
+  const canon = (v) => JSON.stringify(v, (k, x) => (x && typeof x === 'object' && !Array.isArray(x) ? Object.fromEntries(Object.entries(x).sort()) : x));
+  for (const tpl of TEMPLATES.filter((x) => x.id !== 'blank')) {
+    for (const opts of [{}, ...(tpl.options || []).map((o) => ({ [o.id]: true }))]) {
+      const streams = Object.fromEntries(tpl.roles.map((r, i) => [r.node, 'S' + i]));
+      const g = fillTemplate(tpl, streams, opts);
+      const pl = PM.fromGraph(g, { name: 'tpl-' + tpl.id });
+      const errs = PM.validate(pl, { royaltyFree: true }).filter((i) => i.level === 'error');
+      assert.deepEqual(errs.map((e) => e.text), [], tpl.id);
+      assert.equal(canon(PM.toGraph(pl)), canon(g), tpl.id);
+    }
+  }
+});
+t('pipeline editor model: connect check, auto layout, copy/paste, undo snapshot, live tracks, compose inputs', () => {
+  const pl = PM.fromGraph(sampleGraph({ a: 'A', b: 'B', out: 'O' }), { name: 'x' });
+  const id = (n) => pl.nodes.find((m) => m.name === n).id;
+  // 符号化済みの映像は encode に入らず、理由に「デコード」を挟むよう書く。入っている入力は taken
+  const c1 = PM.checkConnect(pl, { node: id('cam_a'), port: 0 }, { node: id('venc'), port: 0 });
+  assert.equal(c1.code, 'incompatible');
+  assert.equal(PM.checkConnect(pl, { node: id('dec_b'), port: 0 }, { node: id('venc'), port: 0 }).code, 'taken');
+  assert.equal(PM.checkConnect(pl, { node: id('venc'), port: 0 }, { node: id('dec_a'), port: 0 }).code, 'cycle');
+  assert.ok(PM.connectTargets(pl, { node: id('dec_b'), port: 0 }).some((x) => x.node === id('venc') && x.taken));
+  assert.ok(PM.kindsAccepting('ev').includes('decode') && !PM.kindsAccepting('ev').includes('compose'));
+  // 自動の配置: 重ならず、上流が左
+  PM.autoLayout(pl);
+  for (const a of pl.nodes) for (const b of pl.nodes) {
+    if (a === b) continue;
+    const overlap = a.x < b.x + PM.NODE_W && b.x < a.x + PM.NODE_W && a.y < b.y + PM.nodeHeight(b) && b.y < a.y + PM.nodeHeight(a);
+    assert.ok(!overlap, a.name + '/' + b.name);
+  }
+  for (const e of pl.edges) assert.ok(pl.nodes.find((n) => n.id === e.from.node).x < pl.nodes.find((n) => n.id === e.to.node).x);
+  // 元に戻す用の写し
+  const snap = PM.serialize(pl);
+  PM.removeNode(pl, id('venc'));
+  PM.restore(pl, snap);
+  assert.equal(pl.nodes.length, 10); assert.equal(pl.edges.length, 10);
+  // 写しと貼り付け: 名前は重ならず、間の線も付く
+  const clip = PM.copyNodes(pl, [id('dec_a'), id('venc')]);
+  const made = PM.pasteNodes(pl, clip);
+  assert.equal(made.length, 2);
+  assert.equal(new Set(pl.nodes.map((n) => n.name)).size, pl.nodes.length);
+  assert.ok(pl.nodes.some((n) => n.name === 'dec_a_2'));
+  // 配信中のトラックを source に入れる
+  const src = pl.nodes.find((n) => n.name === 'cam_b');
+  const changed = PM.applyLiveTracks(src, [{ codec: 'av1', width: 1280, height: 720, track: 0 }, { codec: 'opus', track: 1 }]);
+  assert.deepEqual([src.p['video.codec'], src.p['audio.codec'], src.p['video.width']], ['av1', 'opus', 1280]);
+  assert.ok(changed.includes('video.codec'));
+  assert.equal(PM.describeTracks([{ codec: 'h264', width: 640, height: 360 }]), 'H.264 640×360');
+  // スイッチャー: 合成の入力 → 元の stream、H.264 の符号化は GPU の注意（ノードの code）
+  assert.deepEqual(PM.composeInputStreams(sampleGraph({ a: 'A', b: 'B', out: 'O' }), 'prod'), { a: 'A', b: 'B' });
+  pl.nodes.find((n) => n.name === 'venc').p.codec = 'h264';
+  assert.ok(PM.validate(pl).some((i) => i.level === 'warn' && i.code === 'CAPACITY_UNAVAILABLE'));
+});
+// ---- パイプラインの編集とスイッチャーの道具（ここまで）
 t('SSE parser (CRLF split across chunks, comments, resync)', () => {
   const evs = []; const ps = new EventStreamParser((e) => evs.push(e));
   ps.feed(': keepalive\r\nevent: stream.created\r\nid: 42\r\ndata: {"type":"stream.created","resource_id":"x"}\r\n\r');
@@ -670,12 +727,15 @@ const EXPECTED_FAIL = [
     await page.getByRole('button', { name: '停止', exact: true }).first().click();
   });
 
-  // ---------------------------------------------------------------- パイプライン（VP9 → AV1）
+  // ================================================================ パイプラインとスイッチャー（ここから）
+  // 編集（ひな形・JSON・保存・検証・開始）、グラフの操作（つなぐ・元に戻す・キーボード・文字の一覧）、
+  // スイッチャー（CUT・AUTO・ダブルクリック・キーボード・安全装置・音声・モニター）、狭い画面。
   let pipelineId = null;
+  const nodeIdOf = (name) => page.locator(`[data-node="${name}"]`).getAttribute('data-id');
+  const edgeCount = () => page.locator('.pl-edge').count();
+  const centerOf = async (sel) => { const b = await page.locator(sel).first().boundingBox(); return { x: b.x + b.width / 2, y: b.y + b.height / 2 }; };
   await step('pipeline editor', async () => {
     if (!env.vpx) { check('pipeline editor (skipped: no libvpx / codec worker)', true); return; }
-    await page.goto(`${base}/console/#/pipelines`);
-    await page.getByRole('heading', { name: 'パイプライン', exact: true, level: 1 }).waitFor();
     const graph = {
       version: 1, options: { clock: 'realtime' }, nodes: [
         { type: 'source', id: 'cam_a', stream: env.pv1, video: { codec: 'vp9' }, audio: { codec: 'opus' } },
@@ -691,50 +751,135 @@ const EXPECTED_FAIL = [
         { type: 'sink', id: 'out', inputs: ['venc', 'aenc'], stream: env.pout },
       ],
     };
-    await page.getByRole('button', { name: 'JSON', exact: true }).click();
-    await page.getByLabel('パイプラインの定義（JSON）').fill(JSON.stringify({ name: 'pinp-browser', graph }));
-    await page.getByRole('button', { name: '取り込む' }).click();
+    // 空のひな形から下書きを作り、JSON を貼り付けて反映する
+    await page.goto(`${base}/console/#/pipelines?new=1&template=blank`);
+    await page.getByTestId('tpl-name').fill('pinp-browser');
+    await page.getByTestId('tpl-create').click();
+    await page.getByTestId('pipeline-canvas').waitFor();
+    await page.getByTestId('pipeline-more').click();
+    await page.getByTestId('menu-json').click();
+    await page.getByTestId('json-text').fill(JSON.stringify({ name: 'pinp-browser', graph }));
+    await page.getByTestId('json-apply').click();
     await page.locator('[data-node="venc"]').waitFor();
     const nodes = await page.locator('.pl-node').count();
-    const edges = await page.locator('.pl-edge').count();
-    check('pipeline graph imported into editor (nodes and edges drawn)', nodes === 10 && edges === 10, `${nodes} nodes ${edges} edges`);
+    const edges = await edgeCount();
+    check('pipeline graph applied from JSON into a draft (nodes and edges drawn)', nodes === 10 && edges === 10 && /#\/pipelines\/pl_/.test(page.url()), `${nodes} nodes ${edges} edges ${page.url()}`);
     await clearToasts();
-    await page.getByRole('button', { name: '保存', exact: true }).click();
-    await toastText(/ノードに保存しました/);
+    await page.getByTestId('pipeline-save').click();
+    await toastText(/ノードに作りました/);
     const list = (await apiGet('/pipelines')).body.items;
     const created = list.find((x) => x.name === 'pinp-browser');
     pipelineId = created && created.id;
-    check('pipeline saved (POST /pipelines)', !!created && created.desired_state === 'stopped' && JSON.stringify(created.graph.nodes.map((n) => n.id)) === JSON.stringify(graph.nodes.map((n) => n.id)), created ? created.id : 'none');
+    check('pipeline saved (POST /pipelines) and the URL moves to the saved id', !!created && created.desired_state === 'stopped' && JSON.stringify(created.graph.nodes.map((n) => n.id)) === JSON.stringify(graph.nodes.map((n) => n.id)) && page.url().endsWith(`#/pipelines/${pipelineId}`), created ? created.id : 'none');
+    await page.locator('[data-testid="check-state"][data-state="ok"]').waitFor({ timeout: 15000 });
     await clearToasts();
-    await page.getByRole('button', { name: '検証', exact: true }).click();
+    await page.getByTestId('pipeline-validate').click();
     await toastText(/ノードの検証に通りました/);
-    await page.locator('section', { has: page.getByRole('heading', { name: '計画', exact: true }) }).getByRole('cell', { name: 'venc' }).first().waitFor({ timeout: 5000 });
-    const planText = await page.locator('section', { has: page.getByRole('heading', { name: '計画', exact: true }) }).textContent();
-    check('VP9/AV1 graph validates on node → plan shown', /av1/.test(planText) && /vp9/.test(planText), planText.slice(0, 200));
-    // 方針に反する変更（royalty_free の stream で H.264）→ 問題の一覧
+    await page.locator('[data-tab="plan"]').click();
+    await page.locator('[data-plan-node="venc"]').waitFor({ timeout: 5000 });
+    const planText = await page.getByTestId('plan').textContent();
+    check('VP9/AV1 graph validates on node → plan shown (steps, CPU-only, outputs)', /av1/.test(planText) && /vp9/.test(planText) && /CPU/.test(planText), planText.slice(0, 200));
+    // 方針に反する変更（royalty_free の stream で H.264）→ 問題の一覧（ノードの code と直し方）
     await page.locator('[data-node="venc"]').click();
-    await page.getByLabel('コーデック', { exact: true }).selectOption('h264');
+    await page.locator('[data-k="f:codec"]').selectOption('h264');
     await clearToasts();
-    await page.getByRole('button', { name: '検証', exact: true }).click();
-    await page.locator('ul[data-remote] li').first().waitFor({ timeout: 8000 });
-    const issues = await page.locator('ul[data-remote]').textContent();
-    check('policy violation → node issue list from problem details', /venc/.test(issues) || /h264|H\.264|POLICY|CAPACITY/i.test(issues), issues.slice(0, 200));
-    await page.getByLabel('コーデック', { exact: true }).selectOption('av1');
-    await page.getByLabel('ビットレート（kbps）', { exact: true }).fill('700');
-    await page.getByLabel('ビットレート（kbps）', { exact: true }).press('Tab');
+    await page.getByTestId('pipeline-validate').click();
+    await page.locator('[data-testid="issues"] .pl-issue.remote').first().waitFor({ timeout: 8000 });
+    const issues = await page.getByTestId('issues').textContent();
+    check('policy violation → node issue list with a plain explanation, click focuses the part', /venc/.test(issues) && /(POLICY|ロイヤリティフリー)/.test(issues), issues.slice(0, 200));
+    await page.locator('[data-k="f:codec"]').selectOption('av1');
+    await page.locator('[data-k="f:bitrate_kbps"]').fill('700');
+    await page.locator('[data-k="f:bitrate_kbps"]').press('Tab');
     await clearToasts();
-    await page.getByRole('button', { name: '保存', exact: true }).click();
+    await page.getByTestId('pipeline-save').click();
     await toastText(/ノードに保存しました/);
     const after = (await apiGet(`/pipelines/${pipelineId}`)).body;
     check('pipeline edit saved (PATCH graph with If-Match → new generation)', after.generation === 2 && after.graph.nodes.find((n) => n.id === 'venc').bitrate_kbps === 700, `gen=${after.generation}`);
     await clearToasts();
     await page.getByTestId('pipeline-start').click();
     await toastText(/開始しました/);
-    await page.locator('.toolbar .badge[data-state="running"]').waitFor({ timeout: 30000 });
+    await page.locator('.page-header .badge[data-state="running"]').waitFor({ timeout: 30000 });
     check('pipeline start (PATCH desired_state) → observed running', true);
     await waitApi(`/streams/${env.pout}`, (b) => b && b.observed_state === 'live', 60000);
     check('pipeline output stream turns live', true);
     await shot('10-pipeline');
+  });
+
+  await step('pipeline templates and graph editing', async () => {
+    // ひな形（PinP）から: 入力・出力の stream を選んで下書きを作る
+    await page.goto(`${base}/console/#/pipelines`);
+    await page.getByTestId('pipelines-new').click();
+    await page.locator('[data-testid="template-gallery"] [data-template="pinp"]').click();
+    await page.getByTestId('tpl-name').fill('tpl-pinp');
+    await page.getByTestId('tpl-role-main').selectOption(env.pv1);
+    await page.getByTestId('tpl-role-corner').selectOption(env.pv2);
+    await page.getByTestId('tpl-role-out').selectOption(env.whep264);
+    await page.getByTestId('tpl-create').click();
+    await page.locator('[data-node="prod"]').waitFor();
+    const tn = await page.locator('.pl-node').count();
+    const te = await edgeCount();
+    const stored = await page.evaluate(() => JSON.parse(localStorage.getItem('senca.console.pipelines.v2') || '[]').some((d) => d.name === 'tpl-pinp'));
+    const okIssues = await page.getByTestId('issue-count').textContent();
+    check('template "Picture-in-picture" → draft with streams filled, autosaved, no problems', tn === 7 && te === 7 && stored && /問題なし/.test(okIssues), `${tn} nodes ${te} edges stored=${stored} ${okIssues}`);
+    // Delete で部品を消し、Ctrl+Z で戻す
+    await page.locator('[data-node="venc"]').click();
+    await page.keyboard.press('Delete');
+    await page.locator('[data-node="venc"]').waitFor({ state: 'detached' });
+    const e1 = await edgeCount();
+    await page.keyboard.press('Control+z');
+    await page.locator('[data-node="venc"]').waitFor();
+    const e2 = await edgeCount();
+    check('Delete removes a part with its connections; Ctrl+Z brings both back', e1 === te - 2 && e2 === te, `${te} → ${e1} → ${e2}`);
+    // 部品の一覧から「エンコード」を置き、マウスで prod の出力からつなぐ（つなげる点だけが光る）
+    await page.evaluate(() => { const b = document.querySelector('[data-testid="palette-toggle"]'); if (b && b.getAttribute('aria-expanded') === 'false') b.click(); });
+    await page.locator('.pl-pal-item[data-type="encode"]').click();
+    await page.locator('[data-node="enc1"]').waitFor();
+    await page.getByTestId('pipeline-canvas').locator('button[aria-label="全体を表示"]').click();
+    await sleep(300);
+    const prodOut = await centerOf('[data-node="prod"] [data-port^="out:"]');
+    const encIn = await centerOf('[data-node="enc1"] [data-port^="in:"]');
+    const mainVideo = await centerOf('[data-node="main"] [data-port^="out:"]');
+    // 符号化済みの映像は encode に入らない: 印と理由
+    await page.mouse.move(mainVideo.x, mainVideo.y);
+    await page.mouse.down();
+    await page.mouse.move(encIn.x - 20, encIn.y, { steps: 6 });
+    await page.mouse.move(encIn.x, encIn.y, { steps: 3 });
+    const cannot = await page.locator('[data-node="enc1"] [data-port^="in:"]').getAttribute('class');
+    const why = await page.locator('.pl-wire-hint.no').textContent().catch(() => '');
+    await page.mouse.move(encIn.x + 200, encIn.y + 300, { steps: 4 });
+    await page.mouse.up();
+    await page.keyboard.press('Escape');
+    const before = await edgeCount();
+    await page.mouse.move(prodOut.x, prodOut.y);
+    await page.mouse.down();
+    await page.mouse.move(encIn.x - 20, encIn.y, { steps: 6 });
+    await page.mouse.move(encIn.x, encIn.y, { steps: 3 });
+    const can = await page.locator('[data-node="enc1"] [data-port^="in:"]').getAttribute('class');
+    await page.mouse.up();
+    const afterConnect = await edgeCount();
+    check('drag to connect: incompatible input explains why (put a Decode in between), compatible one lights up and connects', /cannot/.test(cannot) && /デコード/.test(why) && /\bcan\b/.test(can) && afterConnect === before + 1, `cannot=${cannot} why=${why} can=${can} ${before}→${afterConnect}`);
+    await page.keyboard.press('Control+z');
+    const undone = await edgeCount();
+    await page.keyboard.press('Control+Shift+z');
+    const redone = await edgeCount();
+    check('undo / redo of a connection (Ctrl+Z, Ctrl+Shift+Z)', undone === before && redone === before + 1, `${undone} ${redone}`);
+    // キーボードだけで: 部品にフォーカス → 矢印で動かす → Enter で設定 → 「つなぐ先」でつなぐ
+    await page.locator('[data-node="enc1"]').focus();
+    const tr1 = await page.locator('[data-node="enc1"]').getAttribute('transform');
+    await page.keyboard.press('ArrowRight');
+    const tr2 = await page.locator('[data-node="enc1"]').getAttribute('transform');
+    await page.keyboard.press('Enter');
+    const focusedInInspector = await page.evaluate(() => !!document.activeElement.closest('[data-testid="inspector"]'));
+    const target = page.getByTestId('connect-to-0');
+    const optVal = await target.locator('option', { hasText: 'out · 入力 2' }).first().getAttribute('value');
+    await target.selectOption(optVal);
+    await sleep(200);
+    await page.locator('[data-tab="outline"]').click();
+    const outLinks = await page.locator('.pl-out-item', { has: page.locator('[data-outline="out"]') }).textContent();
+    await page.locator('[data-outline="enc1"]').click();
+    const fromOutline = await page.evaluate(() => document.activeElement.getAttribute('data-node'));
+    check('keyboard: arrows move the focused part, Enter opens settings, "Connect to" connects, the text outline focuses parts', tr1 !== tr2 && focusedInInspector && /入力 2 ← enc1/.test(outLinks) && fromOutline === 'enc1', `${tr1}→${tr2} insp=${focusedInInspector} links=${outLinks} outline=${fromOutline}`);
+    await shot('14-pipeline-editing');
   });
 
   // ---------------------------------------------------------------- スイッチャー
@@ -743,13 +888,13 @@ const EXPECTED_FAIL = [
     await page.goto(`${base}/console/#/production?pipeline=${pipelineId}`);
     await page.locator('[data-scene="pinp"]').waitFor({ timeout: 10000 });
     await page.locator('[data-program="pinp"]').waitFor({ timeout: 10000 });
+    await page.locator('[data-scene="cam_a"]:not([disabled])').waitFor({ timeout: 20000 });
     await page.locator('[data-scene="cam_a"]').click();
     await page.locator('[data-preview="cam_a"]').waitFor({ timeout: 5000 });
-    await page.getByRole('button', { name: 'CUT', exact: true }).click();
+    await page.getByTestId('sw-cut').click();
     await page.locator('[data-program="cam_a"]').waitFor({ timeout: 5000 });
     await sleep(2500);
     const stillA = await page.locator('[data-program="cam_a"]').count();
-    // ノードの status（届いていれば）で確かめる
     let confirmed = 'status not observed';
     const end = Date.now() + 6000;
     while (Date.now() < end) {
@@ -760,13 +905,36 @@ const EXPECTED_FAIL = [
       await sleep(150);
     }
     check('switcher: set_preview + CUT (take) round-trip', stillA === 1 && !/program=pinp/.test(confirmed), confirmed);
-    await page.getByRole('button', { name: 'FADE', exact: true }).click();
+    await page.getByTestId('sw-auto').click();
     await page.locator('[data-program="pinp"]').waitFor({ timeout: 5000 });
     await page.locator('[data-scene="cam_a"]').dblclick();
     await page.locator('[data-program="cam_a"]').waitFor({ timeout: 5000 });
-    check('switcher: FADE and double-click switch_program', true);
+    check('switcher: AUTO (take with transition) and double-click switch_program', true);
+    // キーボード: 数字でプレビュー、C で CUT
+    await page.evaluate(() => document.activeElement && document.activeElement.blur());
+    const keyOf = (sc) => page.locator(`[data-scene="${sc}"] .sw-key`).textContent();
+    const kPinp = await keyOf('pinp');
+    const kCamA = await keyOf('cam_a');
+    await page.keyboard.press(kPinp);
+    await page.locator('[data-preview="pinp"]').waitFor({ timeout: 5000 });
+    await page.keyboard.press('c');
+    await page.locator('[data-program="pinp"]').waitFor({ timeout: 5000 });
+    check('switcher keyboard: number key → preview, C → CUT', true);
+    // 安全装置: 1 回目は構えるだけ、2 回目で実行
+    await page.getByTestId('sw-safety').check();
+    await page.evaluate(() => document.activeElement && document.activeElement.blur());
+    await page.keyboard.press(kCamA);
+    await page.locator('[data-preview="cam_a"]').waitFor({ timeout: 5000 });
+    await page.keyboard.press('c');
+    await sleep(600);
+    const armed = await page.getByTestId('sw-cut').getAttribute('class');
+    const stillPinp = await page.locator('[data-program="pinp"]').count();
+    await page.keyboard.press('c');
+    await page.locator('[data-program="cam_a"]').waitFor({ timeout: 5000 });
+    await page.getByTestId('sw-safety').uncheck();
+    check('switcher safety: first C only arms, second C cuts', /armed/.test(armed) && stillPinp === 1, armed);
     // 音声: フェーダー → set_audio、メーター（届いていれば）でノードの値を確かめる
-    const fader = page.getByLabel('mic_a の音量（dB）');
+    const fader = page.getByTestId('fader-mix-mic_a');
     await fader.evaluate((el) => { el.value = '-12'; el.dispatchEvent(new Event('input', { bubbles: true })); });
     let gainSeen = null;
     const end2 = Date.now() + 8000;
@@ -775,28 +943,54 @@ const EXPECTED_FAIL = [
       if (gainSeen === '-12') break;
       await sleep(300);
     }
-    const meterNow = await page.locator('[data-strip="mix/mic_a"] .meter').getAttribute('aria-valuenow');
-    check('switcher: fader → set_audio (node-reported gain via meters)', gainSeen === '-12' || gainSeen === null, `server gain=${gainSeen} meter=${meterNow}`);
-    const mute = page.locator('[data-strip="mix/mic_a"] button', { hasText: 'ミュート' });
-    await mute.click();
-    await page.waitForFunction(() => document.querySelector('[data-strip="mix/mic_a"] button[aria-pressed="true"]'), null, { timeout: 5000 });
+    const meterNow = await page.locator('[data-strip="mix/mic_a"] [role="meter"]').getAttribute('aria-valuenow');
+    check('switcher: fader → set_audio (node-reported gain via meters)', gainSeen === '-12' || gainSeen === '', `server gain=${gainSeen} meter=${meterNow}`);
+    await page.locator('[data-strip="mix/mic_a"] button.mute').click();
+    await page.waitForFunction(() => document.querySelector('[data-strip="mix/mic_a"] button.mute[aria-pressed="true"]'), null, { timeout: 5000 });
     check('switcher: mute toggle', true);
     // プログラムのモニター（出力の stream を WHEP で）
     const pv = 'video[aria-label="プログラムのモニター"]';
     const playing = await page.waitForFunction((s) => { const v = document.querySelector(s); return v && v.currentTime > 1; }, pv, { timeout: 8000 }).then(() => true).catch(() => false);
-    if (!playing) {
-      await page.locator('.monitor.program').getByRole('button', { name: '再生', exact: true }).click();
-    }
+    if (!playing) await page.locator('.monitor.program').getByRole('button', { name: '再生', exact: true }).click();
     const v = await videoAdvances(pv, 20000);
     const mstatus = await page.locator('.monitor.program .player-status').textContent();
     check('switcher: program monitor plays the sink stream (WHEP, AV1)', v.ok && /WebRTC/.test(mstatus), `${mstatus} t1=${v.t1.toFixed(1)} t2=${v.t2.toFixed(1)}`);
     await shot('11-switcher');
-    // 止める
-    await page.goto(`${base}/console/#/pipelines?id=${pipelineId}`);
-    await page.getByTestId('pipeline-stop').click();
-    await page.locator('.toolbar .badge[data-state="stopped"]').waitFor({ timeout: 20000 });
-    check('pipeline stop (PATCH desired_state)', true);
   });
+
+  // 狭い画面（390×844）: パイプラインの一覧・編集とスイッチャーが横にはみ出さず、主な操作が 44px 以上
+  await step('pipelines mobile', async () => {
+    if (!pipelineId) { check('pipelines mobile (skipped: no pipeline)', !env.vpx); return; }
+    const m = await browser.newContext({ viewport: { width: 390, height: 844 }, deviceScaleFactor: 2, isMobile: true, hasTouch: true, locale: 'ja-JP', timezoneId: 'Asia/Tokyo' });
+    await m.addInitScript((tok) => sessionStorage.setItem('senca.console.token', tok), token);
+    const mp = await m.newPage();
+    mp.on('pageerror', (e) => errors.push(`mobile pageerror: ${e.message}`));
+    const widths = {};
+    for (const r of ['/pipelines', `/pipelines/${pipelineId}`, `/production?pipeline=${pipelineId}`]) {
+      await mp.goto(`${base}/console/#${r}`);
+      await mp.locator('main h1').first().waitFor({ timeout: 10000 });
+      await sleep(1200);
+      widths[r] = await mp.evaluate(() => document.documentElement.scrollWidth - window.innerWidth);
+      if (r.startsWith('/pipelines/')) {
+        const cv = await mp.getByTestId('pipeline-canvas').boundingBox();
+        widths.canvasH = cv ? Math.round(cv.height) : 0;
+        await mp.screenshot({ path: path.join(work, '15-mobile-editor.png') });
+      }
+    }
+    const cut = await mp.getByTestId('sw-cut').boundingBox();
+    const auto = await mp.getByTestId('sw-auto').boundingBox();
+    await mp.screenshot({ path: path.join(work, '16-mobile-switcher.png'), fullPage: true });
+    const over = Object.entries(widths).filter(([k, w]) => k !== 'canvasH' && w > 1);
+    check('mobile: pipelines list, editor and switcher fit the width; graph usable; CUT/AUTO ≥ 44px', over.length === 0 && widths.canvasH >= 300 && cut.height >= 44 && auto.height >= 44, JSON.stringify({ widths, cut: cut && cut.height, auto: auto && auto.height }));
+    await m.close();
+    // 止める（確認のダイアログ）
+    await page.goto(`${base}/console/#/pipelines/${pipelineId}`);
+    await page.getByTestId('pipeline-stop').click();
+    await page.getByTestId('confirm-ok').click();
+    await page.locator('.page-header .badge[data-state="stopped"]').waitFor({ timeout: 20000 });
+    check('pipeline stop (confirm → PATCH desired_state)', true);
+  });
+  // ================================================================ パイプラインとスイッチャー（ここまで）
 
   // ---------------------------------------------------------------- このブラウザから送る（WHIP）
   await step('whip send', async () => {
