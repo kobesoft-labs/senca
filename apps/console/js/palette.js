@@ -83,6 +83,8 @@ function staticItems({ navigate, logout }) {
     { id: 'act:new-room', icon: 'rooms', label: t('palette.newRoom'), keywords: ['new room', 'create room', 'webrtc'], run: go('#/rooms?new=1') },
     { id: 'act:new-media-pipeline', icon: 'media-pipelines', label: t('palette.newMediaPipeline'), keywords: ['record room', 'composite', 'rtmp', 'youtube'], run: go('#/media-pipelines/new') },
     { id: 'act:new-pipeline', icon: 'sparkles', label: t('palette.newPipeline'), keywords: ['pipeline', 'template', 'ひな形'], run: go('#/pipelines?new=1') },
+    { id: 'act:new-user', icon: 'user-plus', label: t('palette.newUser'), keywords: ['new user', 'invite', 'ユーザー'], run: go('#/users?new=1') },
+    { id: 'act:account', icon: 'user', label: t('palette.account'), keywords: ['account', 'profile', 'password', 'mfa', '2fa', 'アカウント', 'パスワード'], run: go('#/account') },
     { id: 'act:send', icon: 'camera', label: t('palette.sendFromBrowser'), keywords: ['whip', 'camera'], run: go('#/send') },
     { id: 'act:live-streams', icon: 'live', label: t('palette.liveStreams'), keywords: ['live', 'on air', 'streams'], run: go('#/streams?state=live') },
     { id: 'act:upcoming', icon: 'calendar', label: t('palette.upcoming'), keywords: ['schedule', 'calendar', 'upcoming'], run: go('#/schedules') },

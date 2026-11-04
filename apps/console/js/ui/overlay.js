@@ -105,10 +105,11 @@ function restoreFocus(opener) {
  * build(close) は本文の要素を返す。actions(close) は下のボタンを返す。
  * @param {string} title
  * @param {(close: (v?: any) => void) => Node|Node[]} build
+ * dismissible: false なら Escape・×・背景では閉じず、×も出さない（期限切れの入り直しのように、選んでもらうもの）。
  * beforeClose() が false を返すと、Escape・×・背景では閉じない（一度だけ見せる値をまだ写していないときなど）。
- * @param {{actions?: (close) => Node[], wide?: boolean, icon?: string, kind?: 'danger'|'warn'|'info', testid?: string, initialFocus?: string, beforeClose?: () => boolean}} [o]
+ * @param {{actions?: (close) => Node[], wide?: boolean, icon?: string, kind?: 'danger'|'warn'|'info', testid?: string, initialFocus?: string, beforeClose?: () => boolean, dismissible?: boolean}} [o]
  */
-export function modal(title, build, { actions, wide, icon: iconName, kind, testid, initialFocus, beforeClose } = {}) {
+export function modal(title, build, { actions, wide, icon: iconName, kind, testid, initialFocus, beforeClose, dismissible = true } = {}) {
   return new Promise((resolve) => {
     const titleId = nextId('dlg-title');
     const dlg = h('dialog', { 'aria-labelledby': titleId, class: wide ? 'wide' : null, 'data-testid': testid });
@@ -122,7 +123,7 @@ export function modal(title, build, { actions, wide, icon: iconName, kind, testi
       restoreFocus(opener);
       resolve(v);
     };
-    const dismiss = () => { if (!beforeClose || beforeClose() !== false) close(undefined); };
+    const dismiss = () => { if (dismissible && (!beforeClose || beforeClose() !== false)) close(undefined); };
     dlg.addEventListener('cancel', (e) => { e.preventDefault(); dismiss(); });
     // 背景（::backdrop）のクリックで閉じる
     dlg.addEventListener('mousedown', (e) => {
@@ -135,7 +136,7 @@ export function modal(title, build, { actions, wide, icon: iconName, kind, testi
       h('div', { class: 'dlg-head' },
         iconName ? h('div', { class: ['dlg-icon', kind] }, icon(iconName)) : null,
         h('h2', { id: titleId }, title),
-        h('button', { type: 'button', class: 'ghost icon-only sm dlg-close', 'aria-label': t('common.close'), onClick: () => dismiss() }, icon('close'))),
+        dismissible ? h('button', { type: 'button', class: 'ghost icon-only sm dlg-close', 'aria-label': t('common.close'), onClick: () => dismiss() }, icon('close')) : null),
       h('div', { class: 'dlg-body' }, body),
       ...(actions ? [h('div', { class: 'dlg-foot' }, actions(close))] : []),
     );
@@ -246,9 +247,20 @@ export function attachMenu(anchor, items, { align = 'end', label } = {}) {
       else if (e.key === 'Escape') { e.preventDefault(); e.stopPropagation(); closeMenu(); }
       else if (e.key === 'Tab') { closeMenu(false); }
     });
-    const onDoc = (e) => { if (!el.contains(e.target) && !anchor.contains(e.target)) closeMenu(false); };
-    const onScroll = (e) => { if (!el.contains(e.target)) closeMenu(false); };
-    setTimeout(() => document.addEventListener('mousedown', onDoc), 0);
+    // 閉じた後に残った聞き手が、次に開いたメニューを閉じないように、自分のメニューが開いているときだけ動く
+    const mine = () => openMenu && openMenu.el === el;
+    const onDoc = (e) => {
+      if (!mine()) { document.removeEventListener('mousedown', onDoc); return; }
+      if (!el.contains(e.target) && !anchor.contains(e.target)) closeMenu(false);
+    };
+    // ボタンが実際に動いたときだけ閉じる（項目を押したときのフォーカスで起きる、どこかの小さなスクロールでは閉じない）
+    const at = anchor.getBoundingClientRect();
+    const onScroll = (e) => {
+      if (!mine() || el.contains(e.target)) return;
+      const now = anchor.getBoundingClientRect();
+      if (e.type === 'resize' || Math.abs(now.top - at.top) > 2 || Math.abs(now.left - at.left) > 2) closeMenu(false);
+    };
+    setTimeout(() => { if (mine()) document.addEventListener('mousedown', onDoc); }, 0);
     window.addEventListener('resize', onScroll);
     document.addEventListener('scroll', onScroll, true);
     openMenu = { el, anchor, off: () => { document.removeEventListener('mousedown', onDoc); window.removeEventListener('resize', onScroll); document.removeEventListener('scroll', onScroll, true); } };

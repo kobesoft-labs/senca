@@ -20,6 +20,9 @@ import rooms from './rooms.js';
 import mediaPipelines from './mediaPipelines.js';
 import grid from './grid.js';
 import audit from './audit.js';
+import auth from './auth.js';
+import account from './account.js';
+import users from './users.js';
 
 export default {
   ...core,
@@ -42,4 +45,7 @@ export default {
   ...mediaPipelines,
   ...grid,
   ...audit,
+  ...auth,
+  ...account,
+  ...users,
 };

@@ -32,7 +32,7 @@ cleanup() {
   for p in "${FEED_PIDS[@]}"; do kill "$p" 2>/dev/null || true; done
   [ -n "$PUB_PID" ] && kill "$PUB_PID" 2>/dev/null || true
   [ -n "$NODE_PID" ] && kill "$NODE_PID" 2>/dev/null || true
-  docker rm -f senca-console-browser-$$ >/dev/null 2>&1 || true
+  docker rm -f senca-console-browser-$$ senca-console-auth-$$ >/dev/null 2>&1 || true
   wait 2>/dev/null || true
   if [ -n "${KEEP:-}" ]; then echo "kept $W"; else rm -rf "$W"; fi
 }
@@ -397,6 +397,50 @@ t('realtime: room events become timeline lines', () => {
   for (const key of ['rooms.ev.joined', 'rooms.ev.left', 'rooms.ev.updated', 'rooms.ev.pubVideo', 'rooms.ev.pubAudio', 'rooms.ev.unpub', 'rooms.ev.spotlight', 'rooms.ev.started', 'rooms.ev.stopped', 'rooms.ev.settings']) assert.ok(key in i18n2, key);
 });
 // ==== リアルタイム: ここまで ====
+// ---- ログインとユーザー（ADR-0017）: QR コード・パスワードの強さ・User-Agent ----
+{
+  const { qrMatrix } = await import(D + '/lib/qr.js');
+  const { passwordStrength, generatePassword } = await import(D + '/lib/password.js');
+  const { parseUserAgent } = await import(D + '/lib/useragent.js');
+  const zlib = await import('node:zlib');
+  const { execFileSync } = await import('node:child_process');
+  const crcT = Array.from({ length: 256 }, (_, n) => { let c = n; for (let k = 0; k < 8; k++) c = c & 1 ? 0xedb88320 ^ (c >>> 1) : c >>> 1; return c >>> 0; });
+  const crc = (b) => { let c = 0xffffffff; for (const x of b) c = crcT[(c ^ x) & 255] ^ (c >>> 8); return (c ^ 0xffffffff) >>> 0; };
+  const chunk = (ty, d) => { const l = Buffer.alloc(4); l.writeUInt32BE(d.length); const td = Buffer.concat([Buffer.from(ty), d]); const c = Buffer.alloc(4); c.writeUInt32BE(crc(td)); return Buffer.concat([l, td, c]); };
+  const png = (m, s = 4, q = 4) => { const n = (m.size + 2 * q) * s; const raw = []; for (let y = 0; y < n; y++) { raw.push(0); for (let x = 0; x < n; x++) { const my = Math.floor(y / s) - q; const mx = Math.floor(x / s) - q; raw.push(my >= 0 && mx >= 0 && my < m.size && mx < m.size && m.modules[my][mx] ? 0 : 255); } } const ih = Buffer.alloc(13); ih.writeUInt32BE(n, 0); ih.writeUInt32BE(n, 4); ih[8] = 8; return Buffer.concat([Buffer.from([137, 80, 78, 71, 13, 10, 26, 10]), chunk('IHDR', ih), chunk('IDAT', zlib.deflateSync(Buffer.from(raw))), chunk('IEND', Buffer.alloc(0))]); };
+  t('QR encoder: matrices decode with the independent decoder (tools/interop/qr_decode.py), all masks, versions 1-10', () => {
+    const texts = ['HELLO', 'otpauth://totp/SENCA:alice%40example.com?secret=GEZDGNBVGY3TQOJQGEZDGNBVGY3TQOJQ&issuer=SENCA&algorithm=SHA1&digits=6&period=30', 'x'.repeat(200), 'ログイン 日本語', 'y'.repeat(60)];
+    const seen = new Set();
+    for (const tx of texts) {
+      for (const mask of [undefined, 0, 1, 2, 3, 4, 5, 6, 7]) {
+        const m = qrMatrix(tx, { mask });
+        seen.add(m.version);
+        fs.writeFileSync('$W/qr.png', png(m));
+        assert.equal(execFileSync('python3', ['-I', '$ROOT/tools/interop/qr_decode.py', '$W/qr.png']).toString(), tx);
+      }
+    }
+    assert.ok(seen.has(1) && seen.has(10) && seen.size >= 4, [...seen].join(','));
+    assert.throws(() => qrMatrix('z'.repeat(3000)));
+  });
+  t('password strength (length and variety, no word lists) and temporary passwords', () => {
+    assert.equal(passwordStrength('').reason, 'empty');
+    assert.deepEqual([passwordStrength('short').reason, passwordStrength('short').missing], ['short', 7]);
+    assert.equal(passwordStrength('alice@example.com', { email: 'alice@example.com' }).reason, 'sameAsName');
+    assert.ok(passwordStrength('aaaaaaaaaaaa').score <= 1);
+    assert.ok(passwordStrength('abcdefghijkl').score < passwordStrength('correct horse battery 42').score);
+    assert.ok(passwordStrength('Tr0ub4dor&3-Zebra!').score >= 3);
+    assert.equal(passwordStrength('x'.repeat(257)).ok, false);
+    const g = generatePassword();
+    assert.equal(g.length, 20); assert.match(g, /^[A-HJ-NP-Za-km-z2-9]+\$/); assert.notEqual(g, generatePassword());
+    assert.ok(passwordStrength(g).score >= 3);
+  });
+  t('user agent → device name', () => {
+    assert.deepEqual(parseUserAgent('Mozilla/5.0 (iPhone; CPU iPhone OS 17_0 like Mac OS X) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/17.0 Mobile/15E148 Safari/604.1'), { browser: 'Safari', os: 'iOS', kind: 'phone' });
+    assert.deepEqual(parseUserAgent('Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/130.0 Safari/537.36 Edg/130.0'), { browser: 'Edge', os: 'Windows', kind: 'desktop' });
+    assert.equal(parseUserAgent('curl/8.5.0').kind, 'tool');
+    assert.deepEqual(parseUserAgent(null), { browser: null, os: null, kind: null });
+  });
+}
 console.log(res.join('\n'));
 EOF
 while read -r line; do case "$line" in PASS*) pass "${line#PASS }";; FAIL*) fail "${line#FAIL }";; esac; done < <(node "$W/unit.mjs" 2>&1 || echo "FAIL C unit runner crashed")
@@ -475,7 +519,7 @@ const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
 const waitFile = async (f, ms) => { const end = Date.now() + ms; while (Date.now() < end) { if (fs.existsSync(f)) return true; await sleep(200); } return false; };
 // 試験の中で意図して起こす失敗（[状態, URL]）。ブラウザはこれらも console に出すので除く
 const EXPECTED_FAIL = [
-  [/401/, /\/api\/v1\/capabilities$/], // 間違ったトークンでのログイン
+  [/401/, /\/api\/v1\/(capabilities|auth\/me)$/], // 間違ったトークンでのログイン
   [/412/, /\/api\/v1\/recordings\/[^/?]+$/], // 古い ETag
   [/40[49]|422|503/, /\/api\/v1\/streams\/[^/]+\/snapshot(\?|$)/], // 今の画が無い・作れない
   [/404/, /\/s\/\d+\/[^/]+\/live\/[^/]+\/(index|master)\.m3u8/], // 送り手を止めた後のライブ・字幕の無い master
@@ -526,6 +570,8 @@ const EXPECTED_FAIL = [
 
   await step('login', async () => {
     await page.goto(`${base}/console/`);
+    // 利用者がいないノードでは「最初の管理者を作る」が出る。API トークンのログインは別の入口
+    await page.getByTestId('login-use-token').click();
     await page.getByTestId('login-token').fill('senca_wrong');
     await page.getByTestId('login-submit').click();
     await page.getByText('トークンが正しくないか').waitFor({ timeout: 5000 });
@@ -1688,7 +1734,7 @@ const EXPECTED_FAIL = [
     await page.getByTestId('identity').waitFor();
     check('user menu shows identity, node and scopes', /tenant:admin/.test(await page.getByTestId('identity').textContent()));
     await page.getByTestId('logout').click();
-    await page.getByRole('heading', { name: 'ログイン' }).waitFor();
+    await page.getByTestId('login-page').waitFor();
     check('logout clears token', await page.evaluate(() => sessionStorage.length === 0));
   });
 
@@ -1727,6 +1773,40 @@ PUB_PID=$!
 ) &
 FEED_PIDS+=($!)
 
+# ==== BEGIN ログインとユーザー（ADR-0017）: 試験用の IdP と 2 台のノード（tools/interop/console_auth.cjs が使う） ====
+AUTH_OK=0
+if python3 -c "import cryptography" 2>/dev/null; then
+  AIDP=$(rport); AHA=$(rport); AHB=$(rport)
+  openssl genrsa -out "$W/idp.pem" 2048 2>/dev/null
+  python3 -I "$ROOT/tools/interop/oidc_mock.py" "$AIDP" "$W/idp.pem" >>"$W/idp.log" 2>&1 & FEED_PIDS+=($!)
+  echo "mock-client-secret" > "$W/client-secret"
+  cat > "$W/oidc.json" <<J
+{"providers": [
+  {"id": "google", "display_name": "Google", "issuer": "http://127.0.0.1:$AIDP", "client_id": "senca-confidential",
+   "client_secret_file": "$W/client-secret", "auto_provision": true, "default_role": "viewer",
+   "role_mappings": [{"claim": "groups", "value": "senca-admins", "role": "admin"}]},
+  {"id": "corp", "display_name": "Acme SSO", "issuer": "http://127.0.0.1:$AIDP", "client_id": "senca-public", "auto_provision": false, "default_role": "viewer"}
+]}
+J
+  "$NODE_BIN" --data-dir "$W/auth-a" --http 127.0.0.1:$AHA --rtmp off --public-http-url "http://127.0.0.1:$AHA" --console-dir "$CONSOLE_DIR" \
+    --oidc-config "$W/oidc.json" --rate-limit-login 200 >>"$W/auth-a.log" 2>&1 & FEED_PIDS+=($!)
+  "$NODE_BIN" --data-dir "$W/auth-b" --http 127.0.0.1:$AHB --rtmp off --public-http-url "http://127.0.0.1:$AHB" --console-dir "$CONSOLE_DIR" \
+    --auth-require-mfa --rate-limit-login 200 >>"$W/auth-b.log" 2>&1 & FEED_PIDS+=($!)
+  for p in $AHA $AHB; do for _ in $(seq 100); do curl -sf -o /dev/null "http://127.0.0.1:$p/readyz" && break; sleep 0.1; done; done
+  for _ in $(seq 50); do curl -sf -o /dev/null "http://127.0.0.1:$AIDP/.well-known/openid-configuration" && break; sleep 0.1; done
+  if [ -s "$W/auth-a/control/bootstrap-admin-token" ] && [ -s "$W/auth-b/control/bootstrap-admin-token" ]; then
+    printf '{"a":{"base":"http://127.0.0.1:%s","token":"%s"},"b":{"base":"http://127.0.0.1:%s","token":"%s"},"idp":"http://127.0.0.1:%s"}' \
+      "$AHA" "$(cat "$W/auth-a/control/bootstrap-admin-token")" "$AHB" "$(cat "$W/auth-b/control/bootstrap-admin-token")" "$AIDP" > "$W/auth-env.json"
+    cp "$ROOT/tools/interop/console_auth.cjs" "$W/console_auth.cjs"
+    AUTH_OK=1
+  else
+    fail "D auth nodes did not start"; tail -5 "$W/auth-a.log" "$W/auth-b.log"
+  fi
+else
+  echo "SKIP D auth (python3 cryptography missing for the mock IdP)"
+fi
+# ==== END ログインとユーザー ====
+
 docker run --rm --name senca-console-browser-$$ --network host --ipc=host -v "$W:$W" "$IMG" bash -c \
   "node '$W/browser.cjs' '$BASE' '$TOKEN' '$W'; chown -R $(id -u):$(id -g) '$W'" > "$W/browser.log" 2>&1 || true
 touch "$W/stop-all"
@@ -1742,5 +1822,27 @@ for c in json.load(open(sys.argv[1]))["checks"]: print("%s\t%s\t%s" % (c["ok"], 
 else
   fail "D browser produced no result"; tail -30 "$W/browser.log"
 fi
+# ==== BEGIN ログインとユーザー（ADR-0017）: ブラウザーでの確かめ ====
+if [ "$AUTH_OK" = 1 ]; then
+  docker run --rm --name senca-console-auth-$$ --network host --ipc=host -v "$W:$W" "$IMG" bash -c \
+    "node '$W/console_auth.cjs' '$W'; chown -R $(id -u):$(id -g) '$W'" > "$W/auth-browser.log" 2>&1 || true
+  if [ -s "$W/auth-result.json" ]; then
+    while IFS=$'\t' read -r ok name detail; do
+      if [ "$ok" = True ]; then pass "D $name${detail:+ ($detail)}"; else fail "D $name${detail:+ — $detail}"; fi
+    done < <(python3 -c 'import json,sys
+for c in json.load(open(sys.argv[1]))["checks"]: print("%s\t%s\t%s" % (c["ok"], c["name"], c["detail"].replace("\n"," ").replace("\t"," ")[:200]))' "$W/auth-result.json")
+    # アカウントの画面の QR コード（要素の写真）を読み戻すと、ノードが返した otpauth:// と同じ秘密が入っている
+    if [ -s "$W/auth-qr.png" ]; then
+      "$FFMPEG" -v error -y -i "$W/auth-qr.png" -pix_fmt gray "$W/auth-qr-gray.png"
+      got=$(python3 -I "$ROOT/tools/interop/qr_decode.py" "$W/auth-qr-gray.png" 2>&1 || true)
+      case "$got" in "otpauth://totp/SENCA:admin?secret=$(cat "$W/auth-qr-secret.txt")&issuer=SENCA"*) pass "D auth: QR code shown on the account page decodes to the otpauth URI";; *) fail "D auth: QR decode: $got";; esac
+    fi
+    mkdir -p "${SHOTS:-$HOME/.cache/senca-console-shots}"
+    cp "$W"/auth-*.png "${SHOTS:-$HOME/.cache/senca-console-shots}/" 2>/dev/null || true
+  else
+    fail "D auth browser produced no result"; tail -30 "$W/auth-browser.log"
+  fi
+fi
+# ==== END ログインとユーザー ====
 grep -q "sk_" "$W/node.log" && fail "D stream key leaked to node log" || pass "D no stream key in node log"
 summary

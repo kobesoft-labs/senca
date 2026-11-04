@@ -192,7 +192,7 @@ ffprobe -v error -show_entries stream=codec_name,width,height -of compact "http:
 ブラウザーでは、hls.js などの HLS プレイヤーで再生できます（署名付き URL の応答には `Access-Control-Allow-Origin: *` が付きます）。
 Safari・iOS での再生は、現在確認していません（[1.5 動作確認の状況](01-overview.md#15-動作確認の状況)）。
 
-管理画面は `http://127.0.0.1:8080/console/` です（API トークンでログインします）。管理画面のプレイヤーは fMP4 の HLS か WHEP に
+管理画面は `http://127.0.0.1:8080/console/` です。最初に開くと「最初の管理者を作る」画面になるので、上の管理者トークンを貼り付けてから、管理者のユーザー名とパスワードを決めてください（API トークンのままログインすることもできます。[12.13](12-security.md#1213-利用者のアカウントとログイン)）。管理画面のプレイヤーは fMP4 の HLS か WHEP に
 対応しているため、既定の TS のストリームは管理画面では再生できません。`hls.container` については [4. 取り込みと再生](04-ingest-playback.md) を参照してください。
 
 管理画面からも同じことができます。「配信」→「配信を作成」で名前と送り方（OBS などの RTMP・SRT・このブラウザ・カメラや URL からの取り込み）を選ぶと、
