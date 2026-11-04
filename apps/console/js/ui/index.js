@@ -11,3 +11,4 @@ export { tabs } from './tabs.js';
 export { toast } from './toast.js';
 export { checklist, checklistDismissed } from './onboarding.js';
 export { icon, ICON_NAMES } from '../lib/icons.js';
+export { codeBlock } from './code.js';
