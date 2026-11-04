@@ -86,8 +86,8 @@ export function showShortcutHelp() {
     [t('shortcuts.help'), keys('?')],
     [t('shortcuts.search'), keys('/')],
     [t('shortcuts.sidebar'), keys('[')],
-    [t('shortcuts.close'), keys('Esc')],
     [t('shortcuts.listMove'), [h('kbd', null, 'J'), h('kbd', null, 'K')]],
+    [t('shortcuts.close'), keys('Esc')],
     [t('shortcuts.listOpen'), keys('Enter')],
     [t('shortcuts.create'), keys('N')],
   ];

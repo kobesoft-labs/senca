@@ -16,6 +16,8 @@ import nodes from './nodes.js';
 import tokens from './tokens.js';
 import secrets from './secrets.js';
 import activity from './activity.js';
+import rooms from './rooms.js';
+import mediaPipelines from './mediaPipelines.js';
 import grid from './grid.js';
 import audit from './audit.js';
 import auth from './auth.js';
@@ -39,6 +41,8 @@ export default {
   ...tokens,
   ...secrets,
   ...activity,
+  ...rooms,
+  ...mediaPipelines,
   ...grid,
   ...audit,
   ...auth,
