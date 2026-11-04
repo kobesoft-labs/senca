@@ -353,3 +353,15 @@ CPU 200 + 400 × 4 + 300 + 50 + 1500 + 50 = 3700 millicores and memory 128 + 128
 - When an automatically created room is deleted for being empty, its media pipelines are deleted, but the composite pipeline
   (stopped) and the egress output resources remain. Find them with `GET /pipelines` and `GET /outputs` and delete them.
 - Recordings are stored in the node's data directory. Storing to S3-compatible storage and WHIP egress are not supported.
+
+## 9. In the console
+
+The console (`/console/`) has a **Media pipelines** page where you start from what you want to do.
+
+- **Create**: pick "Record the room", "Stream it out", "Participants as streams" or "Transcription & captions" and only the settings that use case needs are shown.
+  On the right, what will be produced (streams, recordings, destinations) and where it goes updates as you type, and anything missing is pointed out before you create.
+- **Destination keys**: choose YouTube, Twitch, RTMP, SRT or a cloud service. A stream key typed in the form is saved as a secret and referenced with `credential_ref` (it never goes into the URL). You can also pick an existing secret.
+- **List and detail**: each pipeline shows its state (exporting, waiting for participants, getting ready, stopped) and what it produces. The detail page lists the participants being exported, how many are in the composite,
+  links to the streams, recordings, composite pipeline and outputs it created, and problems with the composite or destinations (cannot be placed, cannot connect and so on). Before stopping or deleting, it tells you what stays and what goes.
+- Pipelines created from a room's `recording` setting (`managed: true`) are marked "Automatic" and cannot be changed, stopped or deleted here.
+- Opening it from "Recording & streaming" on a room's page starts with that room selected.

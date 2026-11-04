@@ -15,9 +15,10 @@ tools/interop/console.sh                    # 配信の形・構文・ロジッ�
 
 | 場所 | 中身 |
 |---|---|
-| `index.html` | 外枠。CSS を 5 つ、`js/boot.js`（最初の描画の前に明暗と言語を `<html>` に入れる）、`js/main.js`。インラインのスクリプト・スタイルは無い（CSP） |
+| `index.html` | 外枠。CSS を 6 つ、`js/boot.js`（最初の描画の前に明暗と言語を `<html>` に入れる）、`js/main.js`。インラインのスクリプト・スタイルは無い（CSP） |
 | `css/tokens.css` | デザイントークン（色・文字・間隔・角丸・影・動き・フォーカス）。値はここだけに置く |
 | `css/base.css`・`css/components.css`・`css/shell.css`・`css/views.css` | 土台と補助クラス・部品・外枠・画面ごとの見た目（再生・パイプライン・スイッチャー・スタイルガイド） |
+| `css/realtime.css` | ルーム・メディアパイプラインの画面と、そこで足した部品（折りたたみ・コードの見本・用途のカード・参加者のカード・時系列） |
 | `js/main.js` | 経路の切り替え、ログイン状態、SSE の開始、言語を変えたときの作り直し |
 | `js/nav.js` | 画面の一覧（経路・メニューのグループ・アイコン・`g` のショートカットのキー・準備中） |
 | `js/shell.js` | 左のメニューと上の帯（パンくず・検索・接続の状態・言語・明暗・アカウント） |
@@ -25,7 +26,9 @@ tools/interop/console.sh                    # 配信の形・構文・ロジッ�
 | `js/i18n/` | `t()`・`tn()` と辞書（`ja/*.js`・`en/*.js`、画面ごとのファイル） |
 | `js/ui/` | 部品（下の一覧）。入口は `js/ui/index.js` |
 | `js/lib/` | `dom.js`（`h()` など）・`icons.js`・`format.js`（Intl の書式）・`theme.js`・`ui.js`（エラーの表示・`load()`）・`recent.js`・`guide.js`・`bus.js`・`live.js` など |
-| `js/api/` | `client.js`（fetch の包み。problem+json を `ApiError` に、401 はログインへ）・`resources.js`・`sse.js`・`pipelines.js` |
+| `js/api/` | `client.js`（fetch の包み。problem+json を `ApiError` に、401 はログインへ）・`resources.js`・`sse.js`・`pipelines.js`・`realtime.js`（ルーム・メディアパイプライン） |
+| `js/lib/realtime.js` | ルームとメディアパイプラインの画面に依存しない計算（状態・設定の差分・トラックの要約・SDK のコード・用途 → 作成の本文・作られるもの・出来事の文）。`console.sh` の C で試す |
+| `js/vendor/senca-sdk` | `../../../sdk-js/src` へのリンク（ブラウザー SDK をそのまま配る。写しは持たない）。コンテナイメージでは `/opt/senca/sdk-js/src` に置いてリンクを生かす |
 | `js/player/` | MSE の HLS 再生（fMP4 だけ）: `m3u8.js`・`mp4.js`・`hls.js`、WebRTC の再生 `whep.js`、`widget.js`（自動 = WHEP → だめなら HLS） |
 | `js/pipeline/model.js` | senca-pipeline のグラフ JSON と編集用のモデルの行き来・ポートの型・検査。画面に依存しない |
 | `js/views/` | 画面。`render(main, params, ctx)` を持ち、片付けの関数を返してよい（`ctx = { caps, navigate, setCrumbs, nav }`）。準備中のページは `coming-soon.js` |
@@ -75,6 +78,7 @@ tools/interop/console.sh                    # 配信の形・構文・ロジッ�
 | `searchBox({placeholder, onInput, shortcut})` | `shortcut: true` で `/` で入れるページの検索になる |
 | `copyField(value, label, {secret})` | 写すボタン付き。`secret` は伏せて表示し、目のボタンで見せる |
 | `checklist({id, title, steps})` | はじめの手順。`steps[].done` は実際の状態から計算して渡す。閉じたらこのブラウザでは出さない |
+| `codeBlock(text, {label, lang, testid})` | コードの見本（SDK の呼び方・curl）。等幅で横へ流し、右上にコピー。label はコピーの通知と読み上げの名前 |
 
 `lib/dom.js` の `table()`・`field()`・`kv()`・`badge()` は同じ見た目の簡単な版（並べ替え・必須の印は無い）。
 
@@ -105,6 +109,10 @@ tools/interop/console.sh                    # 配信の形・構文・ロジッ�
 - 試験で選ぶ要素には `data-testid`（`testid`）を付ける。見える文字や役割で選ぶ試験は、言語を変えると壊れるので増やさない。
 - 1 画面の primary のボタンは 1 つ。アイコンだけのボタンには必ず label（ツールチップと読み上げ）。
 - ショートカットは入力中・ダイアログ中は効かない（`isTyping()`）。Ctrl/⌘+K（パレット）・`?`（一覧）・`/`（ページの検索）・`g` → キー（移動）・`[`（メニューを畳む）。
+- 一覧の行は `lib/listnav.js` の `listKeys(container)` で J・K で移れる（行の開くリンクに `data-row-link` を付ける。フォーカスを移すだけなので Enter はリンクのまま）。
+- 生で変わる中身（参加者・実行の状態）は見えている間だけ数秒ごとに読み、SSE でもすぐ読み直す。描き直すときはフォーカスのあった要素の `data-testid` へ戻す（押そうとしているボタンを奪わない）。
+- 設定の多い作成は、よく使う項目だけを先に出し、残りは折りたたみ（`room-form.js` の `disclosure()`、`<details>`）に入れる。誤りは欄の `setError()` で出し、畳んだ中の誤りなら開く。
+- 用途から作るもの（メディアパイプライン）は、用途のカード（`useCards()`）→ その用途の設定だけ → 右に「作られるもの・行き先」と直すところを入力に合わせて出す。直すところがあれば作成のボタンを押せなくする。
 
 ## 再生（`js/player/hls.js`）の決まりと限界
 
@@ -129,3 +137,14 @@ tools/interop/console.sh                    # 配信の形・構文・ロジッ�
 - 再生（WHEP）: `playback-url` の `playback.whep`（署名付き）へ offer を POST、201 の answer を入れる。止めると Location を DELETE。
   配信前・運べないコーデック（AAC だけ・H.265）は 422 → 自動なら HLS に戻す。
 - 送信（WHIP、`#/send`）: カメラ・マイクか画面 → `ingest.whip_url` へ Bearer の stream key で POST。鍵は保存しない。
+
+## ルームとメディアパイプライン
+
+- ルームの一覧の API は参加者の数を持たないので、配置済みのルームごとに `GET /rooms/{id}/participants` を読む（同時に 6 本、8 秒ごと、部屋の出来事でも）。
+- 詳細の参加者は 1 人 1 枚のカード（狭い列・携帯でも読めるように表にしない）。トラックの大きさ・fps と受信の損失は、統計の `client`
+  （SDK の `reportStats` で送られる getStats の要約）があるときだけ出す。層ごとのビットレートは `published[].layers`、受け取り中の層は参加者の受信の枠（`subscriptions` の mid）と統計の `rid` を合わせる。
+- 出来事（`room.*` の SSE）は ID を持たず再送されないので、ページを開いてからのもの（＋ `lib/activity.js` の直近の分）だけを出す。
+- 「このブラウザで参加」は `import('../vendor/senca-sdk/realtime/session.js')` を参加するときに読む。トークンは画面のログインの権限で発行し（`client_id: console-xxxx`、1 時間）、保存しない。
+  `reportStats` を有効にするので、管理画面から入った参加者の大きさ・損失も詳細に出る。ページを離れたら退出してカメラを止める。
+- 参加トークンの発行は、在るルームにだけ使う（無いルームに発行すると API が自動でルームを作るため）。
+- メディアパイプラインの配信先の鍵をその場で入れたときは、作成の直前に秘密値（`{名前}-key`）として保存し、`credential_ref` で参照する。
