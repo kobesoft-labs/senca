@@ -7,7 +7,8 @@
 //! - 読み出し: 新しい順。ファイルの後ろから 64 KiB ずつ読む（ファイル全体をメモリに載せない）。1 回に読む量には上限があり、
 //!   上限に達したら、そこまでの位置（ファイルの番号, 行の先頭のオフセット）を返す。今書いている `audit.log` の番号は
 //!   「回転したファイルの最大の番号 + 1」で、回転しても同じ番号のまま `audit.log.{N}` になるので、位置は回転をまたいで使える。
-//! - 読み出すファイルは書き込みのロックの中で開く（開いた後に回転しても、開いたファイルはそのまま読める）。
+//! - 今書いているファイルは書き込みのロックの中で開く（開いた後に回転しても、開いたファイルはそのまま読める）。回転したファイルは
+//!   読むときに 1 つずつ開く。
 
 use serde::{Deserialize, Serialize};
 use serde_json::{Map, Value};
@@ -195,30 +196,40 @@ impl AuditLog {
         Ok(())
     }
 
-    /// 読むファイルを開く（番号の大きい順、(番号, ファイル, 大きさ)）。
-    fn open_all(&self) -> Vec<(u64, File, u64)> {
+    /// 読むファイル: (今書いているファイルの番号, そのファイル, 回転したファイルの番号（大きい順）)。今書いているファイルは
+    /// ロックの中で開く（開いた後に回転しても、開いたものはそのまま読める）。回転したファイルは中身が変わらず、番号も
+    /// 使い回さないので、読むときに開く（消えていれば飛ばす。一度に開くのは 1 つだけ）。
+    fn files(&self) -> (u64, Option<File>, Vec<u64>) {
         let _g = self.lock.lock().unwrap_or_else(|e| e.into_inner());
         let gens = self.rotated();
         let active = gens.first().map_or(1, |g| g + 1);
-        let mut out = Vec::new();
-        for (n, p) in std::iter::once((active, self.active_path())).chain(gens.iter().map(|g| (*g, self.rotated_path(*g)))) {
-            if let Ok(f) = File::open(&p) {
-                let len = f.metadata().map(|m| m.len()).unwrap_or(0);
-                out.push((n, f, len));
-            }
-        }
-        out
+        (active, File::open(self.active_path()).ok(), gens)
     }
 
     /// 新しい順に、`start`（None なら最新）から `limit` 件まで読む。読む量は `budget` バイトまで。
     pub fn query(&self, f: &Filter, start: Option<Pos>, limit: usize, budget: u64) -> Page {
-        let files = self.open_all();
-        let start = start.unwrap_or_else(|| files.first().map_or(Pos { file: 1, off: 0 }, |(n, _, len)| Pos { file: *n, off: *len }));
+        let (active, active_file, gens) = self.files();
+        let active_len = active_file.as_ref().and_then(|f| f.metadata().ok()).map_or(0, |m| m.len());
+        let start = start.unwrap_or(Pos { file: active, off: active_len });
         let mut page = Page::default();
         let mut scanned = 0u64;
         let stop_before = f.since_ms.map(|s| s.saturating_sub(SKEW_MS));
-        for (n, file, len) in files.iter().filter(|(n, _, _)| *n <= start.file) {
-            let mut end = if *n == start.file { start.off.min(*len) } else { *len };
+        for n in std::iter::once(active).chain(gens).filter(|n| *n <= start.file) {
+            let rotated;
+            let (file, len) = if n == active {
+                match &active_file {
+                    Some(x) => (x, active_len),
+                    None => continue,
+                }
+            } else {
+                rotated = match File::open(self.rotated_path(n)) {
+                    Ok(x) => x,
+                    Err(_) => continue,
+                };
+                let l = rotated.metadata().map(|m| m.len()).unwrap_or(0);
+                (&rotated, l)
+            };
+            let mut end = if n == start.file { start.off.min(len) } else { len };
             if let Some(u) = f.until_ms {
                 end = seek_until(file, end, u.saturating_add(SKEW_MS));
             }
@@ -231,7 +242,7 @@ impl AuditLog {
                     Err(_) => break,
                 };
                 scanned += line.as_ref().map_or(MAX_LINE, |l| l.len() + 1) as u64;
-                let here = Pos { file: *n, off: s };
+                let here = Pos { file: n, off: s };
                 if let Some(l) = line
                     && !f.surely_not(&l)
                     && let Some((e, ts)) = parse_line(&l)
