@@ -1,17 +1,21 @@
 // 予約の詳細: 内容・実行履歴・終了時刻の変更・取り消し・削除。
 
-import { h, replace, table, kv, field, select } from '../lib/dom.js';
+import { h, replace, select } from '../lib/dom.js';
 import { load, confirmDialog, reportError, errorBox, toast } from '../lib/ui.js';
 import { schedules, streams } from '../api/resources.js';
 import { fmtTime, fmtTimeIn, wallToUtcIso, utcToWall, zoneChoices, localZone } from '../lib/format.js';
 import { refreshOn } from '../lib/live.js';
-import { ACTIONS, schedBadge, describeRecurrence } from './schedules.js';
+import { actionLabel, schedBadge, describeRecurrence } from './schedules.js';
+import { t } from '../i18n/index.js';
+import { button, pageHeader, panel, kvList, dataTable, formField } from '../ui/index.js';
+import { rememberRecent, forgetRecent } from '../lib/recent.js';
+import { invalidatePalette } from '../palette.js';
 
 export async function render(root, [id], { navigate }) {
   let sch = null;
   let etag = null;
   let streamName = null;
-  const head = h('div', { class: 'page-head' });
+  const head = h('div');
   const info = h('div');
   const edit = h('div');
   const runs = h('div');
@@ -25,7 +29,7 @@ export async function render(root, [id], { navigate }) {
   const on412 = async (e) => {
     if (e.status !== 412) return false;
     await reload();
-    toast('他の操作で更新されていたので、最新の内容を読み込み直しました。もう一度操作してください', 'warn', 8000);
+    toast(t('schedules.detail.stale'), 'warn', 8000);
     return true;
   };
 
@@ -37,47 +41,62 @@ export async function render(root, [id], { navigate }) {
       renderAll();
       toast(okText, 'ok');
     } catch (e) {
-      if (!(await on412(e))) reportError(e, '更新');
+      if (!(await on412(e))) reportError(e, t('common.updated'));
     }
   };
 
   const cancel = async () => {
-    if (!(await confirmDialog('予約を取り消す', 'この予約を取り消します（実行中なら止めます）。履歴は残ります。', { ok: '取り消す' }))) return;
-    await doPatch({ state: 'canceled' }, '取り消しました');
+    if (!(await confirmDialog(t('schedules.detail.cancelTitle'), t('schedules.detail.cancelBody'), {
+      ok: t('schedules.detail.cancel'), consequences: [t('schedules.detail.cancelC1'), t('schedules.detail.cancelC2')],
+    }))) return;
+    await doPatch({ state: 'canceled' }, t('schedules.detail.canceled'));
   };
 
   const remove = async () => {
-    if (!(await confirmDialog('予約を削除', 'この予約と実行履歴を削除します。作った録画は残ります。', { ok: '削除' }))) return;
+    if (!(await confirmDialog(t('schedules.detail.deleteTitle'), t('schedules.detail.deleteBody'), {
+      ok: t('common.delete'), consequences: [t('schedules.detail.deleteC1'), t('schedules.detail.deleteC2')],
+    }))) return;
     try {
       await schedules.remove(id, etag);
-      toast('削除しました', 'ok');
+      forgetRecent(`#/schedules/${encodeURIComponent(id)}`);
+      invalidatePalette();
+      toast(t('common.deleted'), 'ok');
       navigate('/schedules');
     } catch (e) {
-      if (!(await on412(e))) reportError(e, '削除');
+      if (!(await on412(e))) reportError(e, t('common.delete'));
     }
   };
+
+  const title = () => sch.name || t('schedules.detail.untitled', { id: sch.id.slice(0, 8) });
 
   const renderAll = () => {
     const tz = sch.recurrence ? sch.recurrence.timezone : null;
     const active = sch.state === 'pending' || sch.state === 'running';
-    replace(head, h('h1', null, sch.name || `予約 ${sch.id.slice(0, 8)}`), schedBadge(sch.state), h('span', { class: 'spacer' }),
-      active ? h('button', { onClick: cancel }, '取り消す') : null,
-      h('button', { class: 'danger', onClick: remove }, '削除'));
-    replace(info, kv([
+    replace(head, pageHeader({
+      title: title(),
+      badges: [schedBadge(sch.state)],
+      crumbs: [{ label: t('nav.schedules'), href: '#/schedules' }, { label: title() }],
+      actions: [
+        active ? button(t('schedules.detail.cancel'), { icon: 'stop', onClick: cancel }) : null,
+        button(t('common.delete'), { variant: 'danger', icon: 'trash', onClick: remove }),
+      ].filter(Boolean),
+    }));
+    const withTz = (iso) => [fmtTime(iso), tz ? h('span', { class: 'muted small' }, ` / ${fmtTimeIn(iso, tz)}（${tz}）`) : null];
+    replace(info, kvList([
       ['ID', h('code', null, sch.id)],
-      ['配信', h('a', { href: `#/streams/${encodeURIComponent(sch.stream)}` }, streamName || sch.stream)],
-      ['操作', ACTIONS[sch.action] || sch.action],
-      ['開始', [fmtTime(sch.start_at), tz ? h('span', { class: 'muted small' }, ` / ${fmtTimeIn(sch.start_at, tz)}（${tz}）`) : null]],
-      ['終了', [fmtTime(sch.end_at), tz ? h('span', { class: 'muted small' }, ` / ${fmtTimeIn(sch.end_at, tz)}（${tz}）`) : null]],
-      ['準備・余白・猶予', `${sch.pre_roll_ms / 1000} 秒 / ${sch.post_roll_ms / 1000} 秒 / ${sch.grace_ms / 1000} 秒`],
-      sch.action === 'snapshot' ? ['静止画の間隔', `${sch.snapshot_interval_secs} 秒`] : null,
-      ['繰り返し', describeRecurrence(sch.recurrence)],
-      ['録画の保持', sch.retention_days !== null ? `${sch.retention_days} 日` : '配信の設定に従う'],
-      ['作成', fmtTime(sch.created_at)],
-      ['世代', String(sch.generation)],
+      [t('schedules.col.stream'), h('a', { href: `#/streams/${encodeURIComponent(sch.stream)}` }, streamName || sch.stream)],
+      [t('schedules.col.action'), actionLabel(sch.action)],
+      [t('schedules.col.start'), withTz(sch.start_at)],
+      [t('schedules.col.end'), withTz(sch.end_at)],
+      [t('schedules.detail.margins'), t('schedules.detail.marginsValue', { pre: sch.pre_roll_ms / 1000, post: sch.post_roll_ms / 1000, grace: sch.grace_ms / 1000 })],
+      sch.action === 'snapshot' ? [t('schedules.form.snapInterval'), t('schedules.detail.seconds', { n: sch.snapshot_interval_secs })] : null,
+      [t('schedules.col.repeat'), describeRecurrence(sch.recurrence)],
+      [t('schedules.detail.retention'), sch.retention_days !== null ? t('schedules.detail.days', { n: sch.retention_days }) : t('schedules.form.retentionDefault')],
+      [t('common.created'), fmtTime(sch.created_at)],
+      [t('schedules.detail.generation'), String(sch.generation)],
     ]));
     if (!active) {
-      replace(edit, h('p', { class: 'muted' }, 'この予約は終わっているので変更できません。'));
+      replace(edit, h('p', { class: 'muted' }, t('schedules.detail.finished')));
       return;
     }
     const zone = tz || localZone();
@@ -90,31 +109,38 @@ export async function render(root, [id], { navigate }) {
       end.value = utcToWall(sch.end_at, zoneSel.value);
     });
     replace(edit, h('div', { class: 'form' },
-      field('名前', name),
-      h('div', { class: 'cols' }, field('タイムゾーン（入力の解釈）', zoneSel), field('開始', start, sch.state === 'running' ? '実行中は変えられません' : null), field('終了（延長・短縮）', end)),
-      h('div', { class: 'actions' }, h('button', { class: 'primary', onClick: () => {
+      formField({ label: t('common.name'), input: name }),
+      h('div', { class: 'cols' },
+        formField({ label: t('schedules.detail.zone'), input: zoneSel }),
+        formField({ label: t('schedules.col.start'), input: start, hint: sch.state === 'running' ? t('schedules.detail.runningStart') : null }),
+        formField({ label: t('schedules.detail.endEdit'), input: end })),
+      h('div', { class: 'actions' }, h('button', { type: 'button', class: 'primary', onClick: () => {
         const body = {};
         if ((sch.name || '') !== name.value) body.name = name.value || null;
         const s = wallToUtcIso(start.value, zoneSel.value);
         const e = wallToUtcIso(end.value, zoneSel.value);
         if (sch.state !== 'running' && s && new Date(s).getTime() !== new Date(sch.start_at).getTime()) body.start_at = s;
         if (e && new Date(e).getTime() !== new Date(sch.end_at).getTime()) body.end_at = e;
-        if (!Object.keys(body).length) { toast('変更はありません'); return; }
-        doPatch(body, '保存しました');
-      } }, '保存'))));
+        if (!Object.keys(body).length) { toast(t('common.noChanges')); return; }
+        doPatch(body, t('common.saved'));
+      } }, t('common.save')))));
   };
 
   const loadRuns = () => load(runs, async () => {
     const { data } = await schedules.runs(id);
-    return table([
-      { label: '#', class: 'num', render: (r) => r.occurrence },
-      { label: '開始', render: (r) => fmtTime(r.start_at) },
-      { label: '終了', render: (r) => fmtTime(r.end_at) },
-      { label: '結果', render: (r) => schedBadge(r.state) },
-      { label: '録画', render: (r) => (r.recording ? h('a', { href: `#/recordings/${encodeURIComponent(r.recording)}` }, r.recording.slice(0, 10)) : '—') },
-      { label: '理由', render: (r) => r.reason || '' },
-    ], data.items.slice().reverse(), { empty: 'まだ実行していません' });
-  });
+    return dataTable({
+      columns: [
+        { label: '#', class: 'num', render: (r) => r.occurrence },
+        { label: t('schedules.col.start'), render: (r) => fmtTime(r.start_at) },
+        { label: t('schedules.col.end'), render: (r) => fmtTime(r.end_at) },
+        { label: t('schedules.detail.result'), render: (r) => schedBadge(r.state) },
+        { label: t('nav.recordings'), render: (r) => (r.recording ? h('a', { href: `#/recordings/${encodeURIComponent(r.recording)}` }, r.recording.slice(0, 10)) : '—') },
+        { label: t('schedules.detail.reason'), wrap: true, render: (r) => r.reason || '' },
+      ],
+      rows: data.items.slice().reverse(),
+      empty: { icon: 'history', title: t('schedules.detail.noRuns'), body: t('schedules.detail.noRunsBody') },
+    });
+  }, { kind: 'table' });
 
   const reload = async () => {
     try {
@@ -123,27 +149,28 @@ export async function render(root, [id], { navigate }) {
       loadRuns();
     } catch (e) {
       if (e.status === 404) {
-        toast('この予約は削除されました', 'warn');
+        toast(t('schedules.detail.gone'), 'warn');
         navigate('/schedules');
-      } else reportError(e, '読み込み');
+      } else reportError(e, t('common.refresh'));
     }
   };
 
   try {
     await fetchSch();
   } catch (e) {
-    root.append(h('h1', null, '予約'), errorBox(e), h('p', null, h('a', { href: '#/schedules' }, '一覧へ戻る')));
+    root.append(pageHeader({ title: t('nav.schedules'), crumbs: [{ label: t('nav.schedules'), href: '#/schedules' }, { label: id.slice(0, 8) }] }),
+      errorBox(e), h('p', null, h('a', { href: '#/schedules' }, t('common.backToList'))));
     return null;
   }
   try { streamName = (await streams.get(sch.stream)).data.name; } catch { /* 名前が出ないだけ */ }
+  rememberRecent({ kind: 'schedule', id, label: title(), href: `#/schedules/${encodeURIComponent(id)}` });
 
   root.append(
-    h('nav', { class: 'small', 'aria-label': 'パンくず' }, h('a', { href: '#/schedules' }, '予約'), ' / ', sch.name || sch.id.slice(0, 8)),
     head,
     h('div', { class: 'grid cols-2' },
-      h('section', { class: 'panel', 'aria-labelledby': 'sc-in' }, h('h2', { id: 'sc-in' }, '内容'), info),
-      h('section', { class: 'panel', 'aria-labelledby': 'sc-ed' }, h('h2', { id: 'sc-ed' }, '変更'), edit)),
-    h('section', { class: 'panel', 'aria-labelledby': 'sc-rn' }, h('h2', { id: 'sc-rn' }, '実行履歴'), runs));
+      panel({ title: t('schedules.detail.info'), icon: 'info' }, info),
+      panel({ title: t('schedules.detail.edit'), icon: 'edit' }, edit)),
+    panel({ title: t('schedules.detail.runs'), icon: 'history' }, runs));
   renderAll();
   loadRuns();
   return refreshOn(['schedule.'], reload, { filter: (ev) => ev.data && ev.data.resource_id === id });

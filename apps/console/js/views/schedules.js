@@ -1,55 +1,69 @@
-// 予約の一覧と作成（作成前に POST /schedules/check で重なりを確かめる）。
+// 予約の一覧と作成（作成前に POST /schedules/check で重なりを確かめる）。#/schedules?new=1 で作成のダイアログを開く。
 
-import { h, replace, table, badge, select, field, checkbox } from '../lib/dom.js';
+import { h, replace, table, select, checkbox } from '../lib/dom.js';
 import { load, modal, reportError, errorBox } from '../lib/ui.js';
 import { schedules, streams, listAll } from '../api/resources.js';
-import { fmtTime, fmtTimeIn, fmtRelative, wallToUtcIso, utcToWall, zoneChoices, localZone, WEEKDAYS, idemKey } from '../lib/format.js';
+import { fmtTime, fmtTimeIn, fmtRelative, wallToUtcIso, utcToWall, zoneChoices, localZone, weekdayNames, idemKey } from '../lib/format.js';
 import { refreshOn } from '../lib/live.js';
+import { t } from '../i18n/index.js';
+import {
+  button, iconButton, pageHeader, dataTable, pagination, emptyState, badge, alert, formField, helpHint,
+} from '../ui/index.js';
+import { invalidatePalette } from '../palette.js';
+import { onPageKey } from '../shortcuts.js';
 
 const PAGE = 50;
 
-export const ACTIONS = { record: '録画', live: '配信の受付', snapshot: '静止画' };
+/** 操作の名前（record・live・snapshot）。 */
+export function actionLabel(a) {
+  return ['record', 'live', 'snapshot'].includes(a) ? t(`schedules.action.${a}`) : a;
+}
 
+// 互換: 以前の ACTIONS（値 → 名前）。言語に合わせて引く
+export const ACTIONS = new Proxy({}, { get: (_, k) => (typeof k === 'string' && ['record', 'live', 'snapshot'].includes(k) ? t(`schedules.action.${k}`) : undefined) });
+
+const STATE_KIND = { running: 'ok', pending: 'info', completed: 'ok', missed: 'warn', canceled: 'outline', failed: 'danger' };
+
+/** 予約・実行の状態のピル。 */
 export function schedBadge(state) {
-  const kind = { running: 'live', pending: '', completed: 'ok', missed: 'warn', canceled: 'warn', failed: 'danger' }[state];
-  const text = { running: '実行中', pending: '待機', completed: '完了', missed: '逃した', canceled: '取消', failed: '失敗' }[state] || state;
-  return badge(text, kind);
+  const known = state in STATE_KIND;
+  return badge(known ? t(`schedules.state.${state}`) : String(state), STATE_KIND[state], { dot: true });
 }
 
-function describeRecurrence(r) {
-  if (!r) return '1 回';
-  const days = r.freq === 'weekly' && r.weekdays && r.weekdays.length ? `（${r.weekdays.map((d) => WEEKDAYS[d]).join('・')}）` : '';
-  const end = r.count ? `・${r.count} 回` : r.until_ms ? `・${fmtTime(new Date(r.until_ms).toISOString())} まで` : '';
-  return `${r.freq === 'daily' ? '毎日' : '毎週'}${days}・${r.timezone}${end}`;
+export function describeRecurrence(r) {
+  if (!r) return t('schedules.rec.once');
+  const names = weekdayNames();
+  const days = r.freq === 'weekly' && r.weekdays && r.weekdays.length ? t('schedules.rec.days', { days: r.weekdays.map((d) => names[d]).join(t('schedules.rec.daySep')) }) : '';
+  const end = r.count ? t('schedules.rec.count', { n: r.count }) : r.until_ms ? t('schedules.rec.until', { date: fmtTime(new Date(r.until_ms).toISOString()) }) : '';
+  return t('schedules.rec.summary', { freq: r.freq === 'daily' ? t('schedules.rec.daily') : t('schedules.rec.weekly'), days, tz: r.timezone, end });
 }
-
-export { describeRecurrence };
 
 function scheduleForm(streamList, preset) {
   const zone = localZone();
   const now = Date.now();
   const startDefault = Math.ceil((now + 5 * 60_000) / 300_000) * 300_000;
   const stream = select(streamList.map((s) => [s.id, s.name]), preset || (streamList[0] && streamList[0].id));
-  const name = h('input', { type: 'text', maxlength: 128, placeholder: '例: 朝の講義' });
-  const action = select(Object.entries(ACTIONS), 'record');
-  const tz = select(zoneChoices().map((z) => [z, z === zone ? `${z}（この端末）` : z]), zone);
+  const name = h('input', { type: 'text', maxlength: 128, placeholder: t('schedules.form.namePlaceholder') });
+  const action = select(['record', 'live', 'snapshot'].map((a) => [a, actionLabel(a)]), 'record');
+  const tz = select(zoneChoices().map((z) => [z, z === zone ? t('schedules.form.thisDevice', { zone: z }) : z]), zone);
   const start = h('input', { type: 'datetime-local', required: true, value: utcToWall(startDefault, zone) });
   const end = h('input', { type: 'datetime-local', required: true, value: utcToWall(startDefault + 3600_000, zone) });
   const pre = h('input', { type: 'number', min: 0, max: 300, value: 30 });
   const post = h('input', { type: 'number', min: 0, max: 300, value: 0 });
   const grace = h('input', { type: 'number', min: 0, max: 3600, value: 60 });
   const snapInt = h('input', { type: 'number', min: 1, max: 3600, value: 60 });
-  const retention = h('input', { type: 'number', min: 0, placeholder: '配信の設定に従う' });
-  const rep = select([['none', '繰り返さない'], ['daily', '毎日'], ['weekly', '毎週']], 'none');
-  const wd = WEEKDAYS.map((d, i) => checkbox(d, false, { value: String(i) }));
-  const repEndKind = select([['none', '終わりなし'], ['count', '回数'], ['until', '日付まで']], 'none');
-  const count = h('input', { type: 'number', min: 1, value: 10 });
-  const until = h('input', { type: 'date' });
+  const retention = h('input', { type: 'number', min: 0, placeholder: t('schedules.form.retentionDefault') });
+  const rep = select([['none', t('schedules.form.repNone')], ['daily', t('schedules.rec.daily')], ['weekly', t('schedules.rec.weekly')]], 'none', { 'aria-label': t('schedules.form.repeat') });
+  const wd = weekdayNames().map((d, i) => checkbox(d, false, { value: String(i) }));
+  const repEndKind = select([['none', t('schedules.form.endNone')], ['count', t('schedules.form.endCount')], ['until', t('schedules.form.endUntil')]], 'none', { 'aria-label': t('schedules.form.repeatEnd') });
+  const count = h('input', { type: 'number', min: 1, value: 10, 'aria-label': t('schedules.form.endCount') });
+  const until = h('input', { type: 'date', 'aria-label': t('schedules.form.endUntil') });
   const utcPreview = h('div', { class: 'hint', 'aria-live': 'polite' });
+  rep.style.justifySelf = 'start';
 
-  const wdBox = h('div', { class: 'inline', role: 'group', 'aria-label': '曜日' }, wd.map((x) => x.el));
+  const wdBox = h('div', { class: 'inline', role: 'group', 'aria-label': t('schedules.form.weekdays') }, wd.map((x) => x.el));
   const repEndBox = h('div', { class: 'inline' }, repEndKind, count, until);
-  const snapField = field('静止画の間隔（秒）', snapInt);
+  const snapField = formField({ label: t('schedules.form.snapInterval'), input: snapInt });
 
   const sync = () => {
     wdBox.hidden = rep.value !== 'weekly';
@@ -59,7 +73,7 @@ function scheduleForm(streamList, preset) {
     snapField.hidden = action.value !== 'snapshot';
     const s = wallToUtcIso(start.value, tz.value);
     const e = wallToUtcIso(end.value, tz.value);
-    utcPreview.textContent = s && e ? `UTC: ${s} 〜 ${e}${tz.value !== zone ? `（この端末の時刻: ${fmtTime(s)} 〜 ${fmtTime(e)}）` : ''}` : '';
+    utcPreview.textContent = s && e ? `UTC: ${s} 〜 ${e}${tz.value !== zone ? t('schedules.form.localPreview', { start: fmtTime(s), end: fmtTime(e) }) : ''}` : '';
   };
   for (const el of [rep, repEndKind, action, start, end, tz]) el.addEventListener('input', sync);
   for (const el of [rep, repEndKind, action, tz]) el.addEventListener('change', sync);
@@ -75,19 +89,28 @@ function scheduleForm(streamList, preset) {
   });
   sync();
 
-  const errors = h('div', { role: 'alert' });
+  const errors = h('div');
   const el = h('div', { class: 'form' },
-    h('div', { class: 'cols' }, field('配信', stream), field('操作', action), field('名前（任意）', name)),
-    h('fieldset', null, h('legend', null, '時刻'),
-      h('div', { class: 'cols' }, field('タイムゾーン', tz), field('開始', start), field('終了', end)),
+    h('div', { class: 'cols' },
+      formField({ label: t('schedules.col.stream'), input: stream, required: true }),
+      formField({ label: t('schedules.col.action'), input: action, help: helpHint({ title: t('schedules.col.action'), body: t('schedules.form.actionHelp'), guide: '05-recording.md' }) }),
+      formField({ label: t('schedules.form.nameOptional'), input: name })),
+    h('fieldset', null, h('legend', null, t('schedules.form.time')),
+      h('div', { class: 'cols' },
+        formField({ label: t('schedules.form.timezone'), input: tz }),
+        formField({ label: t('schedules.col.start'), input: start, required: true }),
+        formField({ label: t('schedules.col.end'), input: end, required: true })),
       utcPreview,
-      h('div', { class: 'hint' }, '時刻は選んだタイムゾーンの壁時計で入れます。保存は UTC（RFC 3339）。窓は 24 時間まで。')),
-    h('fieldset', null, h('legend', null, '準備と猶予'),
-      h('div', { class: 'cols' }, field('準備（pre-roll、秒）', pre), field('後ろの余白（post-roll、秒）', post), field('遅れて始める猶予（秒）', grace)),
+      h('div', { class: 'hint' }, t('schedules.form.timeHint'))),
+    h('fieldset', null, h('legend', null, t('schedules.form.margins')),
+      h('div', { class: 'cols' },
+        formField({ label: t('schedules.form.pre'), input: pre }),
+        formField({ label: t('schedules.form.post'), input: post }),
+        formField({ label: t('schedules.form.grace'), input: grace })),
       snapField,
-      field('録画の保持日数', retention)),
-    h('fieldset', null, h('legend', null, '繰り返し'), rep, wdBox, repEndBox,
-      h('div', { class: 'hint' }, '繰り返しは選んだタイムゾーンの壁時計で解釈します（夏時間でも同じ時刻）。')),
+      formField({ label: t('schedules.form.retention'), input: retention })),
+    h('fieldset', null, h('legend', null, t('schedules.form.repeat')), rep, wdBox, repEndBox,
+      h('div', { class: 'hint' }, t('schedules.form.repeatHint'))),
     errors);
 
   const intOr = (input, mult = 1) => (input.value === '' ? null : Math.round(Number(input.value) * mult));
@@ -96,18 +119,18 @@ function scheduleForm(streamList, preset) {
     el,
     value() {
       const problems = [];
-      if (!stream.value) problems.push('配信を選んでください（先に配信を作ってください）');
+      if (!stream.value) problems.push(t('schedules.form.errStream'));
       const s = wallToUtcIso(start.value, tz.value);
       const e = wallToUtcIso(end.value, tz.value);
-      if (!s || !e) problems.push('開始と終了を入れてください');
+      if (!s || !e) problems.push(t('schedules.form.errTimes'));
       else {
-        if (new Date(e) <= new Date(s)) problems.push('終了は開始より後にしてください');
-        if (new Date(e) - new Date(s) > 24 * 3600_000) problems.push('窓は 24 時間までです');
-        if (new Date(e) <= new Date()) problems.push('終了が過去です');
+        if (new Date(e) <= new Date(s)) problems.push(t('schedules.form.errOrder'));
+        if (new Date(e) - new Date(s) > 24 * 3600_000) problems.push(t('schedules.form.errWindow'));
+        if (new Date(e) <= new Date()) problems.push(t('schedules.form.errPast'));
       }
       const weekdays = wd.filter((x) => x.input.checked).map((x) => Number(x.input.value));
-      if (rep.value === 'weekly' && !weekdays.length) problems.push('毎週の曜日を選んでください');
-      replace(errors, problems.length ? h('div', { class: 'alert error' }, h('ul', null, problems.map((p) => h('li', null, p)))) : null);
+      if (rep.value === 'weekly' && !weekdays.length) problems.push(t('schedules.form.errWeekdays'));
+      replace(errors, problems.length ? alert('error', h('ul', null, problems.map((p) => h('li', null, p))), { title: t('streams.form.fixBelow') }) : null);
       if (problems.length) return null;
       const body = {
         stream: stream.value,
@@ -141,103 +164,123 @@ async function createDialog(streamList, preset) {
   const form = scheduleForm(streamList, preset);
   const result = h('div', { 'aria-live': 'polite' });
   const key = idemKey();
+  const overlapTable = (rows) => table([
+    { label: t('schedules.check.schedule'), render: (o) => h('code', null, String(o.id || o).slice(0, 10)) },
+    { label: t('schedules.col.start'), render: (o) => (o.start_at ? fmtTime(o.start_at) : '') },
+    { label: t('schedules.col.end'), render: (o) => (o.end_at ? fmtTime(o.end_at) : '') },
+  ], rows);
   const runCheck = async (body) => {
     try {
       const { data } = await schedules.check(body);
       replace(result, data.overlaps.length
-        ? h('div', { class: 'alert warn' },
-          h('strong', null, `重なる録画予約が ${data.overlaps.length} 件あります`), data.shared_input ? '（入力は共有します。接続は増えません）' : '',
-          table([
-            { label: '予約', render: (o) => h('code', null, o.id.slice(0, 10)) },
-            { label: '開始', render: (o) => fmtTime(o.start_at) },
-            { label: '終了', render: (o) => fmtTime(o.end_at) },
-          ], data.overlaps))
-        : h('div', { class: 'alert ok' }, '検査に通りました。重なる予約はありません。'));
+        ? alert('warn', [data.shared_input ? t('schedules.check.shared') : '', overlapTable(data.overlaps)], { title: t('schedules.check.overlaps', { n: data.overlaps.length }) })
+        : alert('ok', t('schedules.check.ok')));
       return true;
     } catch (e) {
       const overlaps = e.details && Array.isArray(e.details.overlaps) ? e.details.overlaps : [];
-      replace(result, errorBox(e, { title: '検査に通りません' }),
-        overlaps.length ? table([
-          { label: '重なる予約', render: (o) => h('code', null, String(o.id || o).slice(0, 10)) },
-          { label: '開始', render: (o) => (o.start_at ? fmtTime(o.start_at) : '') },
-          { label: '終了', render: (o) => (o.end_at ? fmtTime(o.end_at) : '') },
-        ], overlaps) : null);
+      replace(result, errorBox(e, { title: t('schedules.check.failed') }), overlaps.length ? overlapTable(overlaps) : null);
       return false;
     }
   };
-  return modal('予約を作成', () => [form.el, result], {
+  return modal(t('schedules.createTitle'), () => [form.el, result], {
     wide: true,
+    icon: 'schedules',
+    testid: 'schedule-create-dialog',
     actions: (close) => {
-      const check = h('button', { onClick: async () => { const b = form.value(); if (b) await runCheck(b); } }, '検査（重なりを確かめる）');
-      const ok = h('button', { class: 'primary', onClick: async () => {
+      const check = h('button', { type: 'button', onClick: async () => { const b = form.value(); if (b) await runCheck(b); } }, t('schedules.check.run'));
+      const ok = h('button', { type: 'button', class: 'primary', 'data-testid': 'schedule-create-submit', onClick: async () => {
         const body = form.value();
         if (!body) return;
         ok.disabled = true;
         try {
           if (!(await runCheck(body))) return;
           const { data } = await schedules.create(body, key);
+          invalidatePalette();
           close(data);
         } catch (e) {
-          replace(result, errorBox(e, { title: '作成できませんでした' }));
+          replace(result, errorBox(e, { title: t('schedules.createFailed') }));
         } finally {
           ok.disabled = false;
         }
-      } }, '検査して作成');
-      return [h('button', { onClick: () => close(null) }, 'やめる'), check, ok];
+      } }, t('schedules.checkAndCreate'));
+      return [h('button', { type: 'button', onClick: () => close(null) }, t('common.cancel')), check, ok];
     },
   });
 }
 
 export async function render(root, _p, { navigate }) {
   const box = h('div');
-  const pager = h('div', { class: 'pager' });
+  const pager = h('div');
   let streamList = [];
   const names = new Map();
   try {
     streamList = await listAll(streams.list);
     for (const s of streamList) names.set(s.id, s.name);
   } catch (e) {
-    reportError(e, '配信の一覧');
+    reportError(e, t('schedules.streamList'));
   }
-  const streamSel = select([['', 'すべての配信'], ...streamList.map((s) => [s.id, s.name])], '');
+  const streamSel = select([['', t('schedules.allStreams')], ...streamList.map((s) => [s.id, s.name])], '');
   let cursors = [undefined];
   let page = 0;
 
-  const refresh = () => load(box, async () => {
-    const { data } = await schedules.list({ limit: PAGE, cursor: cursors[page], stream: streamSel.value || undefined });
-    cursors[page + 1] = data.next_cursor || null;
-    replace(pager,
-      h('button', { class: 'small', disabled: page === 0, onClick: () => { page -= 1; refresh(); } }, '← 前へ'),
-      h('span', { class: 'muted small' }, `${page + 1} ページ目`),
-      h('button', { class: 'small', disabled: !data.next_cursor, onClick: () => { page += 1; refresh(); } }, '次へ →'));
-    const items = data.items.slice().sort((a, b) => b.start_at.localeCompare(a.start_at));
-    return table([
-      { label: '予約', render: (s) => h('a', { href: `#/schedules/${encodeURIComponent(s.id)}` }, s.name || s.id.slice(0, 10)) },
-      { label: '配信', render: (s) => names.get(s.stream) || h('code', null, s.stream.slice(0, 10)) },
-      { label: '操作', render: (s) => ACTIONS[s.action] || s.action },
-      { label: '開始', render: (s) => h('span', { title: s.recurrence ? fmtTimeIn(s.start_at, s.recurrence.timezone) + ` (${s.recurrence.timezone})` : s.start_at }, fmtTime(s.start_at), ' ', h('span', { class: 'muted small' }, fmtRelative(s.start_at))) },
-      { label: '終了', render: (s) => fmtTime(s.end_at) },
-      { label: '繰り返し', render: (s) => describeRecurrence(s.recurrence) },
-      { label: '状態', render: (s) => schedBadge(s.state) },
-      { label: '直近の実行', render: (s) => (s.last_run ? [schedBadge(s.last_run.state), ' ', h('span', { class: 'small muted' }, fmtTime(s.last_run.start_at))] : '—') },
-    ], items, { empty: '予約はありません', caption: '予約の一覧' });
-  });
-  streamSel.addEventListener('change', () => { cursors = [undefined]; page = 0; refresh(); });
-
   const create = async () => {
     if (!streamList.length) {
-      reportError(new Error('先に配信を作ってください'));
+      reportError(new Error(t('schedules.needStream')));
       return;
     }
     const s = await createDialog(streamList, streamSel.value || null);
     if (s) navigate(`/schedules/${encodeURIComponent(s.id)}`);
   };
+  const createBtn = (testid) => button(t('schedules.create'), { variant: 'primary', icon: 'plus', testid, onClick: () => create().catch((e) => reportError(e, t('common.create'))) });
+
+  const columns = [
+    { key: 'name', label: t('schedules.col.schedule'), primary: true, sort: (s) => s.name || s.id, render: (s) => h('a', { href: `#/schedules/${encodeURIComponent(s.id)}` }, s.name || s.id.slice(0, 10)) },
+    { key: 'stream', label: t('schedules.col.stream'), sort: (s) => names.get(s.stream) || s.stream, render: (s) => names.get(s.stream) || h('code', null, s.stream.slice(0, 10)) },
+    { key: 'action', label: t('schedules.col.action'), sort: (s) => s.action, render: (s) => actionLabel(s.action) },
+    { key: 'start', label: t('schedules.col.start'), sort: (s) => s.start_at, render: (s) => h('span', { title: s.recurrence ? `${fmtTimeIn(s.start_at, s.recurrence.timezone)} (${s.recurrence.timezone})` : s.start_at }, fmtTime(s.start_at), ' ', h('span', { class: 'muted small' }, fmtRelative(s.start_at))) },
+    { key: 'end', label: t('schedules.col.end'), sort: (s) => s.end_at, render: (s) => fmtTime(s.end_at) },
+    { key: 'rec', label: t('schedules.col.repeat'), wrap: true, render: (s) => describeRecurrence(s.recurrence) },
+    { key: 'state', label: t('common.state'), sort: (s) => s.state, render: (s) => schedBadge(s.state) },
+    { key: 'last', label: t('schedules.col.lastRun'), render: (s) => (s.last_run ? h('span', { class: 'row' }, schedBadge(s.last_run.state), h('span', { class: 'small muted' }, fmtTime(s.last_run.start_at))) : '—') },
+  ];
+
+  const refresh = () => load(box, async () => {
+    const { data } = await schedules.list({ limit: PAGE, cursor: cursors[page], stream: streamSel.value || undefined });
+    cursors[page + 1] = data.next_cursor || null;
+    replace(pager, pagination({
+      page, hasPrev: page > 0, hasNext: !!data.next_cursor,
+      onPrev: () => { page -= 1; refresh(); }, onNext: () => { page += 1; refresh(); },
+    }));
+    const items = data.items.slice().sort((a, b) => b.start_at.localeCompare(a.start_at));
+    if (!items.length && page === 0 && !streamSel.value) {
+      return emptyState({
+        icon: 'schedules', title: t('schedules.emptyTitle'), body: streamList.length ? t('schedules.emptyBody') : t('schedules.emptyNoStream'), testid: 'schedules-empty',
+        actions: [streamList.length ? createBtn() : h('a', { class: 'btn primary', href: '#/streams?new=1' }, t('streams.create'))],
+      });
+    }
+    return dataTable({ columns, rows: items, caption: t('schedules.caption'), rowKey: (s) => s.id, testid: 'schedules-table', empty: { icon: 'schedules', title: t('schedules.emptyFiltered') } });
+  }, { kind: 'table' });
+  streamSel.addEventListener('change', () => { cursors = [undefined]; page = 0; refresh(); });
 
   root.append(
-    h('div', { class: 'page-head' }, h('h1', null, '予約'), h('span', { class: 'spacer' }),
-      h('button', { onClick: () => refresh() }, '再読み込み'),
-      h('button', { class: 'primary', onClick: () => create().catch((e) => reportError(e, '作成')) }, '＋ 予約を作成')),
-    h('section', { class: 'panel' }, h('div', { class: 'toolbar form' }, field('配信', streamSel)), box, pager));
+    pageHeader({
+      title: t('nav.schedules'),
+      description: t('schedules.lead'),
+      help: helpHint({ title: t('nav.schedules'), body: t('schedules.help'), guide: '05-recording.md' }),
+      actions: [
+        iconButton('refresh', t('common.refresh'), { variant: 'secondary', onClick: () => refresh() }),
+        createBtn('schedules-create'),
+      ],
+    }),
+    h('section', { class: 'panel' },
+      h('div', { class: 'toolbar form' }, formField({ label: t('schedules.col.stream'), input: streamSel })),
+      box, pager));
   await refresh();
-  return refreshOn(['schedule.'], refresh);
+  if (new URLSearchParams(location.hash.split('?')[1] || '').get('new') === '1') {
+    history.replaceState(history.state, '', `${location.pathname}${location.search}#/schedules`);
+    create().catch((e) => reportError(e, t('common.create')));
+  }
+  const offKey = onPageKey('n', () => create().catch((e) => reportError(e, t('common.create'))));
+  const off = refreshOn(['schedule.'], refresh);
+  return () => { off(); offKey(); };
 }

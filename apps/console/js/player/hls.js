@@ -10,6 +10,7 @@
 // - MPEG-TS のセグメントは扱わない（Safari のネイティブ再生へ回す。無理なら UnsupportedError）。
 // - LL-HLS の part は使わない（完成したセグメントだけ）。ABR は無い（マスターなら最初の variant）。
 
+import { t } from '../i18n/index.js';
 import { parsePlaylist, containerOf } from './m3u8.js';
 import { parseInit, firstDecodeTime, mimeFor, fixZeroSize } from './mp4.js';
 
@@ -98,11 +99,11 @@ export class HlsPlayer {
   }
 
   async start() {
-    this.status('loading', 'プレイリストを読み込み中');
+    this.status('loading', t('player.loadingPlaylist'));
     let pl = await this.loadPlaylist(true);
     // ライブで、まだセグメントが無ければ待つ
     while (!this.dead && !pl.segments.length && !pl.endList) {
-      this.status('waiting', 'セグメント待ち');
+      this.status('waiting', t('player.waitingSegment'));
       await sleep(1000, this.ctrl.signal);
       pl = await this.loadPlaylist(false);
     }
@@ -110,11 +111,11 @@ export class HlsPlayer {
     const container = containerOf(pl);
     if (container === 'ts' || container === 'unknown') {
       if (nativeHlsSupported(this.video)) return this.playNative();
-      throw new UnsupportedError('ts', 'MPEG-TS の HLS はこのブラウザでは再生できません（Safari、または VLC などの再生ソフトを使ってください）');
+      throw new UnsupportedError('ts', t('player.tsUnsupported'));
     }
     if (mseSupported()) return this.playMse();
     if (nativeHlsSupported(this.video)) return this.playNative();
-    throw new UnsupportedError('mse', 'このブラウザは Media Source Extensions に対応していません');
+    throw new UnsupportedError('mse', t('player.noMse'));
   }
 
   playNative() {
@@ -122,14 +123,14 @@ export class HlsPlayer {
     this.video.src = this.url;
     this.video.muted = true;
     this.video.play().catch(() => {});
-    this.listen(this.video, 'playing', () => this.status('playing', 'ネイティブの HLS で再生中'));
+    this.listen(this.video, 'playing', () => this.status('playing', t('player.nativePlaying')));
     this.listen(this.video, 'error', () => this.status('error', this.videoError()));
-    this.status('loading', 'ネイティブの HLS で再生を開始');
+    this.status('loading', t('player.nativeStarting'));
   }
 
   videoError() {
     const e = this.video.error;
-    return e ? `再生エラー（${e.code}${e.message ? `: ${e.message}` : ''}）` : '再生エラー';
+    return e ? t('player.mediaErrorDetail', { detail: `${e.code}${e.message ? `: ${e.message}` : ''}` }) : t('player.mediaError');
   }
 
   async playMse() {
@@ -143,8 +144,8 @@ export class HlsPlayer {
     if (this.dead) return;
     this.listen(this.video, 'seeking', () => this.onSeeking());
     this.listen(this.video, 'error', () => this.status('error', this.videoError()));
-    this.listen(this.video, 'playing', () => this.status('playing', this.live() ? 'ライブ再生中' : '再生中'));
-    this.listen(this.video, 'waiting', () => this.status('waiting', 'バッファ待ち'));
+    this.listen(this.video, 'playing', () => this.status('playing', this.live() ? t('player.livePlaying') : t('player.playing')));
+    this.listen(this.video, 'waiting', () => this.status('waiting', t('player.buffering')));
     this.timer = setInterval(() => this.watchdog(), 500);
     this.pump().catch((e) => {
       if (!this.dead) this.status('error', e.message || String(e));
@@ -180,7 +181,7 @@ export class HlsPlayer {
         if (!res.ok) throw new HttpError(res.status, this.url);
         let pl = parsePlaylist(await res.text(), res.url || this.url);
         if (pl.master) {
-          if (!pl.variants.length) throw new Error('variant がありません');
+          if (!pl.variants.length) throw new Error(t('player.noVariant'));
           this.mediaUrl = pl.variants[0].uri;
           const r2 = await fetch(this.mediaUrl, { cache: 'no-store', signal: this.ctrl.signal, credentials: 'omit' });
           if (!r2.ok) throw new HttpError(r2.status, this.mediaUrl);
@@ -191,13 +192,13 @@ export class HlsPlayer {
       } catch (e) {
         if (this.dead || e.name === 'AbortError') throw new Error('stopped');
         if (e.status === 403 && this.refreshUrl) {
-          this.status('loading', '再生 URL の期限が切れたので取り直します');
+          this.status('loading', t('player.urlExpired'));
           this.url = await this.refreshUrl();
           this.mediaUrl = null;
           continue;
         }
-        if (e.status === 404) this.status('waiting', '配信がありません（publish を待っています）');
-        else this.status('waiting', `プレイリストを読めません（${e.message}）。再試行します`);
+        if (e.status === 404) this.status('waiting', t('player.noLive'));
+        else this.status('waiting', t('player.playlistRetry', { reason: e.message }));
         if (first && attempt >= 2 && e.status !== 404) throw e;
         await sleep(Math.min(1000 * (attempt + 1), 5000), this.ctrl.signal);
       }
@@ -235,7 +236,7 @@ export class HlsPlayer {
             // MediaSource は閉じるので、再試行せずに止める（理由は video.error に出る）
             setTimeout(() => {
               const detail = this.video.error && this.video.error.message ? `: ${this.video.error.message.slice(0, 200)}` : '';
-              rej(new UnsupportedError('decode', `メディアを追加できませんでした（コーデック・形式を確認）${detail}`));
+              rej(new UnsupportedError('decode', t('player.appendFailed', { detail })));
             }, 0);
           };
           const cleanup = () => { this.sb.removeEventListener('updateend', ok); this.sb.removeEventListener('error', bad); };
@@ -269,7 +270,7 @@ export class HlsPlayer {
 
   /** 初期化セグメントが変わるなら読む（追加は appendInit で、最初のメディアセグメントを見てから）。 */
   async loadInit(seg) {
-    if (!seg.map) throw new UnsupportedError('ts', 'EXT-X-MAP がありません（fMP4 ではない）');
+    if (!seg.map) throw new UnsupportedError('ts', t('player.noMap'));
     const key = rangeKey(seg.map);
     if (key === this.initKey) return null;
     const data = await this.fetchBytes(seg.map, 'init');
@@ -288,7 +289,7 @@ export class HlsPlayer {
     const mime = mimeFor(init);
     const MS = MediaSourceImpl();
     if (!MS.isTypeSupported(mime)) {
-      throw new UnsupportedError('codec', `このブラウザは ${mime} を再生できません`);
+      throw new UnsupportedError('codec', t('player.codecUnsupported', { mime }));
     }
     if (!this.sb) {
       this.sb = this.ms.addSourceBuffer(mime);
@@ -296,7 +297,7 @@ export class HlsPlayer {
     } else if (mime !== this.mime) {
       await this.idle();
       if (typeof this.sb.changeType === 'function') this.sb.changeType(mime);
-      else throw new UnsupportedError('codec', '途中でコーデックが変わりましたが、このブラウザは切り替えに対応していません');
+      else throw new UnsupportedError('codec', t('player.codecChanged'));
     }
     this.mime = mime;
     this.stats.mime = mime;
@@ -346,7 +347,7 @@ export class HlsPlayer {
         this.video.currentTime = b.start(0) + 0.05;
       }
       this.video.muted = true;
-      this.video.play().catch(() => this.status('paused', '再生ボタンを押してください（自動再生が止められました）'));
+      this.video.play().catch(() => this.status('paused', t('player.autoplayBlocked')));
     }
   }
 
@@ -392,7 +393,7 @@ export class HlsPlayer {
           await this.idle();
           if (this.seekTarget === null && this.ms.readyState === 'open') {
             try { this.ms.endOfStream(); } catch { /* 何もしない */ }
-            this.status('ended', '最後まで読み込みました');
+            this.status('ended', t('player.ended'));
           }
         }
         await sleep(300, this.ctrl.signal);
@@ -426,7 +427,7 @@ export class HlsPlayer {
         }
         failures += 1;
         if (failures > 5) throw e;
-        this.status('waiting', `セグメントを読めません（${e.message}）。再試行します`);
+        this.status('waiting', t('player.segmentRetry', { reason: e.message }));
         await sleep(1000 * failures, this.ctrl.signal);
       }
     }
