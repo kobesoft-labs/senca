@@ -1,0 +1,3 @@
+// schedules
+export default {
+};

@@ -1,23 +1,49 @@
-// 表示の書式と時刻の変換。
+// 表示の書式と時刻の変換。地域（日付・数の書き方）は画面の言語に合わせる（js/i18n の locale()）。
 
-const dtf = new Intl.DateTimeFormat('ja-JP', {
-  year: 'numeric', month: '2-digit', day: '2-digit', hour: '2-digit', minute: '2-digit', second: '2-digit',
-});
+import { locale, t } from '../i18n/index.js';
 
-/** RFC 3339 → 利用者の地域の時刻表示。 */
+const cache = new Map();
+function cached(kind, opts, make) {
+  const k = `${locale()}|${kind}|${JSON.stringify(opts)}`;
+  let f = cache.get(k);
+  if (!f) {
+    f = make(locale(), opts);
+    cache.set(k, f);
+  }
+  return f;
+}
+const dtf = (opts) => cached('dt', opts, (l, o) => new Intl.DateTimeFormat(l, o));
+const nf = (opts) => cached('n', opts, (l, o) => new Intl.NumberFormat(l, o));
+const FULL = { year: 'numeric', month: '2-digit', day: '2-digit', hour: '2-digit', minute: '2-digit', second: '2-digit', hourCycle: 'h23' };
+
+/** RFC 3339 → 利用者の地域の時刻表示（年月日と時分秒）。 */
 export function fmtTime(iso) {
   if (!iso) return '—';
   const d = new Date(iso);
   if (Number.isNaN(d.getTime())) return String(iso);
-  return dtf.format(d);
+  return dtf(FULL).format(d);
+}
+
+/** 日付だけ。 */
+export function fmtDate(iso) {
+  if (!iso) return '—';
+  const d = new Date(iso);
+  if (Number.isNaN(d.getTime())) return String(iso);
+  return dtf({ year: 'numeric', month: 'short', day: 'numeric' }).format(d);
+}
+
+/** 時刻だけ（時分秒）。Date も受け取る。 */
+export function fmtClock(v) {
+  if (v === null || v === undefined || v === '') return '—';
+  const d = v instanceof Date ? v : new Date(v);
+  if (Number.isNaN(d.getTime())) return String(v);
+  return dtf({ hour: '2-digit', minute: '2-digit', second: '2-digit', hourCycle: 'h23' }).format(d);
 }
 
 export function fmtTimeIn(iso, timeZone) {
   if (!iso) return '—';
   try {
-    return new Intl.DateTimeFormat('ja-JP', {
-      timeZone, year: 'numeric', month: '2-digit', day: '2-digit', hour: '2-digit', minute: '2-digit', second: '2-digit',
-    }).format(new Date(iso));
+    return dtf({ ...FULL, timeZone }).format(new Date(iso));
   } catch {
     return fmtTime(iso);
   }
@@ -27,11 +53,23 @@ export function fmtRelative(iso) {
   if (!iso) return '';
   const diff = (new Date(iso).getTime() - Date.now()) / 1000;
   const abs = Math.abs(diff);
-  const rtf = new Intl.RelativeTimeFormat('ja', { numeric: 'auto' });
+  const rtf = cached('rt', {}, (l) => new Intl.RelativeTimeFormat(l, { numeric: 'auto' }));
   if (abs < 60) return rtf.format(Math.round(diff), 'second');
   if (abs < 3600) return rtf.format(Math.round(diff / 60), 'minute');
   if (abs < 86400) return rtf.format(Math.round(diff / 3600), 'hour');
   return rtf.format(Math.round(diff / 86400), 'day');
+}
+
+/** 数（桁区切り）。 */
+export function fmtNumber(n, opts = {}) {
+  if (n === null || n === undefined || Number.isNaN(Number(n))) return '—';
+  return nf(opts).format(n);
+}
+
+/** 割合（0〜1 → 12%）。 */
+export function fmtPercent(ratio, digits = 0) {
+  if (ratio === null || ratio === undefined) return '—';
+  return nf({ style: 'percent', maximumFractionDigits: digits }).format(ratio);
 }
 
 export function fmtBytes(n) {
@@ -40,16 +78,17 @@ export function fmtBytes(n) {
   let i = 0;
   let v = n;
   while (v >= 1024 && i < u.length - 1) { v /= 1024; i += 1; }
-  return `${v.toFixed(i ? 1 : 0)} ${u[i]}`;
+  return `${nf({ minimumFractionDigits: i ? 1 : 0, maximumFractionDigits: i ? 1 : 0 }).format(v)} ${u[i]}`;
 }
 
 export function fmtBps(n) {
   if (n === null || n === undefined) return '—';
-  if (n >= 1e6) return `${(n / 1e6).toFixed(2)} Mbps`;
-  if (n >= 1e3) return `${(n / 1e3).toFixed(0)} kbps`;
-  return `${n} bps`;
+  if (n >= 1e6) return `${nf({ minimumFractionDigits: 2, maximumFractionDigits: 2 }).format(n / 1e6)} Mbps`;
+  if (n >= 1e3) return `${nf({ maximumFractionDigits: 0 }).format(n / 1e3)} kbps`;
+  return `${nf({}).format(n)} bps`;
 }
 
+/** ミリ秒 → 1:02:03・2:03（時計の形。言語によらない）。 */
 export function fmtDuration(ms) {
   if (ms === null || ms === undefined) return '—';
   const s = Math.floor(ms / 1000);
@@ -58,6 +97,23 @@ export function fmtDuration(ms) {
   const ss = s % 60;
   const p = (x) => String(x).padStart(2, '0');
   return hh ? `${hh}:${p(mm)}:${p(ss)}` : `${mm}:${p(ss)}`;
+}
+
+/** ミリ秒 → 「1 時間 2 分」「1h 2m」（文の中で使う長さ。大きい方の 2 つの単位まで）。 */
+export function fmtDurationText(ms) {
+  if (ms === null || ms === undefined) return '—';
+  const s = Math.max(0, Math.round(ms / 1000));
+  const parts = [[Math.floor(s / 86400), 'd'], [Math.floor((s % 86400) / 3600), 'h'], [Math.floor((s % 3600) / 60), 'm'], [s % 60, 's']];
+  const first = parts.findIndex(([v]) => v > 0);
+  if (first < 0) return t('format.duration.s', { n: 0 });
+  return parts.slice(first, first + 2).filter(([v]) => v > 0).map(([v, u]) => t(`format.duration.${u}`, { n: v })).join(t('format.duration.sep'));
+}
+
+/** 曜日の短い名前（0 = 日曜）。 */
+export function weekdayNames() {
+  const f = dtf({ weekday: 'short', timeZone: 'UTC' });
+  // 2023-01-01 は日曜
+  return Array.from({ length: 7 }, (_, i) => f.format(new Date(Date.UTC(2023, 0, 1 + i))));
 }
 
 /** 利用者の地域のタイムゾーン名。 */
@@ -106,8 +162,6 @@ export function utcToWall(iso, timeZone) {
   const d = new Date(ms + zoneOffset(ms, timeZone));
   return d.toISOString().slice(0, 16);
 }
-
-export const WEEKDAYS = ['日', '月', '火', '水', '木', '金', '土'];
 
 /** POST の再送で同じ答えを得るための鍵。 */
 export function idemKey() {

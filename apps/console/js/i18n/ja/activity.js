@@ -1,0 +1,3 @@
+// activity
+export default {
+};

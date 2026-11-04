@@ -32,18 +32,19 @@ cleanup() {
   for p in "${FEED_PIDS[@]}"; do kill "$p" 2>/dev/null || true; done
   [ -n "$PUB_PID" ] && kill "$PUB_PID" 2>/dev/null || true
   [ -n "$NODE_PID" ] && kill "$NODE_PID" 2>/dev/null || true
-  docker rm -f senca-console-browser >/dev/null 2>&1 || true
+  docker rm -f senca-console-browser-$$ >/dev/null 2>&1 || true
   wait 2>/dev/null || true
   if [ -n "${KEEP:-}" ]; then echo "kept $W"; else rm -rf "$W"; fi
 }
 trap cleanup EXIT
 
-# 49000〜49999 の空いているポート（TCP と UDP の両方）
+# 49000〜49999 の空いているポート（TCP と UDP の両方）。SENCA_PORT_MIN・SENCA_PORT_MAX で範囲を変えられる
 USED=" "
 rport() { local p; while :; do p=$(python3 -c '
-import random,socket
+import os,random,socket
+lo=int(os.environ.get("SENCA_PORT_MIN","49000")); hi=int(os.environ.get("SENCA_PORT_MAX","49999"))
 for _ in range(200):
-    p=random.randint(49000,49999); s=socket.socket(); u=socket.socket(socket.AF_INET,socket.SOCK_DGRAM)
+    p=random.randint(lo,hi); s=socket.socket(); u=socket.socket(socket.AF_INET,socket.SOCK_DGRAM)
     try: s.bind(("127.0.0.1",p)); u.bind(("127.0.0.1",p)); s.close(); u.close(); print(p); break
     except OSError: pass'); case "$USED" in *" $p "*) ;; *) USED="$USED$p "; echo "$p"; return;; esac; done; }
 HTTP=$(rport); RTMP=$(rport); UDP=$(rport); RTSP=$(rport)
@@ -751,7 +752,7 @@ EOF
 ) &
 PUB_PID=$!
 
-docker run --rm --name senca-console-browser --network host --ipc=host -v "$W:$W" "$IMG" bash -c \
+docker run --rm --name senca-console-browser-$$ --network host --ipc=host -v "$W:$W" "$IMG" bash -c \
   "node '$W/browser.cjs' '$BASE' '$TOKEN' '$W'; chown -R $(id -u):$(id -g) '$W'" > "$W/browser.log" 2>&1 || true
 touch "$W/stop-all"
 wait "$PUB_PID" 2>/dev/null || true; PUB_PID=

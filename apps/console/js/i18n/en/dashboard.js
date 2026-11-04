@@ -1,0 +1,3 @@
+// dashboard
+export default {
+};

@@ -4,6 +4,7 @@
 // 401 は bus に `unauthorized` を流し、画面はログインへ戻る。
 
 import { emit } from '../lib/bus.js';
+import { t } from '../i18n/index.js';
 
 export const BASE = '/api/v1';
 const TOKEN_KEY = 'senca.console.token';
@@ -45,24 +46,11 @@ function buildUrl(path, query) {
   return u.pathname + u.search;
 }
 
-const STATUS_TEXT = {
-  0: 'ノードに接続できません',
-  400: '要求の形が正しくありません',
-  401: '認証に失敗しました',
-  403: '権限がありません',
-  404: '見つかりません',
-  405: 'この操作はできません',
-  409: '状態が衝突しています',
-  412: '他の操作で更新されています',
-  413: '大きすぎます',
-  415: '本文の形式が違います',
-  422: '処理できない内容です',
-  428: 'If-Match が必要です',
-  429: '要求が多すぎます',
-  500: 'ノードの内部エラー',
-  502: '中継のエラー',
-  503: '今は処理できません',
-};
+const KNOWN = [0, 400, 401, 403, 404, 405, 409, 412, 413, 415, 422, 428, 429, 500, 502, 503];
+/** 状態コードの短い説明（problem に title が無いとき）。 */
+export function statusText(status) {
+  return KNOWN.includes(status) ? t(`http.${status}`) : null;
+}
 
 async function toError(res, method, path) {
   const ct = res.headers.get('content-type') || '';
@@ -75,7 +63,7 @@ async function toError(res, method, path) {
   const ra = res.headers.get('retry-after');
   return new ApiError({
     status: res.status,
-    title: problem.title || STATUS_TEXT[res.status] || res.statusText,
+    title: problem.title || statusText(res.status) || res.statusText,
     code: problem.code,
     requestId: problem.request_id || res.headers.get('x-request-id'),
     retryable: problem.retryable,
@@ -119,7 +107,7 @@ export async function request(method, path, opt = {}) {
     res = await fetch(url, { method, headers, body, signal: opt.signal, cache: 'no-store', credentials: 'omit' });
   } catch (e) {
     if (e.name === 'AbortError') throw e;
-    throw new ApiError({ status: 0, title: STATUS_TEXT[0], method, path });
+    throw new ApiError({ status: 0, title: statusText(0), method, path });
   }
   if (!res.ok) {
     const err = await toError(res, method, path);
