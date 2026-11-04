@@ -411,7 +411,19 @@ const EXPECTED_FAIL = [
     check('login with bootstrap token → dashboard (token only in sessionStorage)', stored);
     await page.locator('[data-testid="sse-status"][data-state="open"]').waitFor({ timeout: 10000 });
     check('SSE over fetch connected', true);
-    await page.getByText('dav1d').first().waitFor({ timeout: 5000 }).then(() => check('dashboard shows devices', true)).catch(() => check('dashboard shows devices (no codec worker)', true, 'no providers'));
+    await page.getByTestId('health-strip').waitFor({ timeout: 8000 });
+    check('dashboard health strip', await page.getByTestId('health-summary').isVisible());
+    // ---- 運用と設定: はじめの手順（新しいノード） ----
+    const fresh = page.getByTestId('checklist-getting-started');
+    await fresh.waitFor({ timeout: 5000 });
+    const freshState = await fresh.evaluate((el) => ({
+      streamDone: el.querySelector('[data-step="stream"]').classList.contains('done'),
+      href: el.querySelector('[data-step="stream"] a.primary')?.getAttribute('href'),
+      steps: el.querySelectorAll('li[data-step]').length,
+    }));
+    const haveStreams = ((await apiGet('/streams')).body.items || []).length > 0;
+    check('onboarding checklist on first login: 6 steps, progress from real state', freshState.steps === 6 && freshState.streamDone === haveStreams && (haveStreams || freshState.href === '#/streams?new=1'), JSON.stringify(freshState));
+    // ---- ここまで ----
     await shot('01-dashboard');
   });
 
@@ -521,23 +533,36 @@ const EXPECTED_FAIL = [
   await step('tokens', async () => {
     await page.goto(`${base}/console/#/tokens`);
     await page.getByTestId('tokens-create').click();
-    const dlg = page.getByRole('dialog');
-    await dlg.getByLabel('名前').fill('browser-ro');
-    await dlg.getByRole('button', { name: '発行' }).click();
-    const val = await page.getByRole('dialog').getByRole('textbox', { name: '「browser-ro」のトークン' }).inputValue();
-    check('token created and shown once', /^senca_/.test(val));
-    await page.getByRole('button', { name: '控えました' }).click();
-    await page.getByRole('cell', { name: 'browser-ro', exact: true }).waitFor();
+    const dlg = page.getByTestId('token-create-dialog');
+    await dlg.getByTestId('token-name').fill('browser-ro');
+    await dlg.locator('label.role-card', { has: page.getByTestId('token-role-encoder') }).click();
+    const pubOnly = await dlg.evaluate((d) => [...d.querySelectorAll('[data-testid^="token-scope-"]')].filter((i) => i.checked).map((i) => i.value).join(','));
+    await dlg.locator('label.role-card', { has: page.getByTestId('token-role-viewer') }).click();
+    await dlg.getByTestId('token-create-submit').click();
+    const reveal = page.getByTestId('token-reveal-dialog');
+    const val = await reveal.getByTestId('token-value').inputValue();
+    check('token create: role preset → scopes, value revealed once', /^senca_/.test(val) && pubOnly === 'publish', pubOnly);
+    // 写さずに閉じようとすると一度止まる
+    await page.keyboard.press('Escape');
+    await page.getByTestId('token-not-copied').waitFor({ timeout: 3000 });
+    const still = await reveal.isVisible();
+    await reveal.getByTestId('token-reveal-done').click();
+    await reveal.waitFor({ state: 'detached', timeout: 3000 });
+    check('token reveal: closing without copying warns first, second close works', still);
+    const row = page.locator('[data-testid="tokens-table"] tr', { hasText: 'browser-ro' });
+    await row.waitFor();
+    check('token row shows role and expiry (90 days by default)', /見るだけ/.test(await row.textContent()) && /日後|か月後|月後/.test(await row.textContent()), await row.textContent());
   });
 
   await step('nodes', async () => {
     await page.goto(`${base}/console/#/nodes`);
-    await page.getByRole('button', { name: 'drain', exact: true }).click();
-    await page.getByRole('dialog').getByRole('button', { name: 'drain' }).click();
-    await page.getByRole('button', { name: 'drain を解除' }).waitFor({ timeout: 5000 });
-    await page.getByRole('button', { name: 'drain を解除' }).click();
-    await page.getByRole('dialog').getByRole('button', { name: '解除' }).click();
-    await page.getByRole('button', { name: 'drain', exact: true }).waitFor({ timeout: 5000 });
+    await page.getByTestId('node-card').first().waitFor();
+    await page.getByTestId('node-drain').first().click();
+    await page.getByTestId('confirm-ok').click();
+    await page.getByTestId('node-undrain').first().waitFor({ timeout: 5000 });
+    await page.getByTestId('node-undrain').first().click();
+    await page.getByTestId('confirm-ok').click();
+    await page.getByTestId('node-drain').first().waitFor({ timeout: 5000 });
     check('node drain / undrain', true);
   });
 
@@ -545,14 +570,15 @@ const EXPECTED_FAIL = [
   const SECRET_VALUE = 'sv-' + Math.random().toString(36).slice(2);
   await step('secrets create', async () => {
     await page.goto(`${base}/console/#/secrets`);
-    await page.getByLabel('名前', { exact: true }).fill('sinkkey');
-    await page.getByLabel('値（表示・保存しません）').fill(SECRET_VALUE);
-    await page.getByRole('button', { name: '作成' }).click();
+    await page.getByTestId('secrets-create').click();
+    await page.getByTestId('secret-name').fill('sinkkey');
+    await page.getByTestId('secret-value').fill(SECRET_VALUE);
+    await page.getByTestId('secret-create-submit').click();
     await page.getByRole('textbox', { name: 'sinkkey の参照' }).waitFor({ timeout: 5000 });
     const ref = await page.getByRole('textbox', { name: 'sinkkey の参照' }).inputValue();
     const leaked = await page.evaluate((v) => document.body.innerHTML.includes(v) || [...Object.values(localStorage), ...Object.values(sessionStorage)].some((x) => x.includes(v)), SECRET_VALUE);
-    const valEmpty = (await page.getByLabel('値（表示・保存しません）').inputValue()) === '';
-    check('secret created (write-only; value not in DOM/storage, field cleared)', ref === 'secret:sinkkey' && !leaked && valEmpty, `ref=${ref} leaked=${leaked}`);
+    const dialogGone = (await page.getByTestId('secret-create-dialog').count()) === 0;
+    check('secret created (write-only; value not in DOM/storage, dialog closed)', ref === 'secret:sinkkey' && !leaked && dialogGone, `ref=${ref} leaked=${leaked}`);
     await shot('07-secrets');
   });
 
@@ -582,10 +608,13 @@ const EXPECTED_FAIL = [
     // 使われている秘密値は消せない
     await page.goto(`${base}/console/#/secrets`);
     await clearToasts();
-    await page.getByRole('button', { name: '秘密値 sinkkey を削除' }).click();
-    await page.getByRole('dialog').getByRole('button', { name: '削除' }).click();
-    await toastText(/消せません/);
-    check('secret in use → 409 explained', true);
+    const skRow = page.locator('[data-testid="secrets-table"] tr[data-key="sinkkey"]');
+    await skRow.locator('details.usage').waitFor({ timeout: 10000 });
+    await skRow.getByTestId('secret-delete').click();
+    await page.getByTestId('secret-in-use').waitFor({ timeout: 5000 });
+    const where = await page.getByTestId('secret-in-use').textContent();
+    await page.keyboard.press('Escape');
+    check('secret in use → delete explains where it is used', /whep264/.test(where), where);
     await page.goto(`${base}/console/#/streams/${env.whep264}`);
     await outSec.getByRole('button', { name: /出力 rtmp_push を削除/ }).click();
     await page.getByRole('dialog').getByRole('button', { name: '削除' }).click();
@@ -613,10 +642,12 @@ const EXPECTED_FAIL = [
     await inSec.getByText('入力はありません').waitFor({ timeout: 8000 });
     check('input delete', true);
     await page.goto(`${base}/console/#/secrets`);
-    await page.getByRole('button', { name: '秘密値 sinkkey を削除' }).click();
-    await page.getByRole('dialog').getByRole('button', { name: '削除' }).click();
-    await page.getByText('秘密値はありません').waitFor({ timeout: 5000 });
-    check('secret delete after unused', true);
+    await page.locator('[data-testid="secrets-table"] tr[data-key="sinkkey"]').getByText('使われていません').waitFor({ timeout: 10000 });
+    await page.locator('[data-testid="secrets-table"] tr[data-key="sinkkey"]').getByTestId('secret-delete').click();
+    await page.getByRole('dialog').getByRole('textbox').fill('sinkkey');
+    await page.getByTestId('confirm-ok').click();
+    await page.getByTestId('secrets-empty').waitFor({ timeout: 5000 });
+    check('secret delete after unused (type the name to confirm)', true);
   });
 
   await step('captions settings', async () => {
@@ -917,6 +948,120 @@ const EXPECTED_FAIL = [
     check('style guide renders in English with no missing keys', missingEn.length === 0, missingEn.join(', '));
   });
 
+  // ================================================================ 運用と設定（ダッシュボード・グリッド・監査ログ）ここから
+  await step('ops: onboarding progress', async () => {
+    await page.goto(`${base}/console/#/?onboarding=1`);
+    const cl = page.getByTestId('checklist-getting-started');
+    await cl.waitFor({ timeout: 8000 });
+    const st = await cl.evaluate((el) => Object.fromEntries([...el.querySelectorAll('li[data-step]')].map((li) => [li.dataset.step, li.classList.contains('done')])));
+    const meter = await cl.locator('[role="meter"]').getAttribute('aria-valuenow');
+    check('onboarding checklist follows real state (stream, send, record, team done)', st.stream && st.send && st.record && st.team && Number(meter) >= 4, `${JSON.stringify(st)} meter=${meter}`);
+    await cl.getByRole('button', { name: 'この案内を閉じる' }).click();
+    await page.getByTestId('onboarding-reopen').waitFor({ timeout: 3000 });
+    await page.getByTestId('onboarding-reopen').click();
+    await cl.waitFor({ timeout: 3000 });
+    check('onboarding checklist: dismiss, then re-open from the header', true);
+  });
+
+  await step('ops: audit filter and pagination', async () => {
+    // 130 件の記録を作る（秘密値の作成と削除）
+    const made = await page.evaluate(async (token) => {
+      const H = { Authorization: `Bearer ${token}`, 'Content-Type': 'application/json' };
+      let n = 0;
+      for (let i = 0; i < 65; i++) {
+        const r = await fetch('/api/v1/secrets', { method: 'POST', headers: { ...H, 'Idempotency-Key': `audit-gen-${i}-${Date.now()}` }, body: JSON.stringify({ name: `audit-gen-${i}`, value: 'x' }) });
+        if (r.ok) { n++; const id = (await r.json()).id; if ((await fetch(`/api/v1/secrets/${id}`, { method: 'DELETE', headers: H })).ok) n++; }
+      }
+      return n;
+    }, token);
+    await page.goto(`${base}/console/#/audit?action=secret.`);
+    await page.getByTestId('audit-entry').first().waitFor({ timeout: 10000 });
+    const first = await page.getByTestId('audit-entry').count();
+    // 下へ進むと続きを読む（終わりまで）
+    for (let i = 0; i < 20; i++) {
+      await page.getByTestId('audit-list').locator('li').last().scrollIntoViewIfNeeded();
+      await sleep(400);
+      if (await page.getByTestId('audit-more').isHidden()) break;
+    }
+    const all = await page.getByTestId('audit-entry').evaluateAll((els) => els.map((e) => e.dataset.action));
+    const onlySecret = all.every((a) => a.startsWith('secret.'));
+    check('audit: action prefix filter + infinite scroll to the end', made === 130 && first >= 50 && all.length >= 130 && first < all.length && onlySecret, `made=${made} first=${first} all=${all.length}`);
+    // 条件は URL に残る。操作の種類を変える
+    await page.getByTestId('audit-action').selectOption('token.');
+    await page.waitForFunction(() => location.hash.includes('action=token.'));
+    await page.getByTestId('audit-entry').first().waitFor({ timeout: 8000 });
+    const tok = await page.getByTestId('audit-entry').evaluateAll((els) => els.map((e) => e.dataset.action));
+    await page.reload();
+    await page.getByTestId('audit-entry').first().waitFor({ timeout: 8000 });
+    const kept = await page.getByTestId('audit-action').inputValue();
+    check('audit: filters are URL-stateful and survive reload', tok.length > 0 && tok.every((a) => a.startsWith('token.')) && kept === 'token.', `${tok.length} ${kept}`);
+    // 主体で絞る（チップで外せる）
+    await page.getByTestId('audit-actor').first().click();
+    await page.getByTestId('chip-subject').waitFor({ timeout: 5000 });
+    check('audit: click an actor to filter by it (removable chip)', /subject=/.test(await page.evaluate(() => location.hash)));
+    // 書き出し（今の条件）
+    const [dl] = await Promise.all([page.waitForEvent('download', { timeout: 20000 }), (async () => { await page.getByTestId('audit-export').click(); await page.getByTestId('audit-export-csv').click(); })()]);
+    const csv = fs.readFileSync(await dl.path(), 'utf8').replace(/^﻿/, '').trim().split(/\r\n/);
+    check('audit: CSV export of the current filter', csv[0].startsWith('ts,action,action_label') && csv.length - 1 === tok.length, `${csv.length - 1} rows, ${csv[0].slice(0, 40)}`);
+    await shot('20-audit');
+  });
+
+  await step('ops: grid', async () => {
+    // 配置できるもの 1 つと、ラベルが合わず配置できないもの 1 つ
+    await page.evaluate(async (token) => {
+      const H = { Authorization: `Bearer ${token}`, 'Content-Type': 'application/json' };
+      const post = (p, b) => fetch(`/api/v1${p}`, { method: 'POST', headers: { ...H, 'Idempotency-Key': `${p}-${Math.random()}` }, body: JSON.stringify(b) }).then((r) => r.json());
+      const s = await post('/streams', { name: 'grid-probe' });
+      await post(`/streams/${s.id}/outputs`, { protocol: 'rtmp_push', url: 'rtmp://127.0.0.1:9/live/x', enabled: true, placement: { priority: 'high' } });
+      await post(`/streams/${s.id}/inputs`, { protocol: 'rtmp_pull', url: 'rtmp://127.0.0.1:9/live/y', enabled: true, placement: { labels: [{ op: 'eq', key: 'zone', value: 'nowhere' }] } });
+    }, token);
+    await waitApi('/grid', (g) => g && g.workloads.some((w) => w.state === 'unschedulable') && g.workloads.some((w) => w.state === 'running'), 10000);
+    await page.goto(`${base}/console/#/grid`);
+    await page.getByTestId('grid-board').or(page.getByTestId('grid-empty')).first().waitFor({ timeout: 10000 });
+    const cols = await page.getByTestId('grid-col').count();
+    const nodes = (await apiGet('/grid')).body;
+    const rows = await page.locator('[data-testid="grid-table"] tbody tr').count();
+    check('grid: one column per node, one row per workload', cols === nodes.nodes.length && rows === nodes.workloads.length, `cols=${cols} rows=${rows} api=${nodes.nodes.length}/${nodes.workloads.length}`);
+    if (nodes.workloads.length) {
+      await page.getByTestId('grid-state-filter').getByRole('radio').nth(4).click();
+      await page.waitForFunction(() => location.hash.includes('state=unschedulable'));
+      await page.getByTestId('grid-col-unplaced').waitFor({ timeout: 5000 });
+      const why = await page.getByTestId('grid-col-unplaced').textContent();
+      const shown = await page.locator('[data-testid="grid-table"] tbody tr').count();
+      check('grid: state filter (URL-stateful) shows the unplaceable workload with its reason', shown === 1 && /grid-probe/.test(why) && /ラベル/.test(why), why);
+    }
+    await shot('21-grid');
+  });
+
+  await step('ops: dashboard attention and on air', async () => {
+    await page.goto(`${base}/console/#/`);
+    await page.getByTestId('health-strip').waitFor({ timeout: 8000 });
+    const onair = await page.getByTestId('health-onair').textContent();
+    check('dashboard: on-air count in the health strip', /配信中/.test(onair), onair);
+    await shot('22-dashboard');
+  });
+  await step('ops: mobile', async () => {
+    const m = await browser.newContext({ viewport: { width: 390, height: 844 }, deviceScaleFactor: 2, isMobile: true, hasTouch: true, locale: 'ja-JP', timezoneId: 'Asia/Tokyo' });
+    await m.addInitScript((tok) => sessionStorage.setItem('senca.console.token', tok), token);
+    const mp = await m.newPage();
+    mp.on('pageerror', (e) => errors.push(`ops mobile pageerror: ${e.message}`));
+    const small = [];
+    for (const r of ['/', '/nodes', '/grid', '/audit', '/tokens', '/secrets']) {
+      await mp.goto(`${base}/console/#${r}`);
+      await mp.locator('main h1').first().waitFor({ timeout: 10000 });
+      await sleep(800);
+      const s = await mp.evaluate(() => [...document.querySelectorAll('main button, main a.btn, main select, main input:not([type=checkbox]):not([type=radio])')]
+        .filter((el) => el.offsetParent && !el.closest('.copy-field, .search, .segmented, details:not([open])'))
+        .map((el) => [el.getBoundingClientRect().height, (el.getAttribute('aria-label') || el.textContent || el.tagName).trim().slice(0, 30)])
+        .filter(([hgt]) => hgt < 43.5));
+      small.push(...s.map(([hgt, n]) => `${r} ${n} ${hgt.toFixed(0)}px`));
+      await mp.screenshot({ path: path.join(work, `23-mobile${r.replace(/\W+/g, '_')}.png`), fullPage: true });
+    }
+    check('ops pages on 390px: touch targets ≥ 44px', small.length === 0, small.slice(0, 8).join(' | '));
+    await m.close();
+  });
+  // ================================================================ 運用と設定 ここまで
+
   // ---------------------------------------------------------------- 狭い画面（390×844）: 引き出しのメニュー・横にはみ出さない・表はカード
   await step('mobile', async () => {
     const m = await browser.newContext({ viewport: { width: 390, height: 844 }, deviceScaleFactor: 2, isMobile: true, hasTouch: true, locale: 'ja-JP', timezoneId: 'Asia/Tokyo' });
@@ -924,7 +1069,7 @@ const EXPECTED_FAIL = [
     const mp = await m.newPage();
     mp.on('pageerror', (e) => errors.push(`mobile pageerror: ${e.message}`));
     const widths = {};
-    for (const r of ['/', '/streams', '/recordings', '/schedules', '/tokens', '/secrets', '/nodes', '/send', `/streams/${env.whep264}`, '/_styleguide']) {
+    for (const r of ['/', '/streams', '/recordings', '/schedules', '/tokens', '/secrets', '/nodes', '/grid', '/audit', '/send', `/streams/${env.whep264}`, '/_styleguide']) {
       await mp.goto(`${base}/console/#${r}`);
       await mp.locator('main h1').first().waitFor({ timeout: 10000 });
       await sleep(600);

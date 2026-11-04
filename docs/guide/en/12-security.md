@@ -339,6 +339,7 @@ when reading). To archive the log elsewhere, collect the rotated files (`audit.l
 ### Reading it through the API
 
 `GET /api/v1/audit` returns the entries newest first (requires `tenant:admin`).
+The console's Audit log page shows the same entries, filtered by time range, action and actor, and exports them as CSV or JSON.
 
 ```sh
 curl -s -H "Authorization: Bearer $TOKEN" \
