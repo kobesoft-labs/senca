@@ -22,8 +22,8 @@ export const NAV_GROUPS = [
   ] },
   { id: 'operations', items: [
     { id: 'nodes', href: '#/nodes', icon: 'nodes', key: 'n' },
-    { id: 'grid', href: '#/grid', icon: 'grid', key: 'g', soon: true },
-    { id: 'audit', href: '#/audit', icon: 'audit', key: 'a', soon: true },
+    { id: 'grid', href: '#/grid', icon: 'grid', key: 'g' },
+    { id: 'audit', href: '#/audit', icon: 'audit', key: 'a' },
   ] },
   { id: 'settings', items: [
     { id: 'tokens', href: '#/tokens', icon: 'key', key: 'k' },
@@ -53,8 +53,8 @@ export const ROUTES = [
   { re: /^\/send\/?$/, nav: 'send', load: () => import('./views/send.js') },
   { re: /^\/rooms(\/.*)?$/, nav: 'rooms', load: soon },
   { re: /^\/media-pipelines(\/.*)?$/, nav: 'media-pipelines', load: soon },
-  { re: /^\/grid\/?$/, nav: 'grid', load: soon },
-  { re: /^\/audit\/?$/, nav: 'audit', load: soon },
+  { re: /^\/grid\/?$/, nav: 'grid', load: () => import('./views/grid.js') },
+  { re: /^\/audit\/?$/, nav: 'audit', load: () => import('./views/audit.js') },
   { re: /^\/users(\/.*)?$/, nav: 'users', load: soon },
   { re: /^\/_styleguide\/?$/, nav: null, load: () => import('./views/styleguide.js') },
 ];
